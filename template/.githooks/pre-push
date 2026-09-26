@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Nothing reaches the remote without passing the same gates as CI. Never bypass with --no-verify.
+exec pnpm verify

@@ -1,0 +1,51 @@
+---
+import { cssVariables } from '@{{ project_slug }}/ui-tokens';
+
+const name = {{ project_name | tojson }};
+const description = {{ description | tojson }};
+const rootStyle = Object.entries(cssVariables())
+  .map(([key, value]) => `${key}: ${value}`)
+  .join('; ');
+---
+
+<!doctype html>
+<html lang="en" style={rootStyle}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{name}</title>
+    {description && <meta name="description" content={description} />}
+  </head>
+  <body>
+    <main>
+      <h1>{name}</h1>
+      {description && <p>{description}</p>}
+    </main>
+  </body>
+</html>
+
+<style is:global>
+  body {
+    margin: 0;
+    background: var(--color-background);
+    color: var(--color-text);
+    font-family: var(--font-family);
+    font-size: var(--font-size-md);
+  }
+
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: var(--spacing-xl) var(--spacing-md);
+  }
+
+  h1 {
+    font-size: var(--font-size-xl);
+    margin: 0 0 var(--spacing-md);
+  }
+
+  p {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-lg);
+  }
+</style>

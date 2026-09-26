@@ -1,0 +1,65 @@
+// Enforces house rule E2E-1: the critical journey, walked in a real browser with an axe scan.
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test, type Page } from '@playwright/test';
+
+import app from '../app.json';
+
+const { name } = app.expo;
+{%- if 'api' in apps %}
+
+// Hermetic: `pnpm e2e` builds against http://api.test and each journey answers for it here.
+const api = (page: Page, health: object | 'down') =>
+  page.route('http://api.test/health', (route) =>
+    health === 'down'
+      ? route.abort('connectionrefused')
+      : route.fulfill({ json: health, headers: { 'access-control-allow-origin': '*' } }),
+  );
+{%- endif %}
+
+async function expectAccessible(page: Page) {
+  const { violations } = await new AxeBuilder({ page }).analyze();
+  expect(violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
+}
+
+test.use({ locale: 'en-US' });
+
+test('MOBILE-HOME.S1 home shows the product{% if 'api' in apps %} and a healthy API{% endif %}', async ({ page }) => {
+{%- if 'api' in apps %}
+  await api(page, { status: 'ok', db: 'up' });
+{%- endif %}
+  await page.goto('/');
+
+  await expect(page.getByRole('heading', { name: `Welcome to ${name}` })).toBeVisible();
+{%- if 'api' in apps %}
+  await expect(page.getByText('API working, database up')).toBeVisible();
+{%- endif %}
+  await expectAccessible(page);
+});
+{%- if 'api' in apps %}
+
+test('MOBILE-HOME.S2 home says so when the API is down', async ({ page }) => {
+  await api(page, 'down');
+  await page.goto('/');
+
+  await expect(page.getByRole('alert')).toHaveText("The API can't be reached right now.");
+  await expectAccessible(page);
+});
+{%- endif %}
+
+test.describe('on a phone set to Spanish', () => {
+  test.use({ locale: 'es-AR' });
+
+  test('MOBILE-HOME.S3 home speaks the device language', async ({ page }) => {
+{%- if 'api' in apps %}
+    await api(page, { status: 'ok', db: 'up' });
+{%- endif %}
+    await page.goto('/');
+
+    await expect(
+      page.getByRole('heading', { name: `Te damos la bienvenida a ${name}` }),
+    ).toBeVisible();
+{%- if 'api' in apps %}
+    await expect(page.getByText('API funcionando, base de datos disponible')).toBeVisible();
+{%- endif %}
+  });
+});

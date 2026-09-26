@@ -1,0 +1,22 @@
+{
+  "name": "keelokit",
+  "version": "0.4.0",
+  "description": "Leopoldo Simini's personal Claude Code harness for building apps in TypeScript monorepos: intake, PRD, a generated skeleton with CI, backlog, independent verification and rules backed by checks.",
+  "author": {
+    "name": "Leopoldo Simini",
+    "url": "https://leopoldosimini.com"
+  },
+  "repository": "https://github.com/leosimini/keelokit",
+  "keywords": [
+    "claude-code",
+    "harness",
+    "monorepo",
+    "typescript",
+    "pnpm",
+    "mvp",
+    "spec-driven",
+    "agents"
+  ],
+  "homepage": "https://github.com/leosimini/keelokit",
+  "license": "MIT"
+}

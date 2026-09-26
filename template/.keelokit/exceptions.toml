@@ -1,0 +1,8 @@
+# Registered deviations from a house or local rule. `pnpm doctor` fails on an expired or
+# incomplete one. expires = "YYYY-MM-DD" or "permanent".
+#
+# [[exception]]
+# rule = "UI-1"
+# reason = "Third-party map SDK needs a literal colour for its marker."
+# approver = "Leo"
+# expires = "2026-12-31"

@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+# Build from the REPO ROOT, so the pnpm workspace (lockfile, packages/shared) is in the context:
+#   docker build -f apps/api/Dockerfile -t {{ project_slug }}-api .
+# Fly does the same: `fly deploy --config apps/api/fly.staging.toml` from the root.
+
+FROM node:22-alpine AS build
+RUN corepack enable
+WORKDIR /repo
+
+# Manifests first, so the dependency layer is reused until a package.json or the lockfile changes.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/api/package.json apps/api/
+# --ignore-scripts: the root postinstall builds packages/shared, whose source isn't copied yet.
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @{{ project_slug }}/api...
+
+# Explicit paths, never whole directories: a local node_modules or .env must not reach the image.
+COPY packages/shared/tsconfig.json packages/shared/tsconfig.build.json packages/shared/
+COPY packages/shared/src packages/shared/src
+COPY apps/api/tsconfig.json apps/api/tsconfig.build.json apps/api/prisma.config.ts apps/api/
+COPY apps/api/prisma apps/api/prisma
+COPY apps/api/src apps/api/src
+RUN pnpm --filter @{{ project_slug }}/shared build \
+ && pnpm --filter @{{ project_slug }}/api prisma:generate \
+ && pnpm --filter @{{ project_slug }}/api build \
+ && pnpm deploy --legacy --filter @{{ project_slug }}/api --prod /out
+
+FROM node:22-alpine
+# Prisma's schema engine (`migrate deploy`, Fly's release_command) needs OpenSSL on Alpine.
+RUN apk add --no-cache openssl
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+COPY --from=build /out/package.json /out/prisma.config.ts ./
+COPY --from=build /out/node_modules node_modules
+COPY --from=build /out/prisma prisma
+COPY --from=build /repo/apps/api/dist dist
+USER node
+EXPOSE 3000
+CMD ["node", "dist/main.js"]

@@ -1,0 +1,45 @@
+import 'reflect-metadata';
+import { healthResponseSchema } from '@{{ project_slug }}/shared';
+import type { INestApplication } from '@nestjs/common';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createApp } from './app.js';
+import type { Route } from './authz/authz.matrix.js';
+import { loadEnv } from './config/env.schema.js';
+
+// CONTRACT-1: every response has a schema in packages/shared; the controller returns its z.infer
+// type, and this file parses a real response of every route against the real database.
+// Keyed by the authz matrix, so a route without a contract here fails typecheck.
+
+type Contract = {
+  schema: { parse(body: unknown): unknown };
+  /** Builds the request when `METHOD /path` alone isn't enough (path params, body, auth). */
+  send?: (http: request.Agent) => request.Test;
+};
+
+const contracts: Record<Route, Contract> = {
+  'GET /health': { schema: healthResponseSchema },
+};
+
+describe('response contracts (CONTRACT-1)', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    app = await createApp(loadEnv());
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it.each(Object.entries(contracts))('%s', async (route, { schema, send }) => {
+    const http = request(app.getHttpServer());
+    const [method, path] = route.split(' ');
+    const res = await (send ? send(http) : http[method.toLowerCase() as 'get'](path));
+    expect(res.ok, `${route} answered ${res.status}`).toBe(true);
+    // parse() rejects missing or mistyped fields and drops undeclared ones, so the equality also
+    // catches a field the schema doesn't declare (a leak, or data no client can rely on).
+    expect(schema.parse(res.body)).toEqual(res.body);
+  });
+});

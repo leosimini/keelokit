@@ -1,0 +1,180 @@
+{% raw %}# Fail-fast pipeline: secrets -> checks -> tests -> integration -> build -> deploy (main only).
+# Same gates as `pnpm verify` (scripts/verify.sh), which runs them locally before every push.
+# API-only jobs are rendered only when the API exists (GitHub rejects hashFiles in a job-level
+# `if`); adding an app is a `copier update`, which re-renders this file.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The gitleaks CLI (free), not gitleaks-action (needs a paid license on organisation repos).
+      - name: gitleaks (full history)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact --no-banner /repo
+
+  checks:
+    name: Format, lint, typecheck, doctor, audit
+    needs: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma client
+        if: hashFiles('apps/api/prisma/schema.prisma') != ''
+        run: pnpm --filter ./apps/api prisma:generate
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Harness doctor
+        run: python3 .keelokit/bin/doctor.py --ci
+      - name: Dependency audit
+        run: pnpm audit --audit-level=high
+
+  unit:
+    name: Unit tests
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma client
+        if: hashFiles('apps/api/prisma/schema.prisma') != ''
+        run: pnpm --filter ./apps/api prisma:generate
+      - run: pnpm test
+
+{% endraw %}{% if 'api' in apps %}{% raw %}  integration:
+    name: Integration tests (real PostgreSQL)
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: {% endraw %}{{ 'postgis/postgis:16-3.4' if postgis else 'postgres:16' }}{% raw %}
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U app -d app" --health-interval 5s --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://app:app@localhost:5432/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ./apps/api prisma:generate
+      - run: pnpm --filter ./apps/api prisma:migrate:deploy
+      - run: pnpm --filter ./apps/api db:seed
+      - run: pnpm --filter ./apps/api test:integration
+
+{% endraw %}{% endif %}{% raw %}  # E2E-1: each app's `e2e` script builds, serves and walks its critical journeys (hermetic:
+  # the API is mocked at the network layer, so this job needs no database).
+  e2e:
+    name: End-to-end journeys
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r --if-present e2e:install
+      - run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: apps/*/playwright-report
+          if-no-files-found: ignore
+
+  # SAST-1: static analysis for injection, unsafe APIs and hard-coded secrets.
+  sast:
+    name: Static analysis (Semgrep)
+    needs: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: semgrep/semgrep:1.178.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep scan --config p/typescript --config p/react --config p/secrets --error --metrics=off
+
+  build:
+    name: Build
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma client
+        if: hashFiles('apps/api/prisma/schema.prisma') != ''
+        run: pnpm --filter ./apps/api prisma:generate
+      - run: pnpm build{% endraw %}{% if 'api' in apps %}{% raw %}
+
+  # Staging deploys on every green main. It is a hard failure (never continue-on-error): a red
+  # staging must be seen. Until the FLY_API_TOKEN secret exists the job skips itself, and
+  # `pnpm doctor` keeps listing that as an open setup step.
+  deploy-staging:
+    name: Deploy API to staging (Fly.io)
+    needs: [integration, build, e2e, sast]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip when Fly is not configured yet
+        id: fly
+        run: echo "ready=$([ -n "$FLY_API_TOKEN" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+        if: steps.fly.outputs.ready == 'yes'
+      - if: steps.fly.outputs.ready == 'yes'
+        run: flyctl deploy --config apps/api/fly.staging.toml --remote-only{% endraw %}{% endif %}

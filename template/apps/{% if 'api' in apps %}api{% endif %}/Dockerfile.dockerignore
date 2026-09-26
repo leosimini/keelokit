@@ -1,0 +1,5 @@
+# Used by `docker build -f apps/api/Dockerfile .`: keeps the upload small and local secrets out.
+**/node_modules
+**/dist
+**/.env
+.git

@@ -1,0 +1,88 @@
+# Keelokit
+
+**Mi harness personal de Claude Code para construir aplicaciones en monorepos TypeScript.**
+
+*[Read in English](README.md)*
+
+Soy [Leopoldo Simini](https://leopoldosimini.com). Hace muchos años que escribo software y casi
+toda la vida que emprendo cosas. Los agentes de código cambiaron mi forma de construir: ideas que
+antes esperaban un equipo o un mes libre ahora tienen una primera versión real. Keelokit es el
+harness que uso para eso —mi stack, mis reglas, mi forma de trabajar— y lo mantengo como hobby,
+los fines de semana y en noches de música y código, aprendiendo sobre la marcha.
+
+Lo comparto por si le sirve a alguien que está dando sus primeros pasos con agentes, o a
+emprendedores y equipos —técnicos o no— que están armando la base de su primer MVP. Es opinado y
+está hecho a mi gusto, así que no va a encajar en todos los proyectos ni en todos los equipos.
+Tomá lo que te sirva.
+
+## La idea
+
+Cuando construyo con agentes, las reglas importantes no pueden vivir solo en un prompt. Por eso en
+Keelokit cada regla apunta a algo que la verifica —un test, una regla de lint, un hook de git, un job
+de CI— y un script chico (`doctor`) avisa cuando una regla se quedó sin su verificación. Lo que
+no se sabe queda escrito como pregunta abierta en vez de adivinarse, y el agente que escribe el
+código no es el que dice que está terminado.
+
+## Qué hace
+
+| Comando | Qué pasa |
+|---|---|
+| `/keelokit:kickstart` | De una idea a un esqueleto que funciona: una entrevista que escribe el contexto del producto, un PRD corto, el stack, un monorepo generado con CI y un primer backlog |
+| `/keelokit:adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene y deja el resto como excepciones con fecha |
+| `/keelokit:intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
+| `/keelokit:backlog` | Épicas e historias con escenarios de aceptación, agrupadas para que el trabajo en paralelo no toque los mismos archivos |
+| `/keelokit:build` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff y el verificador la recorre en la app corriendo |
+| `/keelokit:bugbash` | Una cacería de bugs en datos, API, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para que no vuelva |
+| `/keelokit:doctor` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
+| `/keelokit:upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
+| `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
+
+## El stack que genera
+
+pnpm workspaces · TypeScript strict · NestJS + Prisma + PostgreSQL · Vite + React · Expo · Astro ·
+contratos zod e i18n en un paquete compartido · tokens de diseño en otro · Vitest, Jest,
+Playwright con axe · GitHub Actions · Fly.io. Elegís qué apps necesita cada producto. Los motivos
+están en [`template/.keelokit/harness/stack.md`](template/.keelokit/harness/stack.md).
+
+## Probarlo
+
+Necesitás Node 22 con pnpm 10, Python 3.11+, [uv](https://docs.astral.sh/uv/) (corre
+[Copier](https://copier.readthedocs.io/)), Docker y git. macOS o Linux.
+
+```bash
+claude plugin marketplace add leosimini/keelokit
+claude plugin install keelokit@keelokit
+```
+
+Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:kickstart`. En un repo que ya
+tenés, `/keelokit:adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
+
+## Bueno saber
+
+- Es opinado a propósito. Si tu stack es otro, `adopt` igual te da las reglas, el guard y los
+  checks, pero no el esqueleto.
+- `build` y `bugbash` usan varios agentes por historia y consumen más tokens que un chat solo.
+  Para cambios chicos existe `build --light`.
+- El guard que frena a los agentes para que no salteen hooks ni escriban secretos es un reductor
+  de velocidad, no un sandbox. Los hooks de git y el CI son el respaldo real.
+- `doctor` puede ver que un check existe y está prendido, no que sea un buen check. Para eso están
+  las revisiones y las cacerías de bugs.
+- Los skills entienden pedidos en español y en inglés.
+
+## Cómo está hecho
+
+[`docs/design.md`](docs/design.md) explica las piezas: el plugin, el template, las reglas de la
+casa y qué puede ver `doctor` y qué no. Keelokit se prueba a sí mismo:
+`python3 -m unittest discover -s tests` para el guard y `doctor`, y `scripts/test-template.sh`
+para generar proyectos y correr todos sus checks.
+
+## Ideas de las que aprendí
+
+El desarrollo guiado por especificaciones ([OpenSpec](https://github.com/Fission-AI/OpenSpec),
+[Spec Kit](https://github.com/github/spec-kit)), [Superpowers](https://github.com/obra/superpowers)
+por separar quién construye de quién revisa, [Copier](https://copier.readthedocs.io/) por los
+templates que se pueden actualizar, y mucha prueba y error en mis propios proyectos.
+
+## Licencia
+
+MIT — ver [LICENSE](LICENSE). Hecho por [Leopoldo Simini](https://leopoldosimini.com).

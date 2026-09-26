@@ -1,0 +1,85 @@
+// One ESLint config for the whole monorepo. Rules referenced from .keelokit/harness/rules.toml
+// (lint:<rule>) must stay here — `pnpm doctor` checks they do.
+import js from '@eslint/js';
+import prettier from 'eslint-config-prettier';
+import reactHooks from 'eslint-plugin-react-hooks';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+const noHexColour = {
+  selector: 'Literal[value=/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/]',
+  message: 'Use a colour from ui-tokens instead of a hex literal (house rule UI-1).',
+};
+
+// ARCH-1: apps share code only through packages/ (or talk over HTTP), never through each other's
+// files; a package is imported through its entry point, never its internals. `self` is the app
+// being linted, so its own relative imports stay allowed.
+const apps = ['api', 'web', 'mobile', 'site'];
+const boundaries = (self) => ({
+  patterns: [
+    {
+      regex: `^@{{ project_slug }}/(${apps.join('|')})(/|$)`,
+      message: 'Apps never import each other; move shared code to packages/ (house rule ARCH-1).',
+    },
+    {
+      regex: `^(\\.\\./)+(apps/)?(${apps.filter((a) => a !== self).join('|')})/(src|e2e|prisma|dist|package\\.json)(/|$)`,
+      message: 'Apps never import each other; move shared code to packages/ (house rule ARCH-1).',
+    },
+    {
+      regex: '^@[^/]+/[^/]+/(src|dist)(/|$)',
+      message: "Import the package's entry point, not its internals (house rule ARCH-1).",
+    },
+  ],
+});
+
+export default tseslint.config(
+  {
+    ignores: [
+      '**/dist/**',
+      '**/build/**',
+      '**/node_modules/**',
+      '**/.expo/**',
+      '**/.astro/**',
+      '**/coverage/**',
+      '**/playwright-report/**',
+      '**/test-results/**',
+      '**/*.d.ts',
+    ],
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  { files: ['**/*.tsx'], ...reactHooks.configs.flat.recommended },
+  {
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      'no-restricted-imports': ['error', boundaries()],
+    },
+  },
+  ...apps.map((app) => ({
+    files: [`apps/${app}/**`],
+    rules: { 'no-restricted-imports': ['error', boundaries(app)] },
+  })),
+  {
+    // UI-1: colours come from @<project>/ui-tokens, never from a literal in app code.
+    files: ['apps/**/*.{ts,tsx}'],
+    rules: { 'no-restricted-syntax': ['error', noHexColour] },
+  },
+  {
+    // I18N-1: user-facing text in web/mobile screens goes through t(), never JSX literals.
+    files: ['apps/{web,mobile}/src/**/*.tsx'],
+    ignores: ['**/*.test.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        noHexColour,
+        {
+          selector: 'JSXText[value=/[A-Za-zÀ-ÿ]/]',
+          message: 'User-facing text goes through t() and the locale files (house rule I18N-1).',
+        },
+      ],
+    },
+  },
+  prettier,
+);

@@ -1,0 +1,207 @@
+# House rules — inherited by every Keelokit project. Updated only through `copier update`;
+# project-specific rules go in .keelokit/rules.local.toml, deviations in .keelokit/exceptions.toml.
+#
+# A rule is only as real as its enforcer, and `pnpm doctor` checks that each enforcer looks alive:
+#   ci:<job>             a job in .github/workflows/*.yml with real steps and no continue-on-error
+#   claude-hook:<file>   .keelokit/bin/<file>, run by the Keelokit plugin before every agent tool call
+#   git-hook:<name>      a git hook that is installed (core.hooksPath or .husky)
+#   test:<path|glob>     test files that name the rule id and have at least one active test
+#   lint:<rule>          an ESLint rule configured as error/warn and never turned off
+#   script:<path>        a script that exits non-zero when the rule breaks
+#   file:<path>#<text>   a config file that must contain <text> (e.g. "strict": true)
+#   review:<agent>       judged by an agent — inferential, weaker; doctor warns when a MUST has only this
+# `when = "<path>"` (or a list: any of them) limits a rule to projects where that path exists.
+# In an adopted repo, .keelokit/rules.local.toml may remap a house rule to the checks the repo already
+# has: an entry with the same id and only `enforced_by`. The rule text and level never change here.
+#
+# What doctor can't see: whether a test really fails when the rule breaks. That is what the
+# reviewer and verifier agents check, and what `/keelokit:bugbash` tightens when something escapes.
+
+[[rule]]
+id = "SEC-1"
+level = "MUST NOT"
+rule = "Commit a secret (API key, token, password, private key) anywhere in the repo."
+why = "A token was found written into a git remote URL; secrets in git are permanent."
+enforced_by = ["ci:secrets", "claude-hook:guard.py", "git-hook:pre-commit", "script:scripts/verify.sh"]
+
+[[rule]]
+id = "SEC-2"
+level = "MUST NOT"
+rule = "Create, edit or commit .env files other than .env.example / .env.ci."
+why = "Real values belong in the secret store (Fly secrets, EAS secrets), never in the tree."
+enforced_by = ["claude-hook:guard.py", "git-hook:pre-commit"]
+
+[[rule]]
+id = "SEC-3"
+level = "MUST NOT"
+rule = "Ship with a high or critical dependency vulnerability."
+why = "pnpm audit in CI is the cheapest supply-chain gate."
+enforced_by = ["ci:checks", "script:scripts/verify.sh"]
+
+[[rule]]
+id = "QA-1"
+level = "MUST"
+rule = "Pass format, lint, typecheck, doctor, unit, integration and build locally before pushing."
+why = "When format failed in CI every test job behind it was skipped; the local gate is free."
+enforced_by = ["git-hook:pre-push", "script:scripts/verify.sh", "ci:checks", "ci:unit"]
+
+[[rule]]
+id = "QA-2"
+level = "MUST NOT"
+rule = "Bypass the gates (--no-verify, force-push, skipping hooks)."
+why = "A bypassed gate is a gate that silently stops existing."
+enforced_by = ["claude-hook:guard.py"]
+
+[[rule]]
+id = "QA-3"
+level = "MUST"
+rule = "Write TypeScript in strict mode without `any`."
+why = "Types are the cheapest test an agent can't forget to run."
+enforced_by = ["lint:@typescript-eslint/no-explicit-any", "file:tsconfig.base.json#\"strict\": true"]
+
+[[rule]]
+id = "GIT-1"
+level = "MUST"
+rule = "Rebase on origin/main before pushing; several agents merge in parallel."
+why = "Stale branches green on their own base broke main after merging."
+enforced_by = ["script:scripts/verify.sh"]
+
+[[rule]]
+id = "GIT-2"
+level = "SHOULD"
+rule = "Close a story with the trailer `Story: <ID>` on the commit that completes it."
+why = "Story status is derived from that trailer on main; ids mentioned in prose never count."
+enforced_by = ["review:reviewer"]
+
+[[rule]]
+id = "DB-1"
+level = "MUST NOT"
+rule = "Edit or delete a migration that already exists on origin/main; add a new one."
+why = "Applied migrations are history; editing them desynchronises every database."
+enforced_by = ["claude-hook:guard.py", "git-hook:pre-commit"]
+when = "apps/api"
+
+[[rule]]
+id = "CFG-1"
+level = "MUST"
+rule = "Declare every API config key in the schema, .env.example, .env.ci and the README block."
+why = "Undocumented keys made local setup and CI fail in ways only the author understood."
+enforced_by = ["test:apps/api/src/config/env.schema.spec.ts"]
+when = "apps/api"
+
+[[rule]]
+id = "UI-1"
+level = "MUST NOT"
+rule = "Hard-code colours in app code; use @<project>/ui-tokens."
+why = "Hand-copied tokens drifted between the design doc, mobile and web."
+enforced_by = ["lint:no-restricted-syntax"]
+
+[[rule]]
+id = "A11Y-1"
+level = "MUST"
+rule = "Keep every text/background token pair at WCAG AA contrast (4.5:1)."
+why = "Contrast is measurable; measure it instead of eyeballing it."
+enforced_by = ["test:packages/ui-tokens/src/contrast.test.ts"]
+
+[[rule]]
+id = "AGENT-1"
+level = "MUST NOT"
+rule = "Deploy to production without the human's explicit confirmation in chat."
+why = "Production is a human-reserved decision (see .keelokit/harness/execution-protocol.md)."
+enforced_by = ["claude-hook:guard.py"]
+
+[[rule]]
+id = "AGENT-2"
+level = "MUST NOT"
+rule = "Invent facts in docs/context or specs; unknowns become gaps with owner and question."
+why = "A plausible default written as fact is the most expensive bug there is."
+enforced_by = ["review:context-auditor", "script:.keelokit/bin/doctor.py"]
+
+[[rule]]
+id = "CTX-1"
+level = "MUST"
+rule = "Keep docs/context complete: required files present, no vague phrases, every gap tracked."
+why = "Agents act on the context; a stale or vague context produces confident wrong code."
+enforced_by = ["script:.keelokit/bin/doctor.py", "ci:checks"]
+
+[[rule]]
+id = "DEP-1"
+level = "SHOULD"
+rule = "Justify every new dependency: stdlib, platform and installed deps first."
+why = "Each dependency is code someone has to upgrade forever."
+enforced_by = ["review:reviewer"]
+
+[[rule]]
+id = "ARCH-1"
+level = "MUST NOT"
+rule = "Import another app, or a workspace package's internals instead of its entry point."
+why = "Cross-module internal imports made modules impossible to change alone."
+enforced_by = ["lint:no-restricted-imports"]
+
+[[rule]]
+id = "CONTRACT-1"
+level = "MUST"
+rule = "Give every API response a schema in packages/shared and a contract test that parses a real response with it."
+why = "Clients and API drifted silently when the response shape lived only in the controller."
+enforced_by = ["test:apps/api/src/contracts.integration.spec.ts", "ci:integration"]
+when = "apps/api"
+
+[[rule]]
+id = "AUTHZ-1"
+level = "MUST"
+rule = "Declare who may call every API route in apps/api/src/authz/authz.matrix.ts."
+why = "Endpoints shipped without an explicit access decision; a role check was missing on organiser routes."
+enforced_by = ["test:apps/api/src/authz/authz.matrix.spec.ts", "ci:unit"]
+when = "apps/api"
+
+[[rule]]
+id = "I18N-1"
+level = "MUST"
+rule = "Show user-facing text only through t(), with the same keys and placeholders in every locale."
+why = "Screens shipped with English strings in Spanish locales and broken plurals ('1 cupos')."
+enforced_by = ["lint:no-restricted-syntax", "test:apps/*/src/i18n/i18n.test.ts"]
+when = ["apps/web", "apps/mobile"]
+
+[[rule]]
+id = "E2E-1"
+level = "MUST"
+rule = "Walk every critical journey end to end in CI, with an accessibility scan."
+why = "Thousands of green unit tests coexisted with 57 UX defects found only by using the app."
+enforced_by = ["ci:e2e", "test:apps/*/e2e/*.spec.ts"]
+when = ["apps/web", "apps/mobile"]
+
+[[rule]]
+id = "TRACE-1"
+level = "MUST"
+rule = "Cite every scenario of a done story (<ID>.S<n>) in a test title."
+why = "Stories were marked done with acceptance criteria no test exercised."
+enforced_by = ["script:.keelokit/bin/doctor.py", "ci:checks"]
+
+[[rule]]
+id = "SAST-1"
+level = "MUST NOT"
+rule = "Merge code with a Semgrep error finding (injection, unsafe APIs, hard-coded secrets)."
+why = "Pattern-level security bugs are cheap to catch mechanically and expensive in production."
+enforced_by = ["ci:sast"]
+
+[[rule]]
+id = "VERIFY-1"
+level = "MUST"
+rule = "Declare a story done only on the verifier's verdict, with evidence per scenario, after walking it in the running app."
+why = "The agent that wrote the code also graded it, and bugs needed two or more bug-bash passes."
+enforced_by = ["review:verifier"]
+
+[[rule]]
+id = "UX-1"
+level = "SHOULD"
+rule = "Give every screen loading, empty, error and no-permission states, each covered by a test."
+why = "Empty and error states were the most common UX finding."
+enforced_by = ["review:verifier", "review:reviewer"]
+
+[[rule]]
+id = "QA-4"
+level = "MUST NOT"
+rule = "Skip, focus or silence a test or check (.skip, .only, xit, eslint-disable, @ts-ignore, continue-on-error) without the human's yes."
+why = "Going green by disabling the test that caught the bug is the cheapest way to lie."
+enforced_by = ["claude-hook:guard.py", "git-hook:pre-commit"]
+

@@ -1,0 +1,90 @@
+# Keelokit template.
+#   New product:    uvx copier==9.18.2 copy gh:leosimini/keelokit <dir>
+#   Existing repo:  add --data mode=harness (installs only .keelokit/)
+#   Upgrade later:  uvx copier==9.18.2 update -a .keelokit/answers.yml --conflict rej
+_subdirectory: template
+_min_copier_version: "9.4.0"
+_answers_file: .keelokit/answers.yml
+# Ownership after generation. Listed here = the PRODUCT owns it: rendered once, never touched by
+# `copier update` again (matched against destination paths, on copy and update alike). Everything
+# else (CI, hooks, scripts/, lint/format/tsconfig base, Docker, playwright/vite/vitest configs,
+# .keelokit/ harness) is the TEMPLATE's: updates 3-way-merge into it.
+_skip_if_exists:
+  # Project knowledge and local harness choices.
+  - docs/context/*.md
+  - docs/prd.md
+  - .keelokit/rules.local.toml
+  - .keelokit/exceptions.toml
+  - backlog/*.md
+  - README.md
+  # Product code: the template's version is only a starting point; it diverges on day one.
+  - apps/*/src/**
+  # ...except the generic locale-drift test, which enforces a house rule (I18N-1).
+  - "!apps/*/src/i18n/i18n.test.ts"
+  - apps/*/e2e/**
+  - apps/*/index.html
+  - apps/mobile/index.ts
+  - packages/*/src/**
+  # Migrations are append-only history and the schema/seed are the product's data model.
+  - apps/*/prisma/**
+  # Dependencies and app config the product edits: a template bump would conflict every time.
+  - apps/*/package.json
+  - packages/*/package.json
+  - apps/mobile/app.json
+  - apps/mobile/eas.json
+  - apps/*/.env.example
+  - apps/api/.env.ci
+  # Fly app names, regions and machine sizes are set per product (fly launch / scale).
+  - apps/api/fly.*.toml
+_exclude:
+  - node_modules
+  - dist
+  - .DS_Store
+  - __pycache__
+  # mode=harness (existing repos, /keelokit:adopt): install only .keelokit/, never touch the code.
+  - "{% if mode == 'harness' %}**{% endif %}"
+  - "{% if mode == 'harness' %}!.keelokit{% endif %}"
+  - "{% if mode == 'harness' %}!.keelokit/**{% endif %}"
+
+mode:
+  type: str
+  help: New product (full monorepo) or harness only (existing repo)?
+  choices:
+    New product — full monorepo: project
+    Existing repo — harness only: harness
+  default: project
+
+project_name:
+  type: str
+  help: Product name (as users read it)
+  validator: "{% if not project_name %}Required{% endif %}"
+
+project_slug:
+  type: str
+  help: Package/repo slug (lowercase, dashes)
+  default: "{{ project_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+  validator: "{% if not (project_slug | regex_search('^[a-z][a-z0-9-]*$')) %}lowercase letters, digits and dashes{% endif %}"
+
+description:
+  type: str
+  help: One sentence — what problem it solves, for whom
+  default: ""
+
+apps:
+  type: str
+  help: Which apps does this product need?
+  multiselect: true
+  choices:
+    API (NestJS + Prisma + PostgreSQL): api
+    Web app / backoffice (Vite + React): web
+    Mobile (Expo): mobile
+    Public site (Astro): site
+  default: [api, web]
+  when: "{{ mode == 'project' }}"
+  validator: "{% if mode == 'project' and not apps %}Pick at least one{% endif %}"
+
+postgis:
+  type: bool
+  help: Needs geospatial queries (PostGIS)?
+  default: false
+  when: "{{ mode == 'project' and 'api' in apps }}"

@@ -1,0 +1,13 @@
+dist
+build
+node_modules
+.expo
+.astro
+coverage
+playwright-report
+test-results
+pnpm-lock.yaml
+.keelokit/answers.yml
+apps/api/src/generated
+# Markdown is rendered from templates and read by humans/agents; tables stay as written.
+*.md

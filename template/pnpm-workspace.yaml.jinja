@@ -1,0 +1,29 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Dependencies allowed to run install scripts (pnpm 10 blocks them by default).
+onlyBuiltDependencies:
+  - esbuild
+{%- if 'api' in apps %}
+  # api:start
+  - '@prisma/engines'
+  - prisma
+  # api:end
+{%- endif %}
+{%- if 'web' in apps or 'site' in apps %}
+  # web-site:start
+  # web-site:end
+{%- endif %}
+{%- if 'mobile' in apps %}
+  # mobile:start
+  # mobile:end
+{%- endif %}
+{%- if 'api' in apps %}
+
+# Prisma pins these exactly and the pinned versions carry high advisories.
+# ponytail: drop each override once Prisma ships the fixed version itself.
+overrides:
+  'prisma>mysql2': ^3.23.1
+  '@prisma/config>deepmerge-ts': ^8.0.2
+{%- endif %}

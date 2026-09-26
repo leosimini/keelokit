@@ -1,0 +1,7 @@
+{
+  "app.name": {{ project_name | tojson }}{% if 'api' in apps %},
+  "health.checking": "Comprobando la API…",
+  "health.ok": "La API funciona",
+  "health.degraded": "La API funciona, pero su base de datos no responde",
+  "health.error": "La API no responde"{% endif %}
+}

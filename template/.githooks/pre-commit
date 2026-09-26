@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Same guard the Claude hooks run: blocks committing .env files, secrets, and edits to
+# migrations that already exist on origin/main.
+exec python3 .keelokit/bin/guard.py git-pre-commit

@@ -1,0 +1,10 @@
+import { createTranslator, type Messages } from '@{{ project_slug }}/shared';
+import en from './en.json';
+import es from './es.json';
+
+// en is the base locale: the parity test checks every other file against it.
+export const locales: Record<string, Messages> = { en, es };
+
+const language = navigator.language.split('-')[0];
+export const locale = Object.hasOwn(locales, language) ? language : 'en';
+export const t = createTranslator(locales[locale], locale);

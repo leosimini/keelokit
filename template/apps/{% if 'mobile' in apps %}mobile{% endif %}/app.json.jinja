@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": {{ project_name | tojson }},
+    "slug": "{{ project_slug }}",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.{{ project_slug | replace('-', '') }}.app"
+    },
+    "android": {
+      "package": "com.{{ project_slug | replace('-', '') }}.app"
+    },
+    "plugins": ["expo-localization"]
+  }
+}

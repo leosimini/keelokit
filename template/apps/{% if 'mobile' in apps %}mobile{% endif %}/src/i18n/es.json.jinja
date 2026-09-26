@@ -1,0 +1,13 @@
+{
+  "home.title": "Te damos la bienvenida a {name}"
+{%- if 'api' in apps -%}
+  ,
+  "health.checking": "Consultando la API…",
+  "health.ok": "API {status}, base de datos {db}",
+  "health.status.ok": "funcionando",
+  "health.status.degraded": "con problemas",
+  "health.db.up": "disponible",
+  "health.db.down": "caída",
+  "health.error": "No se puede acceder a la API en este momento."
+{%- endif %}
+}

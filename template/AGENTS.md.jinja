@@ -1,0 +1,56 @@
+# {{ project_name }} — working agreement
+
+{{ description }}
+
+This file is for every agent and every human. It points; the detail lives in the linked files.
+
+## Read first
+
+| Need | Read |
+|---|---|
+| What the product is, for whom, its domain and limits | `docs/context/` (`product`, `domain`, `constraints`, `environments`, `gaps`) |
+| Scope and success metrics | `docs/prd.md` |
+| How to work: gates, done, what needs the human | `.keelokit/harness/execution-protocol.md` |
+| Rules and what enforces each | `.keelokit/harness/rules.toml` (house), `.keelokit/rules.local.toml` (this project) |
+| Stack and why | `.keelokit/harness/stack.md`; deviations in `docs/decisions/` |
+| What to build next | `backlog/` — run `pnpm doctor --brief` |
+
+## Layout
+
+```
+apps/        {{ apps | join(', ') }}
+packages/    shared (wire types, pure rules) · ui-tokens (the only source of colours/spacing)
+docs/        context, prd, decisions
+backlog/     epics.md, stories/<ID>-<slug>.md
+.keelokit/      harness: rules, exceptions, doctor, guard
+```
+
+## Commands
+
+| Command | When |
+|---|---|
+| `pnpm verify` | Before saying "done" (changed packages only; `--all` for everything); runs automatically before every push |
+| `pnpm doctor` | Harness health; `--brief` for where we are and what's next |
+| `pnpm lint` · `pnpm typecheck` · `pnpm test` · `pnpm build` · `pnpm e2e` | One gate at a time |
+| `pnpm format` | Before committing |
+{%- for app in apps %}
+| `pnpm dev:{{ app }}` | Run {{ app }} locally |
+{%- endfor %}
+
+## The non-negotiables (full list and enforcers in rules.toml)
+
+1. Never commit secrets or `.env` files; never edit an applied migration.
+2. Never bypass a gate: no `--no-verify`, no force-push, no disabling tests.
+3. `git fetch && git rebase origin/main` before pushing — other agents merge in parallel.
+4. Unknown facts become gaps with an owner and a question, never plausible defaults.
+5. Colours only from `ui-tokens`; visible text only through `t()` in every locale; API responses
+   only through schemas in `packages/shared`; TypeScript strict, no `any`.
+6. A story is done when the verifier says so, with evidence, and every scenario has a test citing
+   `<ID>.S<n>`. The builder never grades its own work (`/keelokit:build`).
+7. Production deploys, money, legal and data deletion wait for the human's yes.
+
+## Changing the rules
+
+A rule without a check is a wish. To add one: write it in `.keelokit/rules.local.toml` with the
+test, lint rule, hook or CI job that enforces it. To break one temporarily: add an entry to
+`.keelokit/exceptions.toml` with reason, approver and expiry. `pnpm doctor` checks both.
