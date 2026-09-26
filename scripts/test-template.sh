@@ -86,5 +86,5 @@ commit_all generated
 cd "$dir"
 step 'Install'
 pnpm install
-pnpm -r --if-present e2e:install
+pnpm -r --workspace-concurrency=1 --if-present e2e:install
 pnpm verify --all

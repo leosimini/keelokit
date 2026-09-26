@@ -118,7 +118,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r --if-present e2e:install
+      # One app at a time: parallel `playwright install --with-deps` runs collide on apt's lock.
+      - run: pnpm -r --workspace-concurrency=1 --if-present e2e:install
       - run: pnpm e2e
       - uses: actions/upload-artifact@v4
         if: failure()

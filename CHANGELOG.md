@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 — 2026-09-26
+
+- E2E browsers install one app at a time, in generated projects' CI and in Keelokit's own:
+  parallel installs collided on Ubuntu's package lock when a project had both web and mobile.
+
 ## 0.4.0 — 2026-09-26 — first public version
 
 - `/keelokit:kickstart`: intake → PRD → stack → a generated pnpm monorepo (NestJS + Prisma, Vite +
