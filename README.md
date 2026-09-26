@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/keelokit-icon.svg" width="120" alt="Keelokit icon: a hydrofoil board flying over the water"></p>
+
 # Keelokit
 
 **My personal Claude Code harness for building apps in TypeScript monorepos.**
