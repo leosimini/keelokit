@@ -21,6 +21,12 @@ python3 .keelokit/bin/doctor.py
 | Exception incomplete or expired | Ask the user: renew (new date, reason, approver) or remove it and comply. Never renew on your own. |
 | docs/context missing / vague / untracked gap | Missing → `/keelokit:intake`. Vague → ask for the number or name. Untracked gap → add its row to `gaps.md`. |
 | Story errors | Fix front matter, file name, or unknown `depends_on`; remove any `status` field. |
+| Invariant without a class, or a story naming an unknown one | Add `class: <class>` to the `INV-nnn` line in `domain.md` (how does it break? see the plugin's `references/invariants.md`); fix the story's `invariants`. A new invariant is a product rule: ask the user. |
+| Story touches a critical area without `integrity`, or two stories of one area share a wave | Add `integrity` and the invariants it keeps; move one story to a later wave. Never shrink an area to go green. |
+| Done story's invariant not cited by a test (INV-1) | Delegate to the verifier: the test its class calls for, titled with the id. |
+| Critical area points at a missing path | The code moved or went away: update `.keelokit/critical.toml`, don't delete the area unless the code is gone. |
+| Escape row incomplete (ESC-1) | Fill in the class and the check that now catches it, or `none — <why>`. |
+| `doctor --scope` fails | Files outside `touches` → add them and re-check the wave, or split the change. Undeclared critical area → `integrity` + full mode. Acceptance tests edited outside `test(<ID>): …` → revert the edit; the verifier changes tests, openly. |
 
 House rules (`.keelokit/harness/`) are inherited: don't edit them in the project. If one is wrong
 for everyone, say so — it gets fixed in the Keelokit template and arrives with `copier update`. If

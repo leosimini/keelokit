@@ -63,6 +63,12 @@ Run the doctor. For each rule it reports:
    doesn't really enforce it just to go green.
 3. **Rule doesn't apply** (e.g. no API) → it is already skipped by its `when`; nothing to do.
 
+Critical areas start empty in an adopted repo (`.keelokit/critical.toml`). During the diagnosis,
+propose the areas where the code moves money, sends things, enforces limits or holds other
+people's data, and the invariants they keep (`domain.md`). MUT-1 maps to the repo's own mutation
+tool if it has one (Stryker, mutmut, PIT); otherwise it is an exception with a date, and a story
+to add `scripts/mutation.sh` (Keelokit's version runs any package `test` script under Stryker).
+
 Stack differences from the house stack: one `docs/decisions/0001-existing-stack.md`
 (Status, Context, Decision, Consequences) — the repo keeps its stack; the decision makes it
 explicit. Don't propose migrations unless the user asks.

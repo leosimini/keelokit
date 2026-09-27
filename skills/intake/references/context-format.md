@@ -1,7 +1,8 @@
 # docs/context format
 
 Five files. Short sentences, facts with sources, gaps inline as `[GAP-nnn]`.
-`pnpm doctor` checks: all five exist, no vague phrases, every inline gap is in `gaps.md`.
+`pnpm doctor` checks: all five exist, no vague phrases, every inline gap is in `gaps.md`, every
+invariant has an `INV-nnn` id and a known class.
 
 ## product.md
 
@@ -43,10 +44,19 @@ Five files. Short sentences, facts with sources, gaps inline as `[GAP-nnn]`.
 | Term | Meaning here | Don't confuse with |
 |---|---|---|
 
-## Entities and invariants
+## Entities
 ### <Entity>
 <One-sentence definition.>
-- [MUST] <invariant, testable> (S1)
+
+## Invariants
+Rules that must hold in every case, for every user, even with two requests at once. One line
+each: an id that never changes, the rule, its class and its source. The class decides the test
+(`references/invariants.md` in the Keelokit plugin): conservation · once · limit · transition ·
+isolation · time · consistency.
+
+- [INV-001] [MUST] Charged = refunded + held + fee, for every payment — class: conservation (S1)
+- [INV-002] [MUST] A reminder goes out at most once per booking — class: once (S1)
+- [INV-003] [MUST] A slot never holds more bookings than its capacity — class: limit (S2)
 
 ## States
 <Entity>: draft → published → closed. Forbidden: closed → published. (S1)
