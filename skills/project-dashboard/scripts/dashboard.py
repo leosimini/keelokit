@@ -794,7 +794,8 @@ def collect(root: Path) -> dict:
     # The harness this project runs (the template version it was generated from or last upgraded to).
     harness = ans.get("_commit", "").lstrip("v")
     # "Built with Keelokit": the template's `credit` answer (visible by default; adopted repos start without it).
-    credit = ans.get("credit") or ("visible" if layout == "project" and ans else "off")
+    # Not stored when left at its default, so the README's marked block tells what the project really carries.
+    credit = ans.get("credit") or ("visible" if "keelokit:credit" in read(root / "README.md") else "off")
     try:
         plugin_version = json.loads(read(PLUGIN_ROOT / ".claude-plugin/plugin.json")).get("version", "")
     except json.JSONDecodeError:

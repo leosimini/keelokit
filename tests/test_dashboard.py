@@ -222,6 +222,8 @@ class DashboardTest(unittest.TestCase):
         self.gates("intake")
         self.context()
         self.write(".keelokit/answers.yml", "mode: project\nproject_name: Shop\n")
+        self.assertEqual(self.state()["credit"], "off")  # generated before the credit existed
+        self.write("README.md", "# Shop\n\n<!-- keelokit:credit -->\n[![Built with Keelokit](x.svg)](https://keelokit.com)\n<!-- /keelokit:credit -->\n")
         self.assertEqual(self.state()["credit"], "visible")
         html = self.page()
         self.assertIn("<strong>Keelokit credit</strong>: visible", html)
