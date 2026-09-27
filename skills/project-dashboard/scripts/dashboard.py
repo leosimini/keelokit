@@ -125,6 +125,35 @@ T = {
         "build_stage": "Construcción",
         "theme_dark": "Tema oscuro",
         "theme_light": "Tema claro",
+        "env_h": "Entornos",
+        "env_what": "Dónde corre el producto: staging, para probar cada cambio antes de que lo vean los usuarios, y producción, donde están los usuarios. Cada entorno tiene su lista de pasos, verificados uno por uno.",
+        "env_none": "Todavía no hay guía de despliegue. /keelokit:ship-setup la arma, hace lo que no necesita tus cuentas y verifica cada paso.",
+        "env_steps": "{done} de {total} pasos listos",
+        "env_nosteps": "Sin pasos todavía",
+        "env_sum": "{ready} de {total} entornos listos",
+        "act_setup": "Preparar los entornos",
+        "act_release": "Sacar una versión",
+        "act_security": "Revisar seguridad y privacidad",
+        "act_upgrade": "Actualizar el harness",
+        "sec_h": "Seguridad y privacidad",
+        "sec_what": "Una revisión a fondo: qué datos personales guarda el producto y por qué, qué pide la ley de cada mercado, cómo alguien podría abusar de cada recorrido crítico, y escaneos de dependencias y de staging. Cada problema se corrige con un test y deja un control para que no vuelva.",
+        "sec_none": "Todavía no se hizo ninguna. Conviene antes del primer lanzamiento a producción.",
+        "sec_run": "Revisión del {date}",
+        "found_h": "Lo que encontramos",
+        "found_stack": "Stack",
+        "found_ci": "Integración continua",
+        "found_hosting": "Despliegue",
+        "found_tests": "Tests",
+        "rules_h": "Reglas de la casa en este repo",
+        "rules_counts": "De {house} reglas: {mapped} cubiertas por lo que el repo ya tenía · {exc} excepciones con fecha · el resto, con los controles de Keelokit",
+        "exc_cols": ["Regla", "Motivo", "Aprobó", "Vence"],
+        "harness_k": "Harness",
+        "harness_behind": "v{have} · hay v{new}",
+        "harness_ok": "v{have}, al día",
+        "wait_harness": "Actualizar el harness: v{have} → v{new}",
+        "h_security": "Revisión de seguridad",
+        "wait_sec": "Decidir lo pendiente de la revisión de seguridad del {date} ({n})",
+        "act_decide_sec_t": "Sobre las decisiones pendientes de la revisión de seguridad del {date}: ",
         "type": "Tipo de proyecto",
         "greenfield": "Producto nuevo (greenfield)",
         "brownfield": "Repositorio existente (brownfield)",
@@ -288,6 +317,35 @@ T = {
         "build_stage": "Build",
         "theme_dark": "Dark theme",
         "theme_light": "Light theme",
+        "env_h": "Environments",
+        "env_what": "Where the product runs: staging, to try every change before users see it, and production, where the users are. Each environment has its list of steps, each one verified.",
+        "env_none": "No deploy guide yet. /keelokit:ship-setup writes it, does what doesn't need your accounts and verifies every step.",
+        "env_steps": "{done} of {total} steps ready",
+        "env_nosteps": "No steps yet",
+        "env_sum": "{ready} of {total} environments ready",
+        "act_setup": "Set up the environments",
+        "act_release": "Release a version",
+        "act_security": "Review security and privacy",
+        "act_upgrade": "Upgrade the harness",
+        "sec_h": "Security and privacy",
+        "sec_what": "An in-depth review: which personal data the product keeps and why, what each market's law asks, how someone could abuse each critical journey, and scans of the dependencies and of staging. Every problem is fixed with a test and leaves a check so it can't come back.",
+        "sec_none": "None yet. Worth doing before the first production release.",
+        "sec_run": "Review of {date}",
+        "found_h": "What we found",
+        "found_stack": "Stack",
+        "found_ci": "Continuous integration",
+        "found_hosting": "Deploys",
+        "found_tests": "Tests",
+        "rules_h": "House rules in this repo",
+        "rules_counts": "Of {house} rules: {mapped} covered by what the repo already had · {exc} dated exceptions · the rest, by Keelokit's own checks",
+        "exc_cols": ["Rule", "Reason", "Approved by", "Expires"],
+        "harness_k": "Harness",
+        "harness_behind": "v{have} · v{new} available",
+        "harness_ok": "v{have}, up to date",
+        "wait_harness": "Upgrade the harness: v{have} → v{new}",
+        "h_security": "Security review",
+        "wait_sec": "Decide what is pending from the {date} security review ({n})",
+        "act_decide_sec_t": "About the pending decisions of the {date} security review: ",
         "type": "Project type",
         "greenfield": "New product (greenfield)",
         "brownfield": "Existing repository (brownfield)",
@@ -647,23 +705,27 @@ def collect(root: Path) -> dict:
         status = m.group(1).strip() if (m := re.search(r"(?im)^(?:status:\s*|##\s*status\s*\n+)\s*([^\n]+)", text)) else ""
         adrs.append({"path": d.relative_to(root).as_posix(), "title": title, "status": status})
 
-    bugbashes = []
-    for report in sorted((root / "docs/bugbash").glob("*/report.md"), reverse=True) \
-            if (root / "docs/bugbash").is_dir() else []:
-        text = read(report)
-        findings = []
-        for row in table_rows(text):
-            if re.fullmatch(r"[A-Z0-9]{2,5}-\d+", row[0]) and len(row) >= 5:
-                cells = row + [""] * 7
-                findings.append({"id": cells[0], "lens": cells[1], "severity": cells[2].upper()[:2],
-                                 "title": cells[3], "status": cells[4], "commit": cells[5], "check": cells[6]})
-        date = report.parent.name
-        bugbashes.append({
-            "date": date, "path": report.relative_to(root).as_posix(), "text": text, "findings": findings,
-            "sha": m.group(0) if (m := re.search(r"\b[0-9a-f]{7,40}\b", md_section(text, "Scope") or text)) else "",
-            "pending": md_section(text, "Pending decisions"),
-            "stories": [x["id"] for x in stories if x["origin"].startswith(f"bugbash:{date}")],
-        })
+    def reports(folder: str, origin: str) -> list[dict]:
+        runs = []
+        for report in sorted((root / folder).glob("*/report.md"), reverse=True) if (root / folder).is_dir() else []:
+            text = read(report)
+            findings = []
+            for row in table_rows(text):
+                if re.fullmatch(r"[A-Z0-9]{2,5}-\d+", row[0]) and len(row) >= 5:
+                    cells = row + [""] * 7
+                    findings.append({"id": cells[0], "lens": cells[1], "severity": cells[2].upper()[:2],
+                                     "title": cells[3], "status": cells[4], "commit": cells[5], "check": cells[6]})
+            date = report.parent.name
+            runs.append({
+                "date": date, "path": report.relative_to(root).as_posix(), "text": text, "findings": findings,
+                "sha": m.group(0) if (m := re.search(r"\b[0-9a-f]{7,40}\b", md_section(text, "Scope") or text)) else "",
+                "pending": md_section(text, "Pending decisions"),
+                "stories": [x["id"] for x in stories if x["origin"].startswith(f"{origin}:{date}")],
+            })
+        return runs
+
+    security = reports("docs/security", "security")
+    bugbashes = reports("docs/bugbash", "bugbash")
 
     history = []
     if has_commits:
@@ -676,9 +738,49 @@ def collect(root: Path) -> dict:
                                     "title": by_id.get(sid.strip(), {}).get("title", parts[2])})
     history += [{"date": b["date"], "kind": "bugbash", "id": b["date"], "commit": b["sha"][:7], "title": b["path"]}
                 for b in bugbashes]
+    history += [{"date": b["date"], "kind": "security", "id": b["date"], "commit": b["sha"][:7], "title": b["path"]}
+                for b in security]
     history += [{"date": v[:10], "kind": "gate", "id": g, "commit": "", "title": "auto" if v.endswith("auto") else ""}
                 for g, v in gates.items() if v]
     history.sort(key=lambda e: e["date"], reverse=True)
+
+    # Environments: the table in docs/context/environments.md, and each one's checklist in docs/deploy.md.
+    deploy = read(root / "docs/deploy.md")
+    envs = {}
+    for row in table_rows(context.get("environments.md", "")):
+        if row and row[0] and row[0].lower() not in ("environment", "entorno"):
+            envs[row[0].strip("*` ")] = {"name": row[0].strip("*` "), "purpose": row[1] if len(row) > 1 else "",
+                                         "url": row[2] if len(row) > 2 else "", "steps": []}
+    for m in re.finditer(r"(?ms)^##\s+(.+?)\s*$(.*?)(?=^##\s|\Z)", deploy):
+        name = m.group(1).strip()
+        env = envs.setdefault(name, {"name": name, "purpose": "", "url": "", "steps": []})
+        env["steps"] = [{"done": x.lower() == "x", "text": t.strip()}
+                        for x, t in re.findall(r"(?m)^\s*[-*]\s+\[([ xX])\]\s+(.+)$", m.group(2))]
+        if not env["purpose"]:
+            first = next((l.strip() for l in m.group(2).splitlines() if l.strip() and not l.lstrip().startswith(("-", "*"))), "")
+            env["purpose"] = first
+    environments = [e for e in envs.values() if e["name"].lower() not in ("local",)]
+
+    # What project-adopt found in an existing repo, and how the house rules map onto it.
+    try:
+        survey = tomllib.loads(read(root / ".keelokit/survey.toml")) if (root / ".keelokit/survey.toml").exists() else {}
+    except tomllib.TOMLDecodeError:
+        survey = {}
+    def toml_list(path, key):
+        try:
+            return tomllib.loads(read(root / path)).get(key, []) if (root / path).exists() else []
+        except tomllib.TOMLDecodeError:
+            return []
+    house_rules = len(re.findall(r"(?m)^id = \"", read(root / ".keelokit/harness/rules.toml")))
+    mapping = {"house": house_rules, "mapped": len(toml_list(".keelokit/rules.local.toml", "rule")),
+               "exceptions": toml_list(".keelokit/exceptions.toml", "exception")}
+
+    # The harness this project runs (the template version it was generated from or last upgraded to).
+    harness = ans.get("_commit", "").lstrip("v")
+    try:
+        plugin_version = json.loads(read(PLUGIN_ROOT / ".claude-plugin/plugin.json")).get("version", "")
+    except json.JSONDecodeError:
+        plugin_version = ""
 
     scope = md_section(prd, "Scope")
     scope_in = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "In")
@@ -698,7 +800,9 @@ def collect(root: Path) -> dict:
         "stories": stories, "by_id": by_id, "epics": epics, "done": done,
         "has_commits": has_commits, "first_commit": first_commit, "github": github_base(root),
         "doctor": doctor, "errors": errors, "run": run, "counts": counts,
-        "adrs": adrs, "bugbashes": bugbashes, "history": history,
+        "adrs": adrs, "bugbashes": bugbashes, "history": history, "security": security,
+        "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
+        "harness": harness, "plugin_version": plugin_version,
     }
 
 
@@ -738,6 +842,14 @@ def next_step(s: dict, lang: str) -> dict:
             "anchor": "stage-backlog"}
 
 
+def behind(s: dict) -> bool:
+    """The project's harness is older than the installed plugin."""
+    def v(x):
+        return tuple(int(p) for p in re.findall(r"\d+", x)[:3]) if re.match(r"^\d+\.\d+\.\d+", x or "") else None
+    have, new = v(s["harness"]), v(s["plugin_version"])
+    return bool(have and new and have < new)
+
+
 def waiting_on_user(s: dict, lang: str) -> list[dict]:
     t, names = T[lang], {k: v[0] for k, v in STAGES[lang].items()}
     items = [{"text": t["wait_gate"].format(stage=names[x["id"]]), "anchor": f"stage-{x['id']}",
@@ -753,6 +865,14 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
         if pending:
             items.append({"text": t["wait_bb"].format(n=len(pending), date=b["date"]), "anchor": f"bb-{b['date']}",
                           "ask": t["act_decide_t"].format(date=b["date"]), "act": t["act_decide"]})
+    for b in s["security"]:
+        pending = [f for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente"))]
+        if pending:
+            items.append({"text": t["wait_sec"].format(n=len(pending), date=b["date"]),
+                          "anchor": f"sec-{b['date']}", "ask": t["act_decide_sec_t"].format(date=b["date"]), "act": t["act_decide"]})
+    if behind(s):
+        items.append({"text": t["wait_harness"].format(have=s["harness"], new=s["plugin_version"]), "anchor": "decisions",
+                      "ask": "/keelokit:harness-upgrade", "act": t["act_upgrade"]})
     if s["gates"] and not s["run"].get("mode"):
         items.append({"text": t["wait_decide"], "anchor": "decisions"})
     return items
@@ -1110,6 +1230,15 @@ details.plain[open]>summary{margin-bottom:12px}
 .setting ul li{font-size:14px;display:block}
 .setting ul li::before{display:none}
 
+/* environments */
+.envs{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.env{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--ground);display:flex;flex-direction:column;gap:8px;min-width:0}
+.env-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.env h4{margin:0;font:600 21px/1.2 var(--display);text-transform:capitalize}
+.env p{margin:0}
+.env .bar{width:100%}
+.env ul.todo{margin:0;padding-left:18px;font-size:14px;color:var(--ink-2);display:flex;flex-direction:column;gap:3px}
+
 /* sections outside the stage sequence */
 details.stage.extra>summary .n{font:600 13px var(--mono)}
 .sev{font:600 11px/1 var(--mono);padding:3px 6px;border-radius:5px;background:var(--idle-soft);color:var(--ink-2)}
@@ -1306,8 +1435,10 @@ def stage_body(s: dict, stage: dict, links: Links, t: dict) -> str:
             repo = s["github"].removesuffix("/blob/main/")
             facts.append((t["remote"], f'<a href="{esc(repo)}" target="_blank" rel="noopener">{esc(repo.removeprefix("https://"))}</a>'))
         parts.append(block(esc(t["skeleton_facts"]), '<dl class="facts">' + "".join(f"<dt>{esc(k)}</dt><dd>{v}</dd>" for k, v in facts) + "</dl>"))
-    elif sid == "adopt" and stage["outputs"]:
-        parts.append(block(esc(t["docs"]), "".join(doc_block(rel, read(root / rel), links, t) for rel in stage["outputs"])))
+    elif sid == "adopt" and (stage["outputs"] or s["survey"]):
+        parts.append(found_block(s, links, t))
+        if stage["outputs"]:
+            parts.append(block(esc(t["docs"]), "".join(doc_block(rel, read(root / rel), links, t) for rel in stage["outputs"])))
     elif sid == "backlog" and s["stories"]:
         parts.append(backlog_block(s, links, t))
     return "".join(parts) or f'<p class="muted">{esc(t["not_yet"])}</p>'
@@ -1399,8 +1530,14 @@ def decisions_card(s: dict, t: dict) -> str:
     if not apps and (m := re.search(r"(?im)^apps?:\s*(.+)$", s["stack_doc"])):
         apps = m.group(1)
     apps = re.sub(r"[\[\]\"'*]", "", apps).strip().rstrip(".")
-    if apps:
+    stack = s["survey"].get("stack") or s["survey"].get("detected", {}).get("stack")
+    if not greenfield and stack:
+        rows.append((t["found_stack"], ", ".join(stack) if isinstance(stack, list) else str(stack), "", False))
+    elif apps:
         rows.append((t["apps_k"], apps, "", False))
+    if s["harness"]:
+        rows.append((t["harness_k"], t["harness_behind"].format(have=s["harness"], new=s["plugin_version"]) if behind(s)
+                     else t["harness_ok"].format(have=s["harness"]), "", False))
     out = []
     for k, v, d, locked in rows:
         shown = f'<span class="v">{LOCK if locked else ""}{esc(v)}</span>' if v \
@@ -1424,15 +1561,14 @@ def extra_section(sid: str, mark: str, name: str, pill: str, summary: str, body:
             f'<span class="sum">{esc(summary)}</span></summary><div class="stage-body">{body}</div></details>')
 
 
-def bugbash_section(s: dict, links: Links, t: dict) -> str:
-    runs = s["bugbashes"]
+def findings_section(runs: list[dict], sid: str, prefix: str, title: str, what: str, none: str, run_title: str,
+                     action: tuple[str, str], s: dict, links: Links, t: dict, decide: str = "act_decide_t") -> str:
     def fixed(f): return f["status"].lower().startswith(("fixed", "corregid"))
     def pending(f): return f["status"].lower().startswith(("pending", "pendiente"))
     found = sum(len(b["findings"]) for b in runs)
     summary = t["bb_sum"].format(n=len(runs), found=found, fixed=sum(fixed(f) for b in runs for f in b["findings"]),
-                                 stories=sum(len(b["stories"]) for b in runs)) if runs else t["bb_none"]
-    body = [f'<p class="what">{esc(t["bb_what"])}</p>',
-            f'<div class="acts">{ask(t["act_bugbash"], "/keelokit:check-bugbash", True)}</div>']
+                                 stories=sum(len(b["stories"]) for b in runs)) if runs else none
+    body = [f'<p class="what">{esc(what)}</p>', f'<div class="acts">{ask(action[0], action[1], True)}</div>']
     open_any = False
     for i, b in enumerate(runs):
         fs = b["findings"]
@@ -1448,19 +1584,81 @@ def bugbash_section(s: dict, links: Links, t: dict) -> str:
             inner.append(f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>')
         if b["pending"]:
             inner.append(block(esc(t["bb_pending"]), f'<div class="md bare">{markdown(b["pending"], links, b["path"])}</div>'
-                               f'<div class="acts">{ask(t["act_decide"], t["act_decide_t"].format(date=b["date"]), True)}</div>'))
+                               f'<div class="acts">{ask(t["act_decide"], t[decide].format(date=b["date"]), True)}</div>'))
         if b["stories"]:
             made = "".join(story_row(s["by_id"][x], links, t) for x in b["stories"] if x in s["by_id"])
             inner.append(block(esc(t["bb_stories"]), made))
         inner.append(doc_block(b["path"], b["text"], links, t))
         is_open = n_pending > 0 or (i == 0 and not open_any)
         open_any = open_any or is_open
-        body.append(f'<details class="group" id="bb-{esc(b["date"])}"{" open" if is_open else ""}><summary>'
-                    f'<span class="gname">{esc(t["bb_run"].format(date=b["date"]))}</span>'
+        body.append(f'<details class="group" id="{prefix}-{esc(b["date"])}"{" open" if is_open else ""}><summary>'
+                    f'<span class="gname">{esc(run_title.format(date=b["date"]))}</span>'
                     f'<span class="count">{len(fs)}</span>{CHEV}</summary><div class="group-body">{"".join(inner)}</div></details>')
     waiting = any(pending(f) for b in runs for f in b["findings"])
     pill = f'<span class="pill review">{esc(t["st_review"])}</span>' if waiting else ""
-    return extra_section("bugbash", "BB", t["bb"], pill, summary, "".join(body), waiting)
+    return extra_section(sid, prefix.upper()[:3], title, pill, summary, "".join(body), waiting)
+
+
+def bugbash_section(s: dict, links: Links, t: dict) -> str:
+    return findings_section(s["bugbashes"], "bugbash", "bb", t["bb"], t["bb_what"], t["bb_none"], t["bb_run"],
+                            (t["act_bugbash"], "/keelokit:check-bugbash"), s, links, t)
+
+
+def security_section(s: dict, links: Links, t: dict) -> str:
+    return findings_section(s["security"], "security", "sec", t["sec_h"], t["sec_what"], t["sec_none"], t["sec_run"],
+                            (t["act_security"], "/keelokit:check-security"), s, links, t, "act_decide_sec_t")
+
+
+def environments_section(s: dict, t: dict) -> str:
+    envs = s["environments"]
+    def ready(e): return bool(e["steps"]) and all(x["done"] for x in e["steps"])
+    cards = []
+    for e in envs:
+        done, total = sum(x["done"] for x in e["steps"]), len(e["steps"])
+        pct = round(100 * done / total) if total else 0
+        url = e["url"] if re.match(r"^[\w.-]+\.[a-z]{2,}(/.*)?$|^https?://", e["url"] or "") else ""
+        href = url if url.startswith("http") else f"https://{url}" if url else ""
+        pending = [x for x in e["steps"] if not x["done"]][:4]
+        items = "".join(f"<li>{inline(x['text'])}</li>" for x in pending)
+        state = "done" if ready(e) else ("current" if done else "todo")
+        cards.append(
+            f'<div class="env"><div class="env-head"><h4>{esc(e["name"])}</h4>'
+            f'<span class="pill {state}">{esc(t["env_steps"].format(done=done, total=total) if total else t["env_nosteps"])}</span></div>'
+            + (f'<p class="muted">{inline(e["purpose"])}</p>' if e["purpose"] else "")
+            + (f'<p><a href="{esc(href)}" target="_blank" rel="noopener">{esc(url)}</a></p>' if href else "")
+            + (f'<span class="bar"><i style="width:{pct}%"></i></span>' if total else "")
+            + (f'<ul class="todo">{items}</ul>' if items else "") + "</div>")
+    body = f'<p class="what">{esc(t["env_what"])}</p>'
+    body += f'<div class="envs">{"".join(cards)}</div>' if cards else ""
+    if not s["has_deploy"]:
+        body += f'<p class="muted">{inline(t["env_none"])}</p>'
+    body += f'<div class="acts">{ask(t["act_setup"], "/keelokit:ship-setup", True)}{ask(t["act_release"], "/keelokit:ship-release")}</div>'
+    n_ready = sum(ready(e) for e in envs)
+    summary = t["env_sum"].format(ready=n_ready, total=len(envs)) if envs else t["sum_none"]
+    return extra_section("environments", "ENV", t["env_h"], "", summary, body, False)
+
+
+def found_block(s: dict, links: Links, t: dict) -> str:
+    sv, parts = s["survey"], []
+    rows = []
+    for key, label in (("stack", t["found_stack"]), ("tests", t["found_tests"]), ("ci", t["found_ci"]), ("hosting", t["found_hosting"])):
+        value = sv.get(key) or sv.get("detected", {}).get(key)
+        if value:
+            chips = "".join(f'<span class="epic">{esc(v)}</span> ' for v in (value if isinstance(value, list) else [value]))
+            rows.append(f"<dt>{esc(label)}</dt><dd>{chips}</dd>")
+    if rows:
+        parts.append(block(esc(t["found_h"]), f'<dl class="facts">{"".join(rows)}</dl>'))
+    m = s["mapping"]
+    if m["house"]:
+        exc = m["exceptions"]
+        table = ""
+        if exc:
+            head = "".join(f"<th>{esc(c)}</th>" for c in t["exc_cols"])
+            body = "".join(f'<tr><td><span class="tag">{esc(e.get("rule", ""))}</span></td><td>{inline(str(e.get("reason", "")))}</td>'
+                           f'<td>{esc(str(e.get("approver", "")))}</td><td>{esc(str(e.get("expires", "")))}</td></tr>' for e in exc)
+            table = f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+        parts.append(block(esc(t["rules_h"]), f'<p>{esc(t["rules_counts"].format(house=m["house"], mapped=m["mapped"], exc=len(exc)))}</p>{table}'))
+    return "".join(parts)
 
 
 def history_section(s: dict, t: dict, stage_names: dict) -> str:
@@ -1473,6 +1671,8 @@ def history_section(s: dict, t: dict, stage_names: dict) -> str:
             what = f'<span class="k">{esc(t["h_story"])}</span> <code>{esc(e["id"])}</code> {esc(e["title"])}'
         elif e["kind"] == "bugbash":
             what = f'<a href="#bb-{esc(e["id"])}">{esc(t["h_bugbash"])}</a>'
+        elif e["kind"] == "security":
+            what = f'<a href="#sec-{esc(e["id"])}">{esc(t["h_security"])}</a>'
         else:
             what = f'<span class="k">{esc(t["h_gate_auto"] if e["title"] == "auto" else t["h_gate"])}</span> {esc(stage_names.get(e["id"], e["id"]))}'
         items.append(f'<li><time>{esc(e["date"])}</time><span>{what}</span></li>')
@@ -1530,8 +1730,10 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
         acts = []
         if ready:
             acts.append(ask(t["act_build"].format(sid=ready[0]["id"]), f"/keelokit:build-story {ready[0]['id']}", True))
-        acts += [ask(t["act_bugbash"], "/keelokit:check-bugbash"), ask(t["act_feature"], t["act_feature_t"]),
-                 ask(t["act_doctor"], "/keelokit:check-health"), ask(t["act_refresh"], "/keelokit:project-dashboard")]
+        acts += [ask(t["act_bugbash"], "/keelokit:check-bugbash"), ask(t["act_security"], "/keelokit:check-security"),
+                 ask(t["act_release"], "/keelokit:ship-release"), ask(t["act_feature"], t["act_feature_t"]),
+                 ask(t["act_setup"], "/keelokit:ship-setup"), ask(t["act_doctor"], "/keelokit:check-health"),
+                 ask(t["act_refresh"], "/keelokit:project-dashboard")]
         actions = block(esc(t["actions"]), f'<div class="acts">{"".join(acts)}</div>')
         health = block(esc(t["health"]), f'<pre class="out"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
         sections.append(
@@ -1540,7 +1742,13 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
             f'<span class="pill {state}">{esc(t["st_" + state])}</span>{CHEV}'
             f'<span class="sum">{esc(t["sum_build"].format(done=done, total=len(s["stories"])))}</span></summary>'
             f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{actions}{modes_block(s, t)}{health}</div></details>')
+    later = s["stories"] or any(x["id"] in ("skeleton", "adopt") and x["status"] == "done" for x in s["stages"])
+    if later or s["environments"] or s["has_deploy"]:
+        sections.append(environments_section(s, t))
+    if s["stories"] or s["bugbashes"]:
         sections.append(bugbash_section(s, links, t))
+    if later or s["security"]:
+        sections.append(security_section(s, links, t))
     sections.append(history_section(s, t, names))
 
     where = names[current["id"]] if current else (t["build_stage"] if building else t["all_gates"])

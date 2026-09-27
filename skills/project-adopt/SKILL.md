@@ -33,6 +33,17 @@ workflows (job names), git hooks (`.githooks`, `.husky`, `core.hooksPath`), lint
 configs, test setup, Dockerfile/deploy configs, ADRs and any existing requirements or context
 docs. Summarise in ten lines: stack vs the house stack, commands, CI jobs, hooks, tests, docs.
 
+Save what you found in `.keelokit/survey.toml` (after step 2 creates `.keelokit/`), so the
+dashboard can show it; update it when the repo changes:
+```toml
+stack = ["Next.js 14", "Prisma", "PostgreSQL"]   # languages, frameworks, data
+tests = ["Vitest", "Playwright"]
+ci = ["GitHub Actions: lint, test, build"]
+hosting = ["Vercel (web)", "Railway (API, Postgres)"]
+```
+Environments found (URLs, who deploys, how) go in `docs/context/environments.md`; if the repo
+already deploys, `/keelokit:ship-setup` can turn that into a verified checklist.
+
 ## 2. Install the harness layer
 
 ```bash

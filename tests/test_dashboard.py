@@ -179,6 +179,44 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("New product (greenfield)", html)
         self.assertIn('id="ask-send"', html)
 
+    def test_environments_security_and_harness_notice(self):
+        self.gates("intake", "product", "stack", "skeleton")
+        self.context()
+        self.write("docs/context/environments.md", "| Environment | Purpose | URL |\n|---|---|---|\n| staging | every green main | staging.shop.app |\n")
+        self.write("docs/deploy.md", "# Deploy\n\n## staging\nTry things here.\n- [x] Fly.io account\n- [ ] Logged in\n\n## production\n- [ ] Domain\n")
+        self.write(".keelokit/answers.yml", "_commit: v0.0.1\nmode: project\nproject_name: Shop\n")
+        self.write("docs/security/2026-10-01/report.md", "| Id | Area | Severity | Title | Status | Fix | Check |\n|---|---|---|---|---|---|---|\n| SEC-1 | logs | P1 | Emails in logs | pending decision | — | — |\n")
+        s = self.state()
+        envs = {e["name"]: e for e in s["environments"]}
+        self.assertEqual([x["done"] for x in envs["staging"]["steps"]], [True, False])
+        self.assertEqual((envs["staging"]["url"], envs["staging"]["purpose"]), ("staging.shop.app", "every green main"))
+        self.assertEqual(len(envs["production"]["steps"]), 1)
+        anchors = [w["anchor"] for w in s["waiting"]]
+        self.assertIn("sec-2026-10-01", anchors)
+        self.assertIn({"text": f"Upgrade the harness: v0.0.1 → v{s['plugin_version']}", "anchor": "decisions",
+                       "ask": "/keelokit:harness-upgrade", "act": "Upgrade the harness"}, s["waiting"])
+        html = self.page()
+        self.assertIn('id="environments"', html)
+        self.assertIn("1 of 2 steps ready", html)
+        self.assertIn('id="security" open', html)
+
+    def test_brownfield_shows_what_was_found(self):
+        self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n_commit: v0.7.0\n")
+        self.write(".keelokit/survey.toml", 'stack = ["Next.js 14", "Prisma"]\nci = ["GitHub Actions: test"]\n')
+        self.write(".keelokit/harness/rules.toml", '[[rule]]\nid = "A"\n\n[[rule]]\nid = "B"\n\n[[rule]]\nid = "C"\n')
+        self.write(".keelokit/rules.local.toml", '[[rule]]\nid = "A"\nenforced_by = ["ci:test"]\n')
+        self.write(".keelokit/exceptions.toml", '[[exception]]\nrule = "B"\nreason = "no e2e yet"\napprover = "Ana"\nexpires = "2026-12-31"\n')
+        self.gates("intake")
+        self.context()
+        s = self.state()
+        self.assertEqual(s["layout"], "harness")
+        self.assertEqual((s["mapping"]["house"], s["mapping"]["mapped"], len(s["mapping"]["exceptions"])), (3, 1, 1))
+        html = self.page()
+        self.assertIn("What we found", html)
+        self.assertIn("Next.js 14", html)
+        self.assertIn("Existing repository (brownfield)", html)
+        self.assertIn("Of 3 rules: 1 covered by what the repo already had · 1 dated exceptions", html)
+
     def test_page_for_the_artifact_tool_escapes_documents(self):
         self.gates("intake", lang="es")
         self.context()
