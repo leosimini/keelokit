@@ -69,6 +69,10 @@ LOG_LEVEL=log
 | `pnpm doctor` | Harness health: rules without enforcers, expired exceptions, blocking gaps, backlog. |
 | `pnpm lint` / `pnpm typecheck` / `pnpm test` / `pnpm build` | One gate at a time |
 | `pnpm e2e` | Builds the apps and walks the critical journeys (first time: `pnpm -r --workspace-concurrency=1 --if-present e2e:install`). Another checkout running at the same time: set `E2E_PORT` (web, default 4173) / `E2E_MOBILE_PORT` (mobile, default 8082) |
+{%- if 'api' in apps and ('web' in apps or 'mobile' in apps) %}
+| `pnpm e2e:stack` | The same journeys against the real API and PostgreSQL, no mocks (needs `DATABASE_URL` pointing at a migrated, seeded database; `pnpm verify` starts a throwaway one). Ports: `E2E_API_PORT` (default 3100) |
+{%- endif %}
+| `pnpm mutation` | Mutation testing of the critical code in `.keelokit/critical.toml` changed on this branch (`--all`: all of it). Fails under `mutation_break`; the report is in `<package>/reports/mutation/` |
 | `pnpm format` | Prettier over the repo |
 
 ## Deploy
@@ -95,4 +99,5 @@ Mobile: `pnpm --filter ./apps/mobile exec eas build --profile preview` (needs `e
 - `docs/prd.md` — scope and success metrics
 - `docs/decisions/` — decisions that deviate from the house stack
 - `backlog/` — epics and stories
-- `.keelokit/` — the harness: house rules, local rules, exceptions, checks
+- `docs/escapes.md` — bugs that got past their story's tests, and the check each one left behind
+- `.keelokit/` — the harness: house rules, local rules, exceptions, critical areas, checks

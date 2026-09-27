@@ -14,6 +14,8 @@ This file is for every agent and every human. It points; the detail lives in the
 | Rules and what enforces each | `.keelokit/harness/rules.toml` (house), `.keelokit/rules.local.toml` (this project) |
 | Stack and why | `.keelokit/harness/stack.md`; deviations in `docs/decisions/` |
 | What to build next | `backlog/` — run `pnpm doctor --brief` |
+| Where a bug costs most, and what must always hold | `.keelokit/critical.toml`; invariants in `docs/context/domain.md` |
+| What escaped before and the check it left | `docs/escapes.md` |
 
 ## Layout
 
@@ -22,7 +24,7 @@ apps/        {{ apps | join(', ') }}
 packages/    shared (wire types, pure rules) · ui-tokens (the only source of colours/spacing)
 docs/        context, prd, decisions
 backlog/     epics.md, stories/<ID>-<slug>.md
-.keelokit/      harness: rules, exceptions, doctor, guard
+.keelokit/      harness: rules, exceptions, critical areas, doctor, guard
 ```
 
 ## Commands
@@ -30,8 +32,12 @@ backlog/     epics.md, stories/<ID>-<slug>.md
 | Command | When |
 |---|---|
 | `pnpm verify` | Before saying "done" (changed packages only; `--all` for everything); runs automatically before every push |
-| `pnpm doctor` | Harness health; `--brief` for where we are and what's next |
+| `pnpm doctor` | Harness health; `--brief` for where we are and what's next; `--scope <ID>` before review |
+| `pnpm mutation` | Mutation testing of the critical areas (`.keelokit/critical.toml`) changed on this branch; `--all` for all |
 | `pnpm lint` · `pnpm typecheck` · `pnpm test` · `pnpm build` · `pnpm e2e` | One gate at a time |
+{%- if 'api' in apps and ('web' in apps or 'mobile' in apps) %}
+| `pnpm e2e:stack` | The journeys against the real API and database (needs `DATABASE_URL`; `pnpm verify` starts one) |
+{%- endif %}
 | `pnpm format` | Before committing |
 {%- for app in apps %}
 | `pnpm dev:{{ app }}` | Run {{ app }} locally |
@@ -46,8 +52,14 @@ backlog/     epics.md, stories/<ID>-<slug>.md
 5. Colours only from `ui-tokens`; visible text only through `t()` in every locale; API responses
    only through schemas in `packages/shared`; TypeScript strict, no `any`.
 6. A story is done when the verifier says so, with evidence, and every scenario has a test citing
-   `<ID>.S<n>`. The builder never grades its own work (`/keelokit:build`).
-7. Production deploys, money, legal and data deletion wait for the human's yes.
+   `<ID>.S<n>`. The builder never grades its own work and never edits its acceptance tests
+   (`/keelokit:build`).
+7. Invariants (`docs/context/domain.md`, `INV-nnn`) are proven by the test their class calls for:
+   property tests for totals, `race()` on the real database for limits, replays for one-time
+   side effects. Critical areas (`.keelokit/critical.toml`) go one story at a time, in full mode,
+   with `pnpm mutation` green.
+8. A bug that escaped leaves a check for its whole class, logged in `docs/escapes.md`.
+9. Production deploys, money, legal and data deletion wait for the human's yes.
 
 ## Changing the rules
 

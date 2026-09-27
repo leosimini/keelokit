@@ -15,14 +15,19 @@
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
     "e2e": "pnpm -r --if-present e2e",
+{%- if 'api' in apps and ('web' in apps or 'mobile' in apps) %}
+    "e2e:stack": "pnpm -r --workspace-concurrency=1 run e2e:stack",
+{%- endif %}
 {%- for app in apps %}
     "dev:{{ app }}": "pnpm --filter ./apps/{{ app }} dev",
 {%- endfor %}
     "verify": "bash scripts/verify.sh",
+    "mutation": "bash scripts/mutation.sh",
     "doctor": "python3 .keelokit/bin/doctor.py"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
+    "@stryker-mutator/core": "^10.0.0",
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",

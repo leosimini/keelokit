@@ -128,6 +128,73 @@ jobs:
           path: apps/*/playwright-report
           if-no-files-found: ignore
 
+{% endraw %}{% if 'api' in apps and ('web' in apps or 'mobile' in apps) %}{% raw %}  # E2E-2: the critical journeys again, against the real API and PostgreSQL — no network mocks.
+  e2e-stack:
+    name: End-to-end on the real stack
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: {% endraw %}{{ 'postgis/postgis:16-3.4' if postgis else 'postgres:16' }}{% raw %}
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U app -d app" --health-interval 5s --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://app:app@localhost:5432/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter ./apps/api prisma:generate
+      - run: pnpm --filter ./apps/api prisma:migrate:deploy
+      - run: pnpm --filter ./apps/api db:seed
+      - run: pnpm -r --workspace-concurrency=1 --if-present e2e:install
+      - run: pnpm e2e:stack
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-stack-report
+          path: apps/*/playwright-report
+          if-no-files-found: ignore
+
+{% endraw %}{% endif %}{% raw %}  # MUT-1: mutate the critical code (.keelokit/critical.toml) and fail under its threshold. A pull
+  # request mutates the critical files it changes; main mutates all of them.
+  mutation:
+    name: Mutation testing (critical code)
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # origin/main, to find the critical files a pull request changes
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma client
+        if: hashFiles('apps/api/prisma/schema.prisma') != ''
+        run: pnpm --filter ./apps/api prisma:generate
+      - run: pnpm mutation ${{ github.event_name == 'push' && '--all' || '' }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mutation-report
+          path: '**/reports/mutation/'
+          if-no-files-found: ignore
+
   # SAST-1: static analysis for injection, unsafe APIs and hard-coded secrets.
   sast:
     name: Static analysis (Semgrep)
@@ -163,7 +230,7 @@ jobs:
   # `pnpm doctor` keeps listing that as an open setup step.
   deploy-staging:
     name: Deploy API to staging (Fly.io)
-    needs: [integration, build, e2e, sast]
+    needs: [integration, build, e2e, {% endraw %}{% if 'web' in apps or 'mobile' in apps %}e2e-stack, {% endif %}{% raw %}sast]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
