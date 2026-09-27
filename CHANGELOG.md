@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — 2026-09-27
 
 - The plugin uploads to claude.ai (Customize → Plugins → Upload): the template's file names no
   longer carry Copier conditions like `{% if 'api' in apps %}` — claude.ai rejects paths with `{`,
