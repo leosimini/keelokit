@@ -1,0 +1,7 @@
+# Written by Copier — never edit by hand. `copier update` reads it to upgrade this project.
+_commit: v0.7.0
+_src_path: gh:leosimini/keelokit
+description: A Claude Code harness for building apps in TypeScript monorepos
+mode: harness
+project_name: Keelokit
+project_slug: keelokit

@@ -1,0 +1,26 @@
+# What this project is, as Keelokit understands it. It decides which house rules apply (a rule with
+# `needs` applies only when every trait it lists is here), which lenses a bug bash runs, and what the
+# dashboard shows. Keep it true: the doctor warns when the repo shows a trait that's missing here
+# (a first migration, a new app, a deploy config), and plan-intake, build-story and check-health
+# update it as the product grows.
+#
+# kind: web-product · mobile-app · api-service · library · cli · plugin · static-site · other
+# traits: typescript · ui · web · mobile · site · api · database · hosted · i18n · personal-data ·
+#         payments · developer-facing
+
+kind = "plugin"
+traits = ["developer-facing"]
+
+[detected]
+stack = ["Claude Code plugin (skills, agents, hooks)", "Python 3.11 (doctor, guard, dashboard)", "Copier template (TypeScript monorepo)", "Bash scripts"]
+tests = ["unittest (guard, doctor, dashboard)", "scripts/test-template.sh (generated projects, end to end)"]
+ci = ["GitHub Actions: CI (tests, manifests, template generation, upgrade)", "GitHub Actions: Release (tag and GitHub Release)"]
+hosting = []
+
+[evidence]
+kind = ".claude-plugin/plugin.json and marketplace.json at the root; skills/, agents/, hooks/"
+developer-facing = "installed by people building with Claude Code; the README and keelokit.com are its docs"
+ui = "none: it renders an HTML dashboard for projects, but has no screens of its own"
+hosted = "none: distributed through the Claude plugin directory and GitHub; keelokit.com is another repo"
+database = "none"
+typescript = "only inside template/ (the generated projects), not in this repo's own code"

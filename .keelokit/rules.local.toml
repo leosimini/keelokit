@@ -1,0 +1,9 @@
+# Project-specific rules, same format as .keelokit/harness/rules.toml. Add one when an incident
+# teaches something only this product needs; give it an enforcer or `pnpm doctor` fails.
+#
+# [[rule]]
+# id = "PAY-1"
+# level = "MUST"
+# rule = "Money amounts are integers in minor units (cents) end to end."
+# why = "A float rounding bug double-charged a customer."
+# enforced_by = ["test:apps/api/src/payments/money.spec.ts"]
