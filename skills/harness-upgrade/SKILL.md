@@ -1,9 +1,14 @@
 ---
-name: ship-upgrade
-description: Bring a Keelokit project up to a newer Keelokit template — house rules, harness scripts, CI, configs — without touching the product's own code. Use when the user says "upgrade keelokit", "update the harness", "actualizá keelokit", "traé la última versión del template", or when doctor/CI shows the harness is behind.
+name: harness-upgrade
+description: Maintenance of the harness, not of the app — bring a Keelokit project up to a newer Keelokit version: the house rules, the doctor and the guard, CI, git hooks and base configs, merged with Copier on a branch, without touching the product's code (apps, migrations, E2E, translations). Use when the user says "upgrade keelokit", "update the harness", "actualizá keelokit", "actualizá el harness", "traé la última versión del template", after `claude plugin update`, or when the dashboard or doctor shows the harness is behind the plugin.
 ---
 
-# Upgrade — new harness, same product
+# Harness upgrade — new harness, same product
+
+A project keeps its own copy of the harness: the version of the Keelokit template it was generated
+from (`_commit` in `.keelokit/answers.yml`). Updating the plugin doesn't change that copy; this
+skill does. Say it that way to the user: it brings Keelokit's new rules and checks into the
+project, on a branch, and never rewrites their product.
 
 The template owns infrastructure (CI, lint/format/ts base configs, `scripts/verify.sh`, git
 hooks, `.keelokit/` except the project's local rules and exceptions). The product owns its code

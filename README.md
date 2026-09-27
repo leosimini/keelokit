@@ -35,7 +35,7 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | `/keelokit:check-bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
 | `/keelokit:project-dashboard` | One page with every stage of the process, what waits for your review (context, PRD scope and metrics, stack, stories by development wave and by epic) and the next step; rebuilt from the repo, so it also tells you where a paused run stopped |
 | `/keelokit:check-health` | Is every rule still checked? Add a rule, register an exception |
-| `/keelokit:ship-upgrade` | Bring a project to a newer template without touching its product code |
+| `/keelokit:harness-upgrade` | Bring a project to a newer template without touching its product code |
 | `/keelokit` | Where the project is, what's next, what's waiting for you |
 
 ## Following along
@@ -103,7 +103,7 @@ have, run `/keelokit:project-adopt`. To generate from your own fork, set `KEELOK
 Keelokit has no server of its own and collects nothing. What it writes (context, PRD, backlog,
 code) stays in your repo. The network traffic is the one your usual tools already make:
 
-- **GitHub:** `project-new`, `project-adopt` and `ship-upgrade` fetch the template with Copier
+- **GitHub:** `project-new`, `project-adopt` and `harness-upgrade` fetch the template with Copier
   (`gh:leosimini/keelokit`, or your fork via `KEELOKIT_TEMPLATE`). `project-new` asks before
   creating a private repo with `gh repo create --push`, which pushes your code to your account.
 - **Package registries and Docker Hub:** installing the generated project's dependencies and images.

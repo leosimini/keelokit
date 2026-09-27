@@ -6,7 +6,7 @@
 |---|---|---|
 | `main` | Where work lands, always green | Keelokit's own marketplace (`claude plugin marketplace add leosimini/keelokit`) |
 | `release` | The last released commit of `main` | The Claude plugin directory, which tracks this branch through a GitHub push webhook |
-| `vX.Y.Z` tags | One per release, made by the Release workflow | `project-new`, `project-adopt` and `ship-upgrade`, which fetch the template at `v` + the plugin's `version` |
+| `vX.Y.Z` tags | One per release, made by the Release workflow | `project-new`, `project-adopt` and `harness-upgrade`, which fetch the template at `v` + the plugin's `version` |
 | GitHub Releases | One per tag, made by the same workflow; its notes are the version's CHANGELOG entry | people reading release notes, and keelokit.com's "Latest release" link |
 
 Three facts shape the process:

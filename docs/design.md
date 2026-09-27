@@ -7,7 +7,7 @@ This describes Keelokit as it is. For how to use it, see the [README](../README.
 | Place | What lives there | How it changes |
 |---|---|---|
 | **The plugin** (this repo, installed in Claude Code) | skills, agents, the hooks that call each project's guard | `claude plugin update` |
-| **The template** (`copier.yml` + `template/`, same repo, tagged) | the monorepo skeleton and the house harness in `.keelokit/` | a project runs `/keelokit:ship-upgrade` (Copier's 3-way merge) |
+| **The template** (`copier.yml` + `template/`, same repo, tagged) | the monorepo skeleton and the house harness in `.keelokit/` | a project runs `/keelokit:harness-upgrade` (Copier's 3-way merge) |
 | **A project** (generated or adopted) | its code, `docs/context/`, `docs/prd.md`, `backlog/`, `.keelokit/answers.yml`, local rules and exceptions | by the people and agents working on it |
 
 The template owns infrastructure; the product owns its code. `copier.yml` lists which is which
@@ -54,7 +54,7 @@ bump for agents, not a sandbox; the git hooks and CI are the backstop.
 | Existing repo | `project-adopt`: intake → `.keelokit/` + rule mapping → diagnosis → backlog | each exception |
 | Build | `build-story`: contract → verifier's tests → builder → reviewer + breaker → verifier walks the app → rebase, breaker again if main moved → land | product rules the story doesn't define, new invariants |
 | Quality | `check-bugbash`: lenses per dimension → validation → root-cause fixes → a new check per escape | pending product decisions |
-| Keep up | `ship-upgrade`, `check-health` | rule changes, exceptions |
+| Keep up | `harness-upgrade`, `check-health` | rule changes, exceptions |
 
 Reserved for the human always: production deploys, money, legal, deleting data.
 

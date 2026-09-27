@@ -37,7 +37,7 @@ código no es el que dice que está terminado.
 | `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
 | `/keelokit:project-dashboard` | Una página con todas las etapas del proceso, lo que espera tu revisión (contexto, alcance y métricas del PRD, stack, historias por ola de desarrollo y por épica) y el próximo paso; se arma desde el repo, así que también muestra dónde quedó un proceso a medias |
 | `/keelokit:check-health` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
-| `/keelokit:ship-upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
+| `/keelokit:harness-upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
 | `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
 
 ## Seguir el avance
@@ -105,7 +105,7 @@ tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_
 Keelokit no tiene servidor propio y no recolecta nada. Lo que escribe (contexto, PRD, backlog,
 código) queda en tu repo. El tráfico de red es el que ya hacen tus herramientas de siempre:
 
-- **GitHub:** `project-new`, `project-adopt` y `ship-upgrade` bajan el template con Copier
+- **GitHub:** `project-new`, `project-adopt` y `harness-upgrade` bajan el template con Copier
   (`gh:leosimini/keelokit`, o tu fork con `KEELOKIT_TEMPLATE`). `project-new` pregunta antes de
   crear un repo privado con `gh repo create --push`, que sube tu código a tu cuenta.
 - **Registros de paquetes y Docker Hub:** para instalar las dependencias e imágenes del proyecto generado.

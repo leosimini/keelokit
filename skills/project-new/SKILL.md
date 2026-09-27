@@ -111,7 +111,7 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
 1. Template source: `$KEELOKIT_TEMPLATE` if set (a fork: `gh:<you>/keelokit`), otherwise
    `gh:leosimini/keelokit`, at the plugin's version tag (`v` + `version` from
    `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`). If git can't reach it (offline), use
-   `${CLAUDE_PLUGIN_ROOT}` and warn that the project can't `/keelokit:ship-upgrade` until its
+   `${CLAUDE_PLUGIN_ROOT}` and warn that the project can't `/keelokit:harness-upgrade` until its
    `.keelokit/answers.yml` `_src_path` points at a git source.
 2. Generate into the product folder (existing `docs/` is kept):
    ```bash

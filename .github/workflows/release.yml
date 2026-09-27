@@ -1,5 +1,5 @@
 # Tags each release. A push to `release` gets the tag `v<version>` from .claude-plugin/plugin.json:
-# project-new, project-adopt and ship-upgrade fetch the template at that tag, so a version without its tag breaks
+# project-new, project-adopt and harness-upgrade fetch the template at that tag, so a version without its tag breaks
 # them. Tags are made here, never by hand. The process is in docs/releasing.md.
 name: Release
 
