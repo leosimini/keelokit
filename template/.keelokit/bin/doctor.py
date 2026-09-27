@@ -66,8 +66,8 @@ TEST_TITLE_RE = re.compile(
     re.S,
 )
 GATES = {
-    "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:kickstart
-    "harness": ["intake", "adopt", "backlog"],  # /keelokit:adopt on an existing repo
+    "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:project-new
+    "harness": ["intake", "adopt", "backlog"],  # /keelokit:project-adopt on an existing repo
 }
 
 errors: list[str] = []
@@ -165,7 +165,7 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
 
 def load_rules() -> dict[str, dict]:
     """House rules, plus local ones. A local entry with a house rule's id may only remap that
-    rule's enforcers to checks this repo already has (how /keelokit:adopt fits existing repos)."""
+    rule's enforcers to checks this repo already has (how /keelokit:project-adopt fits existing repos)."""
     rules: dict[str, dict] = {}
     for r in load_toml(ROOT / ".keelokit/harness/rules.toml", "rule"):
         if r.get("id") in rules:
@@ -233,7 +233,7 @@ def check_context() -> tuple[int, int]:
     ctx = ROOT / "docs/context"
     missing = [f for f in CONTEXT_FILES if not (ctx / f).exists()]
     if missing:
-        errors.append(f"docs/context missing {', '.join(missing)} — run the intake (/keelokit:intake)")
+        errors.append(f"docs/context missing {', '.join(missing)} — run the intake (/keelokit:plan-intake)")
         return 0, 0
     gaps_text = (ctx / "gaps.md").read_text()
     tracked = {m.group(1): line for line in gaps_text.splitlines() if (m := GAP_ROW_RE.match(line))}

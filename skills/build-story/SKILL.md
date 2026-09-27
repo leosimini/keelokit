@@ -1,5 +1,5 @@
 ---
-name: build
+name: build-story
 description: Build one backlog story end to end with independent checks — done-contract from its dimensions and invariants, acceptance tests written by the verifier before any code, implementation, a cold review and an adversarial breaker before landing (again after the rebase if main moved), verification in the running app, then merge. Use when the user says "build the next story", "implement AUTH-003", "next", "continue the backlog", "construí la siguiente historia", "implementá AUTH-003", "seguí con el backlog", or picks a ready story from /keelokit. With a count ("build 3"), runs that many ready stories of the same wave in parallel worktrees. "--light" for small, low-risk stories.
 ---
 
@@ -114,7 +114,7 @@ builder.
 
 ## Report
 
-After each story lands, refresh the dashboard (`/keelokit:dashboard`).
+After each story lands, refresh the dashboard (`/keelokit:project-dashboard`).
 
 Per story: mode (full/light), contract, tests added (ids), invariants proven and how, review and
 attack rounds (findings, what reproduced), escapes logged with their new checks, mutation score

@@ -1,6 +1,6 @@
 ---
 name: breaker
-description: Adversarial pass on one story's branch before it lands — tries to break it by running attacks (double submits, simultaneous requests, replays, other tenants, edges of every window, what the screen promises vs what the API does), including against what already landed on main. Read-only on the repo; its probes live outside it. Use from /keelokit:build in full mode, again after the rebase when main moved, or when the user asks "intentá romper esta rama" / "attack this branch".
+description: Adversarial pass on one story's branch before it lands — tries to break it by running attacks (double submits, simultaneous requests, replays, other tenants, edges of every window, what the screen promises vs what the API does), including against what already landed on main. Read-only on the repo; its probes live outside it. Use from /keelokit:build-story in full mode, again after the rebase when main moved, or when the user asks "intentá romper esta rama" / "attack this branch".
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---

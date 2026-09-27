@@ -26,7 +26,7 @@ trap 'rm -rf "$work"' EXIT
 dir=$work/demo
 step() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 
-# Copier keeps existing files, so this stub context stands in for what /keelokit:intake writes
+# Copier keeps existing files, so this stub context stands in for what /keelokit:plan-intake writes
 # (doctor fails on an empty docs/context/).
 stub_context() {
   mkdir -p "$dir/docs/context"

@@ -1,6 +1,6 @@
 ---
-name: dashboard
-description: Open or refresh the project's Keelokit dashboard — one branded page showing every stage of the process, its status and approval date, what to review at the stage waiting for the human (context, gaps, PRD scope and metrics, stack, backlog by development wave and by epic), what's pending, and the next step with a copyable command. Built from the repo, so it always reflects where the project really is. Use when the user says "dashboard", "tablero", "abrí el tablero", "mostrame el avance", "dónde estamos", "en qué quedamos", "show progress", when resuming a half-finished kickstart or adopt, and after every gate or wave (the other skills call it).
+name: project-dashboard
+description: Open or refresh the project's Keelokit dashboard — one branded page showing every stage of the process, its status and approval date, what to review at the stage waiting for the human (context, gaps, PRD scope and metrics, stack, backlog by development wave and by epic), what's pending, and the next step with a copyable command. Built from the repo, so it always reflects where the project really is. Use when the user says "dashboard", "tablero", "abrí el tablero", "mostrame el avance", "dónde estamos", "en qué quedamos", "show progress", when resuming a half-finished project-new or project-adopt, and after every gate or wave (the other skills call it).
 ---
 
 # Dashboard — one page, rebuilt from the repo every time
@@ -11,16 +11,16 @@ regenerating it is always safe.
 
 ## 1. Build
 
-1. Project root: the nearest directory with `.keelokit/` (walk up from the cwd). During kickstart,
+1. Project root: the nearest directory with `.keelokit/` (walk up from the cwd). During project-new,
    the product folder.
 2. Language: `[dashboard] lang` in `.keelokit/state.toml` — the language the user works in with
    you. If it is missing, or the user now works in another language, set it (`"es"` or `"en"`;
    `es-AR` or `Español` also work) before building; the whole page follows it (texts, dates,
    glossary, the requests its buttons prepare). Other languages fall back to English. Documents
-   are shown as written: kickstart writes them in English unless the user asked otherwise.
+   are shown as written: project-new writes them in English unless the user asked otherwise.
 3. Run:
    ```bash
-   python3 "${CLAUDE_PLUGIN_ROOT}/skills/dashboard/scripts/dashboard.py" --root <root>
+   python3 "${CLAUDE_PLUGIN_ROOT}/skills/project-dashboard/scripts/dashboard.py" --root <root>
    ```
    It writes `.keelokit/out/dashboard.html` (git-ignored by the folder's own `.gitignore`) and
    prints the path. `--json` prints the computed state (stages, stories, next step) without HTML.

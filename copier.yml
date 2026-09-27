@@ -43,7 +43,7 @@ _exclude:
   - dist
   - .DS_Store
   - __pycache__
-  # mode=harness (existing repos, /keelokit:adopt): install only .keelokit/, never touch the code.
+  # mode=harness (existing repos, /keelokit:project-adopt): install only .keelokit/, never touch the code.
   - "{% if mode == 'harness' %}**{% endif %}"
   - "{% if mode == 'harness' %}!.keelokit{% endif %}"
   - "{% if mode == 'harness' %}!.keelokit/**{% endif %}"

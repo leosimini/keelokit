@@ -1,6 +1,6 @@
 ---
-name: backlog
-description: Turn a product's context and PRD into a backlog — epics, stories as vertical slices, consolidated, prioritised and grouped into waves that never touch the same files. Use when the user says "armá el backlog", "generá las historias", "stories", "épicas", "consolidá el backlog", "priorizá", "planificá las waves", "backlog", when kickstart reaches gate 5, or after a new feature intake. Also re-plans an existing backlog without renumbering finished stories.
+name: plan-backlog
+description: Turn a product's context and PRD into a backlog — epics, stories as vertical slices, consolidated, prioritised and grouped into waves that never touch the same files. Use when the user says "armá el backlog", "generá las historias", "stories", "épicas", "consolidá el backlog", "priorizá", "planificá las waves", "backlog", when project-new reaches gate 5, or after a new feature intake. Also re-plans an existing backlog without renumbering finished stories.
 ---
 
 # Backlog — epics, stories, waves
@@ -72,7 +72,7 @@ Anything in the PRD's "out" list never becomes a story.
 ## 5. Check
 
 Run `python3 .keelokit/bin/doctor.py` and fix every backlog error (ids, file names, unknown
-dependencies, stray `status`). Refresh the dashboard (`/keelokit:dashboard`): it shows the
+dependencies, stray `status`). Refresh the dashboard (`/keelokit:project-dashboard`): it shows the
 stories by wave and by epic. Then show the user in the chat: epics, stories per wave, the first
 ready stories, and any story blocked by a gap — and ask them to approve the order. Talking to the
 user in Spanish, waves are **olas de desarrollo**; say once what one is (stories that don't touch

@@ -1,6 +1,6 @@
 ---
 name: keelokit
-description: Entry point of the Keelokit harness. Use when the user says "keelokit", "/keelokit", "dónde estamos", "qué sigue", "what's next", "estado del proyecto", "retomemos", or opens a session in a Keelokit project and asks what to do. Reads the project state and answers where the project is, what comes next and what decision is waiting for the human; routes to kickstart, adopt, intake, backlog, build, doctor or the dashboard.
+description: Entry point of the Keelokit harness. Use when the user says "keelokit", "/keelokit", "dónde estamos", "qué sigue", "what's next", "estado del proyecto", "retomemos", or opens a session in a Keelokit project and asks what to do. Reads the project state and answers where the project is, what comes next and what decision is waiting for the human; routes to project-new, project-adopt, plan-intake, plan-backlog, build-story, check-health or project-dashboard.
 ---
 
 # Keelokit — where are we, what's next
@@ -15,21 +15,21 @@ Answer three things, in this order, in at most ten lines:
 ## Procedure
 
 1. Find the project root: the nearest directory with `.keelokit/` (walk up from the cwd).
-   - **None found, empty folder or no code** → offer a new product (`/keelokit:kickstart`).
-   - **None found, existing code** → offer to bring it under the harness (`/keelokit:adopt`).
+   - **None found, empty folder or no code** → offer a new product (`/keelokit:project-new`).
+   - **None found, existing code** → offer to bring it under the harness (`/keelokit:project-adopt`).
    Do not install or scaffold anything without the user's answer.
 2. Run `python3 .keelokit/bin/doctor.py --brief`. If Python is missing, say so and stop.
 3. Route:
    | State | Next action |
    |---|---|
-   | A gate is pending | Continue `/keelokit:kickstart` (new product) or `/keelokit:adopt` (existing repo) from that gate |
-   | Harness errors reported | `/keelokit:doctor` |
+   | A gate is pending | Continue `/keelokit:project-new` (new product) or `/keelokit:project-adopt` (existing repo) from that gate |
+   | Harness errors reported | `/keelokit:check-health` |
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
-   | Stories ready | Propose `/keelokit:build` on the first ready story (or N of the same wave) |
-   | A wave just finished, or a release is near | Propose `/keelokit:bugbash` |
+   | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave) |
+   | A wave just finished, or a release is near | Propose `/keelokit:check-bugbash` |
    | Nothing ready, backlog not empty | Show which dependency blocks the next wave |
-   | Backlog empty or done | Offer `/keelokit:backlog` for the next slice, or a new feature intake |
+   | Backlog empty or done | Offer `/keelokit:plan-backlog` for the next slice, or a new feature intake |
 4. If the user already said what they want, skip the report and do it.
-5. Offer the dashboard (`/keelokit:dashboard`) with the answer, and open it without asking when
+5. Offer the dashboard (`/keelokit:project-dashboard`) with the answer, and open it without asking when
    a gate is pending or the user is resuming a half-finished run: it shows the stages, what
    waits for their review and the next step.

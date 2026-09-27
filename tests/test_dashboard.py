@@ -7,7 +7,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-DASHBOARD = Path(__file__).resolve().parents[1] / "skills/dashboard/scripts/dashboard.py"
+DASHBOARD = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
 
 STORY = """\
 +++
@@ -74,7 +74,7 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual([(x["id"], x["status"]) for x in s["stages"]],
                          [("intake", "current"), ("product", "todo"), ("stack", "todo"),
                           ("skeleton", "todo"), ("backlog", "todo")])
-        self.assertEqual(s["next"]["command"], "/keelokit:kickstart")
+        self.assertEqual(s["next"]["command"], "/keelokit:project-new")
 
     def test_gate_with_its_output_waits_for_review(self):
         self.gates("intake")
@@ -104,7 +104,7 @@ class DashboardTest(unittest.TestCase):
         self.context("| GAP-001 | domain.md | window | Owner | How long? | no |\n")
         s = self.state()
         self.assertEqual({x["id"]: x["status"] for x in s["stories"]}["SHOP-001"], "gap")
-        self.assertEqual(s["next"]["command"], "/keelokit:build AUTH-002")
+        self.assertEqual(s["next"]["command"], "/keelokit:build-story AUTH-002")
 
     def test_adopted_repo_uses_the_adopt_gates(self):
         self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n")
@@ -175,7 +175,7 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual([e["kind"] for e in s["history"][:2]], ["story", "bugbash"])
         html = self.page()
         self.assertIn('id="bugbash" open', html)
-        self.assertIn('data-ask="/keelokit:build AUTH-002"', html)
+        self.assertIn('data-ask="/keelokit:build-story AUTH-002"', html)
         self.assertIn("New product (greenfield)", html)
         self.assertIn('id="ask-send"', html)
 

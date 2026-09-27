@@ -17,7 +17,7 @@ Invariants are one catalogue with four uses, like `dimensions.md`:
   story the `integrity` dimension;
 - **build** has the verifier write the test the class calls for, before any code, and the
   breaker attack it;
-- **bugbash** runs an `integrity` lens that attacks every invariant on the running app.
+- **check-bugbash** runs an `integrity` lens that attacks every invariant on the running app.
 
 `pnpm doctor` checks that every invariant has a known class, that stories only name invariants
 that exist, and that every invariant of a done story is cited by an active test title (INV-1).

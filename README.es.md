@@ -29,22 +29,22 @@ código no es el que dice que está terminado.
 
 | Comando | Qué pasa |
 |---|---|
-| `/keelokit:kickstart` | De una idea a un esqueleto que funciona: una entrevista que escribe el contexto del producto, un PRD corto, el stack, un monorepo generado con CI y un primer backlog |
-| `/keelokit:adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene y deja el resto como excepciones con fecha |
-| `/keelokit:intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
-| `/keelokit:backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
-| `/keelokit:build` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
-| `/keelokit:bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
-| `/keelokit:dashboard` | Una página con todas las etapas del proceso, lo que espera tu revisión (contexto, alcance y métricas del PRD, stack, historias por ola de desarrollo y por épica) y el próximo paso; se arma desde el repo, así que también muestra dónde quedó un proceso a medias |
-| `/keelokit:doctor` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
-| `/keelokit:upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
+| `/keelokit:project-new` | De una idea a un esqueleto que funciona: una entrevista que escribe el contexto del producto, un PRD corto, el stack, un monorepo generado con CI y un primer backlog |
+| `/keelokit:project-adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene y deja el resto como excepciones con fecha |
+| `/keelokit:plan-intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
+| `/keelokit:plan-backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
+| `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
+| `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
+| `/keelokit:project-dashboard` | Una página con todas las etapas del proceso, lo que espera tu revisión (contexto, alcance y métricas del PRD, stack, historias por ola de desarrollo y por épica) y el próximo paso; se arma desde el repo, así que también muestra dónde quedó un proceso a medias |
+| `/keelokit:check-health` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
+| `/keelokit:ship-upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
 | `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
 
 ## Seguir el avance
 
 <p align="center"><img src="docs/assets/dashboard-es.webp" width="900" alt="El tablero de Keelokit de un proyecto de ejemplo: la etapa actual, el próximo paso, todas las etapas y lo que te espera"></p>
 
-No hace falta leer logs de agentes para saber dónde está todo. `/keelokit:dashboard` arma una
+No hace falta leer logs de agentes para saber dónde está todo. `/keelokit:project-dashboard` arma una
 página desde el repo, en tu idioma y con el look de [keelokit.com](https://keelokit.com):
 
 - **Cada etapa con su estado.** Solo está abierto lo que importa ahora: la etapa que espera tu
@@ -80,15 +80,15 @@ claude plugin marketplace add leosimini/keelokit
 claude plugin install keelokit@keelokit
 ```
 
-Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:kickstart`. En un repo que ya
-tenés, `/keelokit:adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
+Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:project-new`. En un repo que ya
+tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
 
 ## Bueno saber
 
-- Es opinado a propósito. Si tu stack es otro, `adopt` igual te da las reglas, el guard y los
+- Es opinado a propósito. Si tu stack es otro, `project-adopt` igual te da las reglas, el guard y los
   checks, pero no el esqueleto.
-- `build` y `bugbash` usan varios agentes por historia y consumen más tokens que un chat solo.
-  Para cambios chicos existe `build --light`.
+- `build-story` y `check-bugbash` usan varios agentes por historia y consumen más tokens que un chat solo.
+  Para cambios chicos existe `build-story --light`.
 - El guard que frena a los agentes para que no salteen hooks ni escriban secretos es un reductor
   de velocidad, no un sandbox. Los hooks de git y el CI son el respaldo real.
 - `doctor` puede ver que un check existe y está prendido, no que sea un buen check. En el código
@@ -105,8 +105,8 @@ tenés, `/keelokit:adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE
 Keelokit no tiene servidor propio y no recolecta nada. Lo que escribe (contexto, PRD, backlog,
 código) queda en tu repo. El tráfico de red es el que ya hacen tus herramientas de siempre:
 
-- **GitHub:** `kickstart`, `adopt` y `upgrade` bajan el template con Copier
-  (`gh:leosimini/keelokit`, o tu fork con `KEELOKIT_TEMPLATE`). `kickstart` pregunta antes de
+- **GitHub:** `project-new`, `project-adopt` y `ship-upgrade` bajan el template con Copier
+  (`gh:leosimini/keelokit`, o tu fork con `KEELOKIT_TEMPLATE`). `project-new` pregunta antes de
   crear un repo privado con `gh repo create --push`, que sube tu código a tu cuenta.
 - **Registros de paquetes y Docker Hub:** para instalar las dependencias e imágenes del proyecto generado.
 - **Fly.io:** solo el CI del proyecto generado hace deploy ahí, con un secret `FLY_API_TOKEN`

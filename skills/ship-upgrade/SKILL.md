@@ -1,5 +1,5 @@
 ---
-name: upgrade
+name: ship-upgrade
 description: Bring a Keelokit project up to a newer Keelokit template — house rules, harness scripts, CI, configs — without touching the product's own code. Use when the user says "upgrade keelokit", "update the harness", "actualizá keelokit", "traé la última versión del template", or when doctor/CI shows the harness is behind.
 ---
 

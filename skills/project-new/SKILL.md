@@ -1,5 +1,5 @@
 ---
-name: kickstart
+name: project-new
 description: Start a new product from zero with the Keelokit harness — intake interview, PRD, stack decision, monorepo skeleton with CI and staging from day 1, and the first backlog. Use when the user says "nuevo producto", "arrancar un proyecto", "kickstart", "quiero construir <idea>", "armá el proyecto", "new product", or when /keelokit finds no project and the user wants one. Resumes from the pending gate when .keelokit/state.toml exists.
 ---
 
@@ -18,7 +18,7 @@ Rules for the whole run:
 - The user may be a founder who has never run a software project, let alone agents. The first
   time a term of art comes up (PRD, stack, epic, story, development wave, worktree, invariant,
   gap, staging), explain it in one plain sentence. In Spanish, waves are **olas de desarrollo**.
-- The dashboard (`/keelokit:dashboard`) is the user's view of the whole run: show it at the
+- The dashboard (`/keelokit:project-dashboard`) is the user's view of the whole run: show it at the
   start, refresh it when a gate's output is ready and after each approval.
 - **Never ask for an approval without showing what is being approved.** At each gate: refresh
   the dashboard, give its link and the section (`#stage-<gate>`), and summarise in the chat what
@@ -71,11 +71,11 @@ road before the first question.
 with no blocking gap open), stack (only with no deviation from the house stack), skeleton and
 backlog — records them as `"<date> auto"`, refreshes the dashboard, reports in one line and goes
 on. The PRD is always the user's approval. After the backlog it continues straight into
-`/keelokit:build` with the recorded build mode.
+`/keelokit:build-story` with the recorded build mode.
 
 ## 1. Intake
 
-Run `/keelokit:intake` in the new folder. When it finishes, refresh the dashboard and show in the
+Run `/keelokit:plan-intake` in the new folder. When it finishes, refresh the dashboard and show in the
 chat: the problem and users in two lines, the invariants (rules that must never break), and the
 open gaps with who answers each, blocking first. Then ask for approval. Blocking gaps can stay
 open only if the user explicitly accepts them.
@@ -111,7 +111,7 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
 1. Template source: `$KEELOKIT_TEMPLATE` if set (a fork: `gh:<you>/keelokit`), otherwise
    `gh:leosimini/keelokit`, at the plugin's version tag (`v` + `version` from
    `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`). If git can't reach it (offline), use
-   `${CLAUDE_PLUGIN_ROOT}` and warn that the project can't `/keelokit:upgrade` until its
+   `${CLAUDE_PLUGIN_ROOT}` and warn that the project can't `/keelokit:ship-upgrade` until its
    `.keelokit/answers.yml` `_src_path` points at a git source.
 2. Generate into the product folder (existing `docs/` is kept):
    ```bash
@@ -132,7 +132,7 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
 
 ## 5. Backlog
 
-Run `/keelokit:backlog`. Refresh the dashboard: it shows the stories by development wave and by
+Run `/keelokit:plan-backlog`. Refresh the dashboard: it shows the stories by development wave and by
 epic. In the chat, list the epics and, per wave, its stories (id and title), plus any story
 waiting for a gap. Ask for approval of the epics and the wave order.
 
@@ -144,10 +144,10 @@ story, and what needs the user (accounts, approvals). Refresh the dashboard.
 Then, in stage-by-stage mode, offer to start building with the recorded build mode; in
 automatic mode, start. When explaining the build modes (at step 0), use plain words (the
 dashboard's "How to build" section says the same):
-- **One at a time** (`/keelokit:build`): one story is built, tested and lands before the next.
+- **One at a time** (`/keelokit:build-story`): one story is built, tested and lands before the next.
   Slower; the user follows every step and Claude usage is spread out. Recommend it for the first
   wave, for sensitive stories and for a first project with agents.
-- **In parallel** (`/keelokit:build <N>`): N ready stories of the same wave at once, each in its
+- **In parallel** (`/keelokit:build-story <N>`): N ready stories of the same wave at once, each in its
   own copy of the repo (a worktree) with its own agents. Faster, more Claude usage at the same
   time, several results to review together. Safe because stories in a wave never touch the same
   files.

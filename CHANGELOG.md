@@ -2,19 +2,25 @@
 
 ## Unreleased — the dashboard
 
-- **Dashboard** (`/keelokit:dashboard`): one branded page, in the user's language, with every
-  stage of kickstart or adopt, its status and approval date, and — at the stage waiting for
+- **Commands grouped by area.** Every skill now carries a prefix, so the `/keelokit:` menu lists
+  them together: `project-new` (was `kickstart`), `project-adopt` (`adopt`), `project-dashboard`
+  (new), `plan-intake` (`intake`), `plan-backlog` (`backlog`), `build-story` (`build`),
+  `check-bugbash` (`bugbash`), `check-health` (`doctor`), `ship-upgrade` (`upgrade`). `/keelokit`
+  stays the entry point, and asking in words ("kickstart a new product", "build the next
+  story") still reaches the right skill.
+- **Dashboard** (`/keelokit:project-dashboard`): one branded page, in the user's language, with every
+  stage of project-new or project-adopt, its status and approval date, and — at the stage waiting for
   approval — what to check, with the documents rendered inline: context and open gaps, the PRD's
   scope and metrics, the stack, the backlog by development wave and by epic. It shows what waits
   for the user, the next step with a command to copy, and the difference between building one
   story at a time and several in parallel. It is rebuilt from the repo every time, so a paused
   run shows where it stopped. Published as an Artifact when the session can, otherwise a local
-  HTML file; its look is fixed in `skills/dashboard/references/design.md`.
-- Kickstart, adopt, backlog and build refresh the dashboard at every gate, never ask for an
+  HTML file; its look is fixed in `skills/project-dashboard/references/design.md`.
+- project-new, project-adopt, plan-backlog and build-story refresh the dashboard at every gate, never ask for an
   approval without showing what it covers, explain each term of art (PRD, stack, epic, story,
   development wave, worktree) the first time it comes up, and say "olas de desarrollo" in Spanish.
-- Kickstart writes `docs/stack.md` (the apps chosen and why) at the stack gate.
-- **Run decisions, taken once**: at the start, kickstart and adopt ask for the run mode —
+- project-new writes `docs/stack.md` (the apps chosen and why) at the stack gate.
+- **Run decisions, taken once**: at the start, project-new and project-adopt ask for the run mode —
   *stage by stage* or *automatic* (goes on alone and stops only where a person is required: the
   interview and blocking gaps, the PRD, a stack deviation, accounts, and what the execution
   protocol reserves for the human) — and for how stories are built (one at a time or up to N in
@@ -32,6 +38,13 @@
 - The dashboard takes the look of keelokit.com (Cormorant Garamond, Karla, Fragment Mono; the
   foam and sea palette) and opens only what matters now: the stage in progress, the wave with
   work left; everything else collapses to a one-line summary.
+
+### Upgrading from 0.5.x
+
+- Use the new command names; the old ones no longer exist. `/keelokit:ship-upgrade` (the old
+  `/keelokit:upgrade`) brings the project's `AGENTS.md` and harness files to the new names.
+- `.keelokit/state.toml` may gain `[run]` and `[dashboard]` tables; the gate keys (`intake`,
+  `product`, `stack`, `skeleton`, `adopt`, `backlog`) don't change.
 
 ## 0.5.0 — 2026-09-27 — bugs come in classes
 

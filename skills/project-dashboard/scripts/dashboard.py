@@ -33,8 +33,8 @@ from pathlib import Path  # noqa: E402
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 CONTEXT_FILES = ["product.md", "domain.md", "constraints.md", "environments.md", "gaps.md"]
 GATES = {
-    "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:kickstart
-    "harness": ["intake", "adopt", "backlog"],  # /keelokit:adopt
+    "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:project-new
+    "harness": ["intake", "adopt", "backlog"],  # /keelokit:project-adopt
 }
 GAP_ROW_RE = re.compile(r"^\|\s*(GAP-\d+)\s*\|")
 GAP_REF_RE = re.compile(r"\[(GAP-\d+)\]")
@@ -104,7 +104,7 @@ T = {
         "parallel_body": "Varias historias de la misma ola al mismo tiempo, cada una en su propia copia del repositorio (un worktree) con su propio equipo de agentes. Termina antes, pero consume más uso de Claude a la vez y te llegan varios resultados juntos para revisar.",
         "parallel_when": "Es seguro porque las historias de una ola no tocan los mismos archivos. Conviene cuando la ola tiene varias historias independientes y ya confiás en el proceso.",
         "glossary": "Glosario",
-        "footer": "Generado el {when} a partir del repositorio · Keelokit {version} · Para actualizarlo: /keelokit:dashboard",
+        "footer": "Generado el {when} a partir del repositorio · Keelokit {version} · Para actualizarlo: /keelokit:project-dashboard",
         "next_review": "Revisá la etapa «{stage}» y aprobala",
         "next_review_d": "Todo lo que hay que mirar está en su sección de este tablero.",
         "next_continue": "Seguir con la etapa «{stage}»",
@@ -112,7 +112,7 @@ T = {
         "next_gaps": "Responder las preguntas que bloquean",
         "next_gaps_d": "Hay {n} preguntas abiertas que bloquean el avance.",
         "next_build": "Construir {sid}: {title}",
-        "next_build_d": "Hay {n} historias listas en la ola {wave}. En serie: una por vez. En paralelo: «/keelokit:build {n}».",
+        "next_build_d": "Hay {n} historias listas en la ola {wave}. En serie: una por vez. En paralelo: «/keelokit:build-story {n}».",
         "next_blocked": "Destrabar la próxima ola",
         "next_blocked_d": "Ninguna historia está lista: cada una espera a otra que todavía no terminó.",
         "next_more": "Planificar lo que sigue",
@@ -267,7 +267,7 @@ T = {
         "parallel_body": "Several stories of the same wave at once, each in its own copy of the repository (a worktree) with its own team of agents. Finishes sooner, but uses more Claude at the same time and you get several results to review together.",
         "parallel_when": "It is safe because stories in a wave never touch the same files. Best when the wave has several independent stories and you already trust the process.",
         "glossary": "Glossary",
-        "footer": "Generated {when} from the repository · Keelokit {version} · To refresh: /keelokit:dashboard",
+        "footer": "Generated {when} from the repository · Keelokit {version} · To refresh: /keelokit:project-dashboard",
         "next_review": "Review the \"{stage}\" stage and approve it",
         "next_review_d": "Everything to look at is in its section of this dashboard.",
         "next_continue": "Continue the \"{stage}\" stage",
@@ -275,7 +275,7 @@ T = {
         "next_gaps": "Answer the blocking questions",
         "next_gaps_d": "{n} open questions block progress.",
         "next_build": "Build {sid}: {title}",
-        "next_build_d": "{n} stories are ready in wave {wave}. One at a time, or in parallel with \"/keelokit:build {n}\".",
+        "next_build_d": "{n} stories are ready in wave {wave}. One at a time, or in parallel with \"/keelokit:build-story {n}\".",
         "next_blocked": "Unblock the next wave",
         "next_blocked_d": "No story is ready: each one waits for another that isn't done yet.",
         "next_more": "Plan what comes next",
@@ -705,7 +705,7 @@ def collect(root: Path) -> dict:
 def next_step(s: dict, lang: str) -> dict:
     t, names = T[lang], {k: v[0] for k, v in STAGES[lang].items()}
     blocking = [g for g in s["gaps"] if g["blocking"]]
-    flow = "/keelokit:adopt" if s["layout"] == "harness" else "/keelokit:kickstart"
+    flow = "/keelokit:project-adopt" if s["layout"] == "harness" else "/keelokit:project-new"
     if s["pending"]:
         stage = next(x for x in s["stages"] if x["id"] == s["pending"])
         if stage["status"] == "review":
@@ -715,7 +715,7 @@ def next_step(s: dict, lang: str) -> dict:
                 "command": flow, "anchor": f"stage-{stage['id']}"}
     if s["errors"]:
         return {"title": t["next_doctor"], "detail": t["next_doctor_d"].format(n=s["errors"]),
-                "command": "/keelokit:doctor", "anchor": "stage-build"}
+                "command": "/keelokit:check-health", "anchor": "stage-build"}
     if blocking:
         return {"title": t["next_gaps"], "detail": t["next_gaps_d"].format(n=len(blocking)),
                 "command": "/keelokit", "anchor": "stage-intake"}
@@ -725,7 +725,7 @@ def next_step(s: dict, lang: str) -> dict:
         same = [x for x in ready if x["wave"] == first["wave"]]
         return {"title": t["next_build"].format(sid=first["id"], title=first["title"]),
                 "detail": t["next_build_d"].format(n=len(same), wave=first["wave"]),
-                "command": f"/keelokit:build {first['id']}", "anchor": "stage-build"}
+                "command": f"/keelokit:build-story {first['id']}", "anchor": "stage-build"}
     if s["stories"] and any(x["status"] != "done" for x in s["stories"]):
         return {"title": t["next_blocked"], "detail": t["next_blocked_d"], "command": "/keelokit",
                 "anchor": "stage-backlog"}
@@ -733,8 +733,8 @@ def next_step(s: dict, lang: str) -> dict:
     last_bb = max((b["date"] for b in s["bugbashes"]), default="")
     if s["stories"] and last_story and last_bb < last_story:
         return {"title": t["act_bugbash"], "detail": t["bb_none"] if not last_bb else t["next_more_d"],
-                "command": "/keelokit:bugbash", "anchor": "bugbash"}
-    return {"title": t["next_more"], "detail": t["next_more_d"], "command": "/keelokit:backlog",
+                "command": "/keelokit:check-bugbash", "anchor": "bugbash"}
+    return {"title": t["next_more"], "detail": t["next_more_d"], "command": "/keelokit:plan-backlog",
             "anchor": "stage-backlog"}
 
 
@@ -1321,7 +1321,7 @@ def story_row(st: dict, links: Links, t: dict) -> str:
         "gap": t["story_gap"].format(gaps=", ".join(st["gaps"])),
     }[status]
     link = ext_link(links.href(st["path"]), links, t)
-    build = f'<div class="acts">{ask(t["act_build_one"], "/keelokit:build " + st["id"], True)}</div>' if status == "ready" else ""
+    build = f'<div class="acts">{ask(t["act_build_one"], "/keelokit:build-story " + st["id"], True)}</div>' if status == "ready" else ""
     deps = (f'<p class="muted">{esc(t["depends"])}: ' + ", ".join(f"<code>{esc(d)}</code>" for d in st["depends_on"]) + "</p>") \
         if st["depends_on"] else ""
     return (f'<details class="doc story" id="story-{esc(st["id"])}"><summary><span class="sid">{esc(st["id"])}</span>'
@@ -1347,7 +1347,7 @@ def backlog_block(s: dict, links: Links, t: dict) -> str:
     live = next((w for w in waves if any(x["wave"] == w and x["status"] != "done" for x in stories)), None)
     def wave_action(w):
         ready = [x for x in stories if x["wave"] == w and x["status"] == "ready"]
-        return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), f"/keelokit:build {len(ready)}")}</div>' \
+        return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), f"/keelokit:build-story {len(ready)}")}</div>' \
             if len(ready) > 1 else ""
     by_wave = "".join(group(esc(t["wave"].format(n=w)), [x for x in stories if x["wave"] == w], links, t,
                             w == live, t["wave_note"], wave_action(w)) for w in waves)
@@ -1372,8 +1372,8 @@ def modes_block(s: dict, t: dict) -> str:
     n = int(s["run"].get("parallel") or max(len(same), 2))
     build = s["run"].get("build")
     cards = []
-    for key, cmd in (("serial", f"/keelokit:build {ready[0]['id']}" if ready else "/keelokit:build"),
-                     ("parallel", f"/keelokit:build {n}")):
+    for key, cmd in (("serial", f"/keelokit:build-story {ready[0]['id']}" if ready else "/keelokit:build-story"),
+                     ("parallel", f"/keelokit:build-story {n}")):
         chosen = f'<span class="pill done">{esc(t["chosen"])}</span>' if build == key else ""
         cards.append(f'<div class="mode{" chosen" if build == key else ""}"><h4>{esc(t[key])}{chosen}</h4>'
                      f'<p>{esc(t[key + "_body"])}</p><p class="when">{esc(t[key + "_when"])}</p>'
@@ -1432,7 +1432,7 @@ def bugbash_section(s: dict, links: Links, t: dict) -> str:
     summary = t["bb_sum"].format(n=len(runs), found=found, fixed=sum(fixed(f) for b in runs for f in b["findings"]),
                                  stories=sum(len(b["stories"]) for b in runs)) if runs else t["bb_none"]
     body = [f'<p class="what">{esc(t["bb_what"])}</p>',
-            f'<div class="acts">{ask(t["act_bugbash"], "/keelokit:bugbash", True)}</div>']
+            f'<div class="acts">{ask(t["act_bugbash"], "/keelokit:check-bugbash", True)}</div>']
     open_any = False
     for i, b in enumerate(runs):
         fs = b["findings"]
@@ -1511,7 +1511,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
                      f'{ask(t["act_approve"], t["act_approve_t"].format(stage=name), True)}'
                      f'{ask(t["act_change"], t["act_change_t"].format(stage=name))}</div></div>')
         elif st["status"] == "current":
-            flow = "/keelokit:adopt" if s["layout"] == "harness" else "/keelokit:kickstart"
+            flow = "/keelokit:project-adopt" if s["layout"] == "harness" else "/keelokit:project-new"
             check = f'<div class="acts">{ask(t["next_continue"].format(stage=name), flow, True)}</div>'
         date = ""
         if st["date"]:
@@ -1529,9 +1529,9 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
         ready = [x for x in s["stories"] if x["status"] == "ready"]
         acts = []
         if ready:
-            acts.append(ask(t["act_build"].format(sid=ready[0]["id"]), f"/keelokit:build {ready[0]['id']}", True))
-        acts += [ask(t["act_bugbash"], "/keelokit:bugbash"), ask(t["act_feature"], t["act_feature_t"]),
-                 ask(t["act_doctor"], "/keelokit:doctor"), ask(t["act_refresh"], "/keelokit:dashboard")]
+            acts.append(ask(t["act_build"].format(sid=ready[0]["id"]), f"/keelokit:build-story {ready[0]['id']}", True))
+        acts += [ask(t["act_bugbash"], "/keelokit:check-bugbash"), ask(t["act_feature"], t["act_feature_t"]),
+                 ask(t["act_doctor"], "/keelokit:check-health"), ask(t["act_refresh"], "/keelokit:project-dashboard")]
         actions = block(esc(t["actions"]), f'<div class="acts">{"".join(acts)}</div>')
         health = block(esc(t["health"]), f'<pre class="out"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
         sections.append(

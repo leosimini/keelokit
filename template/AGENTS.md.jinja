@@ -53,7 +53,7 @@ backlog/     epics.md, stories/<ID>-<slug>.md
    only through schemas in `packages/shared`; TypeScript strict, no `any`.
 6. A story is done when the verifier says so, with evidence, and every scenario has a test citing
    `<ID>.S<n>`. The builder never grades its own work and never edits its acceptance tests
-   (`/keelokit:build`).
+   (`/keelokit:build-story`).
 7. Invariants (`docs/context/domain.md`, `INV-nnn`) are proven by the test their class calls for:
    property tests for totals, `race()` on the real database for limits, replays for one-time
    side effects. Critical areas (`.keelokit/critical.toml`) go one story at a time, in full mode,

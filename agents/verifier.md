@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: The only role that declares a story done. Before implementation it turns the story's scenarios into acceptance tests (so the builder doesn't grade its own work); after implementation it runs the app and walks every scenario as the story's personas, with evidence. Use from /keelokit:build, or when the user asks "¿está terminada esta historia?" / "verify this story".
+description: The only role that declares a story done. Before implementation it turns the story's scenarios into acceptance tests (so the builder doesn't grade its own work); after implementation it runs the app and walks every scenario as the story's personas, with evidence. Use from /keelokit:build-story, or when the user asks "¿está terminada esta historia?" / "verify this story".
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
@@ -33,7 +33,7 @@ Mode A also runs when the reviewer, the breaker or mode B finds a bug: first rep
 failing test (`test(<ID>): reproduce <finding>`), then hand it to the builder. That bug got past
 your first tests, so add a row to `docs/escapes.md` (ESC-1): what escaped, its class, and the
 check that now catches the whole class. The failing test covers this one case; for the class,
-add a lint rule, a type, a shared test helper or a new rule via `/keelokit:doctor`.
+add a lint rule, a type, a shared test helper or a new rule via `/keelokit:check-health`.
 
 ## Mode B — after implementation: prove it works
 

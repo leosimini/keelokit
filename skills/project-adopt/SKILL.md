@@ -1,5 +1,5 @@
 ---
-name: adopt
+name: project-adopt
 description: Bring an existing repository (brownfield) under the Keelokit harness without touching its code — installs only .keelokit/, maps each house rule to the checks the repo already has, registers what it can't meet yet as dated exceptions, builds docs/context from what exists, and seeds a backlog from a diagnosis of the real code. Use when the user says "adoptá este repo", "sumá keelokit a este proyecto", "proyecto existente", "brownfield", "aplicá el harness acá", "adopt", or when /keelokit runs in a repo without .keelokit/.
 ---
 
@@ -16,13 +16,13 @@ check, or excepted with a reason, an approver and a date.
 | backlog | diagnosis + stories to pay the debt and continue the product | approves the order |
 
 Record each approval in `.keelokit/state.toml` under `[gates]` as `<gate> = "<YYYY-MM-DD>"`.
-Set `[dashboard] lang` to the user's language, and refresh the dashboard (`/keelokit:dashboard`)
+Set `[dashboard] lang` to the user's language, and refresh the dashboard (`/keelokit:project-dashboard`)
 when a gate's output is ready and after each approval. Never ask for an approval without showing
 what it covers: the link to its section and, in the chat, the list itself (each exception with
 reason and expiry; the waves and their stories). Explain terms of art in one plain sentence the
 first time they come up.
 
-Settle the run decisions once, as kickstart's step 0 does, and record them in `[run]`. In
+Settle the run decisions once, as project-new's step 0 does, and record them in `[run]`. In
 automatic mode the intake and backlog gates can be approved automatically (`"<date> auto"`), but
 the adopt gate never is: every exception needs the user's own yes.
 
@@ -45,7 +45,7 @@ plugin's guard hook is active in this repo.
 
 ## 3. Intake from what exists
 
-Run `/keelokit:intake`. Harvest first: existing briefs, requirement docs, context packs, ADRs and
+Run `/keelokit:plan-intake`. Harvest first: existing briefs, requirement docs, context packs, ADRs and
 the code itself are the sources; facts derived from code are `inferred` until the user confirms.
 Only then ask the delta.
 
@@ -90,7 +90,7 @@ is accurate, not a bug: map them to what the repo has, or except them with a dat
 ## 5. Diagnose and seed the backlog
 
 Write `docs/diagnosis.md`: what the code verifiably does today (with `file:line` evidence), the
-debt behind each exception, drift between docs and code, and risks. Then run `/keelokit:backlog`
+debt behind each exception, drift between docs and code, and risks. Then run `/keelokit:plan-backlog`
 with two kinds of stories: one per exception (to remove it before its expiry) and the product's
 next slice. Stories already delivered (their ids in git history) are never renumbered.
 

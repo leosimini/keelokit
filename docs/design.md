@@ -7,7 +7,7 @@ This describes Keelokit as it is. For how to use it, see the [README](../README.
 | Place | What lives there | How it changes |
 |---|---|---|
 | **The plugin** (this repo, installed in Claude Code) | skills, agents, the hooks that call each project's guard | `claude plugin update` |
-| **The template** (`copier.yml` + `template/`, same repo, tagged) | the monorepo skeleton and the house harness in `.keelokit/` | a project runs `/keelokit:upgrade` (Copier's 3-way merge) |
+| **The template** (`copier.yml` + `template/`, same repo, tagged) | the monorepo skeleton and the house harness in `.keelokit/` | a project runs `/keelokit:ship-upgrade` (Copier's 3-way merge) |
 | **A project** (generated or adopted) | its code, `docs/context/`, `docs/prd.md`, `backlog/`, `.keelokit/answers.yml`, local rules and exceptions | by the people and agents working on it |
 
 The template owns infrastructure; the product owns its code. `copier.yml` lists which is which
@@ -43,25 +43,25 @@ the story didn't declare, and acceptance tests edited outside a `test(<ID>): …
 
 It can't tell whether a test really fails when its rule breaks. For critical code, mutation
 testing measures exactly that (MUT-1); everywhere else it is the reviewer's and the verifier's
-job, and what `/keelokit:bugbash` tightens when a bug gets through. The guard is a speed
+job, and what `/keelokit:check-bugbash` tightens when a bug gets through. The guard is a speed
 bump for agents, not a sandbox; the git hooks and CI are the backstop.
 
 ## Lifecycle
 
 | Stage | Skill | Human decides |
 |---|---|---|
-| New product | `kickstart`: intake → PRD → stack → skeleton → backlog | context, scope, stack deviations, story order |
-| Existing repo | `adopt`: intake → `.keelokit/` + rule mapping → diagnosis → backlog | each exception |
-| Build | `build`: contract → verifier's tests → builder → reviewer + breaker → verifier walks the app → rebase, breaker again if main moved → land | product rules the story doesn't define, new invariants |
-| Quality | `bugbash`: lenses per dimension → validation → root-cause fixes → a new check per escape | pending product decisions |
-| Keep up | `upgrade`, `doctor` | rule changes, exceptions |
+| New product | `project-new`: intake → PRD → stack → skeleton → backlog | context, scope, stack deviations, story order |
+| Existing repo | `project-adopt`: intake → `.keelokit/` + rule mapping → diagnosis → backlog | each exception |
+| Build | `build-story`: contract → verifier's tests → builder → reviewer + breaker → verifier walks the app → rebase, breaker again if main moved → land | product rules the story doesn't define, new invariants |
+| Quality | `check-bugbash`: lenses per dimension → validation → root-cause fixes → a new check per escape | pending product decisions |
+| Keep up | `ship-upgrade`, `check-health` | rule changes, exceptions |
 
 Reserved for the human always: production deploys, money, legal, deleting data.
 
-The dashboard (`skills/dashboard/`) is how the human follows all of this: a script reads
+The dashboard (`skills/project-dashboard/`) is how the human follows all of this: a script reads
 `.keelokit/state.toml`, `docs/`, `backlog/` and the `Story:` trailers and renders one page per
 project, published as an Artifact when the session can. It stores nothing, so it is always
-rebuilt from the repo. Every Keelokit page shares its look (`skills/dashboard/references/design.md`).
+rebuilt from the repo. Every Keelokit page shares its look (`skills/project-dashboard/references/design.md`).
 
 ## Bugs come in classes
 

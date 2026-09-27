@@ -22,7 +22,7 @@ invariants = []            # INV-nnn from docs/context/domain.md; any → add "i
 Then: Context (with a "does NOT do" list), User story, Acceptance criteria (Gherkin, one
 `Scenario: [S1] …` per behaviour), Testable units, Definition of done.
 
-`dimensions` says what the story can break; `/keelokit:build` turns each into lines of its
+`dimensions` says what the story can break; `/keelokit:build-story` turns each into lines of its
 done-contract. Every scenario of a done story must have a test whose title cites
 `<ID>.S<n>` — `pnpm doctor` checks it (TRACE-1) — and every invariant it keeps must have a test
 whose title cites `INV-nnn` (INV-1). Stories in the same wave must not share `touches` or a

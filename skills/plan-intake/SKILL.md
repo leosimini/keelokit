@@ -1,6 +1,6 @@
 ---
-name: intake
-description: Interview the user in their language (and read what already exists) to write a product's context in docs/context — problem, users, domain, constraints, environments, and every open gap with owner and question. Use when the user says "entrevistame", "intake", "relevamiento", "contexto del proyecto", "tengo una idea", "armá el contexto", "gather requirements", when kickstart reaches gate 1, or when a new feature needs context the project doesn't have. Only asks what the house harness doesn't already answer.
+name: plan-intake
+description: Interview the user in their language (and read what already exists) to write a product's context in docs/context — problem, users, domain, constraints, environments, and every open gap with owner and question. Use when the user says "entrevistame", "intake", "relevamiento", "contexto del proyecto", "tengo una idea", "armá el contexto", "gather requirements", when project-new reaches gate 1, or when a new feature needs context the project doesn't have. Only asks what the house harness doesn't already answer.
 ---
 
 # Intake — only what this product needs, never invented

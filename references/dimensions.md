@@ -1,8 +1,8 @@
 # Dimensions — what can break, what catches it
 
 One catalogue for three uses: a story lists the dimensions it touches (`dimensions` in its
-front matter), `/keelokit:build` turns each into lines of the story's done-contract, and
-`/keelokit:bugbash` runs one lens per dimension. When a bug escapes, the fix adds a check to the
+front matter), `/keelokit:build-story` turns each into lines of the story's done-contract, and
+`/keelokit:check-bugbash` runs one lens per dimension. When a bug escapes, the fix adds a check to the
 "Automatic" column of its dimension.
 
 | Dimension | The story's contract must include | Automatic (every commit / CI) | Bug-bash lens |

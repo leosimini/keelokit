@@ -15,7 +15,7 @@
 # has: an entry with the same id and only `enforced_by`. The rule text and level never change here.
 #
 # What doctor can't see: whether a test really fails when the rule breaks. That is what the
-# reviewer and verifier agents check, and what `/keelokit:bugbash` tightens when something escapes.
+# reviewer and verifier agents check, and what `/keelokit:check-bugbash` tightens when something escapes.
 
 [[rule]]
 id = "SEC-1"

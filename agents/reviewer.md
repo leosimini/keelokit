@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Independent code review of one story's diff against its story file, its invariants and the house rules, before merge. Use from /keelokit:build after implementation (full and light mode), or when the user asks for a review of a branch or PR in a Keelokit project. It did not write the code and reads it cold.
+description: Independent code review of one story's diff against its story file, its invariants and the house rules, before merge. Use from /keelokit:build-story after implementation (full and light mode), or when the user asks for a review of a branch or PR in a Keelokit project. It did not write the code and reads it cold.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---

@@ -1,5 +1,5 @@
 ---
-name: bugbash
+name: check-bugbash
 description: Full bug bash of a Keelokit project across every dimension (data, API, contracts, logic, integrity, auth, UX, UI, web, mobile, i18n, copy, a11y, security, NFRs, config, ops) — parallel lenses on the running app with seeded personas, adversarial validation of each finding, fixes at the root cause, and, for every class of bug, a new automatic check so it can't come back. Use when the user says "bug bash", "cazá bugs", "revisá todo", "buscá errores", "QA completo", before a release, or after each wave.
 ---
 
@@ -61,8 +61,8 @@ For each confirmed finding (P0 → P3, product-rule changes excluded):
    → a test of the promised behaviour and a copy line in the contract. A test, a lint rule, a
    type, a contract, an E2E step, a mutation area (`.keelokit/critical.toml`) or a new invariant
    in `domain.md` (with the user's yes: it is a product rule). If it expresses a rule, register it
-   with `/keelokit:doctor` (rule + enforcer). Log the escape in `docs/escapes.md` (ESC-1): found
-   by `bugbash`, its class, the check added.
+   with `/keelokit:check-health` (rule + enforcer). Log the escape in `docs/escapes.md` (ESC-1): found
+   by `check-bugbash`, its class, the check added.
 4. One commit per finding: `fix(<area>): … (<finding id>)`; if it completes a story's scenario,
    add the `Story: <ID>` trailer. Re-walk the affected journeys.
 
@@ -75,7 +75,7 @@ For each confirmed finding (P0 → P3, product-rule changes excluded):
   `story <ID>`) · fix commit · **check added**.
 - A `## Pending decisions` section for the human: options + recommendation each.
 - Findings not fixed here — too big for one fix, or a product decision the user has now taken —
-  become backlog stories through `/keelokit:backlog`, each with
+  become backlog stories through `/keelokit:plan-backlog`, each with
   `origin = "bugbash:<date> <finding id>"`; their row's status says `story <ID>`. That is how the
   dashboard shows what each bug bash fed into the backlog and the build.
 - **Escapes by dimension and by class** and the checks added; compare with the previous report
@@ -85,4 +85,4 @@ For each confirmed finding (P0 → P3, product-rule changes excluded):
 - Mutation score of the critical areas (`pnpm mutation --all`) and its survivors.
 - Final `pnpm verify` and `doctor` results.
 
-Refresh the dashboard (`/keelokit:dashboard`): its Bug bashes section reads these reports.
+Refresh the dashboard (`/keelokit:project-dashboard`): its Bug bashes section reads these reports.

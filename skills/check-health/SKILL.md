@@ -1,5 +1,5 @@
 ---
-name: doctor
+name: check-health
 description: Check and repair the health of a Keelokit project's harness — rules without enforcers, enforcers that point nowhere, expired or incomplete exceptions, gaps in docs/context, malformed stories — and add new rules with their checks. Use when the user says "doctor", "chequeá el harness", "¿está todo en orden?", "salud del proyecto", "agregá una regla", "esto no puede volver a pasar", "registrá una excepción", or when `pnpm doctor` / CI's doctor step fails.
 ---
 
@@ -19,7 +19,7 @@ python3 .keelokit/bin/doctor.py
 | Enforcer does not exist | Fix the path/name, or create the missing check. Never delete the rule to go green. |
 | Enforced only by review | Acceptable for SHOULD; for MUST, find a computational check or tell the user it is weak. |
 | Exception incomplete or expired | Ask the user: renew (new date, reason, approver) or remove it and comply. Never renew on your own. |
-| docs/context missing / vague / untracked gap | Missing → `/keelokit:intake`. Vague → ask for the number or name. Untracked gap → add its row to `gaps.md`. |
+| docs/context missing / vague / untracked gap | Missing → `/keelokit:plan-intake`. Vague → ask for the number or name. Untracked gap → add its row to `gaps.md`. |
 | Story errors | Fix front matter, file name, or unknown `depends_on`; remove any `status` field. |
 | Invariant without a class, or a story naming an unknown one | Add `class: <class>` to the `INV-nnn` line in `domain.md` (how does it break? see the plugin's `references/invariants.md`); fix the story's `invariants`. A new invariant is a product rule: ask the user. |
 | Story touches a critical area without `integrity`, or two stories of one area share a wave | Add `integrity` and the invariants it keeps; move one story to a later wave. Never shrink an area to go green. |

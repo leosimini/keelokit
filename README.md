@@ -27,22 +27,22 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 
 | Command | What happens |
 |---|---|
-| `/keelokit:kickstart` | From an idea to a working skeleton: an interview that writes the product context, a short PRD, the stack, a generated monorepo with CI, and a first backlog |
-| `/keelokit:adopt` | For an existing repo: adds only the harness (`.keelokit/`), maps its rules to the checks the repo already has, and lists the rest as dated exceptions |
-| `/keelokit:intake` | Reads what you already have, then asks only what's missing; what nobody knows yet is written down as an open question |
-| `/keelokit:backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
-| `/keelokit:build` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
-| `/keelokit:bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
-| `/keelokit:dashboard` | One page with every stage of the process, what waits for your review (context, PRD scope and metrics, stack, stories by development wave and by epic) and the next step; rebuilt from the repo, so it also tells you where a paused run stopped |
-| `/keelokit:doctor` | Is every rule still checked? Add a rule, register an exception |
-| `/keelokit:upgrade` | Bring a project to a newer template without touching its product code |
+| `/keelokit:project-new` | From an idea to a working skeleton: an interview that writes the product context, a short PRD, the stack, a generated monorepo with CI, and a first backlog |
+| `/keelokit:project-adopt` | For an existing repo: adds only the harness (`.keelokit/`), maps its rules to the checks the repo already has, and lists the rest as dated exceptions |
+| `/keelokit:plan-intake` | Reads what you already have, then asks only what's missing; what nobody knows yet is written down as an open question |
+| `/keelokit:plan-backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
+| `/keelokit:build-story` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
+| `/keelokit:check-bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
+| `/keelokit:project-dashboard` | One page with every stage of the process, what waits for your review (context, PRD scope and metrics, stack, stories by development wave and by epic) and the next step; rebuilt from the repo, so it also tells you where a paused run stopped |
+| `/keelokit:check-health` | Is every rule still checked? Add a rule, register an exception |
+| `/keelokit:ship-upgrade` | Bring a project to a newer template without touching its product code |
 | `/keelokit` | Where the project is, what's next, what's waiting for you |
 
 ## Following along
 
 <p align="center"><img src="docs/assets/dashboard-en.webp" width="900" alt="The Keelokit dashboard of a sample project: the current stage, the next step, every stage and what waits for you"></p>
 
-You don't need to read agent logs to know where things are. `/keelokit:dashboard` builds one
+You don't need to read agent logs to know where things are. `/keelokit:project-dashboard` builds one
 page from the repo, in your language, with the look of [keelokit.com](https://keelokit.com):
 
 - **Every stage with its status.** Only what matters now is open: the stage waiting for your
@@ -78,15 +78,15 @@ claude plugin marketplace add leosimini/keelokit
 claude plugin install keelokit@keelokit
 ```
 
-Then, in an empty folder, open Claude Code and run `/keelokit:kickstart`. In a repo you already
-have, run `/keelokit:adopt`. To generate from your own fork, set `KEELOKIT_TEMPLATE=gh:<you>/keelokit`.
+Then, in an empty folder, open Claude Code and run `/keelokit:project-new`. In a repo you already
+have, run `/keelokit:project-adopt`. To generate from your own fork, set `KEELOKIT_TEMPLATE=gh:<you>/keelokit`.
 
 ## Good to know
 
-- It's opinionated on purpose. If your stack is different, `adopt` still gives you the rules,
+- It's opinionated on purpose. If your stack is different, `project-adopt` still gives you the rules,
   the guard and the checks, but not the skeleton.
-- `build` and `bugbash` run several agents per story; they use more tokens than a single chat.
-  `build --light` exists for small changes.
+- `build-story` and `check-bugbash` run several agents per story; they use more tokens than a single chat.
+  `build-story --light` exists for small changes.
 - The guard that stops agents from bypassing hooks or writing secrets is a speed bump, not a
   sandbox. The git hooks and CI are the real backstop.
 - `doctor` can tell a check is present and switched on, not that it's a good check. For the
@@ -103,8 +103,8 @@ have, run `/keelokit:adopt`. To generate from your own fork, set `KEELOKIT_TEMPL
 Keelokit has no server of its own and collects nothing. What it writes (context, PRD, backlog,
 code) stays in your repo. The network traffic is the one your usual tools already make:
 
-- **GitHub:** `kickstart`, `adopt` and `upgrade` fetch the template with Copier
-  (`gh:leosimini/keelokit`, or your fork via `KEELOKIT_TEMPLATE`). `kickstart` asks before
+- **GitHub:** `project-new`, `project-adopt` and `ship-upgrade` fetch the template with Copier
+  (`gh:leosimini/keelokit`, or your fork via `KEELOKIT_TEMPLATE`). `project-new` asks before
   creating a private repo with `gh repo create --push`, which pushes your code to your account.
 - **Package registries and Docker Hub:** installing the generated project's dependencies and images.
 - **Fly.io:** only the generated project's CI deploys there, with a `FLY_API_TOKEN` secret you

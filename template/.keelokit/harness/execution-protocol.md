@@ -14,7 +14,7 @@ inherits it; change it in the Keelokit template, not here.
 
 - Stay inside the files the story names in `touches`; touching anything else is a scope change —
   say so before doing it.
-- Stories go through `/keelokit:build`: the verifier writes the acceptance tests first (and the
+- Stories go through `/keelokit:build-story`: the verifier writes the acceptance tests first (and the
   test each invariant's class calls for), the builder makes them pass without editing them, the
   reviewer reads the diff cold, the breaker tries to break it (full mode), and only the verifier
   declares done — after walking every scenario in the running app. If main moved before landing,
