@@ -4,7 +4,7 @@
 
 **Mi harness personal de Claude Code para construir aplicaciones en monorepos TypeScript.**
 
-*[Read in English](README.md)*
+*[keelokit.com](https://keelokit.com) · [Read in English](README.md)*
 
 Soy [Leopoldo Simini](https://leopoldosimini.com). Hace muchos años que escribo software y casi
 toda la vida que emprendo cosas. Los agentes de código cambiaron mi forma de construir: ideas que
