@@ -1,6 +1,6 @@
 ---
 name: keelokit
-description: Entry point of the Keelokit harness. Use when the user says "keelokit", "/keelokit", "dónde estamos", "qué sigue", "what's next", "estado del proyecto", or opens a session in a Keelokit project and asks what to do. Reads the project state and answers where the project is, what comes next and what decision is waiting for the human; routes to kickstart, adopt, intake, backlog or doctor.
+description: Entry point of the Keelokit harness. Use when the user says "keelokit", "/keelokit", "dónde estamos", "qué sigue", "what's next", "estado del proyecto", "retomemos", or opens a session in a Keelokit project and asks what to do. Reads the project state and answers where the project is, what comes next and what decision is waiting for the human; routes to kickstart, adopt, intake, backlog, build, doctor or the dashboard.
 ---
 
 # Keelokit — where are we, what's next
@@ -30,3 +30,6 @@ Answer three things, in this order, in at most ten lines:
    | Nothing ready, backlog not empty | Show which dependency blocks the next wave |
    | Backlog empty or done | Offer `/keelokit:backlog` for the next slice, or a new feature intake |
 4. If the user already said what they want, skip the report and do it.
+5. Offer the dashboard (`/keelokit:dashboard`) with the answer, and open it without asking when
+   a gate is pending or the user is resuming a half-finished run: it shows the stages, what
+   waits for their review and the next step.

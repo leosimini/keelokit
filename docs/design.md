@@ -58,6 +58,11 @@ bump for agents, not a sandbox; the git hooks and CI are the backstop.
 
 Reserved for the human always: production deploys, money, legal, deleting data.
 
+The dashboard (`skills/dashboard/`) is how the human follows all of this: a script reads
+`.keelokit/state.toml`, `docs/`, `backlog/` and the `Story:` trailers and renders one page per
+project, published as an Artifact when the session can. It stores nothing, so it is always
+rebuilt from the repo. Every Keelokit page shares its look (`skills/dashboard/references/design.md`).
+
 ## Bugs come in classes
 
 A bug bash that keeps finding bugs means the build loop lets whole kinds of bug through. Each
@@ -89,7 +94,7 @@ is the `mobile` lens of the bug bash, on a real device.
 
 ## Testing Keelokit itself
 
-- `tests/` — unit tests for the guard and doctor (`python3 -m unittest discover -s tests`).
+- `tests/` — unit tests for the guard, doctor and dashboard (`python3 -m unittest discover -s tests`).
 - `scripts/test-template.sh` — generates projects (several app combinations, adopt mode, an
   upgrade from the previous tag), runs `pnpm verify --all` on each (integration tests and the
   real-stack E2E included), then `pnpm mutation --all`, and checks that a suite that can't fail

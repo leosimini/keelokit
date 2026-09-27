@@ -16,6 +16,11 @@ check, or excepted with a reason, an approver and a date.
 | backlog | diagnosis + stories to pay the debt and continue the product | approves the order |
 
 Record each approval in `.keelokit/state.toml` under `[gates]` as `<gate> = "<YYYY-MM-DD>"`.
+Set `[dashboard] lang` to the user's language, and refresh the dashboard (`/keelokit:dashboard`)
+when a gate's output is ready and after each approval. Never ask for an approval without showing
+what it covers: the link to its section and, in the chat, the list itself (each exception with
+reason and expiry; the waves and their stories). Explain terms of art in one plain sentence the
+first time they come up.
 
 ## 1. Survey (read-only)
 

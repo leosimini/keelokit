@@ -35,6 +35,12 @@ overlap), one worktree each (`git worktree add ../<repo>-<ID> -b <id-lower>`), s
 story in parallel. Give each worktree its own ports:
 `E2E_PORT=41<n>0 E2E_MOBILE_PORT=81<n>0 E2E_API_PORT=31<n>0` (n = 1..N).
 
+When the user hasn't said how many stories to build and more than one is ready in the wave, ask
+before starting, in plain words: one at a time (slower, follow every step, Claude usage spread
+out) or N in parallel (faster, more Claude usage at once, several results to review together;
+safe because a wave's stories never touch the same files). Point to the dashboard's "How to
+build" section; recommend one at a time for the first wave.
+
 ## 2. Contract
 
 Write the story's done-contract as a checklist and show it in one block, then continue:
@@ -100,6 +106,8 @@ builder.
    its invariants.
 
 ## Report
+
+After each story lands, refresh the dashboard (`/keelokit:dashboard`).
 
 Per story: mode (full/light), contract, tests added (ids), invariants proven and how, review and
 attack rounds (findings, what reproduced), escapes logged with their new checks, mutation score

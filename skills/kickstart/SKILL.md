@@ -9,16 +9,26 @@ description: Start a new product from zero with the Keelokit harness — intake 
 |---|---|---|
 | 1 intake | `docs/context/` | approves the context |
 | 2 product | `docs/prd.md` | approves scope and metrics |
-| 3 stack | apps chosen; `docs/decisions/` only for deviations | approves deviations |
+| 3 stack | `docs/stack.md` (apps chosen and why); `docs/decisions/` only for deviations | approves the apps and any deviation |
 | 4 skeleton | generated monorepo, `pnpm verify` green, first commit | nothing (unless setup needs their accounts) |
-| 5 backlog | `backlog/` with epics, stories, waves | approves the order |
+| 5 backlog | `backlog/` with epics, stories, development waves | approves the order |
 
 Rules for the whole run:
 - Interview in the user's language; write files in English unless the user asks otherwise.
+- The user may be a founder who has never run a software project, let alone agents. The first
+  time a term of art comes up (PRD, stack, epic, story, development wave, worktree, invariant,
+  gap, staging), explain it in one plain sentence. In Spanish, waves are **olas de desarrollo**.
+- The dashboard (`/keelokit:dashboard`) is the user's view of the whole run: show it at the
+  start, refresh it when a gate's output is ready and after each approval.
+- **Never ask for an approval without showing what is being approved.** At each gate: refresh
+  the dashboard, give its link and the section (`#stage-<gate>`), and summarise in the chat what
+  the approval covers (the lists below). Then ask.
 - After each approval, record it in `.keelokit/state.toml` under `[gates]` as
-  `<gate> = "<YYYY-MM-DD>"` (create the file if needed). That file only records human approvals.
+  `<gate> = "<YYYY-MM-DD>"`. That file holds human approvals and the dashboard's settings
+  (`[dashboard]`: `lang`, `url`), nothing else.
 - Between gates report progress in one line and continue; stop only at the approvals above.
-- Resume: if `.keelokit/state.toml` exists, continue from the first gate without a date.
+- Resume: if `.keelokit/state.toml` exists, continue from the first gate without a date, and
+  open the dashboard first so the user sees where the run stopped.
 
 ## 0. Where
 
@@ -26,16 +36,28 @@ Ask for the product's name and one sentence of what it is, and propose the folde
 `~/Development/<slug>`. Create it (empty) once the user agrees. If it exists and is not empty,
 ask before using it.
 
+Create `.keelokit/state.toml` with `[dashboard] lang = "<the user's language code>"` and open the
+dashboard: it shows the five stages ahead, so the user knows the whole road before the first
+question.
+
 ## 1. Intake
 
-Run `/keelokit:intake` in the new folder. When it finishes, show the gap summary and ask for
-approval. Blocking gaps can stay open only if the user explicitly accepts them.
+Run `/keelokit:intake` in the new folder. When it finishes, refresh the dashboard and show in the
+chat: the problem and users in two lines, the invariants (rules that must never break), and the
+open gaps with who answers each, blocking first. Then ask for approval. Blocking gaps can stay
+open only if the user explicitly accepts them.
 
 ## 2. Product (PRD)
 
+Before writing it, say what a PRD is: the Product Requirements Document — what the first version
+builds, what it deliberately leaves out, and which numbers will say it worked; what isn't in it
+doesn't get built.
+
 Write `docs/prd.md` from the context using `references/prd-template.md`. Every metric has a
 number and a date; every scope line is either in or out. Anything the context doesn't support
-becomes a gap in `docs/context/gaps.md`, not an assumption. Ask for approval.
+becomes a gap in `docs/context/gaps.md`, not an assumption. Refresh the dashboard and show in the
+chat the **scope** (every in and out line) and the **metrics** (metric, target, date). Then ask
+for approval.
 
 ## 3. Stack
 
@@ -45,6 +67,11 @@ only:
 - **postgis** — only if the domain has geospatial queries.
 If a requirement truly can't be met by the house stack, write `docs/decisions/0001-<title>.md`
 (Status, Context, Decision, Consequences) and get approval. "Would be nicer" is not a reason.
+
+Write `docs/stack.md`: the apps chosen, one line each on why (citing the PRD's users and
+channels), the apps left out and why, PostGIS yes/no, and any decision record. Refresh the
+dashboard, show the same in the chat in plain words (what each app is for the user: "a web app
+the receptionist opens on the phone", not "Vite + React"), and ask for approval.
 
 ## 4. Skeleton
 
@@ -72,9 +99,21 @@ If a requirement truly can't be met by the house stack, write `docs/decisions/00
 
 ## 5. Backlog
 
-Run `/keelokit:backlog`. Ask for approval of the epics and the wave order.
+Run `/keelokit:backlog`. Refresh the dashboard: it shows the stories by development wave and by
+epic. In the chat, list the epics and, per wave, its stories (id and title), plus any story
+waiting for a gap. Ask for approval of the epics and the wave order.
 
 ## Close
 
 Report in five lines: what exists, `pnpm verify` status, open gaps by owner, the first ready
-story, and what needs the user (accounts, approvals).
+story, and what needs the user (accounts, approvals). Refresh the dashboard.
+
+Then offer to start building, and explain the choice in plain words (the dashboard's "How to
+build" section says the same):
+- **One at a time** (`/keelokit:build`): one story is built, tested and lands before the next.
+  Slower; the user follows every step and Claude usage is spread out. Recommend it for the first
+  wave, for sensitive stories and for a first project with agents.
+- **In parallel** (`/keelokit:build <N>`): N ready stories of the same wave at once, each in its
+  own copy of the repo (a worktree) with its own agents. Faster, more Claude usage at the same
+  time, several results to review together. Safe because stories in a wave never touch the same
+  files.

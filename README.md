@@ -33,6 +33,7 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | `/keelokit:backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
 | `/keelokit:build` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
 | `/keelokit:bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
+| `/keelokit:dashboard` | One page with every stage of the process, what waits for your review (context, PRD scope and metrics, stack, stories by development wave and by epic) and the next step; rebuilt from the repo, so it also tells you where a paused run stopped |
 | `/keelokit:doctor` | Is every rule still checked? Add a rule, register an exception |
 | `/keelokit:upgrade` | Bring a project to a newer template without touching its product code |
 | `/keelokit` | Where the project is, what's next, what's waiting for you |
@@ -93,7 +94,7 @@ with credentials.
 
 [`docs/design.md`](docs/design.md) explains the pieces: the plugin, the template, the house rules,
 and what `doctor` can and can't see. Keelokit tests itself: `python3 -m unittest discover -s tests`
-for the guard and doctor, and `scripts/test-template.sh` to generate projects and run their full
+for the guard, doctor and dashboard, and `scripts/test-template.sh` to generate projects and run their full
 checks. Releases follow [`docs/releasing.md`](docs/releasing.md).
 
 ## Ideas I learned from

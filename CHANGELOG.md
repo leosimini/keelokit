@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Dashboard** (`/keelokit:dashboard`): one branded page, in the user's language, with every
+  stage of kickstart or adopt, its status and approval date, and — at the stage waiting for
+  approval — what to check, with the documents rendered inline: context and open gaps, the PRD's
+  scope and metrics, the stack, the backlog by development wave and by epic. It shows what waits
+  for the user, the next step with a command to copy, and the difference between building one
+  story at a time and several in parallel. It is rebuilt from the repo every time, so a paused
+  run shows where it stopped. Published as an Artifact when the session can, otherwise a local
+  HTML file; its look is fixed in `skills/dashboard/references/design.md`.
+- Kickstart, adopt, backlog and build refresh the dashboard at every gate, never ask for an
+  approval without showing what it covers, explain each term of art (PRD, stack, epic, story,
+  development wave, worktree) the first time it comes up, and say "olas de desarrollo" in Spanish.
+- Kickstart writes `docs/stack.md` (the apps chosen and why) at the stack gate.
+
 ## 0.5.0 — 2026-09-27 — bugs come in classes
 
 Aimed at the kinds of bug that kept reaching bug bashes: races on limits, side effects sent

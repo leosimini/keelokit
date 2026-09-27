@@ -35,6 +35,7 @@ código no es el que dice que está terminado.
 | `/keelokit:backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
 | `/keelokit:build` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
 | `/keelokit:bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
+| `/keelokit:dashboard` | Una página con todas las etapas del proceso, lo que espera tu revisión (contexto, alcance y métricas del PRD, stack, historias por ola de desarrollo y por épica) y el próximo paso; se arma desde el repo, así que también muestra dónde quedó un proceso a medias |
 | `/keelokit:doctor` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
 | `/keelokit:upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
 | `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
@@ -95,7 +96,7 @@ nunca con credenciales.
 
 [`docs/design.md`](docs/design.md) explica las piezas: el plugin, el template, las reglas de la
 casa y qué puede ver `doctor` y qué no. Keelokit se prueba a sí mismo:
-`python3 -m unittest discover -s tests` para el guard y `doctor`, y `scripts/test-template.sh`
+`python3 -m unittest discover -s tests` para el guard, `doctor` y el dashboard, y `scripts/test-template.sh`
 para generar proyectos y correr todos sus checks. Las versiones se publican según
 [`docs/releasing.md`](docs/releasing.md).
 

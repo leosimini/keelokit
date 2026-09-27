@@ -70,5 +70,8 @@ Anything in the PRD's "out" list never becomes a story.
 ## 5. Check
 
 Run `python3 .keelokit/bin/doctor.py` and fix every backlog error (ids, file names, unknown
-dependencies, stray `status`). Then show the user: epics, stories per wave, the first ready
-stories, and any story blocked by a gap — and ask them to approve the order.
+dependencies, stray `status`). Refresh the dashboard (`/keelokit:dashboard`): it shows the
+stories by wave and by epic. Then show the user in the chat: epics, stories per wave, the first
+ready stories, and any story blocked by a gap — and ask them to approve the order. Talking to the
+user in Spanish, waves are **olas de desarrollo**; say once what one is (stories that don't touch
+the same files, so they can be built at the same time).
