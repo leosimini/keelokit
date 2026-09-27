@@ -231,6 +231,7 @@ class DashboardTest(unittest.TestCase):
         self.write(".keelokit/answers.yml", "mode: project\nproject_name: Shop\ncredit: \"off\"\n")
         self.assertEqual(self.state()["credit"], "off")
         self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n")
+        self.write("README.md", "# Legacy\n")  # an adopted repo keeps its own README
         self.assertEqual(self.state()["credit"], "off")
 
     def test_page_for_the_artifact_tool_escapes_documents(self):
