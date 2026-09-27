@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — the dashboard
+## 0.6.0 — 2026-09-27 — the dashboard
 
 - **Commands grouped by area.** Every skill now carries a prefix, so the `/keelokit:` menu lists
   them together: `project-new` (was `kickstart`), `project-adopt` (`adopt`), `project-dashboard`
