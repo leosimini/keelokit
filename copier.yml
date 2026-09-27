@@ -86,6 +86,16 @@ apps:
   when: "{{ mode == 'project' }}"
   validator: "{% if mode == 'project' and not apps %}Pick at least one{% endif %}"
 
+credit:
+  type: str
+  help: 'Sign the project "Built with Keelokit"? (changed later from the dashboard)'
+  choices:
+    Visible — README badge and a line at the foot of the public site: visible
+    Quiet — README badge and an invisible generator tag: quiet
+    "Off": "off"
+  default: visible
+  when: false
+
 postgis:
   type: bool
   help: Needs geospatial queries (PostGIS)?

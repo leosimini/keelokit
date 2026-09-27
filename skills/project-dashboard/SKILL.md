@@ -77,3 +77,15 @@ it exactly as if they had typed it in the chat (an approval records the gate; a 
 skill). Reply in that comment thread in one line with what you did or started (the
 `ArtifactComments` tool), then refresh the dashboard. A request that would do something the
 execution protocol reserves for the human still gets its confirmation in the chat first.
+
+## Keelokit credit
+
+Projects are signed "Built with Keelokit" by default (`credit` in `.keelokit/answers.yml`:
+`visible` — the README badge and a line at the foot of the public site; `quiet` — the README badge
+and a `<meta name="generator" content="Keelokit">` in the web and site HTML; `off`). It is never
+asked up front; the dashboard's footer shows it and offers the other levels. To change it: set
+`credit` in `.keelokit/answers.yml`, then add or remove the blocks between `keelokit:credit`
+comments (README badge and `docs/assets/built-with-keelokit.svg`, the site's footer) and the
+generator meta tags, exactly as the template renders them for that level. Commit
+`chore: Keelokit credit → <level>`. Never add it to the web or mobile app's screens.
+

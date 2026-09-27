@@ -16,6 +16,10 @@
   (`docs/privacy/data-map.md`), the privacy law of each market, a threat model of the critical
   journeys, dependency, image and staging (OWASP ZAP) scans, and checks for personal data in logs,
   export and deletion, retention and encryption. Report in `docs/security/<date>/report.md`.
+- **Built with Keelokit ♥**: projects carry a small credit by default — a badge in the README and
+  a line at the foot of the public site (`visible`), just the badge and an invisible generator tag
+  (`quiet`), or nothing (`off`). It's never asked up front and never touches the app's screens;
+  the dashboard's footer shows the level and changes it. Adopted repos start without it.
 - **`/keelokit:harness-upgrade`** (was `ship-upgrade`): the same skill, named for what it does —
   maintenance of the harness, not of the app.
 - The dashboard adds **Environments** (each one's checklist from `docs/deploy.md`), **Security and

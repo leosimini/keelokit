@@ -2,6 +2,8 @@
 
 # Keelokit
 
+<p align="center"><a href="https://keelokit.com/?ref=built-with"><img src="docs/assets/built-with-keelokit.svg" alt="Built with Keelokit"></a></p>
+
 **A Claude Code harness for building apps in TypeScript monorepos.**
 
 *[keelokit.com](https://keelokit.com) · [Leer en español](README.es.md)*

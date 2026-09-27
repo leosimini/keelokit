@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="168" height="24" viewBox="0 0 168 24" role="img" aria-label="Built with Keelokit">
+  <title>Built with Keelokit</title>
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A64B0"/>
+      <stop offset="1" stop-color="#0B3574"/>
+    </linearGradient>
+  </defs>
+  <rect width="168" height="24" rx="12" fill="url(#sea)"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11.5" fill="#F6F1E8">
+    <text x="12" y="16" fill-opacity="0.8">Built with</text>
+    <text x="72" y="16" font-weight="700">Keelokit</text>
+  </g>
+  <path fill="#FBC82A" d="M146 18.2l-.9-.8C141.9 14.5 140 12.8 140 10.7c0-1.7 1.3-3 3-3 .9 0 1.8.4 2.4 1.1.6-.7 1.5-1.1 2.4-1.1 1.7 0 3 1.3 3 3 0 2.1-1.9 3.8-5 6.7l-.8.8z"/>
+</svg>

@@ -218,6 +218,19 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("Existing repository (brownfield)", html)
         self.assertIn("Of 3 rules: 1 covered by what the repo already had · 1 dated exceptions", html)
 
+    def test_credit_defaults_and_levels(self):
+        self.gates("intake")
+        self.context()
+        self.write(".keelokit/answers.yml", "mode: project\nproject_name: Shop\n")
+        self.assertEqual(self.state()["credit"], "visible")
+        html = self.page()
+        self.assertIn("<strong>Keelokit credit</strong>: visible", html)
+        self.assertIn("Switch to quiet", html)
+        self.write(".keelokit/answers.yml", "mode: project\nproject_name: Shop\ncredit: \"off\"\n")
+        self.assertEqual(self.state()["credit"], "off")
+        self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n")
+        self.assertEqual(self.state()["credit"], "off")
+
     def test_page_for_the_artifact_tool_escapes_documents(self):
         self.gates("intake", lang="es")
         self.context()

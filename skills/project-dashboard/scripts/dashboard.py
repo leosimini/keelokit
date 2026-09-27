@@ -123,6 +123,14 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} errores del harness para revisar",
         "build_stage": "Construcción",
+        "credit_k": "Firma Keelokit",
+        "credit_names": {"visible": "visible", "quiet": "discreta", "off": "sin firma"},
+        "credit_what": {"visible": "el badge «Built with Keelokit» en el README y una línea al pie del sitio público",
+                        "quiet": "el badge en el README y una etiqueta invisible en el HTML",
+                        "off": "nada"},
+        "credit_to": "Pasar a {level}",
+        "credit_ask": "Cambiá la firma de Keelokit a «{level}»: {what}.",
+        "credit_thanks": "Gracias por firmar: así Keelokit llega a más gente.",
         "theme_dark": "Tema oscuro",
         "theme_light": "Tema claro",
         "env_h": "Entornos",
@@ -315,6 +323,14 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} harness errors to review",
         "build_stage": "Build",
+        "credit_k": "Keelokit credit",
+        "credit_names": {"visible": "visible", "quiet": "quiet", "off": "off"},
+        "credit_what": {"visible": "the “Built with Keelokit” badge in the README and a line at the foot of the public site",
+                        "quiet": "the README badge and an invisible tag in the HTML",
+                        "off": "nothing"},
+        "credit_to": "Switch to {level}",
+        "credit_ask": "Change the Keelokit credit to “{level}”: {what}.",
+        "credit_thanks": "Thanks for the credit: it's how Keelokit reaches more people.",
         "theme_dark": "Dark theme",
         "theme_light": "Light theme",
         "env_h": "Environments",
@@ -777,6 +793,8 @@ def collect(root: Path) -> dict:
 
     # The harness this project runs (the template version it was generated from or last upgraded to).
     harness = ans.get("_commit", "").lstrip("v")
+    # "Built with Keelokit": the template's `credit` answer (visible by default; adopted repos start without it).
+    credit = ans.get("credit") or ("visible" if layout == "project" and ans else "off")
     try:
         plugin_version = json.loads(read(PLUGIN_ROOT / ".claude-plugin/plugin.json")).get("version", "")
     except json.JSONDecodeError:
@@ -802,7 +820,7 @@ def collect(root: Path) -> dict:
         "doctor": doctor, "errors": errors, "run": run, "counts": counts,
         "adrs": adrs, "bugbashes": bugbashes, "history": history, "security": security,
         "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
-        "harness": harness, "plugin_version": plugin_version,
+        "harness": harness, "plugin_version": plugin_version, "credit": credit,
     }
 
 
@@ -1249,6 +1267,10 @@ details.stage.extra>summary .n{font:600 13px var(--mono)}
 .timeline li:first-child{border-top:0}
 .timeline time{font:12px/1.6 var(--mono);color:var(--ink-3)}
 .timeline .k{color:var(--ink-3)}
+footer .credit{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;width:100%;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--paper);color:var(--ink-2)}
+footer .credit .heart{color:var(--foil);font-size:16px}
+footer .credit .acts{margin-left:auto}
+footer .credit .act{padding:6px 11px;font-size:12px}
 footer{padding-block:0 32px;font-size:13px;color:var(--ink-3);display:flex;gap:6px 16px;flex-wrap:wrap;justify-content:space-between}
 footer code{background:none;padding:0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -1680,6 +1702,17 @@ def history_section(s: dict, t: dict, stage_names: dict) -> str:
     return extra_section("history", "↺", t["history"], "", summary, f'<ul class="timeline">{"".join(items)}</ul>', False)
 
 
+def credit_block(s: dict, t: dict) -> str:
+    level = s["credit"] if s["credit"] in ("visible", "quiet", "off") else "visible"
+    names, what = t["credit_names"], t["credit_what"]
+    others = "".join(ask(t["credit_to"].format(level=names[x]), t["credit_ask"].format(level=names[x], what=what[x]))
+                     for x in ("visible", "quiet", "off") if x != level)
+    thanks = f'<span class="muted">{esc(t["credit_thanks"])}</span>' if level != "off" else ""
+    return (f'<div class="credit" id="credit"><span class="heart" aria-hidden="true">♥</span>'
+            f'<span><strong>{esc(t["credit_k"])}</strong>: {esc(names[level])} · {esc(what[level])}</span>'
+            f'{thanks}<span class="acts">{others}</span></div>')
+
+
 def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) -> str:
     t, stage_copy = T[lang], STAGES[lang]
     names = {k: v[0] for k, v in stage_copy.items()}
@@ -1805,7 +1838,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
 {ask_box}
 </aside>
 </main>
-<footer class="wrap"><span>{esc(t["footer"].format(when=when, version=version))}</span></footer>
+<footer class="wrap">{credit_block(s, t)}<span>{esc(t["footer"].format(when=when, version=version))}</span></footer>
 <script>{JS}</script>
 """
     if standalone:

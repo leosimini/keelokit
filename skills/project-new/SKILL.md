@@ -139,7 +139,9 @@ waiting for a gap. Ask for approval of the epics and the wave order.
 ## Close
 
 Report in five lines: what exists, `pnpm verify` status, open gaps by owner, the first ready
-story, and what needs the user (accounts, approvals). Refresh the dashboard.
+story, and what needs the user (accounts, approvals). Refresh the dashboard. Mention once that the project
+carries a small "Built with Keelokit" credit (README badge, a line at the foot of the public site)
+and that the dashboard's footer turns it down or off.
 
 Then, in stage-by-stage mode, offer to start building with the recorded build mode; in
 automatic mode, start. When explaining the build modes (at step 0), use plain words (the

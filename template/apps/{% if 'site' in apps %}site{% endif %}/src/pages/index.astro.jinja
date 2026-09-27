@@ -15,12 +15,23 @@ const rootStyle = Object.entries(cssVariables())
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{name}</title>
     {description && <meta name="description" content={description} />}
+{%- if credit != 'off' %}
+    <meta name="generator" content="Keelokit" />
+{%- endif %}
   </head>
   <body>
     <main>
       <h1>{name}</h1>
       {description && <p>{description}</p>}
     </main>
+{%- if credit == 'visible' %}
+    <!-- keelokit:credit -->
+    <footer class="credit">
+      Built with <a href="https://keelokit.com/?ref=built-with" rel="noopener">Keelokit</a>
+      <span aria-hidden="true">♥</span>
+    </footer>
+    <!-- /keelokit:credit -->
+{%- endif %}
   </body>
 </html>
 
@@ -47,5 +58,17 @@ const rootStyle = Object.entries(cssVariables())
   p {
     color: var(--color-text-muted);
     font-size: var(--font-size-lg);
+  }
+
+  .credit {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: var(--spacing-md);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .credit a {
+    color: inherit;
   }
 </style>

@@ -1,5 +1,11 @@
 # {{ project_name }}
 
+{% if credit != 'off' -%}
+<!-- keelokit:credit -->
+[![Built with Keelokit](docs/assets/built-with-keelokit.svg)](https://keelokit.com/?ref=built-with)
+<!-- /keelokit:credit -->
+
+{% endif -%}
 {{ description }}
 
 Built on the [Keelokit](https://github.com/leosimini/keelokit) harness. Rules for humans and agents:
