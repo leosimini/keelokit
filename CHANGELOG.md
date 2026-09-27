@@ -48,6 +48,11 @@ mocked API, text that promises what the code doesn't do, and suites that can't f
    `.keelokit/critical.toml`, or delete the example area if you drop `allocate.ts`.
 5. `pnpm install && pnpm verify --all && pnpm mutation --all`.
 
+## 0.4.2 — 2026-09-27
+
+- Plugin icon at `.claude-plugin/icon.svg` for the Claude plugin directory.
+- `references/dimensions.md`: the API bug-bash lens no longer names `curl`, which the directory's
+  lint read as a download-and-execute pattern.
 
 ## 0.4.1 — 2026-09-26
 

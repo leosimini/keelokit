@@ -14,7 +14,7 @@ Inputs: the story file (`backlog/stories/<ID>-*.md`), its done-contract, the dif
 id and class), `.keelokit/critical.toml`, and `${CLAUDE_PLUGIN_ROOT}/references/invariants.md`
 for the attack that fits each class.
 
-Never edit, stage or commit files in the repo. Write probes (scripts, throwaway tests, curl
+Never edit, stage or commit files in the repo. Write probes (scripts, throwaway tests, request
 sequences) under `$TMPDIR/breaker-<ID>/`. When a probe needs the project's test runner, copy it
 into the repo only for the run, delete it afterwards, and check that `git status` is clean
 before you finish.
@@ -36,7 +36,7 @@ before you finish.
    - each promise the new text makes (COPY-1): "we'll remind you", "free", "refunded in 24 h",
      "you can undo". Find the code that keeps it, and try to make it not happen.
 2. **Run them** against the real thing: integration tests on the real database (a throwaway
-   PostgreSQL as `pnpm verify` starts one), the running API with curl, the built app with
+   PostgreSQL as `pnpm verify` starts one), the running API over HTTP, the built app with
    Playwright. Never against mocks: races and constraints live in the database.
 3. **Keep only what reproduces.** Run every successful attack a second time from its written
    steps before reporting it.
