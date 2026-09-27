@@ -71,5 +71,11 @@ the submission explains them:
   project, so the scan can't read it. The guard only blocks (exit 2) or lets the call through
   (exit 0); it never approves.
 
+- **Uses hooks.** Information only.
+
+Instructions for agents working on this repo live in `AGENTS.md`, loaded through
+`.claude/CLAUDE.md`. A `CLAUDE.md` at the root would be the plugin's root too, and the directory
+flags it because plugins don't load it.
+
 Any new finding needs a real fix or a line in the submission notes. Don't reword files just to
 get past the scanner.
