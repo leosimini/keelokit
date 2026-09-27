@@ -123,6 +123,34 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} errores del harness para revisar",
         "build_stage": "Construcción",
+        "decisions_h": "Decisiones del proyecto",
+        "run_mode": "Modo de ejecución",
+        "run_auto": "Automático",
+        "run_step": "Por etapas",
+        "run_auto_d": "Avanza solo en todo lo que puede. Se detiene únicamente donde hace falta una persona: aprobar el PRD o un desvío del stack, preguntas que solo vos podés responder, cuentas y credenciales, producción, dinero, temas legales y borrar datos.",
+        "run_step_d": "Se detiene al terminar cada etapa para que la revises y la apruebes, y entre una historia y la siguiente.",
+        "build_mode": "Forma de construir",
+        "build_serial": "En serie",
+        "build_parallel": "En paralelo · hasta {n} a la vez",
+        "undecided": "Sin definir: Keelokit lo pregunta una sola vez, al empezar.",
+        "decided_on": "Definido el {date}",
+        "locked_note": "Son fijas: Keelokit no las vuelve a preguntar ni las cambia por su cuenta. Para cambiarlas, pedilo explícitamente en el chat.",
+        "wait_decide": "Elegir el modo de ejecución y la forma de construir",
+        "auto_on": "Aprobada automáticamente el {date}",
+        "st_auto": "Automática",
+        "chosen": "Elegido",
+        "what_means": "Qué significa cada opción",
+        "current_stage": "Etapa actual",
+        "all_gates": "Todas las etapas aprobadas",
+        "sum_intake": "{docs} documentos · {gaps} preguntas abiertas ({blocking} bloquean) · {inv} invariantes",
+        "sum_product": "{metrics} métricas · {inn} en el alcance · {out} afuera",
+        "sum_stack": "Aplicaciones: {apps}",
+        "sum_skeleton": "Primer commit {commit}",
+        "sum_adopt": "{exc} excepciones registradas",
+        "sum_backlog": "{total} historias · {waves} olas · {epics} épicas",
+        "sum_build": "{done} de {total} historias terminadas",
+        "sum_none": "Todavía no empezó",
+        "stories_n": "{n} historias",
         "build_what": "Cada historia la construye un agente y la controlan otros, independientes: uno escribe las pruebas antes del código, otro revisa los cambios y otro intenta romperlos. Recién entonces entra al producto.",
     },
     "en": {
@@ -203,6 +231,34 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} harness errors to review",
         "build_stage": "Build",
+        "decisions_h": "Project decisions",
+        "run_mode": "Run mode",
+        "run_auto": "Automatic",
+        "run_step": "Stage by stage",
+        "run_auto_d": "Goes on alone wherever it can. It stops only where a person is needed: approving the PRD or a stack deviation, questions only you can answer, accounts and credentials, production, money, legal matters and deleting data.",
+        "run_step_d": "Stops at the end of every stage for you to review and approve it, and between one story and the next.",
+        "build_mode": "How stories are built",
+        "build_serial": "One at a time",
+        "build_parallel": "In parallel · up to {n} at once",
+        "undecided": "Not set yet: Keelokit asks once, at the start.",
+        "decided_on": "Set on {date}",
+        "locked_note": "These are fixed: Keelokit doesn't ask again or change them on its own. To change one, ask for it explicitly in the chat.",
+        "wait_decide": "Choose the run mode and how stories are built",
+        "auto_on": "Approved automatically on {date}",
+        "st_auto": "Automatic",
+        "chosen": "Chosen",
+        "what_means": "What each option means",
+        "current_stage": "Current stage",
+        "all_gates": "Every stage approved",
+        "sum_intake": "{docs} documents · {gaps} open questions ({blocking} blocking) · {inv} invariants",
+        "sum_product": "{metrics} metrics · {inn} in scope · {out} out",
+        "sum_stack": "Apps: {apps}",
+        "sum_skeleton": "First commit {commit}",
+        "sum_adopt": "{exc} exceptions recorded",
+        "sum_backlog": "{total} stories · {waves} waves · {epics} epics",
+        "sum_build": "{done} of {total} stories done",
+        "sum_none": "Not started yet",
+        "stories_n": "{n} stories",
         "build_what": "Each story is built by one agent and checked by others that work independently: one writes the tests before the code, one reviews the changes and one tries to break them. Only then does it land in the product.",
     },
 }
@@ -261,6 +317,7 @@ GLOSSARY = {
         ("Ola de desarrollo", "Un grupo de historias que no tocan los mismos archivos y por eso se pueden construir a la vez."),
         ("Worktree", "Una copia de trabajo separada del mismo repositorio, para que varios agentes trabajen a la vez sin pisarse."),
         ("Staging", "Un entorno en internet igual al real, para probar antes de que llegue a los usuarios."),
+        ("Modo automático", "Keelokit avanza solo y se detiene únicamente donde las reglas de la casa piden a una persona."),
     ],
     "en": [
         ("PRD", "Product Requirements Document: what gets built, what doesn't, and how success is measured."),
@@ -272,6 +329,7 @@ GLOSSARY = {
         ("Development wave", "A group of stories that don't touch the same files, so they can be built at the same time."),
         ("Worktree", "A separate working copy of the same repository, so several agents can work at once without collisions."),
         ("Staging", "An online environment like the real one, to try things before users see them."),
+        ("Automatic mode", "Keelokit goes on alone and stops only where the house rules call for a person."),
     ],
 }
 
@@ -366,6 +424,7 @@ def collect(root: Path) -> dict:
     except tomllib.TOMLDecodeError:
         state = {}
     gates = {k: str(v) for k, v in state.get("gates", {}).items()}
+    run = {k: v for k, v in state.get("run", {}).items() if k in ("mode", "build", "parallel", "decided")}
     ans = answers(root)
     layout = "harness" if ans.get("mode") == "harness" or "adopt" in gates else "project"
 
@@ -465,7 +524,19 @@ def collect(root: Path) -> dict:
             status = "review" if ready_evidence[g] else "current"
         else:
             status = "todo"
-        stages.append({"id": g, "status": status, "date": gates.get(g, ""), "outputs": outputs[g]})
+        value = gates.get(g, "")
+        stages.append({"id": g, "status": status, "date": value[:10], "auto": value.endswith("auto"),
+                       "outputs": outputs[g]})
+
+    scope = md_section(prd, "Scope")
+    scope_in = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "In")
+    scope_out = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "Out")
+    counts = {
+        "metrics": max(len(table_rows(md_section(prd, "Success metrics"))) - 1, 0),
+        "in": len(re.findall(r"(?m)^\s*[-*]\s", scope_in)),
+        "out": len(re.findall(r"(?m)^\s*[-*]\s", scope_out)),
+        "exceptions": len(re.findall(r"(?m)^\s*\[\[exception\]\]", read(root / ".keelokit/exceptions.toml"))),
+    }
 
     return {
         "root": root, "name": name, "layout": layout, "gates": gates, "pending": pending,
@@ -474,7 +545,7 @@ def collect(root: Path) -> dict:
         "stack_doc": read(root / "docs/stack.md"), "diagnosis": read(root / "docs/diagnosis.md"),
         "stories": stories, "by_id": by_id, "epics": epics, "done": done,
         "has_commits": has_commits, "first_commit": first_commit, "github": github_base(root),
-        "doctor": doctor, "errors": errors,
+        "doctor": doctor, "errors": errors, "run": run, "counts": counts,
     }
 
 
@@ -517,6 +588,8 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
                "anchor": "stage-intake"} for g in s["gaps"] if g["blocking"]]
     if s["errors"]:
         items.append({"text": t["wait_errors"].format(n=s["errors"]), "anchor": "stage-build"})
+    if s["gates"] and not s["run"].get("mode"):
+        items.append({"text": t["wait_decide"], "anchor": "decisions"})
     return items
 
 
@@ -646,150 +719,243 @@ def markdown(text: str, links: Links | None = None, base: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# Page
+# Page — the look of keelokit.com: foam ground, the sea gradient, Cormorant Garamond for display,
+# Karla for text, Fragment Mono for ids and commands, board yellow for what you can act on.
+# See ../references/design.md.
 
 CSS = """
 :root{
-  --bg:#F3F6FB;--surface:#FFFFFF;--sunk:#E9EFF8;--ink:#0B1B3A;--muted:#4F5F7C;--line:#D5DFEC;
-  --accent:#0B4CC4;--accent-ink:#FFFFFF;--accent-soft:#E3ECFB;--foil:#C85A12;--foil-soft:#FCEBDD;
-  --good:#1D7F52;--good-soft:#E0F2E9;--bad:#B3322A;--bad-soft:#F9E3E1;--todo:#6B7A93;
-  --shadow:0 1px 2px rgba(11,27,58,.06),0 4px 16px rgba(11,27,58,.06);
-  --display:"Bricolage Grotesque","Avenir Next","Segoe UI",system-ui,sans-serif;
-  --body:"Manrope","Segoe UI",system-ui,-apple-system,sans-serif;
-  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --foam:#F6F1E8;--foam-2:rgba(246,241,232,.74);--foam-3:rgba(246,241,232,.52);
+  --glass:rgba(246,241,232,.06);--glass-line:rgba(246,241,232,.16);
+  --sea-0:#1A64B0;--sea-1:#114D96;--sea-2:#0B3574;--sea-3:#07214E;--abyss:#040F28;
+  --board:#FBC82A;--reef:#8FE0C4;--foil:#EE7B24;
+  --ground:#F6F1E8;--paper:#FFFDF8;--paper-2:#EFE8DA;--ink:#172126;--ink-2:#4A5552;--ink-3:#747B76;
+  --line:#E3DCCF;--line-2:#D3C9B6;--accent:#114D96;--accent-soft:#E3EBF5;
+  --ok:#1C7559;--ok-soft:#DDF2E9;--attn:#AD540F;--attn-soft:#FBE7D4;--live:#7A5C00;--live-soft:#FDF0C4;
+  --bad:#AE3F2D;--bad-soft:#F8E0DA;--idle:#747B76;--idle-soft:#ECE5D8;
+  --shadow:0 1px 0 rgba(23,33,38,.04),0 18px 40px -28px rgba(7,33,78,.35);
+  --display:"Cormorant Garamond",Georgia,"Times New Roman",serif;
+  --body:"Karla",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Fragment Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;
-  --bg:#061127;--surface:#0C1D3D;--sunk:#0A1833;--ink:#E4ECF9;--muted:#9DB0CD;--line:#1C3260;
-  --accent:#63C0FB;--accent-ink:#061127;--accent-soft:#10305E;--foil:#F7963A;--foil-soft:#3A2412;
-  --good:#52C992;--good-soft:#0F3326;--bad:#F2786D;--bad-soft:#3D1715;--todo:#7F91AF;
-  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.25);}}
+  --ground:#040F28;--paper:#081834;--paper-2:#0C2147;--ink:#F6F1E8;--ink-2:rgba(246,241,232,.74);--ink-3:rgba(246,241,232,.52);
+  --line:rgba(246,241,232,.12);--line-2:rgba(246,241,232,.22);--accent:#8FC0F2;--accent-soft:rgba(143,192,242,.12);
+  --ok:#8FE0C4;--ok-soft:rgba(143,224,196,.12);--attn:#FFAE6B;--attn-soft:rgba(238,123,36,.16);--live:#FBC82A;--live-soft:rgba(251,200,42,.13);
+  --bad:#FF9A8A;--bad-soft:rgba(255,154,138,.12);--idle:rgba(246,241,232,.5);--idle-soft:rgba(246,241,232,.07);
+  --shadow:0 18px 40px -28px rgba(0,0,0,.6);}}
 :root[data-theme="dark"]{color-scheme:dark;
-  --bg:#061127;--surface:#0C1D3D;--sunk:#0A1833;--ink:#E4ECF9;--muted:#9DB0CD;--line:#1C3260;
-  --accent:#63C0FB;--accent-ink:#061127;--accent-soft:#10305E;--foil:#F7963A;--foil-soft:#3A2412;
-  --good:#52C992;--good-soft:#0F3326;--bad:#F2786D;--bad-soft:#3D1715;--todo:#7F91AF;
-  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.25);}
-*{box-sizing:border-box}
+  --ground:#040F28;--paper:#081834;--paper-2:#0C2147;--ink:#F6F1E8;--ink-2:rgba(246,241,232,.74);--ink-3:rgba(246,241,232,.52);
+  --line:rgba(246,241,232,.12);--line-2:rgba(246,241,232,.22);--accent:#8FC0F2;--accent-soft:rgba(143,192,242,.12);
+  --ok:#8FE0C4;--ok-soft:rgba(143,224,196,.12);--attn:#FFAE6B;--attn-soft:rgba(238,123,36,.16);--live:#FBC82A;--live-soft:rgba(251,200,42,.13);
+  --bad:#FF9A8A;--bad-soft:rgba(255,154,138,.12);--idle:rgba(246,241,232,.5);--idle-soft:rgba(246,241,232,.07);
+  --shadow:0 18px 40px -28px rgba(0,0,0,.6);}
+*,*::before,*::after{box-sizing:border-box}
 [hidden]{display:none!important}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--body)}
-a{color:var(--accent)}
-a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
-code{font-family:var(--mono);font-size:.86em;background:var(--sunk);padding:.1em .35em;border-radius:4px}
-.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--surface);border-bottom:1px solid var(--line)}
-.bar-in{max-width:1080px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.bar img{width:28px;height:28px;border-radius:7px}
-.wordmark{font:700 16px/1 var(--display);letter-spacing:.01em}
-.bar .sep{color:var(--line)}
-.bar .product{font-weight:600;color:var(--muted);overflow-wrap:anywhere}
-.bar .ver{margin-left:auto;font:500 12px var(--mono);color:var(--muted)}
-.page{max-width:1080px;margin:0 auto;padding-inline:16px;padding-block:24px 48px;display:flex;flex-direction:column;gap:28px}
-.eyebrow{font:600 12px/1 var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
-h1{font:700 clamp(26px,4.5vw,36px)/1.1 var(--display);margin:6px 0 0;text-wrap:balance}
-h2{font:700 22px/1.2 var(--display);margin:0;text-wrap:balance}
-h3{font:700 16px/1.3 var(--body);margin:0}
-.now{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:14px}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow)}
-.panel.next{border-color:var(--accent);background:var(--accent-soft)}
-.panel.wait{border-color:var(--foil)}
-.panel .big{font:700 18px/1.3 var(--display)}
-.panel p{margin:0;color:var(--muted)}
-.panel ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
-.cmd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.cmd code{font-size:14px;padding:6px 10px;background:var(--surface);border:1px solid var(--line);overflow-wrap:anywhere}
-button{font:600 13px var(--body);cursor:pointer;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);padding:6px 12px}
-button.ghost{background:transparent;color:var(--accent)}
-button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
-.hint{font-size:12px;color:var(--muted)}
-.rail{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;counter-reset:st}
-.rail a{display:flex;flex-direction:column;gap:4px;text-decoration:none;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;height:100%}
-.rail a:hover{border-color:var(--accent)}
-.rail .n{font:600 12px var(--mono);color:var(--muted)}
-.rail .nm{font-weight:700}
-.pill{display:inline-flex;align-items:center;gap:6px;font:600 12px/1 var(--body);padding:4px 9px;border-radius:999px;white-space:nowrap;width:fit-content}
-.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
-.pill.done{color:var(--good);background:var(--good-soft)}
-.pill.review{color:var(--foil);background:var(--foil-soft)}
-.pill.current{color:var(--accent);background:var(--accent-soft)}
-.pill.todo{color:var(--todo);background:var(--sunk)}
+body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.6 var(--body);font-feature-settings:"kern" 1,"liga" 1}
+a{color:var(--accent);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--foil);outline-offset:3px;border-radius:4px}
+code{font-family:var(--mono);font-size:.86em;background:var(--paper-2);padding:.08em .38em;border-radius:5px}
+.wrap{width:min(100% - 32px,1160px);margin-inline:auto}
+.eyebrow{font:600 12px/1.2 var(--body);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin:0}
+
+/* top bar */
+.top{display:flex;align-items:center;gap:12px;padding-block:16px;flex-wrap:wrap}
+.brand{display:inline-flex;align-items:center;gap:10px;font-weight:600;font-size:17px;letter-spacing:.02em;color:var(--ink)}
+.brand img{width:30px;height:30px;border-radius:8px;box-shadow:0 4px 12px rgba(17,77,150,.25)}
+.crumb{color:var(--ink-3)}
+.top .product{color:var(--ink-2);font-weight:500;overflow-wrap:anywhere}
+.top .chips{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.chip{font:12px/1 var(--mono);color:var(--ink-2);border:1px solid var(--line-2);padding:6px 10px;border-radius:999px;white-space:nowrap}
+
+/* the sea band: dark in both themes, like the site's sections */
+.sea{color:var(--foam);background:linear-gradient(180deg,var(--sea-0) 0%,var(--sea-1) 22%,var(--sea-2) 52%,var(--sea-3) 82%,var(--abyss) 100%)}
+.sea .eyebrow{color:var(--foam-3)}
+.hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:clamp(20px,4vw,48px);align-items:end;padding-block:clamp(28px,5vw,52px) 28px}
+.hero h1{font:500 clamp(44px,6.4vw,76px)/.98 var(--display);letter-spacing:-.015em;margin:12px 0 0;text-wrap:balance;overflow-wrap:anywhere}
+.lead{margin:16px 0 0;font-size:18px;color:var(--foam-2);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.lead em{font:italic 500 1.45em/1 var(--display);color:var(--foam)}
+.next{background:var(--glass);border:1px solid var(--glass-line);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:10px;backdrop-filter:blur(2px)}
+.next .title{font:500 26px/1.15 var(--display);color:var(--foam);text-decoration:none;text-wrap:balance}
+.next .title:hover{text-decoration:underline}
+.next p{margin:0;color:var(--foam-2);font-size:15px}
+.term{position:relative;background:rgba(4,15,40,.72);border:1px solid var(--glass-line);border-radius:12px;padding:14px 92px 14px 16px;font:14px/1.5 var(--mono);color:var(--foam);overflow-wrap:anywhere}
+.term .prompt{color:var(--board);user-select:none;margin-right:8px}
+.copy{position:absolute;top:50%;right:10px;transform:translateY(-50%);font:600 11px/1 var(--body);letter-spacing:.1em;text-transform:uppercase;color:#172126;background:var(--board);border:0;border-radius:8px;padding:9px 11px;cursor:pointer;transition:background-color .2s ease}
+.copy.is-done{background:var(--reef)}
+.term.light{background:var(--paper-2);border-color:var(--line);color:var(--ink)}
+.term.light .prompt{color:var(--attn)}
+.hint{font-size:13px;color:var(--foam-3)}
+
+/* stepper */
+.steps{list-style:none;margin:0;padding:0 0 30px;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+.steps li{position:relative;border-top:1px solid var(--glass-line)}
+.steps a{display:flex;flex-direction:column;gap:3px;padding:18px 16px 4px 0;color:var(--foam);text-decoration:none}
+.steps a:hover .nm{text-decoration:underline}
+.steps li::before{content:"";position:absolute;top:-5px;left:0;width:9px;height:9px;border-radius:50%;background:var(--abyss);border:1.5px solid var(--foam-3)}
+.steps li.done::before{background:var(--reef);border-color:var(--reef)}
+.steps li.review::before{background:var(--foil);border-color:var(--foil);box-shadow:0 0 0 4px rgba(238,123,36,.25)}
+.steps li.current::before{background:var(--board);border-color:var(--board);box-shadow:0 0 0 4px rgba(251,200,42,.22)}
+.steps .n{font:12px var(--mono);color:var(--foam-3)}
+.steps .nm{font-weight:600;font-size:15px}
+.steps .st{font-size:13px;color:var(--foam-2)}
+@media (max-width:760px){.hero{grid-template-columns:1fr}
+  .steps{grid-template-columns:1fr;margin-left:5px}
+  .steps li{border-top:0;border-left:1px solid var(--glass-line)}
+  .steps li::before{top:22px;left:-5px}
+  .steps a{padding:14px 0 14px 22px}}
+
+/* body */
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:28px;align-items:start;padding-block:28px 56px}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.side{position:sticky;top:16px}
+@media (max-width:980px){.layout{grid-template-columns:1fr}.side{position:static;order:-1}}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;box-shadow:var(--shadow)}
+.card ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.card li{display:flex;gap:10px;align-items:baseline;font-size:15px}
+.card li::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--attn);transform:translateY(-1px)}
+.card li a{color:var(--ink)}
+.muted{color:var(--ink-3);margin:0;font-size:14px}
+.setting{display:flex;flex-direction:column;gap:2px;padding-block:10px;border-top:1px solid var(--line)}
+.setting:first-of-type{border-top:0;padding-top:0}
+.setting .k{font-size:13px;color:var(--ink-3)}
+.setting .v{display:flex;align-items:center;gap:8px;font-weight:600}
+.setting .v svg{width:14px;height:14px;flex:none;color:var(--ink-3)}
+.setting .d{font-size:13px;color:var(--ink-3)}
+.setting .v.unset{font-weight:500;color:var(--attn)}
+
+/* stages */
+details.stage{background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);scroll-margin-top:16px}
+details.stage.review{border-color:var(--attn)}
+details.stage>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:4px 14px;padding:16px 18px}
+details.stage>summary::-webkit-details-marker{display:none}
+details.stage>summary .n{grid-area:1/1;font:12px var(--mono);color:var(--ink-3)}
+details.stage>summary .nm{grid-area:1/2;font:600 25px/1.1 var(--display);letter-spacing:-.005em}
+details.stage>summary .pill{grid-area:1/3}
+details.stage>summary .chev{grid-area:1/4}
+details.stage>summary .sum{grid-area:2/2/3/5;font-size:14px;color:var(--ink-3)}
+details.stage[open]>summary{border-bottom:1px solid var(--line)}
+details.stage.todo>summary .nm{color:var(--ink-3)}
+.chev{flex:none;width:9px;height:9px;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);transform:rotate(45deg) translateY(-3px);transition:transform .2s ease}
+details[open]>summary .chev{transform:rotate(225deg) translateY(-2px)}
+@media (max-width:560px){details.stage>summary{grid-template-columns:auto minmax(0,1fr) auto}
+  details.stage>summary .pill{grid-area:3/2;justify-self:start}
+  details.stage>summary .chev{grid-area:1/3}
+  details.stage>summary .sum{grid-area:2/2/3/4}}
+.stage-body{padding:18px 20px 22px;display:flex;flex-direction:column;gap:20px}
+.what{margin:0;color:var(--ink-2);max-width:68ch}
+.check{background:var(--attn-soft);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.check .eyebrow{color:var(--attn)}
+.check ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.check p{margin:0;font-weight:600}
+.block{display:flex;flex-direction:column;gap:10px;min-width:0}
+.block>h3{font:600 12px/1.2 var(--body);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin:0}
+.pill{display:inline-flex;align-items:center;gap:6px;font:600 12px/1 var(--body);padding:5px 10px;border-radius:999px;white-space:nowrap;width:fit-content}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.done{color:var(--ok);background:var(--ok-soft)}
+.pill.review{color:var(--attn);background:var(--attn-soft)}
+.pill.current{color:var(--live);background:var(--live-soft)}
+.pill.todo{color:var(--idle);background:var(--idle-soft)}
 .pill.ready{color:var(--accent);background:var(--accent-soft)}
 .pill.blocked,.pill.gap{color:var(--bad);background:var(--bad-soft)}
-.stage{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px;scroll-margin-top:72px}
-.stage.review{border-color:var(--foil);box-shadow:0 0 0 3px var(--foil-soft)}
-.stage-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.stage-head .n{font:600 13px var(--mono);color:var(--muted)}
-.stage-head .when{font-size:13px;color:var(--muted)}
-.what{margin:0;max-width:72ch;color:var(--ink)}
-.check{background:var(--foil-soft);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
-.check h3{color:var(--foil)}
-.check ul{margin:0;padding-left:18px}
-.check p{margin:0;font-weight:600}
-.block{display:flex;flex-direction:column;gap:8px}
-.muted{color:var(--muted);margin:0}
+.sea .pill.review{color:#FFC08A;background:rgba(238,123,36,.2)}
+.sea .pill.current{color:var(--board);background:rgba(251,200,42,.16)}
+.sea .pill.done{color:var(--reef);background:rgba(143,224,196,.14)}
+
+/* tables and documents */
 .scroll{overflow-x:auto;max-width:100%}
 table{border-collapse:collapse;width:100%;min-width:520px;font-size:14px;font-variant-numeric:tabular-nums}
-th,td{text-align:left;vertical-align:top;padding:7px 10px;border-bottom:1px solid var(--line)}
-th{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600}
-details.doc{border:1px solid var(--line);border-radius:10px;background:var(--bg)}
-details.doc>summary{cursor:pointer;padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;list-style:none}
+th,td{text-align:left;vertical-align:top;padding:9px 12px 9px 0;border-bottom:1px solid var(--line)}
+th{font:600 11px/1.3 var(--body);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+details.doc{border:1px solid var(--line);border-radius:10px;background:var(--ground)}
+details.doc>summary{list-style:none;cursor:pointer;padding:10px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 details.doc>summary::-webkit-details-marker{display:none}
-details.doc>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
-details.doc[open]>summary::before{transform:rotate(90deg)}
-details.doc>summary .path{font:500 13px var(--mono);overflow-wrap:anywhere}
-details.doc>summary a{margin-left:auto;font-size:13px}
-.md{padding:4px 16px 14px;border-top:1px solid var(--line);max-width:100%;overflow-wrap:anywhere}
-.md h3,.md h4,.md h5,.md h6{margin:16px 0 6px;font-family:var(--display)}
-.md p{margin:8px 0;max-width:75ch}
-.md pre{margin:8px 0;padding:10px;background:var(--sunk);border-radius:8px;font:13px/1.5 var(--mono)}
-.md pre code{background:none;padding:0}
+details.doc>summary .path{font:13px var(--mono);overflow-wrap:anywhere;flex:1;min-width:0}
+details.doc>summary a{font-size:13px}
+.md{padding:6px 16px 16px;border-top:1px solid var(--line);overflow-wrap:anywhere}
 .md.bare{padding:0;border:0}
-.out{margin:0;padding:10px 12px;background:var(--sunk);border-radius:8px;font:13px/1.5 var(--mono)}
-.out code{background:none;padding:0}
-.md blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid var(--line);color:var(--muted)}
-.tag{font:600 11px var(--mono);padding:1px 6px;border-radius:5px;background:var(--sunk);color:var(--muted);white-space:nowrap}
-.tag.must{color:var(--foil);background:var(--foil-soft)}
+.md h3,.md h4,.md h5,.md h6{font:600 20px/1.2 var(--display);margin:18px 0 6px}
+.md p{margin:8px 0;max-width:72ch}
+.md ul,.md ol{padding-left:20px;margin:8px 0}
+.md pre,.out{margin:8px 0;padding:12px 14px;background:var(--paper-2);border-radius:10px;font:13px/1.55 var(--mono);overflow-x:auto}
+.md pre code,.out code{background:none;padding:0}
+.md blockquote{margin:8px 0;padding:4px 14px;border-left:2px solid var(--line-2);color:var(--ink-2)}
+.tag{font:11px var(--mono);padding:2px 6px;border-radius:5px;background:var(--paper-2);color:var(--ink-2);white-space:nowrap}
+.tag.must{color:var(--attn);background:var(--attn-soft)}
 .ref{font-family:var(--mono);font-size:.9em}
-.facts{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0}
-.facts dt{color:var(--muted)}
+.facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 20px;margin:0}
+.facts dt{color:var(--ink-3)}
 .facts dd{margin:0;overflow-wrap:anywhere}
-.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.progress{height:6px;border-radius:999px;background:var(--sunk);overflow:hidden;min-width:80px;flex:1;max-width:220px}
-.progress i{display:block;height:100%;background:var(--good)}
-.group{display:flex;flex-direction:column;gap:6px}
-.group-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.group-head .count{font:500 13px var(--mono);color:var(--muted)}
-.stories{display:flex;flex-direction:column;gap:6px}
-.story>summary .sid{font:600 13px var(--mono)}
-.story>summary .stitle{flex:1;min-width:12ch}
-.chip{font:600 11px var(--mono);padding:2px 7px;border-radius:5px;border:1px solid var(--line);color:var(--muted)}
-.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
-.mode{border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px;background:var(--bg)}
+
+/* backlog */
+.toolbar{display:flex;gap:12px 16px;align-items:center;flex-wrap:wrap}
+.toolbar strong{font-weight:600}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:999px;padding:3px;margin-left:auto}
+.seg button{font:600 13px var(--body);border:0;background:none;color:var(--ink-2);padding:6px 14px;border-radius:999px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--ground)}
+.bar{height:5px;border-radius:999px;background:var(--paper-2);overflow:hidden;width:120px;flex:none}
+.bar i{display:block;height:100%;background:var(--ok)}
+details.group{border-top:1px solid var(--line)}
+details.group>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;padding:12px 0;flex-wrap:wrap}
+details.group>summary::-webkit-details-marker{display:none}
+details.group>summary .gname{font:600 20px/1.2 var(--display);flex:1;min-width:8ch}
+details.group>summary .count{font:12px var(--mono);color:var(--ink-3)}
+.group-body{display:flex;flex-direction:column;gap:6px;padding-bottom:14px}
+.group-body>.muted{margin-bottom:4px}
+details.story>summary{padding:9px 12px}
+details.story .sid{font:13px var(--mono);color:var(--ink-2);flex:none}
+details.story .stitle{flex:1;min-width:14ch;font-weight:500}
+.epic{font:11px/1 var(--mono);padding:4px 7px;border-radius:5px;border:1px solid var(--line-2);color:var(--ink-3)}
+
+/* build modes */
+.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.mode{border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;background:var(--ground)}
+.mode.chosen{border-color:var(--ok);box-shadow:inset 0 0 0 1px var(--ok)}
+.mode h4{margin:0;font:600 21px/1.2 var(--display);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .mode p{margin:0}
-.mode .when{color:var(--muted);font-size:14px}
-.gloss{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 24px;margin:0}
-.gloss div{display:flex;flex-direction:column;gap:2px}
-.gloss dt{font-weight:700}
-.gloss dd{margin:0;color:var(--muted)}
-footer{font-size:12px;color:var(--muted);text-align:center}
+.mode .when{color:var(--ink-3);font-size:14px}
+details.plain>summary{cursor:pointer;color:var(--accent);font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:8px}
+details.plain>summary::-webkit-details-marker{display:none}
+details.plain[open]>summary{margin-bottom:12px}
+.card.plain>summary{color:var(--ink-3);display:flex;justify-content:space-between}
+.gloss{display:flex;flex-direction:column;gap:10px;margin:0}
+.gloss dt{font-weight:600}
+.gloss dd{margin:0;color:var(--ink-2);font-size:14px}
+footer{padding-block:0 32px;font-size:13px;color:var(--ink-3);display:flex;gap:6px 16px;flex-wrap:wrap;justify-content:space-between}
+footer code{background:none;padding:0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
 JS = """
 (function(){
-  function copy(btn){
-    var text=btn.getAttribute('data-copy'), done=btn.getAttribute('data-done'), label=btn.textContent;
-    function ok(){btn.textContent=done;setTimeout(function(){btn.textContent=label},1600)}
-    function fallback(){var r=document.createRange(),el=btn.previousElementSibling;if(!el)return;
-      r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r)}
-    try{navigator.clipboard.writeText(text).then(ok,fallback)}catch(e){fallback()}
-  }
-  document.querySelectorAll('button[data-copy]').forEach(function(b){b.addEventListener('click',function(){copy(b)})});
+  document.querySelectorAll('button[data-copy]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var text=btn.getAttribute('data-copy'), label=btn.textContent;
+      function ok(){btn.textContent=btn.getAttribute('data-done');btn.classList.add('is-done');
+        setTimeout(function(){btn.textContent=label;btn.classList.remove('is-done')},1600)}
+      function fallback(){var el=btn.parentNode.querySelector('.cmdtext');if(!el)return;var r=document.createRange();
+        r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r)}
+      try{navigator.clipboard.writeText(text).then(ok,fallback)}catch(e){fallback()}
+    });
+  });
   var views=document.querySelectorAll('[data-view]'), btns=document.querySelectorAll('button[data-show]');
   function show(v){views.forEach(function(el){el.hidden=el.getAttribute('data-view')!==v});
     btns.forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-show')===v))});
     try{localStorage.setItem('keelokit-backlog-view',v)}catch(e){}}
   btns.forEach(function(b){b.addEventListener('click',function(){show(b.getAttribute('data-show'))})});
-  if(btns.length){var v='wave';try{v=localStorage.getItem('keelokit-backlog-view')||'wave'}catch(e){}show(v)}
+  if(btns.length){var v='wave';try{v=localStorage.getItem('keelokit-backlog-view')||'wave'}catch(e){}show(v==='epic'?'epic':'wave')}
+  function reveal(id){var el=document.getElementById(id);if(!el)return;
+    for(var n=el;n;n=n.parentElement){if(n.tagName==='DETAILS')n.open=true}
+    el.scrollIntoView({block:'start'})}
+  document.addEventListener('click',function(e){var a=e.target.closest('a[href^="#"]');if(!a)return;
+    var id=a.getAttribute('href').slice(1);if(document.getElementById(id)){e.preventDefault();reveal(id)}});
+  if(location.hash.length>1)reveal(location.hash.slice(1));
 })();
 """
+
+LOCK = ('<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+        '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>')
+CHEV = '<span class="chev" aria-hidden="true"></span>'
 
 
 def logo() -> str:
@@ -797,60 +963,89 @@ def logo() -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode() if svg else ""
 
 
-def doc_block(rel: str, text: str, links: Links, t: dict, open_: bool = False) -> str:
-    href = links.href(rel)
+def ext_link(href: str | None, links: Links, t: dict) -> str:
+    if not href:
+        return ""
     label = t["open_github"] if links.github else t["open_file"]
-    a = f'<a href="{esc(href)}" target="_blank" rel="noopener">{esc(label)}</a>' if href else ""
-    return (f'<details class="doc"{" open" if open_ else ""}><summary><span class="path">{esc(rel)}</span>{a}</summary>'
+    return f'<a href="{esc(href)}" target="_blank" rel="noopener">{esc(label)}</a>'
+
+
+def doc_block(rel: str, text: str, links: Links, t: dict) -> str:
+    return (f'<details class="doc"><summary><span class="path">{esc(rel)}</span>'
+            f'{ext_link(links.href(rel), links, t)}{CHEV}</summary>'
             f'<div class="md">{markdown(text, links, rel)}</div></details>')
 
 
-def copy_cmd(cmd: str, t: dict) -> str:
-    return (f'<div class="cmd"><code>{esc(cmd)}</code><button type="button" class="ghost" '
-            f'data-copy="{esc(cmd)}" data-done="{esc(t["copied"])}">{esc(t["copy"])}</button></div>')
+def term(cmd: str, t: dict, light: bool = False) -> str:
+    return (f'<div class="term{" light" if light else ""}"><span class="prompt">›</span><span class="cmdtext">{esc(cmd)}</span>'
+            f'<button type="button" class="copy" data-copy="{esc(cmd)}" data-done="{esc(t["copied"])}">{esc(t["copy"])}</button></div>')
 
 
-def stage_body(s: dict, stage: dict, links: Links, t: dict, lang: str) -> str:
-    sid, root, parts = stage["id"], s["root"], []
+def block(title: str, inner: str) -> str:
+    return f'<div class="block"><h3>{title}</h3>{inner}</div>'
+
+
+def stage_summary(s: dict, stage: dict, t: dict) -> str:
+    sid, c = stage["id"], s["counts"]
+    if stage["status"] == "todo" and not stage["outputs"]:
+        return t["sum_none"]
     if sid == "intake":
-        if s["context"]:
-            if s["gaps"]:
-                rows = "".join(
-                    f'<tr><td><span class="tag">{esc(g["id"])}</span></td><td>{inline(g["missing"])}</td>'
-                    f'<td>{esc(g["owner"])}</td><td>{inline(g["question"])}</td>'
-                    f'<td>{esc(t["yes"] if g["blocking"] else t["no"])}</td></tr>' for g in s["gaps"])
-                head = "".join(f"<th>{esc(c)}</th>" for c in t["gap_cols"])
-                parts.append(f'<div class="block"><h3>{esc(t["gaps"])}</h3><div class="scroll"><table>'
-                             f'<thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div></div>')
-            else:
-                parts.append(f'<div class="block"><h3>{esc(t["gaps"])}</h3><p class="muted">{esc(t["gaps_none"])}</p></div>')
-            if s["invariants"]:
-                items = "".join(f'<li><span class="tag">{esc(i["id"])}</span> {inline(i["text"])}</li>' for i in s["invariants"])
-                parts.append(f'<div class="block"><h3>{esc(t["invariants"])}</h3><ul>{items}</ul></div>')
-            docs = "".join(doc_block(f"docs/context/{f}", txt, links, t) for f, txt in s["context"].items())
-            parts.append(f'<div class="block"><h3>{esc(t["docs"])}</h3>{docs}</div>')
+        return t["sum_intake"].format(docs=len(s["context"]), gaps=len(s["gaps"]),
+                                      blocking=sum(g["blocking"] for g in s["gaps"]), inv=len(s["invariants"]))
+    if sid == "product" and s["prd"]:
+        return t["sum_product"].format(metrics=c["metrics"], inn=c["in"], out=c["out"])
+    if sid == "stack":
+        apps = s["answers"].get("apps", "")
+        if not apps and (m := re.search(r"(?im)^apps?:\s*(.+)$", s["stack_doc"])):
+            apps = m.group(1)
+        apps = re.sub(r"[\[\]\"'*]", "", apps).strip().rstrip(".")
+        return t["sum_stack"].format(apps=apps) if apps else t["sum_none"]
+    if sid == "skeleton" and s["first_commit"]:
+        return t["sum_skeleton"].format(commit=s["first_commit"].split()[0])
+    if sid == "adopt":
+        return t["sum_adopt"].format(exc=c["exceptions"])
+    if sid == "backlog" and s["stories"]:
+        return t["sum_backlog"].format(total=len(s["stories"]), waves=len({x["wave"] for x in s["stories"]}),
+                                       epics=len({x["epic"] for x in s["stories"]}))
+    return t["sum_none"]
+
+
+def stage_body(s: dict, stage: dict, links: Links, t: dict) -> str:
+    sid, root, parts = stage["id"], s["root"], []
+    if sid == "intake" and s["context"]:
+        if s["gaps"]:
+            rows = "".join(
+                f'<tr><td><span class="tag">{esc(g["id"])}</span></td><td>{inline(g["missing"])}</td>'
+                f'<td>{esc(g["owner"])}</td><td>{inline(g["question"])}</td>'
+                f'<td>{esc(t["yes"] if g["blocking"] else t["no"])}</td></tr>' for g in s["gaps"])
+            head = "".join(f"<th>{esc(c)}</th>" for c in t["gap_cols"])
+            parts.append(block(esc(t["gaps"]), f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'))
+        else:
+            parts.append(block(esc(t["gaps"]), f'<p class="muted">{esc(t["gaps_none"])}</p>'))
+        if s["invariants"]:
+            items = "".join(f'<li><span class="tag">{esc(i["id"])}</span> {inline(i["text"])}</li>' for i in s["invariants"])
+            parts.append(block(esc(t["invariants"]), f'<div class="md bare"><ul>{items}</ul></div>'))
+        parts.append(block(esc(t["docs"]), "".join(doc_block(f"docs/context/{f}", x, links, t) for f, x in s["context"].items())))
     elif sid == "product" and s["prd"]:
         for key, title in (("metrics", "Success metrics"), ("scope", "Scope")):
             if body := md_section(s["prd"], title):
-                parts.append(f'<div class="block"><h3>{esc(t[key])}</h3><div class="md bare">{markdown(body, links, "docs/prd.md")}</div></div>')
-        parts.append(f'<div class="block"><h3>{esc(t["docs"])}</h3>{doc_block("docs/prd.md", s["prd"], links, t)}</div>')
-    elif sid == "stack":
+                parts.append(block(esc(t[key]), f'<div class="md bare">{markdown(body, links, "docs/prd.md")}</div>'))
+        parts.append(block(esc(t["docs"]), doc_block("docs/prd.md", s["prd"], links, t)))
+    elif sid == "stack" and stage["status"] != "todo":
         if s["stack_doc"]:
-            parts.append(f'<div class="block"><h3>{esc(t["apps"])}</h3><div class="md bare">{markdown(s["stack_doc"], links, "docs/stack.md")}</div></div>')
+            parts.append(block(esc(t["apps"]), f'<div class="md bare">{markdown(s["stack_doc"], links, "docs/stack.md")}</div>'))
         elif s["answers"].get("apps"):
-            parts.append(f'<div class="block"><h3>{esc(t["apps"])}</h3><p><code>{esc(s["answers"]["apps"])}</code></p></div>')
+            parts.append(block(esc(t["apps"]), f'<p><code>{esc(s["answers"]["apps"])}</code></p>'))
         if s["decisions"]:
-            docs = "".join(doc_block(d, read(root / d), links, t) for d in s["decisions"])
-            parts.append(f'<div class="block"><h3>{esc(t["decisions"])}</h3>{docs}</div>')
-        house = read(PLUGIN_ROOT / "template/.keelokit/harness/stack.md")
-        if house and stage["status"] != "todo":
-            parts.append(f'<div class="block"><h3>{esc(t["house_stack"])}</h3>'
-                         f'<details class="doc"><summary><span class="path">house stack · Keelokit</span></summary>'
-                         f'<div class="md">{markdown(house)}</div></details></div>')
+            parts.append(block(esc(t["decisions"]), "".join(doc_block(d, read(root / d), links, t) for d in s["decisions"])))
+        if house := read(PLUGIN_ROOT / "template/.keelokit/harness/stack.md"):
+            parts.append(block(esc(t["house_stack"]),
+                               f'<details class="doc"><summary><span class="path">Keelokit · stack.md</span>{CHEV}</summary>'
+                               f'<div class="md">{markdown(house)}</div></details>'))
     elif sid == "skeleton" and (s["answers"] or s["has_commits"]):
         facts = []
         if s["answers"]:
-            facts.append((t["generated"], f'Keelokit {esc(s["answers"].get("_commit", ""))}'))
+            facts.append((t["generated"], f'<code>{esc(s["answers"].get("_commit", ""))}</code>'))
             if apps := s["answers"].get("apps"):
                 facts.append((t["apps"], f"<code>{esc(apps)}</code>"))
         if s["first_commit"]:
@@ -858,62 +1053,97 @@ def stage_body(s: dict, stage: dict, links: Links, t: dict, lang: str) -> str:
         if s["github"]:
             repo = s["github"].removesuffix("/blob/main/")
             facts.append((t["remote"], f'<a href="{esc(repo)}" target="_blank" rel="noopener">{esc(repo.removeprefix("https://"))}</a>'))
-        dl = "".join(f"<dt>{esc(k)}</dt><dd>{v}</dd>" for k, v in facts)
-        parts.append(f'<div class="block"><h3>{esc(t["skeleton_facts"])}</h3><dl class="facts">{dl}</dl></div>')
-    elif sid == "adopt":
-        for rel in stage["outputs"]:
-            parts.append(doc_block(rel, read(root / rel), links, t))
+        parts.append(block(esc(t["skeleton_facts"]), '<dl class="facts">' + "".join(f"<dt>{esc(k)}</dt><dd>{v}</dd>" for k, v in facts) + "</dl>"))
+    elif sid == "adopt" and stage["outputs"]:
+        parts.append(block(esc(t["docs"]), "".join(doc_block(rel, read(root / rel), links, t) for rel in stage["outputs"])))
     elif sid == "backlog" and s["stories"]:
         parts.append(backlog_block(s, links, t))
-    if not parts:
-        parts.append(f'<p class="muted">{esc(t["not_yet"])}</p>')
-    return "\n".join(parts)
+    return "".join(parts) or f'<p class="muted">{esc(t["not_yet"])}</p>'
 
 
-def story_row(st: dict, s: dict, links: Links, t: dict) -> str:
+def story_row(st: dict, links: Links, t: dict) -> str:
     status = st["status"]
     label = {
         "done": t["story_done"], "ready": t["story_ready"],
         "blocked": t["story_blocked"].format(deps=", ".join(st.get("waits", []))),
         "gap": t["story_gap"].format(gaps=", ".join(st["gaps"])),
     }[status]
-    href = links.href(st["path"])
-    a = f'<a href="{esc(href)}" target="_blank" rel="noopener">{esc(t["open_github"] if links.github else t["open_file"])}</a>' if href else ""
+    link = ext_link(links.href(st["path"]), links, t)
     deps = (f'<p class="muted">{esc(t["depends"])}: ' + ", ".join(f"<code>{esc(d)}</code>" for d in st["depends_on"]) + "</p>") \
         if st["depends_on"] else ""
-    return (f'<details class="doc story"><summary><span class="sid">{esc(st["id"])}</span>'
-            f'<span class="stitle">{esc(st["title"])}</span><span class="chip">{esc(st["epic"])}</span>'
-            f'<span class="pill {status}">{esc(label)}</span></summary>'
-            f'<div class="md">{a and f"<p>{a}</p>"}{deps}{markdown(st["body"], links, st["path"])}</div></details>')
+    return (f'<details class="doc story" id="story-{esc(st["id"])}"><summary><span class="sid">{esc(st["id"])}</span>'
+            f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
+            f'<span class="pill {status}">{esc(label)}</span>{CHEV}</summary>'
+            f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{markdown(st["body"], links, st["path"])}</div></details>')
 
 
-def group(title: str, items: list[dict], s: dict, links: Links, t: dict, note: str = "") -> str:
+def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, note: str = "") -> str:
     done = sum(1 for x in items if x["status"] == "done")
     pct = round(100 * done / len(items)) if items else 0
-    return (f'<div class="group"><div class="group-head"><h3>{title}</h3>'
-            f'<span class="count">{done}/{len(items)}</span><span class="progress"><i style="width:{pct}%"></i></span></div>'
-            + (f'<p class="muted">{esc(note)}</p>' if note else "")
-            + '<div class="stories">' + "".join(story_row(x, s, links, t) for x in items) + "</div></div>")
+    return (f'<details class="group"{" open" if open_ else ""}><summary><span class="gname">{title}</span>'
+            f'<span class="count">{done}/{len(items)}</span><span class="bar"><i style="width:{pct}%"></i></span>{CHEV}</summary>'
+            f'<div class="group-body">{f"<p class=muted>{esc(note)}</p>" if note else ""}'
+            + "".join(story_row(x, links, t) for x in items) + "</div></details>")
 
 
 def backlog_block(s: dict, links: Links, t: dict) -> str:
     stories = s["stories"]
     done = sum(1 for x in stories if x["status"] == "done")
     waves = sorted({x["wave"] for x in stories})
-    by_wave = "".join(group(esc(t["wave"].format(n=w)), [x for x in stories if x["wave"] == w], s, links, t, t["wave_note"])
-                      for w in waves)
+    live = next((w for w in waves if any(x["wave"] == w and x["status"] != "done" for x in stories)), None)
+    by_wave = "".join(group(esc(t["wave"].format(n=w)), [x for x in stories if x["wave"] == w], links, t,
+                            w == live, t["wave_note"]) for w in waves)
+    first_epic = next((x["epic"] for x in stories if x["status"] != "done"), None)
     by_epic = "".join(
-        group(f'{esc(t["epic"])} <code>{esc(e)}</code>' + (f" · {inline(goal)}" if goal else ""),
-              [x for x in stories if x["epic"] == e], s, links, t)
+        group(f'<code>{esc(e)}</code> {inline(goal) if goal else ""}', [x for x in stories if x["epic"] == e], links, t,
+              e == first_epic)
         for e, goal in s["epics"].items() if any(x["epic"] == e for x in stories))
     epics_doc = doc_block("backlog/epics.md", read(s["root"] / "backlog/epics.md"), links, t) \
         if (s["root"] / "backlog/epics.md").exists() else ""
+    pct = round(100 * done / len(stories))
     return (f'<div class="toolbar"><strong>{esc(t["backlog_total"].format(done=done, total=len(stories)))}</strong>'
-            f'<span class="progress"><i style="width:{round(100 * done / len(stories))}%"></i></span>'
-            f'<button type="button" class="ghost" data-show="wave" aria-pressed="true">{esc(t["by_wave"])}</button>'
-            f'<button type="button" class="ghost" data-show="epic" aria-pressed="false">{esc(t["by_epic"])}</button></div>'
-            f'<div class="block" data-view="wave">{by_wave}</div><div class="block" data-view="epic" hidden>{by_epic}</div>'
-            f'{epics_doc}')
+            f'<span class="bar"><i style="width:{pct}%"></i></span>'
+            f'<span class="seg" role="group"><button type="button" data-show="wave" aria-pressed="true">{esc(t["by_wave"])}</button>'
+            f'<button type="button" data-show="epic" aria-pressed="false">{esc(t["by_epic"])}</button></span></div>'
+            f'<div data-view="wave">{by_wave}</div><div data-view="epic" hidden>{by_epic}</div>{epics_doc}')
+
+
+def modes_block(s: dict, t: dict) -> str:
+    ready = [x for x in s["stories"] if x["status"] == "ready"]
+    same = [x for x in ready if x["wave"] == ready[0]["wave"]] if ready else []
+    n = int(s["run"].get("parallel") or max(len(same), 2))
+    build = s["run"].get("build")
+    cards = []
+    for key, cmd in (("serial", f"/keelokit:build {ready[0]['id']}" if ready else "/keelokit:build"),
+                     ("parallel", f"/keelokit:build {n}")):
+        chosen = f'<span class="pill done">{esc(t["chosen"])}</span>' if build == key else ""
+        cards.append(f'<div class="mode{" chosen" if build == key else ""}"><h4>{esc(t[key])}{chosen}</h4>'
+                     f'<p>{esc(t[key + "_body"])}</p><p class="when">{esc(t[key + "_when"])}</p>'
+                     f'{term(cmd, t, light=True) if not build or build == key else ""}</div>')
+    inner = f'<p class="what">{esc(t["modes_intro"])}</p><div class="modes">{"".join(cards)}</div>'
+    if build:
+        inner = f'<details class="plain"><summary>{esc(t["what_means"])}{CHEV}</summary>{inner}</details>'
+    return block(esc(t["modes"]), inner)
+
+
+def decisions_card(s: dict, t: dict) -> str:
+    run = s["run"]
+    rows = []
+    mode = run.get("mode")
+    rows.append((t["run_mode"], t["run_auto"] if mode == "auto" else t["run_step"] if mode else "",
+                 t["run_auto_d"] if mode == "auto" else t["run_step_d"] if mode else ""))
+    build = run.get("build")
+    value = (t["build_parallel"].format(n=run.get("parallel", 2)) if build == "parallel"
+             else t["build_serial"] if build else "")
+    rows.append((t["build_mode"], value, ""))
+    html_rows = []
+    for k, v, d in rows:
+        shown = f'<span class="v">{LOCK}{esc(v)}</span>' if v else f'<span class="v unset">{esc(t["undecided"])}</span>'
+        html_rows.append(f'<div class="setting"><span class="k">{esc(k)}</span>{shown}'
+                         + (f'<span class="d">{esc(d)}</span>' if d else "") + "</div>")
+    when = f'<p class="muted">{esc(t["decided_on"].format(date=run["decided"]))}</p>' if run.get("decided") else ""
+    return (f'<section class="card" id="decisions"><p class="eyebrow">{esc(t["decisions_h"])}</p>'
+            f'{"".join(html_rows)}{when}<p class="muted">{esc(t["locked_note"])}</p></section>')
 
 
 def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) -> str:
@@ -921,82 +1151,84 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
     links = Links(s["github"], standalone, out_dir, s["root"])
     nxt, waiting = next_step(s, lang), waiting_on_user(s, lang)
     current = next((x for x in s["stages"] if x["status"] in ("review", "current")), None)
-    all_done = current is None
+    building = current is None and bool(s["stories"])
 
-    rail = []
+    def label(st):
+        return t["st_auto"] if st["auto"] else t["st_" + st["status"]]
+
+    steps = []
     for n, st in enumerate(s["stages"], 1):
-        rail.append(f'<li><a href="#stage-{st["id"]}"><span class="n">{n:02d}</span>'
-                    f'<span class="nm">{esc(stage_copy[st["id"]][0])}</span>'
-                    f'<span class="pill {st["status"]}">{esc(t["st_" + st["status"]])}</span></a></li>')
+        steps.append(f'<li class="{st["status"]}"><a href="#stage-{st["id"]}"><span class="n">{n:02d}</span>'
+                     f'<span class="nm">{esc(stage_copy[st["id"]][0])}</span><span class="st">{esc(label(st))}</span></a></li>')
     if s["stories"]:
-        n = len(s["stages"]) + 1
-        state = "current" if all_done else "todo"
-        rail.append(f'<li><a href="#stage-build"><span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'
-                    f'<span class="pill {state}">{esc(t["st_" + state])}</span></a></li>')
+        state = "current" if building else "todo"
+        steps.append(f'<li class="{state}"><a href="#stage-build"><span class="n">{len(s["stages"]) + 1:02d}</span>'
+                     f'<span class="nm">{esc(t["build_stage"])}</span><span class="st">{esc(t["st_" + state])}</span></a></li>')
 
     sections = []
     for n, st in enumerate(s["stages"], 1):
         name, what, checks = stage_copy[st["id"]]
-        when = f'<span class="when">{esc(t["approved_on"].format(date=st["date"]))}</span>' if st["date"] else ""
         check = ""
         if st["status"] == "review":
             items = "".join(f"<li>{esc(c)}</li>" for c in checks)
-            check = (f'<div class="check"><h3>{esc(t["review"])}</h3><ul>{items}</ul>'
+            check = (f'<div class="check"><p class="eyebrow">{esc(t["review"])}</p><ul>{items}</ul>'
                      f'<p>{esc(t["how_approve"])}</p></div>')
+        date = ""
+        if st["date"]:
+            date = f' · {esc((t["auto_on"] if st["auto"] else t["approved_on"]).format(date=st["date"]))}'
+        is_open = st is current
         sections.append(
-            f'<section class="stage {st["status"]}" id="stage-{st["id"]}"><div class="stage-head">'
-            f'<span class="n">{n:02d}</span><h2>{esc(name)}</h2><span class="pill {st["status"]}">{esc(t["st_" + st["status"]])}</span>{when}</div>'
-            f'<p class="what">{esc(what)}</p>{check}{stage_body(s, st, links, t, lang)}</section>')
+            f'<details class="stage {st["status"]}" id="stage-{st["id"]}"{" open" if is_open else ""}><summary>'
+            f'<span class="n">{n:02d}</span><span class="nm">{esc(name)}</span>'
+            f'<span class="pill {st["status"]}">{esc(label(st))}</span>{CHEV}'
+            f'<span class="sum">{esc(stage_summary(s, st, t))}{date}</span></summary>'
+            f'<div class="stage-body"><p class="what">{esc(what)}</p>{check}{stage_body(s, st, links, t)}</div></details>')
     if s["stories"]:
         n = len(s["stages"]) + 1
-        ready = [x for x in s["stories"] if x["status"] == "ready"]
-        cmd_serial = f"/keelokit:build {ready[0]['id']}" if ready else "/keelokit:build"
-        same = [x for x in ready if ready and x["wave"] == ready[0]["wave"]]
-        cmd_parallel = f"/keelokit:build {max(len(same), 2)}"
-        modes = (f'<div class="block"><h3>{esc(t["modes"])}</h3><p class="what">{esc(t["modes_intro"])}</p><div class="modes">'
-                 f'<div class="mode"><h3>{esc(t["serial"])}</h3><p>{esc(t["serial_body"])}</p><p class="when">{esc(t["serial_when"])}</p>{copy_cmd(cmd_serial, t)}</div>'
-                 f'<div class="mode"><h3>{esc(t["parallel"])}</h3><p>{esc(t["parallel_body"])}</p><p class="when">{esc(t["parallel_when"])}</p>{copy_cmd(cmd_parallel, t)}</div>'
-                 f'</div></div>')
-        health = ""
-        if s["doctor"]:
-            health = (f'<div class="block"><h3>{esc(t["health"])}</h3><div class="scroll"><pre class="out"><code>'
-                      f'{esc(chr(10).join(s["doctor"]))}</code></pre></div></div>')
-        state = "current" if all_done else "todo"
+        state = "current" if building else "todo"
+        done = sum(1 for x in s["stories"] if x["status"] == "done")
+        health = block(esc(t["health"]), f'<pre class="out"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
         sections.append(
-            f'<section class="stage {state}" id="stage-build"><div class="stage-head"><span class="n">{n:02d}</span>'
-            f'<h2>{esc(t["build_stage"])}</h2><span class="pill {state}">{esc(t["st_" + state])}</span></div>'
-            f'<p class="what">{esc(t["build_what"])}</p>{modes}{health}</section>')
+            f'<details class="stage {state}" id="stage-build"{" open" if building else ""}><summary>'
+            f'<span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'
+            f'<span class="pill {state}">{esc(t["st_" + state])}</span>{CHEV}'
+            f'<span class="sum">{esc(t["sum_build"].format(done=done, total=len(s["stories"])))}</span></summary>'
+            f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{modes_block(s, t)}{health}</div></details>')
 
-    where = stage_copy[current["id"]][0] if current else t["build_stage"]
-    where_pill = f'<span class="pill {current["status"]}">{esc(t["st_" + current["status"]])}</span>' if current else ""
+    where = stage_copy[current["id"]][0] if current else (t["build_stage"] if building else t["all_gates"])
+    where_pill = f'<span class="pill {current["status"]}">{esc(label(current))}</span>' if current else ""
     wait_html = ("<ul>" + "".join(f'<li><a href="#{esc(w["anchor"])}">{inline(w["text"])}</a></li>' for w in waiting) + "</ul>") \
-        if waiting else f'<p>{esc(t["nothing_waiting"])}</p>'
-    cmd = (copy_cmd(nxt["command"], t) + f'<span class="hint">{esc(t["copy_hint"])}</span>') if nxt["command"] else ""
+        if waiting else f'<p class="muted">{esc(t["nothing_waiting"])}</p>'
+    cmd = (term(nxt["command"], t) + f'<span class="hint">{esc(t["copy_hint"])}</span>') if nxt["command"] else ""
     gloss = "".join(f"<div><dt>{esc(k)}</dt><dd>{esc(v)}</dd></div>" for k, v in GLOSSARY[lang])
+    mode = s["run"].get("mode")
+    mode_chip = f'<span class="chip">{esc(t["run_auto"] if mode == "auto" else t["run_step"])}</span>' if mode else ""
     when = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     img = logo()
 
     page = f"""<title>{esc(t["title"].format(name=s["name"]))}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=JetBrains+Mono:wght@500;600&family=Manrope:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Fragment+Mono&family=Karla:wght@400;500;600&display=swap">
 <style>{CSS}</style>
-<header class="bar"><div class="bar-in">{f'<img src="{img}" alt="">' if img else ""}<span class="wordmark">Keelokit</span><span class="sep">/</span><span class="product">{esc(s["name"])}</span><span class="ver">v{esc(version)}</span></div></header>
-<main class="page">
-<section aria-labelledby="where">
-<p class="eyebrow">{esc(t["eyebrow"])}</p>
-<h1 id="where">{esc(s["name"])}</h1>
-<div class="now">
-<div class="panel"><p class="eyebrow">{esc(t["where"])}</p><div class="big"><a href="#{f'stage-{current["id"]}' if current else 'stage-build'}">{esc(where)}</a></div>{where_pill}</div>
-<div class="panel next"><p class="eyebrow">{esc(t["next"])}</p><div class="big"><a href="#{esc(nxt["anchor"])}">{esc(nxt["title"])}</a></div><p>{esc(nxt["detail"])}</p>{cmd}</div>
-<div class="panel wait"><p class="eyebrow">{esc(t["waiting"])}</p>{wait_html}</div>
-</div>
+<header class="wrap top"><span class="brand">{f'<img src="{img}" alt="">' if img else ""}Keelokit</span><span class="crumb">/</span><span class="product">{esc(s["name"])}</span><span class="chips">{mode_chip}<span class="chip">v{esc(version)}</span></span></header>
+<div class="sea"><div class="wrap">
+<section class="hero" aria-labelledby="where">
+<div><p class="eyebrow">{esc(t["eyebrow"])}</p><h1 id="where">{esc(s["name"])}</h1>
+<p class="lead">{esc(t["current_stage"])}: <em>{esc(where)}</em>{where_pill}</p></div>
+<div class="next"><p class="eyebrow">{esc(t["next"])}</p><a class="title" href="#{esc(nxt["anchor"])}">{esc(nxt["title"])}</a><p>{esc(nxt["detail"])}</p>{cmd}</div>
 </section>
-<nav aria-label="{esc(t["stages"])}"><ol class="rail">{"".join(rail)}</ol></nav>
-{"".join(sections)}
-<section class="stage" id="glossary"><h2>{esc(t["glossary"])}</h2><dl class="gloss">{gloss}</dl></section>
-<footer>{esc(t["footer"].format(when=when, version=version))}</footer>
+<nav aria-label="{esc(t["stages"])}"><ol class="steps">{"".join(steps)}</ol></nav>
+</div></div>
+<main class="wrap layout">
+<div class="col">{"".join(sections)}</div>
+<aside class="col side">
+<section class="card"><p class="eyebrow">{esc(t["waiting"])}</p>{wait_html}</section>
+{decisions_card(s, t)}
+<details class="card plain"><summary class="eyebrow">{esc(t["glossary"])}{CHEV}</summary><dl class="gloss">{gloss}</dl></details>
+</aside>
 </main>
+<footer class="wrap"><span>{esc(t["footer"].format(when=when, version=version))}</span></footer>
 <script>{JS}</script>
 """
     if standalone:
@@ -1029,6 +1261,7 @@ def main() -> int:
         view["done"] = sorted(s["done"])
         view["next"] = next_step(s, lang)
         view["waiting"] = waiting_on_user(s, lang)
+        view["summaries"] = {x["id"]: stage_summary(s, x, T[lang]) for x in s["stages"]}
         print(json.dumps(view, indent=2, ensure_ascii=False))
         return 0
 

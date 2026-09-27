@@ -14,6 +14,15 @@
   approval without showing what it covers, explain each term of art (PRD, stack, epic, story,
   development wave, worktree) the first time it comes up, and say "olas de desarrollo" in Spanish.
 - Kickstart writes `docs/stack.md` (the apps chosen and why) at the stack gate.
+- **Run decisions, taken once**: at the start, kickstart and adopt ask for the run mode —
+  *stage by stage* or *automatic* (goes on alone and stops only where a person is required: the
+  interview and blocking gaps, the PRD, a stack deviation, accounts, and what the execution
+  protocol reserves for the human) — and for how stories are built (one at a time or up to N in
+  parallel). Both live in `[run]` in `.keelokit/state.toml`; no skill asks again or changes them
+  on its own. Automatic approvals are recorded as `"<date> auto"` and shown on the dashboard.
+- The dashboard takes the look of keelokit.com (Cormorant Garamond, Karla, Fragment Mono; the
+  foam and sea palette) and opens only what matters now: the stage in progress, the wave with
+  work left; everything else collapses to a one-line summary.
 
 ## 0.5.0 — 2026-09-27 — bugs come in classes
 

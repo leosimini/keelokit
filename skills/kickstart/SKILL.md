@@ -24,9 +24,11 @@ Rules for the whole run:
   the dashboard, give its link and the section (`#stage-<gate>`), and summarise in the chat what
   the approval covers (the lists below). Then ask.
 - After each approval, record it in `.keelokit/state.toml` under `[gates]` as
-  `<gate> = "<YYYY-MM-DD>"`. That file holds human approvals and the dashboard's settings
-  (`[dashboard]`: `lang`, `url`), nothing else.
-- Between gates report progress in one line and continue; stop only at the approvals above.
+  `<gate> = "<YYYY-MM-DD>"` (`"<YYYY-MM-DD> auto"` when automatic mode approved it). That file
+  holds the approvals, the run decisions (`[run]`) and the dashboard's settings (`[dashboard]`:
+  `lang`, `url`), nothing else.
+- Between gates report progress in one line and continue; stop only at the approvals above —
+  and in automatic mode, only where a person is required (below).
 - Resume: if `.keelokit/state.toml` exists, continue from the first gate without a date, and
   open the dashboard first so the user sees where the run stopped.
 
@@ -36,9 +38,40 @@ Ask for the product's name and one sentence of what it is, and propose the folde
 `~/Development/<slug>`. Create it (empty) once the user agrees. If it exists and is not empty,
 ask before using it.
 
-Create `.keelokit/state.toml` with `[dashboard] lang = "<the user's language code>"` and open the
-dashboard: it shows the five stages ahead, so the user knows the whole road before the first
-question.
+Create `.keelokit/state.toml` with `[dashboard] lang = "<the user's language code>"`.
+
+Then settle the two run decisions — **once per project**, with the multiple-choice tool and a
+recommendation, explained in plain words:
+
+1. **Run mode.** *Stage by stage* (recommended for a first project): Keelokit stops at the end of
+   every stage for the user to review and approve it, and between stories. *Automatic*: it goes
+   on alone and stops only where a person is required — the questions only the user can answer
+   (the interview, blocking gaps), approving the PRD's scope and metrics or a stack deviation,
+   accounts and credentials, and everything `.keelokit/harness/execution-protocol.md` reserves
+   for the human (production, money, legal, deleting data, paid services). Every automatic
+   approval is recorded and stays reviewable on the dashboard.
+2. **How stories are built.** *One at a time* or *in parallel, up to N at once* (2–4); see Close
+   for how to explain it.
+
+Record them:
+```toml
+[run]
+mode = "step"        # or "auto"
+build = "serial"     # or "parallel"
+parallel = 3         # only with build = "parallel"
+decided = "<YYYY-MM-DD>"
+```
+These are fixed: no skill asks them again or changes them on its own. Only an explicit request
+from the user changes one (update the value and `decided`, and say so in one line).
+
+Open the dashboard: it shows the stages ahead and these decisions, so the user knows the whole
+road before the first question.
+
+**Automatic mode** approves, by itself, the gates no rule reserves for a person — context (only
+with no blocking gap open), stack (only with no deviation from the house stack), skeleton and
+backlog — records them as `"<date> auto"`, refreshes the dashboard, reports in one line and goes
+on. The PRD is always the user's approval. After the backlog it continues straight into
+`/keelokit:build` with the recorded build mode.
 
 ## 1. Intake
 
@@ -108,8 +141,9 @@ waiting for a gap. Ask for approval of the epics and the wave order.
 Report in five lines: what exists, `pnpm verify` status, open gaps by owner, the first ready
 story, and what needs the user (accounts, approvals). Refresh the dashboard.
 
-Then offer to start building, and explain the choice in plain words (the dashboard's "How to
-build" section says the same):
+Then, in stage-by-stage mode, offer to start building with the recorded build mode; in
+automatic mode, start. When explaining the build modes (at step 0), use plain words (the
+dashboard's "How to build" section says the same):
 - **One at a time** (`/keelokit:build`): one story is built, tested and lands before the next.
   Slower; the user follows every step and Claude usage is spread out. Recommend it for the first
   wave, for sensitive stories and for a first project with agents.

@@ -1,70 +1,75 @@
 # Keelokit pages — design
 
-Every page Keelokit shows a person (today, the project dashboard) looks the same, so people know at
-a glance that it comes from the plugin. The spec lives in code: `scripts/dashboard.py` holds the
-tokens, the CSS and the components below. A new page reuses that CSS and header, never a
-hand-written style, and any change to the look is made there and here together.
+Every page Keelokit shows a person (today, the project dashboard) carries the look of
+[keelokit.com](https://keelokit.com), so it reads as part of the product. The spec lives in code:
+`scripts/dashboard.py` holds the tokens, the CSS and the components below. A new page reuses that
+CSS and header, never a hand-written style, and any change to the look is made there and here
+together.
 
 ## Identity
 
-- **Header bar** on every page: the Keelokit icon (`.claude-plugin/icon.svg`, 28 px, radius 7),
-  the wordmark `Keelokit`, a `/`, the product's name, and the plugin version at the right. It is
-  sticky (`top: env(safe-area-inset-top, 0px)`).
-- **Title** (`<title>`): `Tablero de <product>` / `<product> dashboard`. Artifact icon: `dashboard`.
-- The brand colours come from the icon: keel blue (sky), navy (sea), foil orange. Board yellow
-  stays in the icon only.
+- **Top bar** on the page ground: the Keelokit icon (`.claude-plugin/icon.svg`, 30 px, radius 8,
+  soft blue shadow), the wordmark `Keelokit`, `/`, the product's name; at the right, chips for the
+  run mode and the plugin version.
+- **Sea band** under it, dark in both themes as on the site: the sea gradient
+  (`#1A64B0 → #114D96 → #0B3574 → #07214E → #040F28`) with foam text. It holds the product name,
+  the current stage, the next step and the stage stepper.
+- **Title**: `Tablero de <product>` / `<product> dashboard`. Artifact icon: `dashboard`.
 
-## Tokens
+## Colour
 
-| Token | Light | Dark | Use |
-|---|---|---|---|
-| `--bg` | `#F3F6FB` | `#061127` | page ground (blue-biased, never pure grey) |
-| `--surface` | `#FFFFFF` | `#0C1D3D` | panels, stages, header |
-| `--sunk` | `#E9EFF8` | `#0A1833` | code, progress track, neutral chips |
-| `--ink` | `#0B1B3A` | `#E4ECF9` | text |
-| `--muted` | `#4F5F7C` | `#9DB0CD` | secondary text, labels |
-| `--line` | `#D5DFEC` | `#1C3260` | borders, table rules |
-| `--accent` | `#0B4CC4` | `#63C0FB` | links, buttons, "in progress", "ready" |
-| `--foil` | `#C85A12` | `#F7963A` | **waiting on the human**: a stage to review, a MUST |
-| `--good` | `#1D7F52` | `#52C992` | approved, done |
-| `--bad` | `#B3322A` | `#F2786D` | blocked |
+The site's palette, unchanged: foam `#F6F1E8`, ink `#172126`, ink-2 `#4A5552`, line `#E3DCCF`,
+sea `#1A64B0 #114D96 #0B3574 #07214E`, abyss `#040F28`, board `#FBC82A`, foil `#EE7B24`,
+reef `#8FE0C4`.
 
-Each colour has a `-soft` fill for pills and callouts. Dark values apply under
-`prefers-color-scheme: dark` (unless `data-theme="light"`) and under `data-theme="dark"`.
+| Role | Light | Dark (abyss ground) |
+|---|---|---|
+| Ground / paper / sunk | foam / `#FFFDF8` / `#EFE8DA` | abyss / `#081834` / `#0C2147` |
+| Text / secondary / tertiary | ink / ink-2 / `#747B76` | foam at 100 / 74 / 52 % |
+| Accent (links, ready) | sea `#114D96` | `#8FC0F2` |
+| Done | `#1C7559` on reef tint | reef |
+| Waits for you (review, a MUST) | `#AD540F` on foil tint | `#FFAE6B` |
+| In progress | `#7A5C00` on board tint | board |
+| Blocked | `#AE3F2D` | `#FF9A8A` |
+
+Board yellow marks what you can act on: the copy button, the command prompt, the stepper dot of
+the stage in progress. Status colour appears only in pills and stepper dots.
 
 ## Type
 
-- Display: **Bricolage Grotesque** 600/700 — the product name, stage titles, big panel lines.
-- Body: **Manrope** 400–700, 15 px / 1.55.
-- Data: **JetBrains Mono** 500/600 — ids (`AUTH-001`, `GAP-003`, `INV-002`), commands, paths,
-  stage numbers.
-- Fallbacks are declared for all three; the page must read well offline with system fonts.
+- Display: **Cormorant Garamond** 500/600 (italic for the current stage) — the product name,
+  stage names, wave and epic names, the next step.
+- Text: **Karla** 400–600, 16 px / 1.6. Eyebrows: 12 px, 600, uppercase, letter-spacing .16em.
+- Data: **Fragment Mono** — ids (`AUTH-001`, `GAP-003`, `INV-002`), commands, paths, numbers.
+- Fallbacks (Georgia, system sans, system mono) keep the page readable offline.
+
+## Layout and behaviour
+
+- 1160 px wrap, 16 px gutter. Main column of stages + a 330 px sticky side column (what waits for
+  you, project decisions, glossary); on narrow screens the side column comes first, then stages.
+- **Only what matters now is open.** Each stage is a collapsible card whose closed header still
+  says enough: number, name, status, a one-line summary (e.g. "5 stories · 3 waves · 3 epics")
+  and the approval date. The stage in progress or waiting for review opens by default; so does
+  Build once every gate is approved. Inside the backlog, only the wave (or epic) with work left
+  opens. Documents and stories stay closed until asked for. Links to a section open it.
+- The stepper in the sea band mirrors the stages, like the site's numbered steps.
 
 ## Components
 
-| Component | What it says | Rule |
-|---|---|---|
-| **Now** panels | where we are · next step · waiting on you | always first; the next step carries a copyable command when one exists |
-| **Stage rail** | every stage, in order, with its status | numbered because the order is the process |
-| **Stage section** | name, status pill, approval date, what the stage is in plain words, its outputs | one per gate, anchored `#stage-<gate>` |
-| **Review callout** (foil) | what to check before approving, and how to approve | only on the stage waiting for approval |
-| **Status pill** | Approved · Ready for review · In progress · Not started; Done · Ready to build · Waits for X | the only place status colour appears |
-| **Document** | a repo file rendered inline, collapsed, with "Open on GitHub" when the repo has a GitHub remote | the page never depends on links working |
-| **Backlog** | stories by development wave or by epic, with progress per group | toggle remembered per viewer (browser storage) |
-| **Build modes** | one at a time vs in parallel, what each costs the user, a command for each | shown once stories exist |
-| **Glossary** | the terms of art the page uses | every page that uses one |
+| Component | What it says |
+|---|---|
+| Next step | the one action, and its command in a terminal line with a copy button |
+| Stepper | every stage with its status (dot: reef done, foil waiting for you, board in progress, hollow not started) |
+| Stage card | what the stage is in plain words, what to check before approving (foil callout, only while waiting), its content and documents |
+| Waits for you | approvals, blocking questions, harness errors, undecided run settings |
+| Project decisions | run mode and build mode, with a lock: fixed once chosen |
+| Backlog | stories by development wave or by epic (segmented control), progress per group |
+| Build modes | one at a time vs in parallel, what each costs; the chosen one marked |
+| Glossary | the terms of art the page uses |
 
 ## Copy
 
-- The user's language (`[dashboard] lang` in `.keelokit/state.toml`); code, paths and ids stay
-  as they are.
-- Written for a founder who has never run a software project: every term of art (PRD, stack,
-  epic, story, development wave, worktree, invariant, gap) is explained in plain words where it
-  first appears and in the glossary.
-- Spanish says **olas de desarrollo**, never "waves".
-- A control says what it does ("Copy"); status says what is true ("Waits for AGENDA-002").
-
-## Layout
-
-One column up to 1080 px, 16 px side gutter, grids that wrap to one column at phone width.
-Tables and code scroll inside their own box; the page never scrolls sideways.
+- The user's language (`[dashboard] lang`); code, paths and ids stay as they are.
+- Written for a founder who has never run a software project: each term of art is explained in
+  plain words where it first appears and in the glossary. Spanish says **olas de desarrollo**.
+- A control says what it does ("Copy"); a status says what is true ("Waits for AGENDA-002").

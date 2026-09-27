@@ -116,6 +116,32 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(s["stages"][1]["status"], "review")
         self.assertEqual(s["next"]["command"], None)
 
+    def test_run_decisions_and_automatic_approvals(self):
+        self.gates("intake")
+        self.context()
+        self.assertIn({"text": "Choose the run mode and how stories are built", "anchor": "decisions"}, self.state()["waiting"])
+        self.write(".keelokit/state.toml", """\
+            [gates]
+            intake = "2026-09-20 auto"
+
+            [run]
+            mode = "auto"
+            build = "parallel"
+            parallel = 3
+            decided = "2026-09-20"
+            """)
+        self.write("docs/prd.md", "# Shop — PRD\n")
+        s = self.state()
+        self.assertEqual(s["run"]["mode"], "auto")
+        self.assertEqual((s["stages"][0]["date"], s["stages"][0]["auto"]), ("2026-09-20", True))
+        self.assertNotIn("decisions", [w["anchor"] for w in s["waiting"]])
+        html = self.page()
+        self.assertIn("Approved automatically on 2026-09-20", html)
+        self.assertIn("In parallel · up to 3 at once", html)
+        # Only the stage waiting for the user is open.
+        self.assertIn('<details class="stage review" id="stage-product" open>', html)
+        self.assertIn('<details class="stage done" id="stage-intake">', html)
+
     def test_page_for_the_artifact_tool_escapes_documents(self):
         self.gates("intake", lang="es")
         self.context()

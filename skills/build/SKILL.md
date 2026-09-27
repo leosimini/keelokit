@@ -35,11 +35,18 @@ overlap), one worktree each (`git worktree add ../<repo>-<ID> -b <id-lower>`), s
 story in parallel. Give each worktree its own ports:
 `E2E_PORT=41<n>0 E2E_MOBILE_PORT=81<n>0 E2E_API_PORT=31<n>0` (n = 1..N).
 
-When the user hasn't said how many stories to build and more than one is ready in the wave, ask
-before starting, in plain words: one at a time (slower, follow every step, Claude usage spread
-out) or N in parallel (faster, more Claude usage at once, several results to review together;
-safe because a wave's stories never touch the same files). Point to the dashboard's "How to
-build" section; recommend one at a time for the first wave.
+How many at once comes from `[run]` in `.keelokit/state.toml`: `build = "serial"` → one;
+`build = "parallel"` → up to `parallel` ready stories of the wave. A count the user gives now
+wins for this run only. Never ask again when `[run]` is set; if it isn't, ask once, in plain words
+— one at a time (slower, follow every step, Claude usage spread out) or N in parallel (faster,
+more Claude usage at once, several results to review together; safe because a wave's stories
+never touch the same files) — recommend one at a time, and record the answer in `[run]`.
+
+`mode = "auto"` in `[run]`: after a story lands, pick the next ready ones and go on, wave after
+wave, until nothing is ready. Stop only for what needs a person: a product rule the story doesn't
+define or a new invariant (steps 2), a third failed review round (step 5), and anything the
+execution protocol reserves for the human. `mode = "step"`: report after each story (or each
+batch) and wait for the user.
 
 ## 2. Contract
 

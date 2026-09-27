@@ -22,6 +22,10 @@ what it covers: the link to its section and, in the chat, the list itself (each 
 reason and expiry; the waves and their stories). Explain terms of art in one plain sentence the
 first time they come up.
 
+Settle the run decisions once, as kickstart's step 0 does, and record them in `[run]`. In
+automatic mode the intake and backlog gates can be approved automatically (`"<date> auto"`), but
+the adopt gate never is: every exception needs the user's own yes.
+
 ## 1. Survey (read-only)
 
 Read, don't run: README, manifests (`package.json`, workspace files, lockfile type), CI

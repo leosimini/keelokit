@@ -52,5 +52,9 @@ After every gate is prepared (before asking for approval), after each approval, 
 lands, after a wave, and when a session resumes a half-finished process. Publishing is a refresh:
 it doesn't need the user's permission once the first page exists.
 
+The page also shows the project's run decisions (`[run]` in `.keelokit/state.toml`: run mode and
+build mode) as fixed settings, and opens only the stage in progress; everything else collapses to
+a one-line summary.
+
 The next step on the page is a command to copy into the chat (`/keelokit:build AGENDA-002`,
 `/keelokit:kickstart`); the page itself can't start work in the session.
