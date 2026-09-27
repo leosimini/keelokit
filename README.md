@@ -94,7 +94,7 @@ with credentials.
 [`docs/design.md`](docs/design.md) explains the pieces: the plugin, the template, the house rules,
 and what `doctor` can and can't see. Keelokit tests itself: `python3 -m unittest discover -s tests`
 for the guard and doctor, and `scripts/test-template.sh` to generate projects and run their full
-checks.
+checks. Releases follow [`docs/releasing.md`](docs/releasing.md).
 
 ## Ideas I learned from
 

@@ -1,0 +1,48 @@
+# Tags each release. A push to `release` gets the tag `v<version>` from .claude-plugin/plugin.json:
+# kickstart, adopt and upgrade fetch the template at that tag, so a version without its tag breaks
+# them. Tags are made here, never by hand. The process is in docs/releasing.md.
+name: Release
+
+on:
+  push:
+    branches: [release]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Tag v<version>
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # main and the existing tags
+      - name: Check the release and tag it
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')
+          tag="v$version"
+          git merge-base --is-ancestor HEAD origin/main \
+            || { echo "::error::release must point at a commit of main"; exit 1; }
+          heading=$(grep -m1 "^## $version — " CHANGELOG.md) \
+            || { echo "::error::CHANGELOG.md has no '## $version — <date>' entry"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ] \
+              || { echo "::error::$tag is already on another commit; a release raises the version (scripts/release.sh)"; exit 1; }
+            echo "$tag is already on this commit"
+            exit 0
+          fi
+          rest=${heading#"## $version — "}
+          title=""
+          case "$rest" in *" — "*) title=" — ${rest#* — }" ;; esac
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Keelokit $version$title"
+          git push origin "$tag"
+          echo "Tagged $tag: Keelokit $version$title"

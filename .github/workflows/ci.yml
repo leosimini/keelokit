@@ -38,6 +38,10 @@ jobs:
           for path in [*glob.glob(".claude-plugin/*.json"), "hooks/hooks.json"]:
               json.load(open(path))
               print("ok", path)
+          # The version only changes in a release commit, which also dates its CHANGELOG entry.
+          version = json.load(open(".claude-plugin/plugin.json"))["version"]
+          assert f"\n## {version} — " in open("CHANGELOG.md").read(), f"CHANGELOG.md has no entry for {version}"
+          print("ok CHANGELOG.md", version)
           EOF
 
   template:
