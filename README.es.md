@@ -40,6 +40,27 @@ código no es el que dice que está terminado.
 | `/keelokit:upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
 | `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
 
+## Seguir el avance
+
+No hace falta leer logs de agentes para saber dónde está todo. `/keelokit:dashboard` arma una
+página desde el repo, en tu idioma y con el look de [keelokit.com](https://keelokit.com):
+
+- **Cada etapa con su estado.** Solo está abierto lo que importa ahora: la etapa que espera tu
+  revisión muestra qué mirar (el alcance y las métricas del PRD, el stack, las historias por ola
+  de desarrollo y por épica) con los documentos a la vista; el resto se pliega en una línea.
+- **Lo que te espera y las decisiones tomadas:** greenfield o brownfield, cómo trabaja Keelokit,
+  cómo se construyen las historias, las aplicaciones y las decisiones registradas.
+- **Bug bashes e historial:** qué encontró cada cacería de errores, qué se corrigió, qué control
+  dejó y qué sumó al backlog; y cada historia, bug bash y aprobación, en orden.
+- **Pedile a Claude:** cada acción de la página (aprobar, pedir cambios, construir una historia o
+  una ola, hacer un bug bash, sumar una funcionalidad) llena una caja que podés enviar a la
+  sesión de Claude que mira el tablero, o copiar en cualquier chat.
+
+Al empezar elegís, una sola vez, cómo trabaja Keelokit: **por etapas** (se detiene para que
+revises cada una) o **automático** (avanza solo y se detiene únicamente donde hace falta una
+persona: preguntas que solo vos podés responder, el PRD, cuentas, producción, dinero, temas
+legales), y si las historias se construyen de a una o varias en paralelo.
+
 ## El stack que genera
 
 pnpm workspaces · TypeScript strict · NestJS + Prisma + PostgreSQL · Vite + React · Expo · Astro ·
@@ -88,6 +109,9 @@ código) queda en tu repo. El tráfico de red es el que ya hacen tus herramienta
 - **Registros de paquetes y Docker Hub:** para instalar las dependencias e imágenes del proyecto generado.
 - **Fly.io:** solo el CI del proyecto generado hace deploy ahí, con un secret `FLY_API_TOKEN`
   que creás vos en la configuración del repo. El plugin nunca lo lee.
+- **claude.ai:** donde Claude puede publicar páginas, el tablero se publica como Artifact
+  privado en tu cuenta, con los documentos de tu producto; sus tipografías se cargan de Google
+  Fonts. En una terminal es un archivo HTML local.
 
 La entrevista no registra datos personales de personas reales: las cuentas se nombran por rol,
 nunca con credenciales.

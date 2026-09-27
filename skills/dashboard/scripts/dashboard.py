@@ -931,9 +931,9 @@ code{font-family:var(--mono);font-size:.86em;background:var(--paper-2);padding:.
 .crumb{color:var(--ink-3)}
 .top .product{color:var(--ink-2);font-weight:500;overflow-wrap:anywhere}
 .top .chips{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.theme{display:inline-flex;align-items:center;gap:7px;font:600 12px/1 var(--body);color:var(--ink);background:var(--paper);border:1px solid var(--line-2);border-radius:999px;padding:6px 11px;cursor:pointer}
+.theme{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;color:var(--ink);background:var(--paper);border:1px solid var(--line-2);border-radius:50%;padding:0;cursor:pointer}
 .theme:hover{border-color:var(--accent)}
-.theme svg{width:14px;height:14px}
+.theme svg{width:16px;height:16px}
 .chip{font:12px/1 var(--mono);color:var(--ink-2);border:1px solid var(--line-2);padding:6px 10px;border-radius:999px;white-space:nowrap}
 
 /* the sea band: dark in both themes, like the site's sections */
@@ -1134,7 +1134,7 @@ JS = """
     return window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}
   function paintTheme(){if(!themeBtn)return;var dark=effective()==='dark';
     themeBtn.setAttribute('aria-pressed',String(dark));
-    themeBtn.querySelector('.lbl').textContent=themeBtn.getAttribute(dark?'data-light':'data-dark');
+    var name=themeBtn.getAttribute(dark?'data-light':'data-dark');themeBtn.setAttribute('aria-label',name);themeBtn.title=name;
     themeBtn.querySelector('.moon').style.display=dark?'none':'';themeBtn.querySelector('.sun').style.display=dark?'':'none'}
   try{var saved=localStorage.getItem('keelokit-theme');if(saved==='dark'||saved==='light')root.setAttribute('data-theme',saved)}catch(e){}
   if(themeBtn){themeBtn.addEventListener('click',function(){var next=effective()==='dark'?'light':'dark';
@@ -1569,7 +1569,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
                f'<button type="button" class="act" id="ask-copy">{esc(t["ask_copy"])}</button></div>'
                f'<p class="status" id="ask-status" aria-live="polite"></p></section>')
     theme = (f'<button type="button" class="theme" id="theme" aria-pressed="false" data-dark="{esc(t["theme_dark"])}" '
-             f'data-light="{esc(t["theme_light"])}">{MOON}{SUN}<span class="lbl">{esc(t["theme_dark"])}</span></button>')
+             f'data-light="{esc(t["theme_light"])}" aria-label="{esc(t["theme_dark"])}" title="{esc(t["theme_dark"])}">{MOON}{SUN}</button>')
     when = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     img = logo()
 

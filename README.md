@@ -38,6 +38,27 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | `/keelokit:upgrade` | Bring a project to a newer template without touching its product code |
 | `/keelokit` | Where the project is, what's next, what's waiting for you |
 
+## Following along
+
+You don't need to read agent logs to know where things are. `/keelokit:dashboard` builds one
+page from the repo, in your language, with the look of [keelokit.com](https://keelokit.com):
+
+- **Every stage with its status.** Only what matters now is open: the stage waiting for your
+  review shows what to check (the PRD's scope and metrics, the stack, the stories by development
+  wave and by epic) with the documents inline; the rest folds into one-line summaries.
+- **What waits for you and the decisions taken:** greenfield or brownfield, how Keelokit runs,
+  how stories are built, the apps, the recorded decisions.
+- **Bug bashes and history:** what each bug hunt found, what got fixed, the check it left, what
+  it added to the backlog; and every story, bug bash and approval in order.
+- **Ask Claude:** every action on the page (approve, ask for changes, build a story or a wave,
+  run a bug bash, add a feature) fills a box you can send to the Claude session watching the
+  page, or copy into any chat.
+
+At the start you choose, once, how Keelokit works: **stage by stage** (it stops for you to
+review each stage) or **automatic** (it goes on alone and stops only where a person is required:
+questions only you can answer, the PRD, accounts, production, money, legal), and whether stories
+are built one at a time or several in parallel.
+
 ## The stack it generates
 
 pnpm workspaces · TypeScript strict · NestJS + Prisma + PostgreSQL · Vite + React · Expo ·
@@ -86,6 +107,9 @@ code) stays in your repo. The network traffic is the one your usual tools alread
 - **Package registries and Docker Hub:** installing the generated project's dependencies and images.
 - **Fly.io:** only the generated project's CI deploys there, with a `FLY_API_TOKEN` secret you
   create in your repo's settings. The plugin never reads it.
+- **claude.ai:** where Claude can publish pages, the dashboard is published as a private
+  Artifact in your account, with your product documents in it; its fonts load from Google Fonts.
+  In a terminal it is a local HTML file.
 
 The interview doesn't record personal data of real people: accounts are named by role, never
 with credentials.

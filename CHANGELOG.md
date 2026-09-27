@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Unreleased — the dashboard
 
 - **Dashboard** (`/keelokit:dashboard`): one branded page, in the user's language, with every
   stage of kickstart or adopt, its status and approval date, and — at the stage waiting for
@@ -27,7 +27,7 @@
 - **Ask Claude** on the dashboard: action buttons (approve, ask for changes, answer a gap, build
   a story or a wave, run a bug bash, add a feature…) fill a box that can be sent to the Claude
   session watching the page, or copied into any chat.
-- A light/dark theme toggle in the dashboard's top bar (remembered per viewer), and the page
+- A light/dark theme button (an icon) in the dashboard's top bar (remembered per viewer), and the page
   follows `[dashboard] lang` (`es`, `es-AR`, `Español`… all work) and marks its language.
 - The dashboard takes the look of keelokit.com (Cormorant Garamond, Karla, Fragment Mono; the
   foam and sea palette) and opens only what matters now: the stage in progress, the wave with
