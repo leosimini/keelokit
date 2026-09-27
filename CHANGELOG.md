@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 — 2026-09-27
+
+- Plugin icon at `.claude-plugin/icon.svg` for the Claude plugin directory.
+- `references/dimensions.md`: the API bug-bash lens no longer names `curl`, which the directory's
+  lint read as a download-and-execute pattern.
+
 ## 0.4.1 — 2026-09-26
 
 - E2E browsers install one app at a time, in generated projects' CI and in Keelokit's own:

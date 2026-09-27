@@ -8,7 +8,7 @@ front matter), `/keelokit:build` turns each into lines of the story's done-contr
 | Dimension | The story's contract must include | Automatic (every commit / CI) | Bug-bash lens |
 |---|---|---|---|
 | `data` | Invariants from `domain.md` as DB constraints or tests; migration; seed personas updated | Migration ↔ schema diff clean; integration tests on real Postgres | Volume seed; `EXPLAIN` hot queries; integrity after failures |
-| `api` | Every endpoint × role (incl. a stranger); validation and error bodies | Integration tests; AUTHZ-1 matrix test | curl as owner / member / stranger / anonymous |
+| `api` | Every endpoint × role (incl. a stranger); validation and error bodies | Integration tests; AUTHZ-1 matrix test | Call each endpoint as owner / member / stranger / anonymous |
 | `contract` | Response schema in `packages/shared`; clients parse it | CONTRACT-1 contract tests; typecheck across packages | Old client vs new API; missing/extra fields |
 | `logic` | Invariants, state transitions (allowed and forbidden), calculations with rounding, dates and time zones | Unit tests named after the invariant/scenario | Walk each rule in `domain.md` against the running app |
 | `auth` | Session lifecycle: login, refresh, expiry, logout clears ALL user state (cache, tokens, push), account switch | Tests for logout/switch; AUTHZ-1 | Shared device: log out A, log in B — does B see anything of A? |
