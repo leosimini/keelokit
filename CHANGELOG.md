@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — ship it
+## 0.7.0 — 2026-09-27 — ship it
 
 - **The project's profile** (`.keelokit/profile.toml`): what the project is (`kind`: web product,
   mobile app, API service, library, CLI, plugin, static site) and its `traits` (UI, web, mobile,
