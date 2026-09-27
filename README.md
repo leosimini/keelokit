@@ -74,6 +74,21 @@ have, run `/keelokit:adopt`. To generate from your own fork, set `KEELOKIT_TEMPL
   [`docs/design.md`](docs/design.md#bugs-come-in-classes).
 - Skills understand requests in English and Spanish.
 
+## Data and network
+
+Keelokit has no server of its own and collects nothing. What it writes (context, PRD, backlog,
+code) stays in your repo. The network traffic is the one your usual tools already make:
+
+- **GitHub:** `kickstart`, `adopt` and `upgrade` fetch the template with Copier
+  (`gh:leosimini/keelokit`, or your fork via `KEELOKIT_TEMPLATE`). `kickstart` asks before
+  creating a private repo with `gh repo create --push`, which pushes your code to your account.
+- **Package registries and Docker Hub:** installing the generated project's dependencies and images.
+- **Fly.io:** only the generated project's CI deploys there, with a `FLY_API_TOKEN` secret you
+  create in your repo's settings. The plugin never reads it.
+
+The interview doesn't record personal data of real people: accounts are named by role, never
+with credentials.
+
 ## How it's built
 
 [`docs/design.md`](docs/design.md) explains the pieces: the plugin, the template, the house rules,
