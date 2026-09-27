@@ -58,7 +58,7 @@ jobs:
           - { name: all apps + PostGIS, apps: '["api","web","mobile","site"]', flags: --postgis }
           - { name: adopt, flags: --adopt }
           # An upgrade from the previous public tag, with the CHANGELOG's manual steps.
-          - { name: update from v0.4.1, apps: '["api","web","mobile"]', flags: --update-from v0.4.1 }
+          - { name: update from v0.6.0, apps: '["api","web","mobile"]', flags: --update-from v0.6.0 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
