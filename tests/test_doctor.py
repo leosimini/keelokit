@@ -158,5 +158,118 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("signup.ts", out)
 
 
+    def integrity_story(self, sid: str, wave: int, touches: str, dims: str, invariants: str = "") -> None:
+        text = STORY.format(id=sid, wave=wave, touches=touches).replace('dimensions = ["api"]', f"dimensions = [{dims}]")
+        if invariants:
+            text = text.replace("+++\n```", f"invariants = [{invariants}]\n+++\n```", 1)
+        self.write(f"backlog/stories/{sid}-x.md", text)
+
+    def test_invariants_need_a_class_and_a_test_once_their_story_is_done(self):
+        self.rules()
+        self.write("docs/context/domain.md", """\
+            # Domain
+            - [INV-001] [MUST] Charged equals refunded plus held plus fee — class: conservation (S1)
+            - [INV-002] [MUST] A reminder is sent at most once — class: someday (S1)
+            - [INV-003] [MUST] A slot never takes more bookings than its capacity (S1)
+            <!-- - [INV-009] commented out — class: nope -->
+            """)
+        self.integrity_story("PAY-001", 1, '"apps/api/src/pay/"', '"api", "integrity"', '"INV-001", "INV-404"')
+        self.integrity_story("PAY-002", 1, '"apps/api/src/other/"', '"api", "integrity"')
+        self.integrity_story("PAY-003", 2, '"apps/api/src/third/"', '"api"', '"INV-002"')
+        out = self.doctor()
+        self.assertIn("INV-002 needs 'class:", out)
+        self.assertIn("INV-003 needs 'class:", out)
+        self.assertNotIn("INV-009", out)
+        self.assertIn("PAY-001: invariants INV-404 are not defined", out)
+        self.assertIn("PAY-002: declares 'integrity' — list the invariants", out)
+        self.assertIn("PAY-003: lists invariants — declare the 'integrity' dimension", out)
+        self.assertIn("warn  invariant INV-003", out)
+
+        self.write("docs/context/domain.md", "- [INV-001] [MUST] Conserved — class: conservation (S1)\n")
+        for sid in ("PAY-002", "PAY-003"):
+            (self.root / f"backlog/stories/{sid}-x.md").unlink()
+        self.integrity_story("PAY-001", 1, '"apps/api/src/pay/"', '"api", "integrity"', '"INV-001"')
+        self.write("apps/api/pay.test.ts", "it('PAY-001.S1 ok', () => {})\nit('PAY-001.S10 ok', () => {})\nit.skip('INV-001 conserved', () => {})\n")
+        self.commit("feat: pay\n\nStory: PAY-001")
+        self.assertIn("no active test title cites invariant INV-001 (INV-1)", self.doctor())
+        self.write("apps/api/pay.test.ts", "it('PAY-001.S1 ok', () => {})\nit('PAY-001.S10 ok', () => {})\nit('INV-001 conserved for any split', () => {})\n")
+        self.assertIn("harness healthy", self.doctor())
+
+    def test_critical_areas_force_integrity_and_go_one_story_at_a_time(self):
+        self.rules()
+        self.write("docs/context/domain.md", "- [INV-001] [MUST] Conserved — class: conservation (S1)\n")
+        self.write("apps/api/src/pay/charge.ts", "export const charge = 1;\n")
+        self.write("apps/api/src/pay/charge.spec.ts", "it('x', () => {})\n")
+        self.write("packages/shared/src/allocate.ts", "export const a = 1;\n")
+        self.write(".keelokit/critical.toml", """\
+            mutation_break = 70
+            [[area]]
+            name = "money"
+            why = "charges and refunds"
+            paths = ["apps/api/src/pay/", "packages/shared/src/allocate.ts"]
+            [[area]]
+            name = "ghost"
+            why = "gone"
+            paths = ["apps/api/src/nope/"]
+            """)
+        self.integrity_story("PAY-001", 1, '"apps/api/src/pay/"', '"api"')
+        self.integrity_story("PAY-002", 1, '"packages/shared/"', '"logic", "integrity"', '"INV-001"')
+        self.integrity_story("PAY-003", 1, '"apps/web/"', '"ux"')
+        self.commit("init")
+        out = self.doctor()
+        self.assertIn("area 'ghost' points at 'apps/api/src/nope/', which does not exist", out)
+        self.assertIn("PAY-001: touches critical area money — declare 'integrity'", out)
+        self.assertIn("stories PAY-001 and PAY-002 share wave 1 and critical area money", out)
+        self.assertNotIn("PAY-003 share", out)
+        self.assertNotIn("PAY-003: touches", out)
+
+        self.write(".keelokit/critical.toml", '[[area]]\nname = "money"\nwhy = "w"\npaths = ["apps/api/src/pay/", "packages/shared/src/allocate.ts"]\n')
+        self.assertEqual(
+            self.doctor("--critical").split(),
+            ["apps/api/src/pay/charge.ts", "packages/shared/src/allocate.ts"],
+        )
+        self.commit("areas")
+        sh(self.root, "git", "checkout", "-q", "-b", "pay")
+        self.assertEqual(self.doctor("--critical", "--changed").split(), [])
+        self.write("packages/shared/src/allocate.ts", "export const a = 2;\n")
+        self.assertEqual(self.doctor("--critical", "--changed").split(), ["packages/shared/src/allocate.ts"])
+
+    def test_scope_catches_undeclared_critical_work_and_edited_acceptance_tests(self):
+        self.rules()
+        self.write("apps/api/src/pay/charge.ts", "export const charge = 1;\n")
+        self.write(".keelokit/critical.toml", '[[area]]\nname = "money"\nwhy = "w"\npaths = ["apps/api/src/pay/"]\n')
+        self.integrity_story("AUTH-001", 1, '"apps/api/"', '"api"')
+        self.commit("init")
+        sh(self.root, "git", "checkout", "-q", "-b", "auth-001")
+        self.write("apps/api/src/auth.spec.ts", "it('AUTH-001.S1', () => {})\n")
+        self.commit("test(AUTH-001): acceptance tests")
+        self.write("apps/api/src/auth.ts", "export {}\n")
+        self.commit("feat: auth")
+        self.assertIn("all 2 changed files are within its touches", self.doctor("--scope", "AUTH-001"))
+        self.write("apps/api/src/auth.spec.ts", "it('AUTH-001.S1', () => { expect(1) })\n")
+        self.commit("test(AUTH-001): the scenario asked for 401, not 403")
+        self.assertIn("within its touches", self.doctor("--scope", "AUTH-001"))
+        self.write("apps/api/src/auth.spec.ts", "it.skip('AUTH-001.S1', () => {})\n")
+        self.write("apps/api/src/pay/charge.ts", "export const charge = 2;\n")
+        self.commit("feat: make it pass")
+        out = self.doctor("--scope", "AUTH-001")
+        self.assertIn("acceptance tests changed outside a 'test(AUTH-001): …' commit", out)
+        self.assertIn("apps/api/src/auth.spec.ts", out)
+        self.assertIn("changed critical area money but does not declare 'integrity'", out)
+
+    def test_escape_log_names_the_check_left_behind(self):
+        self.rules()
+        self.write("docs/escapes.md", """\
+            | Id | Date | Found by | What escaped | Class | Check added |
+            |---|---|---|---|---|---|
+            | ESC-001 | 2026-09-01 | breaker | Two taps booked the last seat twice | limit | race test on POST /bookings |
+            | ESC-002 | 2026-09-02 | bugbash | Reminder sent twice | once |  |
+            """)
+        out = self.doctor()
+        self.assertIn("Escapes logged: 2", out)
+        self.assertIn("ESC-002 needs", out)
+        self.assertNotIn("ESC-001 needs", out)
+
+
 if __name__ == "__main__":
     unittest.main()
