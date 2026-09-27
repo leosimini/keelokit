@@ -1,0 +1,49 @@
+{% raw %}# Releases (REL-1): a vX.Y.Z tag on main, with its CHANGELOG.md entry, is the only way to production.
+# /keelokit:ship-release writes the entry and creates the tag, after the human says yes. The deploy
+# then waits for a person to approve the `production` environment (set its required reviewers in
+# the repo's Settings → Environments); until then nothing reaches users.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Tag on main, with release notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag is a commit of main and CHANGELOG.md has its entry
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not a commit of main"; exit 1; }
+          grep -q "^## $version" CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no '## $version' entry"; exit 1; }
+{% endraw %}{% if 'api' in apps %}{% raw %}
+  deploy-production:
+    name: Deploy API to production (Fly.io)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip when Fly is not configured yet
+        id: fly
+        run: echo "ready=$([ -n "$FLY_API_TOKEN" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
+        if: steps.fly.outputs.ready == 'yes'
+      - if: steps.fly.outputs.ready == 'yes'
+        run: flyctl deploy --config apps/api/fly.production.toml --remote-only
+{% endraw %}{% endif %}

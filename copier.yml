@@ -17,6 +17,7 @@ _skip_if_exists:
   - .keelokit/exceptions.toml
   - .keelokit/critical.toml
   - docs/escapes.md
+  - CHANGELOG.md
   - backlog/*.md
   - README.md
   # Product code: the template's version is only a starting point; it diverges on day one.

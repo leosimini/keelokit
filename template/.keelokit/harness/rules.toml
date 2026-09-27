@@ -111,6 +111,14 @@ why = "Production is a human-reserved decision (see .keelokit/harness/execution-
 enforced_by = ["claude-hook:guard.py"]
 
 [[rule]]
+id = "REL-1"
+level = "MUST"
+rule = "Deploy to production only from a vX.Y.Z tag on main with its CHANGELOG.md entry, after a person approves the production environment."
+why = "Production has to be a version someone can name, read about and roll back to, and a person decides when it goes out."
+enforced_by = ["ci:deploy-production", "claude-hook:guard.py"]
+when = "apps/api"
+
+[[rule]]
 id = "AGENT-2"
 level = "MUST NOT"
 rule = "Invent facts in docs/context or specs; unknowns become gaps with owner and question."
