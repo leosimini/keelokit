@@ -28,6 +28,8 @@ Answer three things, in this order, in at most ten lines:
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
    | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave) |
    | A wave just finished, or a release is near | Propose `/keelokit:check-bugbash` |
+   | A wave is done and its bug bash is clean | Propose `/keelokit:ship-release` (and `/keelokit:check-security` before the first production release) |
+   | The skeleton exists but `docs/deploy.md` doesn't, or an environment's checklist has open steps | Propose `/keelokit:ship-setup` |
    | Nothing ready, backlog not empty | Show which dependency blocks the next wave |
    | Backlog empty or done | Offer `/keelokit:plan-backlog` for the next slice, or a new feature intake |
 4. If the user already said what they want, skip the report and do it.

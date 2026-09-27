@@ -187,6 +187,7 @@ class DashboardTest(unittest.TestCase):
         self.write(".keelokit/answers.yml", "_commit: v0.0.1\nmode: project\nproject_name: Shop\n")
         self.write("docs/security/2026-10-01/report.md", "| Id | Area | Severity | Title | Status | Fix | Check |\n|---|---|---|---|---|---|---|\n| SEC-1 | logs | P1 | Emails in logs | pending decision | — | — |\n")
         s = self.state()
+        self.assertEqual(s["name"], "Shop")
         envs = {e["name"]: e for e in s["environments"]}
         self.assertEqual([x["done"] for x in envs["staging"]["steps"]], [True, False])
         self.assertEqual((envs["staging"]["url"], envs["staging"]["purpose"]), ("staging.shop.app", "every green main"))

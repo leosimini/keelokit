@@ -54,6 +54,8 @@ bump for agents, not a sandbox; the git hooks and CI are the backstop.
 | Existing repo | `project-adopt`: intake → `.keelokit/` + rule mapping → diagnosis → backlog | each exception |
 | Build | `build-story`: contract → verifier's tests → builder → reviewer + breaker → verifier walks the app → rebase, breaker again if main moved → land | product rules the story doesn't define, new invariants |
 | Quality | `check-bugbash`: lenses per dimension → validation → root-cause fixes → a new check per escape | pending product decisions |
+| Security | `check-security`: data map → privacy law per market → threat model → scans → root-cause fixes → a check per class | privacy choices, legal questions |
+| Ship | `ship-setup`: a verified checklist per environment · `ship-release`: notes → tag → production after approval (REL-1) | accounts, money, every production release |
 | Keep up | `harness-upgrade`, `check-health` | rule changes, exceptions |
 
 Reserved for the human always: production deploys, money, legal, deleting data.

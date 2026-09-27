@@ -752,8 +752,8 @@ def collect(root: Path) -> dict:
             envs[row[0].strip("*` ")] = {"name": row[0].strip("*` "), "purpose": row[1] if len(row) > 1 else "",
                                          "url": row[2] if len(row) > 2 else "", "steps": []}
     for m in re.finditer(r"(?ms)^##\s+(.+?)\s*$(.*?)(?=^##\s|\Z)", deploy):
-        name = m.group(1).strip()
-        env = envs.setdefault(name, {"name": name, "purpose": "", "url": "", "steps": []})
+        env_name = m.group(1).strip()
+        env = envs.setdefault(env_name, {"name": env_name, "purpose": "", "url": "", "steps": []})
         env["steps"] = [{"done": x.lower() == "x", "text": t.strip()}
                         for x, t in re.findall(r"(?m)^\s*[-*]\s+\[([ xX])\]\s+(.+)$", m.group(2))]
         if not env["purpose"]:

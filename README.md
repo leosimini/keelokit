@@ -27,16 +27,25 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 
 | Command | What happens |
 |---|---|
+| `/keelokit` | Where the project is, what's next, what's waiting for you |
+| **Project** | |
 | `/keelokit:project-new` | From an idea to a working skeleton: an interview that writes the product context, a short PRD, the stack, a generated monorepo with CI, and a first backlog |
-| `/keelokit:project-adopt` | For an existing repo: adds only the harness (`.keelokit/`), maps its rules to the checks the repo already has, and lists the rest as dated exceptions |
+| `/keelokit:project-adopt` | For an existing repo: adds only the harness (`.keelokit/`), maps its rules to the checks the repo already has, lists the rest as dated exceptions, and shows on the dashboard what it found |
+| `/keelokit:project-dashboard` | One page with every stage, what waits for your review, stories by development wave and by epic, environments, bug bashes and security reviews, the decisions taken, and buttons that ask Claude for the next step |
+| **Plan** | |
 | `/keelokit:plan-intake` | Reads what you already have, then asks only what's missing; what nobody knows yet is written down as an open question |
 | `/keelokit:plan-backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
+| **Build** | |
 | `/keelokit:build-story` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
+| **Check** | |
 | `/keelokit:check-bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
-| `/keelokit:project-dashboard` | One page with every stage of the process, what waits for your review (context, PRD scope and metrics, stack, stories by development wave and by epic) and the next step; rebuilt from the repo, so it also tells you where a paused run stopped |
+| `/keelokit:check-security` | Security and privacy in depth: a map of the personal data, the privacy law of each market, a threat model of the critical journeys, dependency and staging scans; fixes with a test and a check per class |
 | `/keelokit:check-health` | Is every rule still checked? Add a rule, register an exception |
-| `/keelokit:harness-upgrade` | Bring a project to a newer template without touching its product code |
-| `/keelokit` | Where the project is, what's next, what's waiting for you |
+| **Ship** | |
+| `/keelokit:ship-setup` | Staging and production for people who have never deployed: a guide with a checklist per environment, the steps that need none of your credentials done for you, each one verified |
+| `/keelokit:ship-release` | A version of the product: release notes from what landed, a `vX.Y.Z` tag after your yes, and production only after a person approves it in GitHub |
+| **Harness** | |
+| `/keelokit:harness-upgrade` | Maintenance of the harness, not of your app: brings Keelokit's newer rules and checks into the project, on a branch, without touching its product code |
 
 ## Following along
 
@@ -62,6 +71,11 @@ questions only you can answer, the PRD, accounts, production, money, legal), and
 are built one at a time or several in parallel.
 
 ## The stack it generates
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stack-dark.svg">
+  <img src="docs/assets/stack-light.svg" width="100%" alt="The stack Keelokit generates: pnpm, TypeScript, NestJS, Prisma, PostgreSQL, React, Vite, Expo, Astro, Zod, Vitest, GitHub Actions, Fly.io">
+</picture>
 
 pnpm workspaces · TypeScript strict · NestJS + Prisma + PostgreSQL · Vite + React · Expo ·
 Astro · zod contracts and i18n in a shared package · design tokens in another · Vitest, Jest,

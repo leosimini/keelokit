@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — ship it
+
+- **`/keelokit:ship-release`**: versions of the product. Picks the next semver from what landed,
+  writes release notes users understand (each line tied to its story or finding), tags `vX.Y.Z`
+  on `main` after the user's yes, and follows the deploy. New house rule **REL-1**: production
+  only runs a tag on `main` with its `CHANGELOG.md` entry, after a person approves the
+  `production` environment in GitHub. The template gains `.github/workflows/release.yml` (checks
+  the tag and the notes, then deploys the API to Fly.io behind that approval) and `CHANGELOG.md`.
+- **`/keelokit:ship-setup`**: staging and production for people who have never deployed.
+  Writes `docs/deploy.md` with a checklist per environment, does what needs none of the user's
+  credentials (Fly.io apps and config, GitHub environments with production approval, deploy
+  tokens piped into GitHub secrets), walks the user through the rest, and verifies each step.
+- **`/keelokit:check-security`**: security and privacy in depth — a map of the personal data
+  (`docs/privacy/data-map.md`), the privacy law of each market, a threat model of the critical
+  journeys, dependency, image and staging (OWASP ZAP) scans, and checks for personal data in logs,
+  export and deletion, retention and encryption. Report in `docs/security/<date>/report.md`.
+- **`/keelokit:harness-upgrade`** (was `ship-upgrade`): the same skill, named for what it does —
+  maintenance of the harness, not of the app.
+- The dashboard adds **Environments** (each one's checklist from `docs/deploy.md`), **Security and
+  privacy** (each review's findings, pending decisions and the stories it created), **What we
+  found** for adopted repos (the stack, CI and hosting `project-adopt` saves in
+  `.keelokit/survey.toml`, and how the house rules map onto the repo), and a notice when the
+  project's harness is older than the plugin.
+
+### Upgrading from 0.6.x
+
+- `/keelokit:ship-upgrade` is now `/keelokit:harness-upgrade`; run it to bring REL-1, the release
+  workflow and `CHANGELOG.md` into the project.
+- REL-1's deploy job uses the GitHub environment `production`: give it required reviewers and its
+  own `FLY_API_TOKEN` (the production app's deploy token). `/keelokit:ship-setup` does both.
+
 ## 0.6.0 — 2026-09-27 — the dashboard
 
 - **Commands grouped by area.** Every skill now carries a prefix, so the `/keelokit:` menu lists

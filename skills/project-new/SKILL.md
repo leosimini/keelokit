@@ -125,9 +125,9 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
    template itself is wrong, say so: it must be fixed in Keelokit.
 4. First commit: `chore: skeleton from Keelokit v<version>`.
 5. Ask whether to create a private GitHub repo (`gh repo create <slug> --private --source . --push`).
-6. Staging: the API deploys to Fly.io from CI. The Fly account, `fly auth login`, secrets and the
-   `FLY_API_TOKEN` GitHub secret are the user's — walk them through the README's Deploy section;
-   never type credentials yourself. Record the gate even if staging setup is deferred, and add a
+6. Staging: the API deploys to Fly.io from CI. Offer `/keelokit:ship-setup` now: it writes the
+   deploy guide, does what needs none of the user's credentials and verifies each step. The Fly
+   account, logins, payment and third-party keys stay the user's; never type credentials yourself. Record the gate even if staging setup is deferred, and add a
    non-blocking gap "staging not configured" (owner: user).
 
 ## 5. Backlog

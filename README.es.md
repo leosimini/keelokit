@@ -29,16 +29,25 @@ código no es el que dice que está terminado.
 
 | Comando | Qué pasa |
 |---|---|
+| `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
+| **Proyecto** | |
 | `/keelokit:project-new` | De una idea a un esqueleto que funciona: una entrevista que escribe el contexto del producto, un PRD corto, el stack, un monorepo generado con CI y un primer backlog |
-| `/keelokit:project-adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene y deja el resto como excepciones con fecha |
+| `/keelokit:project-adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene, deja el resto como excepciones con fecha y muestra en el tablero lo que encontró |
+| `/keelokit:project-dashboard` | Una página con cada etapa, lo que espera tu revisión, las historias por ola de desarrollo y por épica, los entornos, los bug bashes y las revisiones de seguridad, las decisiones tomadas y botones para pedirle a Claude el próximo paso |
+| **Planificar** | |
 | `/keelokit:plan-intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
 | `/keelokit:plan-backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
+| **Construir** | |
 | `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
+| **Revisar** | |
 | `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
-| `/keelokit:project-dashboard` | Una página con todas las etapas del proceso, lo que espera tu revisión (contexto, alcance y métricas del PRD, stack, historias por ola de desarrollo y por épica) y el próximo paso; se arma desde el repo, así que también muestra dónde quedó un proceso a medias |
+| `/keelokit:check-security` | Seguridad y privacidad a fondo: un mapa de los datos personales, la ley de privacidad de cada mercado, un modelo de amenazas de los recorridos críticos, escaneos de dependencias y de staging; corrige con un test y un control por clase |
 | `/keelokit:check-health` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
-| `/keelokit:harness-upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
-| `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
+| **Publicar** | |
+| `/keelokit:ship-setup` | Staging y producción para quien nunca desplegó nada: una guía con un checklist por entorno, los pasos que no necesitan tus credenciales resueltos por Keelokit, y cada uno verificado |
+| `/keelokit:ship-release` | Una versión del producto: notas de lo que entró, un tag `vX.Y.Z` después de tu sí, y producción solo cuando una persona lo aprueba en GitHub |
+| **Harness** | |
+| `/keelokit:harness-upgrade` | Mantenimiento del harness, no de tu app: trae al proyecto las reglas y los controles nuevos de Keelokit, en una rama, sin tocar el código del producto |
 
 ## Seguir el avance
 
@@ -64,6 +73,11 @@ persona: preguntas que solo vos podés responder, el PRD, cuentas, producción, 
 legales), y si las historias se construyen de a una o varias en paralelo.
 
 ## El stack que genera
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stack-dark.svg">
+  <img src="docs/assets/stack-light.svg" width="100%" alt="El stack que genera Keelokit: pnpm, TypeScript, NestJS, Prisma, PostgreSQL, React, Vite, Expo, Astro, Zod, Vitest, GitHub Actions, Fly.io">
+</picture>
 
 pnpm workspaces · TypeScript strict · NestJS + Prisma + PostgreSQL · Vite + React · Expo · Astro ·
 contratos zod e i18n en un paquete compartido · tokens de diseño en otro · Vitest, Jest,
