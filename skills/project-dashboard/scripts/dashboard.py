@@ -123,6 +123,17 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} errores del harness para revisar",
         "build_stage": "Construcción",
+        "profile_k": "Qué es el proyecto",
+        "kinds": {"web-product": "Producto web", "mobile-app": "App móvil", "api-service": "Servicio (API)",
+                  "library": "Librería", "cli": "Herramienta de línea de comandos", "plugin": "Plugin",
+                  "static-site": "Sitio estático", "other": "Otro"},
+        "traits": {"typescript": "TypeScript", "ui": "con interfaz", "web": "web", "mobile": "móvil", "site": "sitio público",
+                   "api": "API", "database": "base de datos", "hosted": "se hostea", "i18n": "varios idiomas",
+                   "personal-data": "datos personales", "payments": "pagos", "developer-facing": "para desarrolladores"},
+        "traits_none": "sin interfaz, sin base de datos, sin hosting",
+        "wait_profile_unknown": "Diagnosticar qué es el proyecto (decide qué reglas aplican)",
+        "wait_profile_drift": "El perfil del proyecto quedó desactualizado: {what}",
+        "act_profile": "Actualizar el perfil",
         "credit_k": "Firma Keelokit",
         "credit_names": {"visible": "visible", "quiet": "discreta", "off": "sin firma"},
         "credit_what": {"visible": "el badge «Built with Keelokit» en el README y una línea al pie del sitio público",
@@ -323,6 +334,17 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} harness errors to review",
         "build_stage": "Build",
+        "profile_k": "What the project is",
+        "kinds": {"web-product": "Web product", "mobile-app": "Mobile app", "api-service": "Service (API)",
+                  "library": "Library", "cli": "Command-line tool", "plugin": "Plugin",
+                  "static-site": "Static site", "other": "Other"},
+        "traits": {"typescript": "TypeScript", "ui": "with a UI", "web": "web", "mobile": "mobile", "site": "public site",
+                   "api": "API", "database": "database", "hosted": "hosted", "i18n": "several languages",
+                   "personal-data": "personal data", "payments": "payments", "developer-facing": "for developers"},
+        "traits_none": "no UI, no database, no hosting",
+        "wait_profile_unknown": "Diagnose what the project is (it decides which rules apply)",
+        "wait_profile_drift": "The project's profile is out of date: {what}",
+        "act_profile": "Update the profile",
         "credit_k": "Keelokit credit",
         "credit_names": {"visible": "visible", "quiet": "quiet", "off": "off"},
         "credit_what": {"visible": "the “Built with Keelokit” badge in the README and a line at the foot of the public site",
@@ -681,6 +703,7 @@ def collect(root: Path) -> dict:
         except (OSError, subprocess.TimeoutExpired):
             doctor = []
     errors = next((int(m.group(1)) for line in doctor if (m := re.search(r"Harness errors:\s*(\d+)", line))), 0)
+    drift = [line.split(":", 1)[1].strip() for line in doctor if line.startswith("Profile drift:")]
 
     outputs = {
         "intake": [f"docs/context/{f}" for f in context],
@@ -778,10 +801,16 @@ def collect(root: Path) -> dict:
     environments = [e for e in envs.values() if e["name"].lower() not in ("local",)]
 
     # What project-adopt found in an existing repo, and how the house rules map onto it.
-    try:
-        survey = tomllib.loads(read(root / ".keelokit/survey.toml")) if (root / ".keelokit/survey.toml").exists() else {}
-    except tomllib.TOMLDecodeError:
-        survey = {}
+    # The project's profile (kind, traits, what was detected); survey.toml was its name before 0.7.
+    survey = {}
+    for f in (".keelokit/profile.toml", ".keelokit/survey.toml"):
+        if (root / f).exists():
+            try:
+                survey = tomllib.loads(read(root / f))
+            except tomllib.TOMLDecodeError:
+                survey = {}
+            break
+    profile = {"kind": survey.get("kind", ""), "traits": list(survey.get("traits", []))} if "kind" in survey else None
     def toml_list(path, key):
         try:
             return tomllib.loads(read(root / path)).get(key, []) if (root / path).exists() else []
@@ -822,6 +851,7 @@ def collect(root: Path) -> dict:
         "adrs": adrs, "bugbashes": bugbashes, "history": history, "security": security,
         "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
         "harness": harness, "plugin_version": plugin_version, "credit": credit,
+        "profile": profile, "drift": drift,
     }
 
 
@@ -889,6 +919,11 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
         if pending:
             items.append({"text": t["wait_sec"].format(n=len(pending), date=b["date"]),
                           "anchor": f"sec-{b['date']}", "ask": t["act_decide_sec_t"].format(date=b["date"]), "act": t["act_decide"]})
+    if s["profile"] and s["profile"]["kind"] in ("", "unknown"):
+        items.append({"text": t["wait_profile_unknown"], "anchor": "decisions", "ask": "/keelokit:check-health", "act": t["act_profile"]})
+    elif s["drift"]:
+        items.append({"text": t["wait_profile_drift"].format(what=s["drift"][0]), "anchor": "decisions",
+                      "ask": "/keelokit:check-health", "act": t["act_profile"]})
     if behind(s):
         items.append({"text": t["wait_harness"].format(have=s["harness"], new=s["plugin_version"]), "anchor": "decisions",
                       "ask": "/keelokit:harness-upgrade", "act": t["act_upgrade"]})
@@ -1543,6 +1578,12 @@ def decisions_card(s: dict, t: dict) -> str:
     greenfield = s["layout"] == "project"
     rows = [(t["type"], t["greenfield"] if greenfield else t["brownfield"],
              t["greenfield_d"] if greenfield else t["brownfield_d"], True)]
+    prof = s["profile"]
+    if prof and prof["kind"] not in ("", "unknown"):
+        kinds, traits = t["kinds"], t["traits"]
+        label = kinds.get(prof["kind"], prof["kind"])
+        desc = ", ".join(traits.get(x, x) for x in prof["traits"]) or t["traits_none"]
+        rows.append((t["profile_k"], label, desc, False))
     mode = run.get("mode")
     rows.append((t["run_mode"], t["run_auto"] if mode == "auto" else t["run_step"] if mode else "",
                  t["run_auto_d"] if mode == "auto" else t["run_step_d"] if mode else "", True))
@@ -1777,7 +1818,8 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
             f'<span class="sum">{esc(t["sum_build"].format(done=done, total=len(s["stories"])))}</span></summary>'
             f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{actions}{modes_block(s, t)}{health}</div></details>')
     later = s["stories"] or any(x["id"] in ("skeleton", "adopt") and x["status"] == "done" for x in s["stages"])
-    if later or s["environments"] or s["has_deploy"]:
+    hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]
+    if hosted and (later or s["environments"] or s["has_deploy"]):
         sections.append(environments_section(s, t))
     if s["stories"] or s["bugbashes"]:
         sections.append(bugbash_section(s, links, t))

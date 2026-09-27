@@ -33,14 +33,27 @@ workflows (job names), git hooks (`.githooks`, `.husky`, `core.hooksPath`), lint
 configs, test setup, Dockerfile/deploy configs, ADRs and any existing requirements or context
 docs. Summarise in ten lines: stack vs the house stack, commands, CI jobs, hooks, tests, docs.
 
-Save what you found in `.keelokit/survey.toml` (after step 2 creates `.keelokit/`), so the
-dashboard can show it; update it when the repo changes:
+Then **diagnose what the project is** — from the code, not from habit. A Claude Code plugin, a
+library or a CLI has no hosting, no database and no screens; a SaaS has all three. Decide the
+`kind` and the `traits` (vocabulary in the file's header: `typescript`, `ui`, `web`, `mobile`,
+`site`, `api`, `database`, `hosted`, `i18n`, `personal-data`, `payments`, `developer-facing`),
+each with its evidence, and show them to the user to confirm. After step 2 creates `.keelokit/`,
+write them in `.keelokit/profile.toml`:
 ```toml
-stack = ["Next.js 14", "Prisma", "PostgreSQL"]   # languages, frameworks, data
-tests = ["Vitest", "Playwright"]
-ci = ["GitHub Actions: lint, test, build"]
-hosting = ["Vercel (web)", "Railway (API, Postgres)"]
+kind = "plugin"
+traits = ["developer-facing"]   # no ui, no database, no hosting: rules that need them don't apply
+
+[detected]
+stack = ["Python 3.11", "Markdown skills", "Copier template"]
+tests = ["unittest"]
+ci = ["GitHub Actions: tests, template generation"]
+hosting = []
+
+[evidence]
+hosted = "no deploy config; distributed through the Claude plugin directory"
 ```
+The profile decides which house rules apply (their `needs`), which bug-bash lenses run, and what
+the dashboard shows. Never create folders or apps the profile doesn't call for.
 Environments found (URLs, who deploys, how) go in `docs/context/environments.md`; if the repo
 already deploys, `/keelokit:ship-setup` can turn that into a verified checklist.
 
@@ -62,7 +75,8 @@ Only then ask the delta.
 
 ## 4. Map the house rules
 
-Run the doctor. For each rule it reports:
+Run the doctor. Rules whose `needs` the profile doesn't have are listed as not applicable — they
+are not exceptions and need nothing. For each rule it reports:
 
 1. **The repo already enforces it under another name** (a CI job, a test, a lint rule, a hook) →
    add a local entry with the house rule's id and only `enforced_by` in `.keelokit/rules.local.toml`:

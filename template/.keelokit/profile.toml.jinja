@@ -1,0 +1,40 @@
+# What this project is, as Keelokit understands it. It decides which house rules apply (a rule with
+# `needs` applies only when every trait it lists is here), which lenses a bug bash runs, and what the
+# dashboard shows. Keep it true: the doctor warns when the repo shows a trait that's missing here
+# (a first migration, a new app, a deploy config), and plan-intake, build-story and check-health
+# update it as the product grows.
+#
+# kind: web-product · mobile-app · api-service · library · cli · plugin · static-site · other
+# traits: typescript · ui · web · mobile · site · api · database · hosted · i18n · personal-data ·
+#         payments · developer-facing
+{%- if mode == 'project' %}
+{%- set traits = ['typescript'] %}
+{%- if 'web' in apps or 'mobile' in apps or 'site' in apps %}{% set traits = traits + ['ui'] %}{% endif %}
+{%- if 'web' in apps %}{% set traits = traits + ['web'] %}{% endif %}
+{%- if 'mobile' in apps %}{% set traits = traits + ['mobile'] %}{% endif %}
+{%- if 'site' in apps %}{% set traits = traits + ['site'] %}{% endif %}
+{%- if 'api' in apps %}{% set traits = traits + ['api'] %}{% endif %}
+{%- if 'api' in apps %}{% set traits = traits + ['database'] %}{% endif %}
+{%- if 'api' in apps or 'web' in apps or 'site' in apps %}{% set traits = traits + ['hosted'] %}{% endif %}
+{%- if 'web' in apps or 'mobile' in apps %}{% set traits = traits + ['i18n'] %}{% endif %}
+
+kind = "{{ 'web-product' if 'web' in apps else 'mobile-app' if 'mobile' in apps else 'api-service' if 'api' in apps else 'static-site' }}"
+traits = [{% for t in traits %}"{{ t }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+
+[detected]
+stack = ["TypeScript", "pnpm workspaces"{% if 'api' in apps %}, "NestJS", "Prisma", "PostgreSQL"{% endif %}{% if 'web' in apps %}, "Vite + React"{% endif %}{% if 'mobile' in apps %}, "Expo"{% endif %}{% if 'site' in apps %}, "Astro"{% endif %}]
+tests = ["Vitest", "Playwright"{% if 'mobile' in apps %}, "Jest"{% endif %}]
+ci = ["GitHub Actions"]
+hosting = [{% if 'api' in apps %}"Fly.io (API, PostgreSQL)"{% endif %}{% if 'api' in apps and ('web' in apps or 'site' in apps) %}, {% endif %}{% if 'web' in apps or 'site' in apps %}"a static host (web, site)"{% endif %}]
+{%- else %}
+
+# An existing repo: /keelokit:project-adopt diagnoses it from the code and fills this in.
+kind = "unknown"
+traits = []
+
+[detected]
+stack = []
+tests = []
+ci = []
+hosting = []
+{%- endif %}

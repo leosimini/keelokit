@@ -24,7 +24,30 @@ front matter), `/keelokit:build-story` turns each into lines of the story's done
 | `nfr` | Timeouts, rate limits, idempotency, multiple instances (crons, locks), performance budget | Tests for locks/idempotency (`race()`); perf budget on seeded volume | Load and volume; two instances at once |
 | `config` | Every new key in schema, `.env.example`, `.env.ci`, README; prod build fails without required public config | CFG-1 drift test | Build/deploy with a key missing |
 | `ops` | Logs with request id, errors to Sentry, health, migration on deploy, rollback | Health tests; deploy job | Deploy dry-run; kill the DB mid-request |
+| `dx` | For people who use it as developers (a library, CLI, plugin, template): commands and APIs do what their names say, defaults are safe, errors say what went wrong and how to fix it | Tests of each command/API's documented behaviour; manifest validation | A newcomer follows the README from zero; wrong input on every command; the error messages read cold |
+| `docs` | Every command, option and file the docs mention exists and behaves as written; examples run | Link check; examples executed in tests where possible | Diff the docs against the code: each promise, each flag, each path |
+| `packaging` | Install, upgrade and uninstall work from a clean machine; versions and changelog agree; nothing private ships | Build/validate the package in CI; version ↔ CHANGELOG check | Install the released artifact fresh; upgrade from the previous version; inspect what the archive contains |
 
 `integrity` is the dimension for invariants: money, stock, quotas, one-time side effects,
 anything where a wrong number or a duplicate is a P0. Its classes, the test each one calls for
 and how to hold it in code are in `invariants.md`.
+
+## Which lenses a project gets
+
+The project's profile (`.keelokit/profile.toml`) decides. A lens runs when the profile has its
+traits; the ones marked *always* run for every project.
+
+| Lens | Needs |
+|---|---|
+| `logic`, `integrity`, `security`, `copy`, `nfr` | always |
+| `data` | `database` |
+| `api`, `contract`, `auth` | `api` (`auth` also any `ui` with accounts) |
+| `ux`, `ui`, `a11y` | `ui` |
+| `web` · `mobile` | `web` or `site` · `mobile` |
+| `i18n` | `i18n` |
+| `config`, `ops` | `hosted` |
+| `dx`, `docs`, `packaging` | `developer-facing` |
+
+A lens that doesn't apply is named in the report as skipped, with the reason. When the code shows
+something the profile doesn't (a first migration, a new app, a deploy config), update the profile
+first: the doctor warns about that drift.

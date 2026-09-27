@@ -48,6 +48,10 @@ define or a new invariant (steps 2), a third failed review round (step 5), and a
 execution protocol reserves for the human. `mode = "step"`: report after each story (or each
 batch) and wait for the user.
 
+A story that brings something new into the project — its first migration, a new app, a deploy
+config, personal data, payments — updates `traits` in `.keelokit/profile.toml` in the same change;
+the doctor warns when the code shows a trait the profile lacks.
+
 ## 2. Contract
 
 Write the story's done-contract as a checklist and show it in one block, then continue:

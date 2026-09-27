@@ -13,8 +13,12 @@ a recommendation, and work continues on everything else.
 the project's style guide if any. If the expected behaviour doesn't follow from them, it is a
 pending decision, not a bug.
 
-Findings format and severity: `references/finding-format.md`. Lenses: one per row of
-`${CLAUDE_PLUGIN_ROOT}/references/dimensions.md` (skip dimensions the project doesn't have). The
+Findings format and severity: `references/finding-format.md`. Lenses: the ones the project's
+profile calls for (`.keelokit/profile.toml` and "Which lenses a project gets" in
+`${CLAUDE_PLUGIN_ROOT}/references/dimensions.md`) — a data model, contracts and screens for a
+product; developer experience, docs and packaging for a library, CLI or plugin. If the code shows
+something the profile doesn't, update the profile first (`/keelokit:check-health`). Name every
+skipped lens in the report with its reason. The
 `integrity` lens attacks every invariant in `docs/context/domain.md` with its class's attack from
 `${CLAUDE_PLUGIN_ROOT}/references/invariants.md`, the way `agents/breaker.md` does for one story.
 
@@ -30,9 +34,11 @@ Findings format and severity: `references/finding-format.md`. Lenses: one per ro
    Sonnet. Each lens that runs the app gets its own ports (`E2E_PORT`, `E2E_MOBILE_PORT`, `PORT`)
    and, when it writes data, its own database (`docker run … postgres` on a free port, then
    `prisma:migrate:deploy` and `db:seed`).
-4. Run the app with seeded personas (`pnpm --filter ./apps/api db:seed`; add the personas the
+4. Run what the project is: the app with seeded personas (`pnpm --filter ./apps/api db:seed`; add the personas the
    product needs to `apps/api/prisma/seed.ts` if they're missing — one per role and relevant
-   state: new, with data, no permission, expired session). All locales.
+   state: new, with data, no permission, expired session), all locales — or, for a developer-facing
+project, the package itself from a clean install, with personas like a newcomer following the
+README, a user upgrading from the last version, and a contributor running the tests.
 5. Baseline: `pnpm verify` result, so pre-existing failures aren't blamed on fixes.
 
 ## 2. Survey — one agent per lens, in parallel, no fixing yet

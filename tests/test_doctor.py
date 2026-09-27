@@ -257,6 +257,31 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("apps/api/src/auth.spec.ts", out)
         self.assertIn("changed critical area money but does not declare 'integrity'", out)
 
+    def test_profile_decides_which_rules_apply_and_warns_on_drift(self):
+        self.rules(
+            self.rule("R-UI", "test:missing.test.ts") + 'needs = ["ui"]\n',
+            self.rule("R-ALL", "test:missing.test.ts"),
+        )
+        self.write(".keelokit/profile.toml", 'kind = "plugin"\ntraits = ["developer-facing"]\n')
+        out = self.doctor()
+        self.assertNotIn("rule R-UI:", out)  # a plugin without UI isn't held to UI rules
+        self.assertIn("rule R-ALL:", out)
+        self.assertIn("not applicable: R-UI", out)
+        # The repo grows a database the profile doesn't know about: the doctor says so.
+        self.write("prisma/schema.prisma", "// schema\n")
+        self.assertIn("profile: the repo shows `database` (prisma/schema.prisma)", self.doctor())
+        # And the other way round: a structural trait nothing backs.
+        self.write(".keelokit/profile.toml", 'kind = "plugin"\ntraits = ["developer-facing", "database", "mobile"]\n')
+        out = self.doctor("--brief")
+        self.assertIn("Profile drift: the profile lists `mobile` but nothing in the repo shows it yet", out)
+        self.assertNotIn("`database` but nothing", out)
+
+    def test_profile_must_be_diagnosed(self):
+        self.write(".keelokit/profile.toml", 'kind = "unknown"\ntraits = ["ui", "blockchain"]\n')
+        out = self.doctor()
+        self.assertIn("the project's kind isn't diagnosed yet", out)
+        self.assertIn("unknown traits blockchain", out)
+
     def test_escape_log_names_the_check_left_behind(self):
         self.rules()
         self.write("docs/escapes.md", """\

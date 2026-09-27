@@ -10,6 +10,10 @@ The rule is REL-1 (`.keelokit/harness/rules.toml`): production only ever runs a 
 GitHub before it deploys. Staging keeps deploying every green `main`. Creating the tag is a
 production decision: ask, and wait for a clear yes (execution protocol, "Reserved for the human").
 
+For a developer-facing project (profile: library, CLI, plugin, template) there is no production
+environment: the release is the tag, the notes and publishing the package where its users get it
+(npm, the plugin directory, a registry) — REL-1 doesn't apply. Everything else below does.
+
 ## 1. Ready?
 
 - On `main`, up to date, working tree clean; CI green on the tip (the staging deploy included).

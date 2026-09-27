@@ -39,6 +39,11 @@ it is wrong only here, register an exception.
 3. Add the entry to `.keelokit/rules.local.toml`: `id`, `level`, `rule`, `why` (the incident in one
    line), `enforced_by`, and `when` if it only applies when some path exists.
 4. Run the doctor; commit rule and enforcer together.
+
+**Profile drift.** When the doctor says the repo shows a trait the profile lacks (or lists one
+nothing backs), check the evidence, propose the updated `kind`/`traits` to the user, and write
+`.keelokit/profile.toml` on their yes. A profile still `unknown` (an adopted repo) gets diagnosed
+the way `/keelokit:project-adopt` does.
 5. If the lesson applies to every product, tell the user it should move to the house rules in
    Keelokit.
 

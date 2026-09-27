@@ -16,6 +16,7 @@ _skip_if_exists:
   - .keelokit/rules.local.toml
   - .keelokit/exceptions.toml
   - .keelokit/critical.toml
+  - .keelokit/profile.toml
   - docs/escapes.md
   - CHANGELOG.md
   - backlog/*.md

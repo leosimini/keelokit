@@ -46,7 +46,7 @@ STORY_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d{3}$")
 # What a story may touch; each one pulls its checks into the story's contract (skills/build).
 DIMENSIONS = {
     "data", "api", "contract", "logic", "integrity", "auth", "ux", "ui", "web", "mobile", "i18n",
-    "copy", "a11y", "security", "nfr", "config", "ops",
+    "copy", "a11y", "security", "nfr", "config", "ops", "dx", "docs", "packaging",
 }
 # Invariant classes (references/invariants.md in the plugin): each one fixes the kind of test that
 # proves it — a property test, a concurrency test, a replay test, a transition table.
@@ -65,6 +65,26 @@ TEST_TITLE_RE = re.compile(
     r"(?:\.(?:only|concurrent|serial|parallel|each\((?:[^()]|\([^()]*\))*\)))*\s*\(\s*(['\"`])((?:\\.|(?!\1).)*)\1",
     re.S,
 )
+# What a project can be (.keelokit/profile.toml `traits`). A rule with `needs` applies only when the
+# profile lists every trait it needs, so a plugin without UI or hosting isn't held to UI or deploy
+# rules. No profile file → every rule applies (projects from before profiles).
+TRAITS = {
+    "typescript", "ui", "web", "mobile", "site", "api", "database", "hosted", "i18n",
+    "personal-data", "payments", "developer-facing",
+}
+# What in the repo shows a trait. The doctor warns when the repo shows one the profile lacks, or
+# the profile lists a structural one nothing in the repo backs — the profile has to keep up.
+TRAIT_EVIDENCE = {
+    "typescript": ["tsconfig.json", "tsconfig.base.json"],
+    "api": ["apps/api", "nest-cli.json"],
+    "database": ["prisma/schema.prisma", "apps/*/prisma/schema.prisma", "alembic.ini", "db/migrations", "migrations"],
+    "web": ["apps/web", "vite.config.ts", "next.config.js", "next.config.mjs", "next.config.ts"],
+    "mobile": ["apps/mobile", "app.json", "eas.json"],
+    "site": ["apps/site", "astro.config.mjs"],
+    "hosted": ["fly.toml", "apps/*/fly.*.toml", "Dockerfile", "vercel.json", "netlify.toml", "render.yaml", "Procfile"],
+}
+STRUCTURAL = {"api", "database", "web", "mobile", "site"}  # hosted: a static host may leave nothing in the repo
+
 GATES = {
     "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:project-new
     "harness": ["intake", "adopt", "backlog"],  # /keelokit:project-adopt on an existing repo
@@ -72,6 +92,8 @@ GATES = {
 
 errors: list[str] = []
 warnings: list[str] = []
+profile_drift: list[str] = []
+not_applicable: list[str] = []
 
 
 def load_toml(path: Path, key: str) -> list[dict]:
@@ -209,10 +231,40 @@ def check_exceptions(rule_ids: set[str]) -> set[str]:
     return active
 
 
-def check_rules(rules: dict[str, dict], excepted: set[str]) -> None:
+def load_profile() -> dict | None:
+    """.keelokit/profile.toml: the project's kind and traits, and whether the repo still matches them."""
+    path = ROOT / ".keelokit/profile.toml"
+    if not path.exists():
+        return None
+    try:
+        profile = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        errors.append(f".keelokit/profile.toml: invalid TOML ({e})")
+        return None
+    traits = set(profile.get("traits", []))
+    if profile.get("kind", "unknown") == "unknown":
+        errors.append(".keelokit/profile.toml: the project's kind isn't diagnosed yet — /keelokit:project-adopt or /keelokit:check-health writes it")
+    if unknown := traits - TRAITS:
+        errors.append(f".keelokit/profile.toml: unknown traits {', '.join(sorted(unknown))} (known: {', '.join(sorted(TRAITS))})")
+    for trait, patterns in TRAIT_EVIDENCE.items():
+        seen = next((m.relative_to(ROOT).as_posix() for pat in patterns for m in ROOT.glob(pat)
+                     if "node_modules" not in m.parts), None)
+        if seen and trait not in traits:
+            profile_drift.append(f"the repo shows `{trait}` ({seen}) but the profile doesn't list it")
+        elif trait in traits and trait in STRUCTURAL and not seen and profile.get("kind") != "unknown":
+            profile_drift.append(f"the profile lists `{trait}` but nothing in the repo shows it yet")
+    for d in profile_drift:
+        warnings.append(f"profile: {d} — update .keelokit/profile.toml")
+    return {**profile, "traits": traits}
+
+
+def check_rules(rules: dict[str, dict], excepted: set[str], profile: dict | None = None) -> None:
     for rid, r in rules.items():
         when = r.get("when")
         if when and not any((ROOT / w).exists() for w in ([when] if isinstance(when, str) else when)):
+            continue
+        if profile is not None and not set(r.get("needs", [])) <= profile["traits"]:
+            not_applicable.append(rid)
             continue
         refs = r.get("enforced_by", [])
         must = r.get("level", "").startswith("MUST")
@@ -503,7 +555,8 @@ def main() -> int:
         print("\n".join(files))
         return 0
     rules = load_rules()
-    check_rules(rules, check_exceptions(set(rules)))
+    profile = load_profile()
+    check_rules(rules, check_exceptions(set(rules)), profile)
     gaps, blocking = check_context()
     invariants = check_invariants()
     areas, _ = load_critical()
@@ -521,6 +574,10 @@ def main() -> int:
               f"Backlog: {len(backlog['done'])}/{backlog['total']} done")
         if backlog["ready"]:
             print("Next ready stories:", ", ".join(backlog["ready"][:3]))
+        if profile is not None:
+            print(f"Profile: {profile.get('kind', 'unknown')} · {len(not_applicable)} rules don't apply")
+        for d in profile_drift:
+            print(f"Profile drift: {d}")
         if errors:
             print(f"Harness errors: {len(errors)} — run `pnpm doctor`")
         return 0
@@ -528,6 +585,9 @@ def main() -> int:
     print("Keelokit doctor")
     print(f"  Gates: " + " → ".join(f"{g}{' ✓' if gates.get(g) else ''}" for g in gate_names))
     print(f"  Rules: {len(rules)} · Context gaps: {gaps} ({blocking} blocking)")
+    if profile is not None:
+        print(f"  Profile: {profile.get('kind', 'unknown')} · traits: {', '.join(sorted(profile['traits'])) or 'none'}"
+              + (f" · not applicable: {', '.join(not_applicable)}" if not_applicable else ""))
     print(f"  Invariants: {len(invariants)} · Critical areas: {len(areas)} · Escapes logged: {escapes}")
     print(f"  Backlog: {len(backlog['done'])}/{backlog['total']} done"
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))

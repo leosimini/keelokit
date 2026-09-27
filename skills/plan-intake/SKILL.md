@@ -56,7 +56,15 @@ Write the five files exactly as `references/context-format.md` shows:
 - No vague phrases ("robust", "user-friendly", "best practices"…) — `pnpm doctor` rejects them.
 - No secrets, no personal data of real people; accounts are named by owner, never with values.
 
-## 4. Check and hand back
+## 4. Keep the profile true
+
+If the project has `.keelokit/profile.toml`, update its `traits` from what the context now says:
+`personal-data` when it stores anything that identifies a person, `payments` when money moves,
+`i18n` for more than one language, `developer-facing` when its users are developers. A new
+feature that needs something new (an API, a database, a mobile app, hosting) adds it too — and
+say so to the user: it changes which rules apply and what the bug bash hunts.
+
+## 5. Check and hand back
 
 1. If the project has `.keelokit/bin/doctor.py`, run it and fix every `docs/context` error.
 2. For a deep review, delegate to the `context-auditor` agent (it didn't write the context, so it

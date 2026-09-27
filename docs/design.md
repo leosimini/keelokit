@@ -24,6 +24,15 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `bin/guard.py` — one guard, two callers: Claude Code's PreToolUse hook and git's pre-commit.
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
 
+## The project's profile
+
+`.keelokit/profile.toml` says what the project is: a `kind` and its `traits` (UI, web, mobile, API,
+database, hosted, languages, personal data, payments, developer-facing). It is diagnosed — by
+`project-new` from the PRD, by `project-adopt` from the code — and kept up by `plan-intake`,
+`build-story` and `check-health`, with the doctor warning when the repo shows a trait the profile
+lacks. Rules declare the traits they `needs`, so only the ones that fit apply; the bug bash, the
+security review, ship-setup, ship-release and the dashboard read it to decide what matters.
+
 ## What `doctor` checks — and what it can't
 
 It checks that each MUST rule has an enforcer and that the enforcer looks alive: a test file

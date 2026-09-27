@@ -2,6 +2,18 @@
 
 ## Unreleased — ship it
 
+- **The project's profile** (`.keelokit/profile.toml`): what the project is (`kind`: web product,
+  mobile app, API service, library, CLI, plugin, static site) and its `traits` (UI, web, mobile,
+  API, database, hosted, languages, personal data, payments, developer-facing). Diagnosed, not
+  assumed: `project-new` generates only what the product needs and doesn't scaffold apps for a
+  library, CLI or plugin; `project-adopt` reads it from the code. House rules declare what they
+  `needs` and the doctor applies only those that fit — a plugin isn't held to UI, database or
+  deploy rules. It keeps up as the project grows: `plan-intake` and `build-story` update it, and
+  the doctor warns when the repo shows something it doesn't list (a first migration, a new app, a
+  deploy config). The bug bash picks its lenses from it — data model, contracts and screens for a
+  product; developer experience, docs and packaging (three new dimensions: `dx`, `docs`,
+  `packaging`) for something developers use — and `check-security`, `ship-setup`, `ship-release`
+  and the dashboard follow it too.
 - **`/keelokit:ship-release`**: versions of the product. Picks the next semver from what landed,
   writes release notes users understand (each line tied to its story or finding), tags `vX.Y.Z`
   on `main` after the user's yes, and follows the deploy. New house rule **REL-1**: production
@@ -24,14 +36,15 @@
   maintenance of the harness, not of the app.
 - The dashboard adds **Environments** (each one's checklist from `docs/deploy.md`), **Security and
   privacy** (each review's findings, pending decisions and the stories it created), **What we
-  found** for adopted repos (the stack, CI and hosting `project-adopt` saves in
-  `.keelokit/survey.toml`, and how the house rules map onto the repo), and a notice when the
-  project's harness is older than the plugin.
+  found** for adopted repos (the stack, CI and hosting `project-adopt` detected, and how the house
+  rules map onto the repo), and a notice when the project's harness is older than the plugin.
 
 ### Upgrading from 0.6.x
 
 - `/keelokit:ship-upgrade` is now `/keelokit:harness-upgrade`; run it to bring REL-1, the release
   workflow and `CHANGELOG.md` into the project.
+- `/keelokit:harness-upgrade` adds `.keelokit/profile.toml` from the project's apps; add
+  `personal-data` or `payments` to its `traits` if they apply (`/keelokit:check-health` helps).
 - REL-1's deploy job uses the GitHub environment `production`: give it required reviewers and its
   own `FLY_API_TOKEN` (the production app's deploy token). `/keelokit:ship-setup` does both.
 

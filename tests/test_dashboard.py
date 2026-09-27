@@ -203,7 +203,7 @@ class DashboardTest(unittest.TestCase):
 
     def test_brownfield_shows_what_was_found(self):
         self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n_commit: v0.7.0\n")
-        self.write(".keelokit/survey.toml", 'stack = ["Next.js 14", "Prisma"]\nci = ["GitHub Actions: test"]\n')
+        self.write(".keelokit/profile.toml", 'kind = "web-product"\ntraits = ["ui", "web", "database", "hosted"]\n\n[detected]\nstack = ["Next.js 14", "Prisma"]\nci = ["GitHub Actions: test"]\n')
         self.write(".keelokit/harness/rules.toml", '[[rule]]\nid = "A"\n\n[[rule]]\nid = "B"\n\n[[rule]]\nid = "C"\n')
         self.write(".keelokit/rules.local.toml", '[[rule]]\nid = "A"\nenforced_by = ["ci:test"]\n')
         self.write(".keelokit/exceptions.toml", '[[exception]]\nrule = "B"\nreason = "no e2e yet"\napprover = "Ana"\nexpires = "2026-12-31"\n')
@@ -233,6 +233,20 @@ class DashboardTest(unittest.TestCase):
         self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n")
         self.write("README.md", "# Legacy\n")  # an adopted repo keeps its own README
         self.assertEqual(self.state()["credit"], "off")
+
+    def test_profile_hides_what_does_not_apply(self):
+        self.gates("intake", "adopt")
+        self.context()
+        self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Tool\n")
+        self.write(".keelokit/profile.toml", 'kind = "plugin"\ntraits = ["developer-facing"]\n')
+        self.write("docs/context/environments.md", "| Environment | Purpose | URL |\n|---|---|---|\n| local | dev | — |\n")
+        html = self.page()
+        self.assertIn("What the project is", html)
+        self.assertIn("Plugin", html)
+        self.assertIn("for developers", html)
+        self.assertNotIn('id="environments"', html)  # nothing to host
+        self.write(".keelokit/profile.toml", 'kind = "unknown"\ntraits = []\n')
+        self.assertIn("decisions", [w["anchor"] for w in self.state()["waiting"] if "Diagnose" in w["text"]])
 
     def test_page_for_the_artifact_tool_escapes_documents(self):
         self.gates("intake", lang="es")

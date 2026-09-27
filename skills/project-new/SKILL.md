@@ -94,12 +94,24 @@ for approval.
 
 ## 3. Stack
 
-The house stack is fixed (`${CLAUDE_PLUGIN_ROOT}/template/.keelokit/harness/stack.md`). Decide
+First, what kind of project this is, from the PRD: a product people use (web, mobile, an API
+others call), or something developers use (a library, a CLI, a plugin, a template). The template
+builds products. For a developer-facing kind it would only add apps, a database and hosting the
+project doesn't need: say so, and instead start a minimal repo (`git init`, README, the context
+and PRD already written) and bring the harness in with `/keelokit:project-adopt`, which writes
+the profile and applies only the rules that fit.
+
+For a product, the house stack is fixed (`${CLAUDE_PLUGIN_ROOT}/template/.keelokit/harness/stack.md`). Decide
 only:
 - **apps** — any of `api`, `web`, `mobile`, `site`, justified from the PRD's users and channels;
 - **postgis** — only if the domain has geospatial queries.
 If a requirement truly can't be met by the house stack, write `docs/decisions/0001-<title>.md`
 (Status, Context, Decision, Consequences) and get approval. "Would be nicer" is not a reason.
+
+Nothing more than the PRD needs: no API if nothing is stored or shared, no mobile app if the web
+works on phones, no public site if there's nothing to say before sign-up. The skeleton writes
+`.keelokit/profile.toml` from the apps; add `personal-data` and `payments` to its `traits` when
+the context says so.
 
 Write `docs/stack.md`: the apps chosen, one line each on why (citing the PRD's users and
 channels), the apps left out and why, PostGIS yes/no, and any decision record. Refresh the

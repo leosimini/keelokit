@@ -5,6 +5,9 @@ description: Set up where the product runs — staging and production — for pe
 
 # Ship setup — environments a founder can own
 
+Only for projects the profile marks `hosted`. A library, CLI or plugin isn't deployed: say so, and
+point at `/keelokit:ship-release`, which publishes it.
+
 The stack deploys the API to Fly.io (staging from every green `main`, production from a tag with
 REL-1) and the web and site to any static host. Environments and owners are in
 `docs/context/environments.md`. This skill turns that into working environments and keeps the

@@ -10,6 +10,12 @@ product rule (what data is kept, for how long, who may see it) is a pending deci
 user, with options and a recommendation. Legal questions are named and explained, never decided:
 the user or their counsel decides.
 
+Scope comes from the profile (`.keelokit/profile.toml`): the data map and privacy law when it has
+`personal-data`; the staging scan when it's `hosted`; payment flows when it has `payments`. A
+developer-facing project (library, CLI, plugin) gets supply-chain questions instead: what it runs
+on the user's machine, which network calls it makes, what permissions it asks for, and whether
+anything private ends up in what it distributes.
+
 The day-to-day checks already run on every push: secret scan (SEC-1), `pnpm audit` (SEC-3),
 Semgrep (SAST-1), the access matrix (AUTHZ-1). This skill looks for what they can't.
 

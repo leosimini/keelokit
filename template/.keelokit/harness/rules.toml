@@ -11,6 +11,7 @@
 #   file:<path>#<text>   a config file that must contain <text> (e.g. "strict": true)
 #   review:<agent>       judged by an agent — inferential, weaker; doctor warns when a MUST has only this
 # `when = "<path>"` (or a list: any of them) limits a rule to projects where that path exists.
+# `needs = ["ui", …]` limits it to projects whose .keelokit/profile.toml lists those traits.
 # In an adopted repo, .keelokit/rules.local.toml may remap a house rule to the checks the repo already
 # has: an entry with the same id and only `enforced_by`. The rule text and level never change here.
 #
@@ -37,6 +38,7 @@ level = "MUST NOT"
 rule = "Ship with a high or critical dependency vulnerability."
 why = "pnpm audit in CI is the cheapest supply-chain gate."
 enforced_by = ["ci:checks", "script:scripts/verify.sh"]
+needs = ["typescript"]
 
 [[rule]]
 id = "QA-1"
@@ -58,6 +60,7 @@ level = "MUST"
 rule = "Write TypeScript in strict mode without `any`."
 why = "Types are the cheapest test an agent can't forget to run."
 enforced_by = ["lint:@typescript-eslint/no-explicit-any", "file:tsconfig.base.json#\"strict\": true"]
+needs = ["typescript"]
 
 [[rule]]
 id = "GIT-1"
@@ -80,6 +83,7 @@ rule = "Edit or delete a migration that already exists on origin/main; add a new
 why = "Applied migrations are history; editing them desynchronises every database."
 enforced_by = ["claude-hook:guard.py", "git-hook:pre-commit"]
 when = "apps/api"
+needs = ["database"]
 
 [[rule]]
 id = "CFG-1"
@@ -88,6 +92,7 @@ rule = "Declare every API config key in the schema, .env.example, .env.ci and th
 why = "Undocumented keys made local setup and CI fail in ways only the author understood."
 enforced_by = ["test:apps/api/src/config/env.schema.spec.ts"]
 when = "apps/api"
+needs = ["api"]
 
 [[rule]]
 id = "UI-1"
@@ -95,6 +100,7 @@ level = "MUST NOT"
 rule = "Hard-code colours in app code; use @<project>/ui-tokens."
 why = "Hand-copied tokens drifted between the design doc, mobile and web."
 enforced_by = ["lint:no-restricted-syntax"]
+needs = ["ui"]
 
 [[rule]]
 id = "A11Y-1"
@@ -102,6 +108,7 @@ level = "MUST"
 rule = "Keep every text/background token pair at WCAG AA contrast (4.5:1)."
 why = "Contrast is measurable; measure it instead of eyeballing it."
 enforced_by = ["test:packages/ui-tokens/src/contrast.test.ts"]
+needs = ["ui"]
 
 [[rule]]
 id = "AGENT-1"
@@ -117,6 +124,7 @@ rule = "Deploy to production only from a vX.Y.Z tag on main with its CHANGELOG.m
 why = "Production has to be a version someone can name, read about and roll back to, and a person decides when it goes out."
 enforced_by = ["ci:deploy-production", "claude-hook:guard.py"]
 when = "apps/api"
+needs = ["hosted"]
 
 [[rule]]
 id = "AGENT-2"
@@ -145,6 +153,7 @@ level = "MUST NOT"
 rule = "Import another app, or a workspace package's internals instead of its entry point."
 why = "Cross-module internal imports made modules impossible to change alone."
 enforced_by = ["lint:no-restricted-imports"]
+needs = ["typescript"]
 
 [[rule]]
 id = "CONTRACT-1"
@@ -153,6 +162,7 @@ rule = "Give every API response a schema in packages/shared and a contract test 
 why = "Clients and API drifted silently when the response shape lived only in the controller."
 enforced_by = ["test:apps/api/src/contracts.integration.spec.ts", "ci:integration"]
 when = "apps/api"
+needs = ["api"]
 
 [[rule]]
 id = "AUTHZ-1"
@@ -161,6 +171,7 @@ rule = "Declare who may call every API route in apps/api/src/authz/authz.matrix.
 why = "Endpoints shipped without an explicit access decision; a role check was missing on organiser routes."
 enforced_by = ["test:apps/api/src/authz/authz.matrix.spec.ts", "ci:unit"]
 when = "apps/api"
+needs = ["api"]
 
 [[rule]]
 id = "I18N-1"
@@ -169,6 +180,7 @@ rule = "Show user-facing text only through t(), with the same keys and placehold
 why = "Screens shipped with English strings in Spanish locales and broken plurals ('1 cupos')."
 enforced_by = ["lint:no-restricted-syntax", "test:apps/*/src/i18n/i18n.test.ts"]
 when = ["apps/web", "apps/mobile"]
+needs = ["ui", "i18n"]
 
 [[rule]]
 id = "E2E-1"
@@ -177,6 +189,7 @@ rule = "Walk every critical journey end to end in CI, with an accessibility scan
 why = "Thousands of green unit tests coexisted with 57 UX defects found only by using the app."
 enforced_by = ["ci:e2e", "test:apps/*/e2e/*.spec.ts"]
 when = ["apps/web", "apps/mobile"]
+needs = ["ui"]
 
 [[rule]]
 id = "TRACE-1"
@@ -205,6 +218,7 @@ level = "SHOULD"
 rule = "Give every screen loading, empty, error and no-permission states, each covered by a test."
 why = "Empty and error states were the most common UX finding."
 enforced_by = ["review:verifier", "review:reviewer"]
+needs = ["ui"]
 
 [[rule]]
 id = "QA-4"
@@ -245,6 +259,7 @@ rule = "Walk the critical journeys against the real API and database, with no ne
 why = "Hermetic E2E stayed green while the real API answered with another shape, status or state."
 enforced_by = ["ci:e2e-stack", "test:apps/*/e2e/stack/*.spec.ts", "lint:no-restricted-syntax"]
 when = ["apps/web/playwright.stack.config.ts", "apps/mobile/playwright.stack.config.ts"]
+needs = ["ui", "api"]
 
 [[rule]]
 id = "REVIEW-1"

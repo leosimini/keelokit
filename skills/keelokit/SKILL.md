@@ -24,6 +24,7 @@ Answer three things, in this order, in at most ten lines:
    |---|---|
    | A gate is pending | Continue `/keelokit:project-new` (new product) or `/keelokit:project-adopt` (existing repo) from that gate |
    | Harness errors reported | `/keelokit:check-health` |
+   | The profile is `unknown`, or the doctor reports profile drift | `/keelokit:check-health` to bring `.keelokit/profile.toml` up to date |
    | The project's harness (`_commit` in `.keelokit/answers.yml`) is older than the plugin | Offer `/keelokit:harness-upgrade` |
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
    | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave) |
