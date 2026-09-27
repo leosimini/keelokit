@@ -1,6 +1,6 @@
 ---
 name: project-new
-description: Start a new product from zero with the Keelokit harness — intake interview, PRD, stack decision, monorepo skeleton with CI and staging from day 1, and the first backlog. Use when the user says "nuevo producto", "arrancar un proyecto", "kickstart", "quiero construir <idea>", "armá el proyecto", "new product", or when /keelokit finds no project and the user wants one. Resumes from the pending gate when .keelokit/state.toml exists.
+description: Start a new product from zero with the Keelokit harness — intake interview, PRD, stack decision, monorepo skeleton with CI and staging from day 1, and the first backlog. Use when the user says "nuevo producto", "arrancar un proyecto", "kickstart", "quiero construir una app", "armá el proyecto", "new product", or when /keelokit finds no project and the user wants one. Resumes from the pending gate when .keelokit/state.toml exists.
 ---
 
 # Kickstart — five gates from idea to a working skeleton

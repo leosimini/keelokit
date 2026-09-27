@@ -6,6 +6,8 @@
   longer carry Copier conditions like `{% if 'api' in apps %}` — claude.ai rejects paths with `{`,
   `%`, `'` or spaces. The conditions moved to `_exclude` in `copier.yml`; generated projects and
   `harness-upgrade` are unchanged. A test keeps every path in the repo plain.
+- claude.ai's upload also rejects skill descriptions with anything that looks like a tag:
+  `project-new`'s said "quiero construir <idea>". A test keeps descriptions plain.
 
 ## 0.7.0 — 2026-09-27 — ship it
 
