@@ -77,6 +77,17 @@ if [ -n "$from" ]; then
     [ -f "$spec" ] && ! grep -q 'E2E-1' "$spec" &&
       { printf '%s\n' '// Enforces house rule E2E-1.'; cat "$spec"; } >"$spec.tmp" && mv "$spec.tmp" "$spec"
   done
+  # 0.5.0: fast-check for the property tests, and the real-stack E2E scripts (E2E-2).
+  (cd "$dir/packages/shared" && npm pkg set devDependencies.fast-check=^4.10.2)
+  if [ -f "$dir/apps/api/package.json" ]; then
+    (cd "$dir/apps/api" && npm pkg set devDependencies.fast-check=^4.10.2)
+    api_url='http://localhost:${E2E_API_PORT:-3100}'
+    [ -f "$dir/apps/web/package.json" ] && (cd "$dir/apps/web" && npm pkg set \
+      "scripts.e2e:stack=pnpm --dir ../api build && VITE_API_URL=$api_url vite build && playwright test -c playwright.stack.config.ts")
+    [ -f "$dir/apps/mobile/package.json" ] && (cd "$dir/apps/mobile" && npm pkg set \
+      "scripts.e2e=EXPO_PUBLIC_API_URL=http://api.test expo export --platform web --clear && playwright test" \
+      "scripts.e2e:stack=pnpm --dir ../api build && EXPO_PUBLIC_API_URL=$api_url expo export --platform web --clear && playwright test -c playwright.stack.config.ts")
+  fi
 else
   step "Generate $apps"
   "${copier[@]}" copy --vcs-ref HEAD --defaults "${data[@]}" "$keelokit" "$dir"
@@ -88,3 +99,20 @@ step 'Install'
 pnpm install
 pnpm -r --workspace-concurrency=1 --if-present e2e:install
 pnpm verify --all
+
+# MUT-1 must bite: the template's critical example passes, and the same code under a suite that
+# can't fail is rejected.
+step 'Mutation testing (critical code)'
+pnpm mutation --all
+spec=packages/shared/src/allocate.test.ts
+if [ -f "$spec" ]; then
+  cp "$spec" "$work/allocate.test.ts"
+  printf '%s\n' "import { expect, it } from 'vitest';" "import { allocate } from './allocate.js';" \
+    "it('returns parts', () => expect(allocate(1, [1])).toHaveLength(1));" >"$spec"
+  if pnpm mutation --all >/dev/null 2>&1; then
+    echo 'a suite that cannot fail passed mutation testing' >&2
+    exit 1
+  fi
+  cp "$work/allocate.test.ts" "$spec"
+  echo 'a suite that cannot fail was rejected ✔'
+fi

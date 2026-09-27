@@ -49,6 +49,10 @@ Write the five files exactly as `references/context-format.md` shows:
 - Every fact carries its source id; inferred facts are marked `(inferred, S3)`.
 - Constraints are written as `[MUST]` / `[MUST NOT]` with something measurable; if breaking it
   has no named consequence, it is not a constraint — move it to the PRD.
+- Rules that must never break (D03–D03d) become invariants in `domain.md`: `[INV-nnn]`, the rule,
+  `class: <class>` and the source. Ask how it breaks to pick the class; two ways → two
+  invariants. Ids never change or get reused. Money, one-time side effects, limits and other
+  people's data are where the worst bugs live: don't close the domain block without asking.
 - No vague phrases ("robust", "user-friendly", "best practices"…) — `pnpm doctor` rejects them.
 - No secrets, no personal data of real people; accounts are named by owner, never with values.
 

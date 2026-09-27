@@ -14,11 +14,20 @@ inherits it; change it in the Keelokit template, not here.
 
 - Stay inside the files the story names in `touches`; touching anything else is a scope change —
   say so before doing it.
-- Stories go through `/keelokit:build`: the verifier writes the acceptance tests first, the
-  builder makes them pass without editing them, the reviewer reads the diff cold, and only the
-  verifier declares done — after walking every scenario in the running app.
+- Stories go through `/keelokit:build`: the verifier writes the acceptance tests first (and the
+  test each invariant's class calls for), the builder makes them pass without editing them, the
+  reviewer reads the diff cold, the breaker tries to break it (full mode), and only the verifier
+  declares done — after walking every scenario in the running app. If main moved before landing,
+  rebase and let the breaker attack the combination.
+- Critical areas (`.keelokit/critical.toml`) go one story at a time, in full mode, with
+  `pnpm mutation` green. Put the critical rule in a pure function; wrap it in a transaction.
+- Anything that writes: what if it runs twice, or twice at once? Answer with a constraint, a
+  conditional update, a lock or an idempotency key, and prove it with `race()` on the real
+  database, never with a mock.
 - Any other behaviour change: failing test first; the smallest change that makes it pass, at the
   root cause (grep every caller of what you change).
+- A bug that got past the tests meant to catch it: a failing test for it, the fix, and a row in
+  `docs/escapes.md` naming the check that now catches its whole class.
 - Unknown fact → never guess. Record a gap in `docs/context/gaps.md` (id, owner, exact question,
   blocking yes/no) and continue with what doesn't depend on it, or stop and ask.
 - A command fails twice for the same reason → stop, report what you tried, ask.
@@ -26,8 +35,9 @@ inherits it; change it in the Keelokit template, not here.
 ## Done means
 
 - `pnpm verify` passed on the final commit (it runs before every push anyway).
-- For a story: the verifier's DONE verdict, with evidence per scenario; every scenario has a test
-  citing `<ID>.S<n>` (doctor checks it).
+- For a story: the reviewer's APPROVE (and in full mode the breaker's HOLDS), then the
+  verifier's DONE verdict, with evidence per scenario and per invariant; every scenario has a
+  test citing `<ID>.S<n>` and every invariant a test citing `INV-nnn` (doctor checks both).
 - The commit that completes a story carries the trailer `Story: AUTH-003` (last line of the
   message). That trailer, reachable from `main`, is what makes the story done — mentioning the id
   anywhere else doesn't count.
@@ -50,6 +60,8 @@ the options, a recommendation, and what each option costs.
 ## Never
 
 - Bypass a gate (`--no-verify`, force-push, disabling a test to go green).
+- Edit a story's acceptance tests as its builder; only the verifier changes them, in a
+  `test(<ID>): …` commit that says why.
 - Commit secrets or `.env` files.
 - Edit a migration that already exists on `origin/main`.
 - Mark something done that `pnpm verify` has not passed.

@@ -1,6 +1,6 @@
 {
   "name": "keelokit",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Leopoldo Simini's personal Claude Code harness for building apps in TypeScript monorepos: intake, PRD, a generated skeleton with CI, backlog, independent verification and rules backed by checks.",
   "author": {
     "name": "Leopoldo Simini",

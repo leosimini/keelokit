@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The CI pipeline, run locally. The pre-push hook runs it; so does every agent before it says
-# "done". Integration tests get a throwaway PostgreSQL in Docker, never your dev database.
+# "done". Integration tests and the real-stack E2E (E2E-2) get a throwaway PostgreSQL in Docker,
+# never your dev database. Mutation testing (MUT-1) is slower and runs apart: `pnpm mutation`.
 #
 #   pnpm verify         typecheck/test/build/e2e only for packages changed since origin/main
 #                       (and their dependents); lint, format, doctor and audit stay repo-wide
@@ -64,9 +65,17 @@ python3 .keelokit/bin/doctor.py --ci
 step 'Unit tests'
 pnpm "${scope[@]}" --if-present run test
 
-if $has_api && affected apps/api; then
+# E2E-2 walks web/mobile against the real API: it runs when the app or the API changed.
+stack_apps='' # a plain list: macOS's bash 3.2 rejects empty arrays under `set -u`
+for app in web mobile; do
+  [ -f "apps/$app/playwright.stack.config.ts" ] || continue
+  if affected apps/api || affected "apps/$app"; then stack_apps="$stack_apps ./apps/$app"; fi
+done
+
+db=false
+if $has_api && { affected apps/api || [ -n "$stack_apps" ]; }; then
   if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
-    step 'Integration tests (throwaway PostgreSQL)'
+    step 'Throwaway PostgreSQL (migrated, seeded)'
     image=$(grep -m1 'image:' docker-compose.yml | awk '{print $2}')
     DB=$(docker run -d --rm -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app \
       -p 127.0.0.1::5432 "$image")
@@ -78,16 +87,27 @@ if $has_api && affected apps/api; then
     until docker exec "$DB" pg_isready -U app -d app -h 127.0.0.1 >/dev/null 2>&1; do sleep 1; done
     pnpm --filter ./apps/api prisma:migrate:deploy >/dev/null
     pnpm --filter ./apps/api db:seed >/dev/null
-    pnpm --filter ./apps/api test:integration
+    db=true
   else
-    echo '(Docker not running — integration tests skipped here; CI runs them.)'
+    echo '(Docker not running — integration and real-stack E2E skipped here; CI runs them.)'
   fi
+fi
+
+if $db && affected apps/api; then
+  step 'Integration tests (real PostgreSQL)'
+  pnpm --filter ./apps/api test:integration
 fi
 
 step 'Build'
 pnpm "${scope[@]}" --if-present run build
 step 'End-to-end journeys'
 pnpm "${scope[@]}" --if-present run e2e
+if $db; then
+  for app in $stack_apps; do
+    step "End-to-end on the real stack ($app)"
+    pnpm --filter "$app" run e2e:stack
+  done
+fi
 step 'Dependency audit'
 pnpm audit --audit-level=high
 

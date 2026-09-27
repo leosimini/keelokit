@@ -43,6 +43,8 @@ export default tseslint.config(
       '**/coverage/**',
       '**/playwright-report/**',
       '**/test-results/**',
+      '**/reports/**',
+      '**/.stryker-tmp/**',
       '**/*.d.ts',
     ],
   },
@@ -77,6 +79,21 @@ export default tseslint.config(
         {
           selector: 'JSXText[value=/[A-Za-zÀ-ÿ]/]',
           message: 'User-facing text goes through t() and the locale files (house rule I18N-1).',
+        },
+      ],
+    },
+  },
+  {
+    // E2E-2: journeys under e2e/stack/ run against the real API and database. Intercepting the
+    // network there would quietly turn them back into hermetic tests.
+    files: ['apps/*/e2e/stack/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        noHexColour,
+        {
+          selector: 'CallExpression[callee.property.name=/^(route|routeFromHAR|routeWebSocket)$/]',
+          message: 'No network mocks in e2e/stack — they walk the real API (house rule E2E-2).',
         },
       ],
     },

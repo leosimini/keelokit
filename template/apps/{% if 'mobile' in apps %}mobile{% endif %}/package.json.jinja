@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "jest --forceExit",
 {%- if 'api' in apps %}
-    "e2e": "EXPO_PUBLIC_API_URL=http://api.test expo export --platform web && playwright test",
+    "e2e": "EXPO_PUBLIC_API_URL=http://api.test expo export --platform web --clear && playwright test",
+    "e2e:stack": "pnpm --dir ../api build && EXPO_PUBLIC_API_URL=http://localhost:${E2E_API_PORT:-3100} expo export --platform web --clear && playwright test -c playwright.stack.config.ts",
 {%- else %}
     "e2e": "expo export --platform web && playwright test",
 {%- endif %}

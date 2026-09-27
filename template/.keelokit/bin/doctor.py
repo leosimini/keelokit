@@ -4,15 +4,21 @@
     python3 .keelokit/bin/doctor.py            full report
     python3 .keelokit/bin/doctor.py --brief    where am I / what's next (SessionStart hook)
     python3 .keelokit/bin/doctor.py --ci       full report, exit 1 on any error
-    python3 .keelokit/bin/doctor.py --scope ID files changed on this branch vs the story's `touches`
+    python3 .keelokit/bin/doctor.py --scope ID files changed on this branch vs the story's `touches`,
+                                               critical areas and acceptance tests
+    python3 .keelokit/bin/doctor.py --critical [--changed]
+                                               critical source files (all, or changed since main)
 
 Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the
 rule and has active cases, a lint rule that is on, a CI job with real steps and no
 continue-on-error, a git hook that is installed) unless an approved exception is active;
 exceptions are complete and not expired; docs/context is complete, precise and its gaps are
-tracked; backlog stories are well-formed, stories in one wave don't touch the same paths, and
-every scenario of a done story is cited by an active test title. A story is done when a commit
-reachable from main carries the trailer `Story: <ID>` — status is never stored in a file.
+tracked; every invariant in domain.md has an id and a class; critical areas point at real
+paths; backlog stories are well-formed, stories in one wave don't touch the same paths or the
+same critical area, a story touching a critical area declares `integrity` and its invariants,
+and every scenario and invariant of a done story is cited by an active test title; the escape
+log names the check each escaped bug left behind. A story is done when a commit reachable from
+main carries the trailer `Story: <ID>` — status is never stored in a file.
 """
 import sys
 
@@ -39,9 +45,17 @@ GAP_ROW_RE = re.compile(r"^\|\s*(GAP-\d+)\s*\|")  # row in gaps.md
 STORY_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d{3}$")
 # What a story may touch; each one pulls its checks into the story's contract (skills/build).
 DIMENSIONS = {
-    "data", "api", "contract", "logic", "auth", "ux", "ui", "web", "mobile", "i18n", "copy",
-    "a11y", "security", "nfr", "config", "ops",
+    "data", "api", "contract", "logic", "integrity", "auth", "ux", "ui", "web", "mobile", "i18n",
+    "copy", "a11y", "security", "nfr", "config", "ops",
 }
+# Invariant classes (references/invariants.md in the plugin): each one fixes the kind of test that
+# proves it — a property test, a concurrency test, a replay test, a transition table.
+INVARIANT_CLASSES = {"conservation", "once", "limit", "transition", "isolation", "time", "consistency"}
+# `- [INV-001] [MUST] … — class: conservation (S1)` in docs/context/domain.md defines an invariant.
+INV_DEF_RE = re.compile(r"(?m)^\s*[-*]\s*\[(INV-\d{3})\](.*)$")
+INV_CLASS_RE = re.compile(r"\bclass:\s*([a-z]+)")
+ESCAPE_ROW_RE = re.compile(r"^\|\s*(ESC-\d{3})\s*\|")
+SOURCE_RE = re.compile(r"\.[cm]?[jt]sx?$")
 SCENARIO_RE = re.compile(r"(?im)^\s*(?:scenario|escenario)[^:\n]*:\s*\[(S\d+)\]")
 TEST_FILE_RE = re.compile(r"(\.(test|spec)\.[cm]?[jt]sx?$)|(/e2e/.*\.[jt]s$)")
 # Title of an active test/describe call. `.skip`, `.todo`, `xit` and friends never match, so a
@@ -235,6 +249,85 @@ def check_context() -> tuple[int, int]:
     return len(tracked), blocking
 
 
+def check_invariants() -> dict[str, str]:
+    """Invariants defined in docs/context/domain.md, id → class."""
+    path = ROOT / "docs/context/domain.md"
+    found: dict[str, str] = {}
+    if not path.exists():
+        return found
+    text = re.sub(r"(?s)<!--.*?-->", "", path.read_text())
+    for iid, rest in INV_DEF_RE.findall(text):
+        m = INV_CLASS_RE.search(rest)
+        if iid in found:
+            errors.append(f"docs/context/domain.md: {iid} is defined twice")
+        if not m or m.group(1) not in INVARIANT_CLASSES:
+            errors.append(f"docs/context/domain.md: {iid} needs 'class: <{'|'.join(sorted(INVARIANT_CLASSES))}>'")
+        found[iid] = m.group(1) if m else "?"
+    return found
+
+
+def load_critical() -> tuple[list[dict], int]:
+    """Critical areas from .keelokit/critical.toml, and the mutation score that fails the build."""
+    path = ROOT / ".keelokit/critical.toml"
+    if not path.exists():
+        return [], 0
+    try:
+        data = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as e:
+        errors.append(f".keelokit/critical.toml: invalid TOML ({e})")
+        return [], 0
+    threshold = data.get("mutation_break", 70)  # scripts/mutation.sh uses the same default
+    if not isinstance(threshold, int) or not 0 <= threshold <= 100:
+        errors.append(".keelokit/critical.toml: mutation_break must be a whole percentage (0-100)")
+        threshold = 70
+    areas = []
+    for a in data.get("area", []):
+        name = a.get("name", "?")
+        if not a.get("name") or not a.get("why") or not a.get("paths"):
+            errors.append(f".keelokit/critical.toml: area '{name}' needs name, why and paths")
+            continue
+        for p in a["paths"]:
+            if not (ROOT / p).exists():
+                errors.append(f".keelokit/critical.toml: area '{name}' points at '{p}', which does not exist")
+        areas.append(a)
+    return areas, threshold
+
+
+def areas_hit(paths: list[str], areas: list[dict]) -> list[str]:
+    return [a["name"] for a in areas if any(overlaps(p, q) for p in paths for q in a["paths"])]
+
+
+def critical_files(areas: list[dict]) -> list[str]:
+    """Source files (not tests) under the critical areas."""
+    files = set()
+    for a in areas:
+        for p in a["paths"]:
+            path = ROOT / p
+            for f in path.rglob("*") if path.is_dir() else [path]:
+                rel = f.relative_to(ROOT).as_posix()
+                if (f.is_file() and SOURCE_RE.search(rel) and not TEST_FILE_RE.search(rel)
+                        and not rel.endswith(".d.ts")
+                        and not re.search(r"(^|/)(node_modules|dist|generated)/", rel)):
+                    files.add(rel)
+    return sorted(files)
+
+
+def check_escapes() -> int:
+    """docs/escapes.md: every bug that got past a story's own tests, and the check it left behind."""
+    path = ROOT / "docs/escapes.md"
+    if not path.exists():
+        return 0
+    rows = 0
+    for line in path.read_text().splitlines():
+        if not (m := ESCAPE_ROW_RE.match(line)):
+            continue
+        rows += 1
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 6 or not all(cells[:6]):
+            errors.append(f"docs/escapes.md: {m.group(1)} needs id, date, found by, what escaped, class and check added")
+    return rows
+
+
 def done_story_ids() -> set[str]:
     """Stories closed by a `Story: <ID>` trailer on a commit reachable from main."""
     trailers = git("log", main_ref(), "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
@@ -272,7 +365,7 @@ def overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 
-def check_backlog() -> dict:
+def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
     stories = {}
     for path in sorted((ROOT / "backlog/stories").glob("*.md")):
         meta = read_story(path)
@@ -301,6 +394,19 @@ def check_backlog() -> dict:
             errors.append(f"story {sid}: unknown dimensions {', '.join(sorted(unknown))}")
         if not meta["_scenarios"]:
             errors.append(f"story {sid}: acceptance criteria need scenario ids, e.g. 'Scenario: [S1] …'")
+        invs = meta.get("invariants", [])
+        if unknown := [i for i in invs if i not in invariants]:
+            errors.append(f"story {sid}: invariants {', '.join(unknown)} are not defined in docs/context/domain.md")
+        if "integrity" in (dims or []) and not invs:
+            errors.append(f"story {sid}: declares 'integrity' — list the invariants it must keep (invariants = [\"INV-001\"])")
+        if invs and "integrity" not in (dims or []):
+            errors.append(f"story {sid}: lists invariants — declare the 'integrity' dimension too")
+        if sid not in done and (hit := areas_hit(meta.get("touches", []), areas)) and "integrity" not in (dims or []):
+            errors.append(f"story {sid}: touches critical area {', '.join(hit)} — declare 'integrity' and the invariants it must keep")
+    kept = {i for m in stories.values() for i in m.get("invariants", [])}
+    if stories:
+        for iid in sorted(set(invariants) - kept):
+            warnings.append(f"invariant {iid} ({invariants[iid]}) is kept by no story yet")
     pending = [s for s in stories if s not in done]
     for i, a in enumerate(pending):
         for b in pending[i + 1:]:
@@ -309,6 +415,9 @@ def check_backlog() -> dict:
             clash = [f"{x}" for x in stories[a].get("touches", []) for y in stories[b].get("touches", []) if overlaps(x, y)]
             if clash:
                 errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} but both touch {', '.join(clash)} — move one to a later wave")
+            shared = set(areas_hit(stories[a].get("touches", []), areas)) & set(areas_hit(stories[b].get("touches", []), areas))
+            if shared:
+                errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time")
     corpus = cited_titles() if done else ""
     for sid in sorted(done):
         untested = [
@@ -317,6 +426,9 @@ def check_backlog() -> dict:
         ]
         if untested:
             errors.append(f"story {sid} is done but no active test title cites {', '.join(untested)} (TRACE-1)")
+        unproven = [i for i in stories[sid].get("invariants", []) if not re.search(rf"\b{i}\b", corpus)]
+        if unproven:
+            errors.append(f"story {sid} is done but no active test title cites invariant {', '.join(unproven)} (INV-1)")
     ready = [
         sid for sid, m in stories.items()
         if sid not in done and all(d in done for d in m.get("depends_on", []))
@@ -336,26 +448,67 @@ def check_scope(sid: str) -> int:
     if sid not in stories:
         print(f"No story {sid} in backlog/stories")
         return 1
-    touches = stories[sid].get("touches", [])
+    story = stories[sid]
+    touches = story.get("touches", [])
     changed = git("diff", "--name-only", f"{main_ref()}...HEAD").split()
+    status = 0
     outside = [f for f in changed if not any(overlaps(f, t) or f.startswith(t.rstrip("/") + "/") for t in touches)
                and not f.startswith(("backlog/", "docs/"))]
     if outside:
         print(f"{sid} changed files outside its touches: " + ", ".join(outside))
         print("Add them to the story's touches (and re-check its wave) or move the change to its own story.")
-        return 1
-    print(f"{sid}: all {len(changed)} changed files are within its touches")
-    return 0
+        status = 1
+    areas, _ = load_critical()
+    hit = areas_hit(changed, areas)
+    if hit and "integrity" not in story.get("dimensions", []):
+        print(f"{sid} changed critical area {', '.join(hit)} but does not declare 'integrity': "
+              "add it and the invariants it keeps, then run the full build (no --light).")
+        status = 1
+    # The builder makes the verifier's acceptance tests pass; it never edits them. Only a later
+    # `test(<ID>): …` commit (the verifier fixing a test openly) may change them.
+    log = git("log", "--reverse", "--format=%H%x09%s", f"{main_ref()}..HEAD").splitlines()
+    marker = f"test({sid.lower()})"
+    first = next((i for i, line in enumerate(log) if line.partition("\t")[2].lower().startswith(marker)), None)
+    if first is not None:
+        tests = set(git("show", "--name-only", "--format=", log[first].split("\t")[0]).split())
+        for line in log[first + 1:]:
+            sha, _, subject = line.partition("\t")
+            if subject.lower().startswith(marker):
+                continue
+            if edited := tests & set(git("show", "--name-only", "--format=", sha).split()):
+                print(f"{sid}: acceptance tests changed outside a 'test({sid}): …' commit — {sha[:9]} "
+                      f"\"{subject}\" edits {', '.join(sorted(edited))}")
+                status = 1
+    if status == 0:
+        print(f"{sid}: all {len(changed)} changed files are within its touches"
+              + (f"; critical area {', '.join(hit)} declared" if hit else ""))
+    return status
 
 
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode == "--scope":
         return check_scope(sys.argv[2] if len(sys.argv) > 2 else "")
+    if mode == "--critical":
+        areas, _ = load_critical()
+        if errors:
+            print("\n".join(errors), file=sys.stderr)
+            return 1
+        files = critical_files(areas)
+        if "--changed" in sys.argv:
+            base = git("merge-base", main_ref(), "HEAD").strip() or "HEAD"
+            changed = set(git("diff", "--name-only", base).split())
+            changed |= set(git("ls-files", "--others", "--exclude-standard").split())
+            files = [f for f in files if f in changed]
+        print("\n".join(files))
+        return 0
     rules = load_rules()
     check_rules(rules, check_exceptions(set(rules)))
     gaps, blocking = check_context()
-    backlog = check_backlog()
+    invariants = check_invariants()
+    areas, _ = load_critical()
+    escapes = check_escapes()
+    backlog = check_backlog(invariants, areas)
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
     layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", answers.read_text()) else "project"
@@ -375,6 +528,7 @@ def main() -> int:
     print("Keelokit doctor")
     print(f"  Gates: " + " → ".join(f"{g}{' ✓' if gates.get(g) else ''}" for g in gate_names))
     print(f"  Rules: {len(rules)} · Context gaps: {gaps} ({blocking} blocking)")
+    print(f"  Invariants: {len(invariants)} · Critical areas: {len(areas)} · Escapes logged: {escapes}")
     print(f"  Backlog: {len(backlog['done'])}/{backlog['total']} done"
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))
     for w in warnings:
