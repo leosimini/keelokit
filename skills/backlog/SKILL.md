@@ -24,7 +24,9 @@ Anything in the PRD's "out" list never becomes a story.
 - Front matter (`+++` TOML): `id`, `epic`, `title`, `wave`, `depends_on`, `touches` (the paths
   it will change — directories are fine), `dimensions` (what it can break, from
   `${CLAUDE_PLUGIN_ROOT}/references/dimensions.md`: a screen implies at least `ux`, `ui`, `i18n`,
-  `a11y`; an endpoint implies `api`, `contract`, `auth`). No `status`.
+  `a11y`; an endpoint implies `api`, `contract`, `auth`), and `invariants` (the `INV-nnn` from
+  `docs/context/domain.md` the story must keep; listing any means declaring `integrity`, and
+  touching a critical area from `.keelokit/critical.toml` means both). No `status`.
 - Body sections, in order:
   1. **Context** — why, with references to `docs/context` / PRD sections, and a
      **Does NOT do** list.
@@ -32,7 +34,8 @@ Anything in the PRD's "out" list never becomes a story.
   3. **Acceptance criteria** — Gherkin, one `Scenario: [S1] …` per behaviour (ids are how tests
      trace back: `AUTH-003.S1`). Cover, per declared dimension, the uncomfortable cases: empty,
      error, loading, no permission, another role, expired session, other locale, 320 px, twice in
-     a row. Include the domain invariants the story touches.
+     a row, two at once. The invariants go in the front matter, not as scenarios: each one gets
+     the test its class calls for (`${CLAUDE_PLUGIN_ROOT}/references/invariants.md`).
   4. **Testable units** — table: unit · test type (unit / integration / e2e) · file.
   5. **Definition of done** — `pnpm verify` green, every scenario covered by a test titled with
      its id, `Story: <ID>` trailer on the completing commit, addendum if the result differs.
@@ -52,9 +55,15 @@ Anything in the PRD's "out" list never becomes a story.
    priority, then risk (unknowns early).
 2. Waves: a story goes in the earliest wave where all `depends_on` are in earlier waves **and**
    its `touches` don't overlap any other story in the same wave (same file, or one path inside
-   another). Overlap → next wave; `pnpm doctor` fails on overlaps. This is what lets several
-   agents build in parallel safely.
-3. Write `backlog/epics.md`: the epics table, then one table per wave
+   another) **and** it shares no critical area with another story of the wave. Overlap → next
+   wave; `pnpm doctor` fails on both. This is what lets several agents build in parallel
+   safely, and what keeps critical work (money, notices, limits, orchestrators) one story at a
+   time.
+3. Critical areas: when the plan creates code where a bug moves money, repeats a side effect,
+   breaks a limit or leaks data, propose an area for `.keelokit/critical.toml` (name, why,
+   paths) to the user, and point its stories at it. Shared orchestrators that many stories call
+   are good candidates: serialising them is cheap, a collision in them is not.
+4. Write `backlog/epics.md`: the epics table, then one table per wave
    (`Story · Title · Depends on · Touches`), then a short "collisions resolved" note for stories
    moved to a later wave because of overlap.
 

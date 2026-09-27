@@ -22,6 +22,10 @@ Ask in the user's language, in your own words. **B** = blocking: unanswered → 
 | D01 | Name the 5–15 main things of the business and define each in one sentence. | Entity + definition | B |
 | D02 | Which words do you use with a meaning different from the usual one? | Term + meaning | |
 | D03 | Which business rule must never break? | Testable invariant | B |
+| D03a | Where do amounts move (payments, refunds, fees, credits, stock)? What must always add up? | A sum that must hold, or "no amounts" | |
+| D03b | What must happen at most once, even if a user taps twice or a job runs twice (a charge, a notice, an email)? | Named side effect | |
+| D03c | What has a limit that two people could pass at the same time (seats, stock, quotas, one active X per person)? | Named limit + number | |
+| D03d | What would a user see or receive that belongs to someone else, if it went wrong? | Named data + owner | |
 | D04 | Which states does the main entity go through? Which transition is forbidden? | States + forbidden transitions | |
 | D05 | Are there critical calculations (prices, fees, quotas)? Exactly how are they computed? | Formula or worked example | |
 | D06 | Which events trigger work (a booking, a payment, a date)? | Event + reaction | |

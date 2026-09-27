@@ -205,3 +205,63 @@ rule = "Skip, focus or silence a test or check (.skip, .only, xit, eslint-disabl
 why = "Going green by disabling the test that caught the bug is the cheapest way to lie."
 enforced_by = ["claude-hook:guard.py", "git-hook:pre-commit"]
 
+
+# ── Bugs come in classes: invariants, critical areas, adversarial review, tests that bite ──────
+# The plugin's references/invariants.md explains each class and the test it calls for.
+
+[[rule]]
+id = "INV-1"
+level = "MUST"
+rule = "Prove every invariant a done story keeps (INV-nnn in docs/context/domain.md) with an active test whose title cites its id, of the kind its class calls for."
+why = "Money, quotas and notices broke in ways no scenario described; the rules that must always hold were never tested as rules."
+enforced_by = ["script:.keelokit/bin/doctor.py", "ci:checks", "review:verifier"]
+
+[[rule]]
+id = "CRIT-1"
+level = "MUST"
+rule = "Declare `integrity` and its invariants on any story that touches a critical area (.keelokit/critical.toml), build it in full mode, and never put two stories of the same area in one wave."
+why = "Parallel stories that each looked safe broke a shared orchestrator and its notices together."
+enforced_by = ["script:.keelokit/bin/doctor.py", "ci:checks"]
+
+[[rule]]
+id = "MUT-1"
+level = "MUST"
+rule = "Keep the mutation score of critical code at or above `mutation_break` in .keelokit/critical.toml."
+why = "Green suites let deliberate bugs in money code through; a test that can't fail proves nothing."
+enforced_by = ["ci:mutation", "script:scripts/mutation.sh"]
+
+[[rule]]
+id = "E2E-2"
+level = "MUST"
+rule = "Walk the critical journeys against the real API and database, with no network mocks, in CI."
+why = "Hermetic E2E stayed green while the real API answered with another shape, status or state."
+enforced_by = ["ci:e2e-stack", "test:apps/*/e2e/stack/*.spec.ts", "lint:no-restricted-syntax"]
+when = ["apps/web/playwright.stack.config.ts", "apps/mobile/playwright.stack.config.ts"]
+
+[[rule]]
+id = "REVIEW-1"
+level = "MUST"
+rule = "Land a story only after the reviewer read its diff cold and, in full mode, the breaker attacked it — and again after the rebase when main moved in between."
+why = "One review at the end of the night for everything missed the interactions between stories that landed the same day."
+enforced_by = ["review:reviewer", "review:breaker"]
+
+[[rule]]
+id = "VERIFY-2"
+level = "MUST NOT"
+rule = "Change a story's acceptance tests except in a `test(<ID>): …` commit that says why."
+why = "A builder that can edit the tests it must pass is grading its own work again."
+enforced_by = ["script:.keelokit/bin/doctor.py", "review:reviewer"]
+
+[[rule]]
+id = "ESC-1"
+level = "SHOULD"
+rule = "Log every bug that got past a story's own tests in docs/escapes.md, with the check that now catches its whole class."
+why = "Fixes without a new check let the same class of bug come back in the next bug bash."
+enforced_by = ["script:.keelokit/bin/doctor.py", "review:verifier"]
+
+[[rule]]
+id = "COPY-1"
+level = "SHOULD"
+rule = "Back every promise the product's text makes (a time, an amount, a notice, 'you can undo') with a test of that behaviour."
+why = "Screens promised reminders and refunds that the code never sent or paid."
+enforced_by = ["review:reviewer", "review:breaker"]

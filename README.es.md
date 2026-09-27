@@ -32,9 +32,9 @@ código no es el que dice que está terminado.
 | `/keelokit:kickstart` | De una idea a un esqueleto que funciona: una entrevista que escribe el contexto del producto, un PRD corto, el stack, un monorepo generado con CI y un primer backlog |
 | `/keelokit:adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene y deja el resto como excepciones con fecha |
 | `/keelokit:intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
-| `/keelokit:backlog` | Épicas e historias con escenarios de aceptación, agrupadas para que el trabajo en paralelo no toque los mismos archivos |
-| `/keelokit:build` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff y el verificador la recorre en la app corriendo |
-| `/keelokit:bugbash` | Una cacería de bugs en datos, API, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para que no vuelva |
+| `/keelokit:backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
+| `/keelokit:build` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
+| `/keelokit:bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
 | `/keelokit:doctor` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
 | `/keelokit:upgrade` | Llevar un proyecto a un template más nuevo sin tocar el código del producto |
 | `/keelokit` | Dónde está el proyecto, qué sigue y qué espera tu decisión |
@@ -67,8 +67,13 @@ tenés, `/keelokit:adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE
   Para cambios chicos existe `build --light`.
 - El guard que frena a los agentes para que no salteen hooks ni escriban secretos es un reductor
   de velocidad, no un sandbox. Los hooks de git y el CI son el respaldo real.
-- `doctor` puede ver que un check existe y está prendido, no que sea un buen check. Para eso están
-  las revisiones y las cacerías de bugs.
+- `doctor` puede ver que un check existe y está prendido, no que sea un buen check. En el código
+  crítico eso lo mide el mutation testing; en el resto, las revisiones y las cacerías de bugs.
+- Los bugs vienen en clases, así que el harness apunta a clases: las reglas que siempre tienen
+  que cumplirse (los totales cierran, un aviso sale una sola vez, un límite aguanta dos requests
+  a la vez) se escriben como invariantes y se prueban con tests de propiedades, de concurrencia
+  y de repetición; el código donde un bug cuesta más se marca como área crítica y se construye
+  de a una historia. Ver [`docs/design.md`](docs/design.md#bugs-come-in-classes).
 - Los skills entienden pedidos en español y en inglés.
 
 ## Cómo está hecho

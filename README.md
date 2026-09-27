@@ -30,9 +30,9 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | `/keelokit:kickstart` | From an idea to a working skeleton: an interview that writes the product context, a short PRD, the stack, a generated monorepo with CI, and a first backlog |
 | `/keelokit:adopt` | For an existing repo: adds only the harness (`.keelokit/`), maps its rules to the checks the repo already has, and lists the rest as dated exceptions |
 | `/keelokit:intake` | Reads what you already have, then asks only what's missing; what nobody knows yet is written down as an open question |
-| `/keelokit:backlog` | Epics and stories with acceptance scenarios, grouped so parallel work doesn't touch the same files |
-| `/keelokit:build` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, the verifier walks it in the running app |
-| `/keelokit:bugbash` | A bug hunt across data, API, UX, i18n, accessibility, security and more; every bug that got through adds a check so it doesn't come back |
+| `/keelokit:backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
+| `/keelokit:build` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
+| `/keelokit:bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
 | `/keelokit:doctor` | Is every rule still checked? Add a rule, register an exception |
 | `/keelokit:upgrade` | Bring a project to a newer template without touching its product code |
 | `/keelokit` | Where the project is, what's next, what's waiting for you |
@@ -65,8 +65,13 @@ have, run `/keelokit:adopt`. To generate from your own fork, set `KEELOKIT_TEMPL
   `build --light` exists for small changes.
 - The guard that stops agents from bypassing hooks or writing secrets is a speed bump, not a
   sandbox. The git hooks and CI are the real backstop.
-- `doctor` can tell a check is present and switched on, not that it's a good check. Reviews and
-  bug hunts cover that.
+- `doctor` can tell a check is present and switched on, not that it's a good check. For the
+  critical code, mutation testing measures that; elsewhere, reviews and bug hunts cover it.
+- Bugs come in classes, so the harness aims at classes: the rules that must always hold
+  (totals add up, a notice goes out once, a limit holds with two requests at once) are written
+  as invariants and proven with property, concurrency and replay tests; the code where a bug
+  costs most is listed as a critical area and built one story at a time. See
+  [`docs/design.md`](docs/design.md#bugs-come-in-classes).
 - Skills understand requests in English and Spanish.
 
 ## How it's built

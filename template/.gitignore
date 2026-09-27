@@ -6,6 +6,8 @@ build
 coverage
 playwright-report
 test-results
+reports/mutation
+.stryker-tmp
 *.log
 *.tsbuildinfo
 .env

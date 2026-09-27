@@ -6,6 +6,8 @@ node_modules
 coverage
 playwright-report
 test-results
+reports
+.stryker-tmp
 pnpm-lock.yaml
 .keelokit/answers.yml
 apps/api/src/generated

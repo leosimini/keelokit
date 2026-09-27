@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "vite build && playwright test",
+{%- if 'api' in apps %}
+    "e2e:stack": "pnpm --dir ../api build && VITE_API_URL=http://localhost:${E2E_API_PORT:-3100} vite build && playwright test -c playwright.stack.config.ts",
+{%- endif %}
     "e2e:install": "playwright install --with-deps --only-shell chromium"
   },
   "dependencies": {

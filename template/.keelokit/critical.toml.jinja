@@ -1,0 +1,23 @@
+# Critical areas: code where a bug moves money wrongly, does something twice, breaks a limit or
+# shows someone another person's data. The product owns this file — add an area when such code
+# appears, and point it at the paths that hold it.
+#
+# What changes for the code listed here:
+#   - a story that touches an area declares the `integrity` dimension and the invariants it keeps
+#     (ids from docs/context/domain.md) and is built in full mode: reviewer + breaker, never
+#     --light (CRIT-1; `pnpm doctor` and `doctor --scope` check it);
+#   - two stories that touch the same area never share a wave: critical work goes one at a time;
+#   - `pnpm mutation` (CI job `mutation`) mutates it and fails under `mutation_break` (MUT-1).
+#
+# Keep the rule itself in a pure function with Vitest unit tests — property tests and mutation
+# testing reach it there — and let the API wrap it in a transaction proven by a concurrency test.
+
+mutation_break = 70 # minimum mutation score (%) of the files below
+{%- if mode == 'project' %}
+
+# The template's example: whole-unit allocation (cents, seats, stock). Remove it with the file.
+[[area]]
+name = "allocation"
+why = "Splitting an amount must never lose or invent a unit (class: conservation)."
+paths = ["packages/shared/src/allocate.ts"]
+{%- endif %}

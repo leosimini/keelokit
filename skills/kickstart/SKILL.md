@@ -60,9 +60,9 @@ If a requirement truly can't be met by the house stack, write `docs/decisions/00
      --data description="<one sentence>" --data 'apps=["api","web"]' --data postgis=false \
      "${KEELOKIT_TEMPLATE:-gh:leosimini/keelokit}" <folder>
    ```
-3. `git init -b main`, `pnpm install`, then `pnpm verify`. Fix until green — the fix belongs in
-   the generated project only if it is product-specific; if the template itself is wrong, say
-   so: it must be fixed in Keelokit.
+3. `git init -b main`, `pnpm install`, then `pnpm verify` and `pnpm mutation --all`. Fix until
+   green — the fix belongs in the generated project only if it is product-specific; if the
+   template itself is wrong, say so: it must be fixed in Keelokit.
 4. First commit: `chore: skeleton from Keelokit v<version>`.
 5. Ask whether to create a private GitHub repo (`gh repo create <slug> --private --source . --push`).
 6. Staging: the API deploys to Fly.io from CI. The Fly account, `fly auth login`, secrets and the
