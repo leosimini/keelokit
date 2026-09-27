@@ -62,10 +62,14 @@ the stage in progress. Status colour appears only in pills and stepper dots.
 | Stepper | every stage with its status (dot: reef done, foil waiting for you, board in progress, hollow not started) |
 | Stage card | what the stage is in plain words, what to check before approving (foil callout, only while waiting), its content and documents |
 | Waits for you | approvals, blocking questions, harness errors, undecided run settings |
-| Project decisions | run mode and build mode, with a lock: fixed once chosen |
+| Project decisions | project type (greenfield / brownfield), run mode and build mode with a lock (fixed once chosen), the apps, the recorded decisions |
 | Backlog | stories by development wave or by epic (segmented control), progress per group |
 | Build modes | one at a time vs in parallel, what each costs; the chosen one marked |
 | Glossary | the terms of art the page uses |
+| Ask Claude | a box every action button fills with its request; Send to Claude (page comment to the watching session) or Copy |
+| Action buttons | pill buttons (primary: sea; in the sea band: board) that fill the Ask box, never act on their own |
+| Bug bashes | each run: counts, findings with severity and the check added, pending decisions, the stories it created |
+| History | stories done, bug bashes and stage approvals, newest first; closed by default |
 
 ## Copy
 

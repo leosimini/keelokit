@@ -15,6 +15,7 @@ depends_on = []            # story ids that must be done first
 touches = ["apps/api/src/auth/", "apps/mobile/src/screens/SignUp.tsx"]
 dimensions = ["api", "contract", "auth", "data", "ux", "ui", "i18n", "a11y", "mobile"]
 invariants = []            # INV-nnn from docs/context/domain.md; any → add "integrity"
+# origin = "bugbash:2026-10-03 UX-4"   # optional: where the story came from
 +++
 ```
 

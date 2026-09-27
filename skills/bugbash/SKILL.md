@@ -71,12 +71,18 @@ For each confirmed finding (P0 → P3, product-rule changes excluded):
 ## 5. Report — `docs/bugbash/<date>/report.md`
 
 - Scope (sha), lenses run, personas, what couldn't be verified and why.
-- Table: id · lens · severity · title · status (fixed / pending decision / open) · fix commit ·
-  **check added**.
-- Pending decisions for the human: options + recommendation each.
+- Table: id · lens · severity · title · status (`fixed` / `pending decision` / `open` /
+  `story <ID>`) · fix commit · **check added**.
+- A `## Pending decisions` section for the human: options + recommendation each.
+- Findings not fixed here — too big for one fix, or a product decision the user has now taken —
+  become backlog stories through `/keelokit:backlog`, each with
+  `origin = "bugbash:<date> <finding id>"`; their row's status says `story <ID>`. That is how the
+  dashboard shows what each bug bash fed into the backlog and the build.
 - **Escapes by dimension and by class** and the checks added; compare with the previous report
   and with `docs/escapes.md` (what the build loop caught before merge) — the trend should go
   down. A dimension or class escaping two bug bashes in a row → propose a house rule for
   Keelokit. Code that produced a P0 or P1 and isn't in a critical area yet → propose adding it.
 - Mutation score of the critical areas (`pnpm mutation --all`) and its survivors.
 - Final `pnpm verify` and `doctor` results.
+
+Refresh the dashboard (`/keelokit:dashboard`): its Bug bashes section reads these reports.

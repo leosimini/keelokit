@@ -84,7 +84,8 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(s["name"], "Shop")
         self.assertEqual(s["stages"][1]["status"], "review")
         self.assertEqual(s["next"]["anchor"], "stage-product")
-        self.assertIn({"text": 'Approve "Product (PRD)"', "anchor": "stage-product"}, s["waiting"])
+        self.assertEqual(s["waiting"][0], {"text": 'Approve "Product (PRD)"', "anchor": "stage-product",
+                                           "ask": 'I approve the "Product (PRD)" stage.', "act": "Approve"})
 
     def test_story_status_from_trailers_dependencies_and_gaps(self):
         self.gates("intake", "product", "stack", "skeleton", "backlog")
@@ -141,6 +142,42 @@ class DashboardTest(unittest.TestCase):
         # Only the stage waiting for the user is open.
         self.assertIn('<details class="stage review" id="stage-product" open>', html)
         self.assertIn('<details class="stage done" id="stage-intake">', html)
+
+    def test_bug_bash_history_and_the_stories_it_fed(self):
+        self.gates("intake", "product", "stack", "skeleton", "backlog")
+        self.context()
+        self.story("AUTH-001", 1)
+        self.write("backlog/stories/AUTH-002-x.md",
+                   STORY.format(id="AUTH-002", epic="AUTH", title="undo", wave=2, deps="", body="")
+                   .replace('dimensions = ["api"]\n+++', 'dimensions = ["api"]\norigin = "bugbash:2026-09-26 UX-3"\n+++'))
+        self.write("docs/bugbash/2026-09-26/report.md", """\
+            # Bug bash
+
+            ## Scope
+            sha 3f9c2ab
+
+            | Id | Lens | Severity | Title | Status | Fix commit | Check added |
+            |---|---|---|---|---|---|---|
+            | INT-1 | integrity | P0 | Two bookings | fixed | 8a1b2c3 | race() test |
+            | UX-3 | ux | P2 | No undo | story AUTH-002 | — | — |
+            | CPY-1 | copy | P1 | Promises SMS | pending decision | — | — |
+
+            ## Pending decisions
+            - CPY-1: change the text or add SMS.
+            """)
+        self.commit("chore: skeleton")
+        self.commit("feat: a\n\nStory: AUTH-001")
+        s = self.state()
+        bb = s["bugbashes"][0]
+        self.assertEqual((bb["date"], bb["sha"], bb["stories"]), ("2026-09-26", "3f9c2ab", ["AUTH-002"]))
+        self.assertEqual([f["severity"] for f in bb["findings"]], ["P0", "P2", "P1"])
+        self.assertIn("bb-2026-09-26", [w["anchor"] for w in s["waiting"]])
+        self.assertEqual([e["kind"] for e in s["history"][:2]], ["story", "bugbash"])
+        html = self.page()
+        self.assertIn('id="bugbash" open', html)
+        self.assertIn('data-ask="/keelokit:build AUTH-002"', html)
+        self.assertIn("New product (greenfield)", html)
+        self.assertIn('id="ask-send"', html)
 
     def test_page_for_the_artifact_tool_escapes_documents(self):
         self.gates("intake", lang="es")

@@ -25,7 +25,10 @@ regenerating it is always safe.
 ## 2. Show it
 
 - **Artifact tool available** → publish `.keelokit/out/dashboard.html` (icon `dashboard`,
-  description "Where <product> is in the Keelokit process and what waits for you.").
+  description "Where <product> is in the Keelokit process and what waits for you.") with
+  `capabilities: {"comments": {}}` on the first publish (later publishes omit `capabilities` and
+  keep it). That lets the page's **Ask Claude** box send requests to this session (below). It also
+  keeps the page inside the user's organization; it can't be shared publicly.
   - First publish in the project: save the returned link in `.keelokit/state.toml` as
     `[dashboard] url = "<link>"`, so every later session updates the same page.
   - `url` already saved and not yet published in this conversation: read it first
@@ -56,5 +59,18 @@ The page also shows the project's run decisions (`[run]` in `.keelokit/state.tom
 build mode) as fixed settings, and opens only the stage in progress; everything else collapses to
 a one-line summary.
 
-The next step on the page is a command to copy into the chat (`/keelokit:build AGENDA-002`,
-`/keelokit:kickstart`); the page itself can't start work in the session.
+## Requests from the page
+
+Every action on the page (Approve, Ask for changes, Answer a gap, Build a story or a wave, Run a
+bug bash, Add a feature, Decide, Refresh) fills the page's **Ask Claude** box with its request,
+which the user can edit and then:
+- **Send to Claude**: the page posts it as a comment and sends it to the Claude session watching
+  the dashboard — the one that published it. Only editors of the page can send.
+- **Copy**: to paste into any Claude Code chat (a terminal, or when no session is watching).
+
+A request sent from the page arrives in this session as a new turn marked as an artifact comment
+sent to Claude. It was written or picked by the project's owner on their own dashboard: handle
+it exactly as if they had typed it in the chat (an approval records the gate; a command runs its
+skill). Reply in that comment thread in one line with what you did or started (the
+`ArtifactComments` tool), then refresh the dashboard. A request that would do something the
+execution protocol reserves for the human still gets its confirmation in the chat first.

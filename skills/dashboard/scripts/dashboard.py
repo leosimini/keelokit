@@ -123,6 +123,59 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} errores del harness para revisar",
         "build_stage": "Construcción",
+        "type": "Tipo de proyecto",
+        "greenfield": "Producto nuevo (greenfield)",
+        "brownfield": "Repositorio existente (brownfield)",
+        "greenfield_d": "Se arma desde cero con el esqueleto de Keelokit.",
+        "brownfield_d": "Keelokit se sumó a un código que ya existía, sin reescribirlo.",
+        "apps_k": "Aplicaciones",
+        "adrs_k": "Decisiones registradas",
+        "no_adrs": "Ningún desvío del stack de la casa.",
+        "ask_h": "Pedile a Claude",
+        "ask_ph": "Elegí una acción del tablero o escribí lo que necesites…",
+        "ask_send": "Enviar a Claude",
+        "ask_copy": "Copiar",
+        "ask_sent": "Enviado. Claude lo recibe en la sesión que mira este tablero y responde en los comentarios.",
+        "ask_copy_only": "Copialo y pegalo en el chat de Claude Code.",
+        "ask_no_session": "Ahora no hay una sesión de Claude mirando este tablero: copiá el texto y pegalo en el chat.",
+        "ask_writers": "Solo quien edita el tablero puede enviarle pedidos a Claude. Podés copiarlo.",
+        "ask_consent": "No se envió: falta tu permiso para comentar desde la página. Probá de nuevo y aceptalo.",
+        "ask_rate": "Esperá un momento antes de enviar otro pedido.",
+        "ask_failed": "No se pudo enviar. Copiá el texto y pegalo en el chat.",
+        "act_approve": "Aprobar",
+        "act_approve_t": "Apruebo la etapa «{stage}».",
+        "act_change": "Pedir cambios",
+        "act_change_t": "En la etapa «{stage}» quiero cambiar esto: ",
+        "act_answer": "Responder",
+        "act_answer_t": "Respuesta a {gap}: ",
+        "act_continue_t": "{cmd}",
+        "act_build": "Construir {sid}",
+        "act_build_wave": "Construir la ola {w} en paralelo",
+        "act_bugbash": "Hacer un bug bash",
+        "act_feature": "Sumar una funcionalidad",
+        "act_feature_t": "Quiero sumar esta funcionalidad al producto (hacé el intake y ampliá el backlog): ",
+        "act_refresh": "Actualizar el tablero",
+        "act_doctor": "Revisar la salud",
+        "act_decide": "Decidir",
+        "act_decide_t": "Sobre las decisiones pendientes del bug bash del {date}: ",
+        "act_build_one": "Construir esta historia",
+        "actions": "Acciones",
+        "history": "Historial",
+        "history_sum": "Eventos: {n} · el último, el {date}",
+        "h_story": "Historia terminada",
+        "h_bugbash": "Bug bash",
+        "h_gate": "Etapa aprobada",
+        "h_gate_auto": "Etapa aprobada automáticamente",
+        "bb": "Bug bashes",
+        "bb_what": "Un bug bash es una cacería de errores en todo el producto: varios agentes lo recorren por dimensiones (datos, seguridad, textos, accesibilidad…), otro confirma cada hallazgo, se corrige la causa y se agrega un control para que ese tipo de error no vuelva. Lo que no se corrige en el momento pasa al backlog como historia.",
+        "bb_sum": "Ejecutados: {n} · hallazgos: {found} · corregidos: {fixed} · historias nuevas: {stories}",
+        "bb_none": "Todavía no se hizo ninguno. Conviene uno al terminar cada ola.",
+        "bb_run": "Bug bash del {date}",
+        "bb_counts": "Hallazgos: {found} · corregidos: {fixed} · por decidir: {pending} · abiertos: {open}",
+        "bb_cols": ["Id", "Severidad", "Hallazgo", "Estado", "Control agregado"],
+        "bb_pending": "Decisiones pendientes",
+        "bb_stories": "Historias que generó",
+        "wait_bb": "Decidir lo pendiente del bug bash del {date} ({n})",
         "decisions_h": "Decisiones del proyecto",
         "run_mode": "Modo de ejecución",
         "run_auto": "Automático",
@@ -231,6 +284,59 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} harness errors to review",
         "build_stage": "Build",
+        "type": "Project type",
+        "greenfield": "New product (greenfield)",
+        "brownfield": "Existing repository (brownfield)",
+        "greenfield_d": "Built from scratch on the Keelokit skeleton.",
+        "brownfield_d": "Keelokit joined code that already existed, without rewriting it.",
+        "apps_k": "Apps",
+        "adrs_k": "Recorded decisions",
+        "no_adrs": "No deviation from the house stack.",
+        "ask_h": "Ask Claude",
+        "ask_ph": "Pick an action on the dashboard or write what you need…",
+        "ask_send": "Send to Claude",
+        "ask_copy": "Copy",
+        "ask_sent": "Sent. Claude gets it in the session watching this dashboard and answers in the comments.",
+        "ask_copy_only": "Copy it and paste it into the Claude Code chat.",
+        "ask_no_session": "No Claude session is watching this dashboard right now: copy the text and paste it into the chat.",
+        "ask_writers": "Only editors of the dashboard can send requests to Claude. You can copy it.",
+        "ask_consent": "Not sent: the page needs your permission to comment. Try again and allow it.",
+        "ask_rate": "Wait a moment before sending another request.",
+        "ask_failed": "It couldn't be sent. Copy the text and paste it into the chat.",
+        "act_approve": "Approve",
+        "act_approve_t": "I approve the \"{stage}\" stage.",
+        "act_change": "Ask for changes",
+        "act_change_t": "In the \"{stage}\" stage I want to change this: ",
+        "act_answer": "Answer",
+        "act_answer_t": "Answer to {gap}: ",
+        "act_continue_t": "{cmd}",
+        "act_build": "Build {sid}",
+        "act_build_wave": "Build wave {w} in parallel",
+        "act_bugbash": "Run a bug bash",
+        "act_feature": "Add a feature",
+        "act_feature_t": "I want to add this feature to the product (run the intake and extend the backlog): ",
+        "act_refresh": "Refresh the dashboard",
+        "act_doctor": "Check the health",
+        "act_decide": "Decide",
+        "act_decide_t": "About the pending decisions of the {date} bug bash: ",
+        "act_build_one": "Build this story",
+        "actions": "Actions",
+        "history": "History",
+        "history_sum": "Events: {n} · latest on {date}",
+        "h_story": "Story done",
+        "h_bugbash": "Bug bash",
+        "h_gate": "Stage approved",
+        "h_gate_auto": "Stage approved automatically",
+        "bb": "Bug bashes",
+        "bb_what": "A bug bash hunts for errors across the whole product: several agents walk it by dimension (data, security, copy, accessibility…), another confirms each finding, the cause gets fixed and a check is added so that kind of error can't come back. Whatever isn't fixed on the spot goes to the backlog as a story.",
+        "bb_sum": "Runs: {n} · findings: {found} · fixed: {fixed} · new stories: {stories}",
+        "bb_none": "None yet. One after each wave is a good habit.",
+        "bb_run": "Bug bash of {date}",
+        "bb_counts": "Findings: {found} · fixed: {fixed} · to decide: {pending} · open: {open}",
+        "bb_cols": ["Id", "Severity", "Finding", "Status", "Check added"],
+        "bb_pending": "Pending decisions",
+        "bb_stories": "Stories it created",
+        "wait_bb": "Decide what is pending from the {date} bug bash ({n})",
         "decisions_h": "Project decisions",
         "run_mode": "Run mode",
         "run_auto": "Automatic",
@@ -317,6 +423,7 @@ GLOSSARY = {
         ("Ola de desarrollo", "Un grupo de historias que no tocan los mismos archivos y por eso se pueden construir a la vez."),
         ("Worktree", "Una copia de trabajo separada del mismo repositorio, para que varios agentes trabajen a la vez sin pisarse."),
         ("Staging", "Un entorno en internet igual al real, para probar antes de que llegue a los usuarios."),
+        ("Bug bash", "Una cacería de errores en todo el producto, que deja un control nuevo por cada tipo de error encontrado."),
         ("Modo automático", "Keelokit avanza solo y se detiene únicamente donde las reglas de la casa piden a una persona."),
     ],
     "en": [
@@ -329,6 +436,7 @@ GLOSSARY = {
         ("Development wave", "A group of stories that don't touch the same files, so they can be built at the same time."),
         ("Worktree", "A separate working copy of the same repository, so several agents can work at once without collisions."),
         ("Staging", "An online environment like the real one, to try things before users see them."),
+        ("Bug bash", "A hunt for errors across the whole product that leaves a new check for every kind of error it finds."),
         ("Automatic mode", "Keelokit goes on alone and stops only where the house rules call for a person."),
     ],
 }
@@ -464,7 +572,7 @@ def collect(root: Path) -> dict:
             "wave": meta.get("wave", 0) if isinstance(meta.get("wave"), int) else 0,
             "depends_on": list(meta.get("depends_on", [])),
             "gaps": sorted(set(GAP_REF_RE.findall(body)) & open_gaps),
-            "path": path.relative_to(root).as_posix(), "body": body,
+            "path": path.relative_to(root).as_posix(), "body": body, "origin": str(meta.get("origin", "")),
         })
     by_id = {s["id"]: s for s in stories}
     for s in stories:
@@ -528,6 +636,46 @@ def collect(root: Path) -> dict:
         stages.append({"id": g, "status": status, "date": value[:10], "auto": value.endswith("auto"),
                        "outputs": outputs[g]})
 
+    adrs = []
+    for d in decisions:
+        text = read(d)
+        title = m.group(1).strip() if (m := re.search(r"(?m)^#\s+(.+)$", text)) else d.stem
+        status = m.group(1).strip() if (m := re.search(r"(?im)^(?:status:\s*|##\s*status\s*\n+)\s*([^\n]+)", text)) else ""
+        adrs.append({"path": d.relative_to(root).as_posix(), "title": title, "status": status})
+
+    bugbashes = []
+    for report in sorted((root / "docs/bugbash").glob("*/report.md"), reverse=True) \
+            if (root / "docs/bugbash").is_dir() else []:
+        text = read(report)
+        findings = []
+        for row in table_rows(text):
+            if re.fullmatch(r"[A-Z0-9]{2,5}-\d+", row[0]) and len(row) >= 5:
+                cells = row + [""] * 7
+                findings.append({"id": cells[0], "lens": cells[1], "severity": cells[2].upper()[:2],
+                                 "title": cells[3], "status": cells[4], "commit": cells[5], "check": cells[6]})
+        date = report.parent.name
+        bugbashes.append({
+            "date": date, "path": report.relative_to(root).as_posix(), "text": text, "findings": findings,
+            "sha": m.group(0) if (m := re.search(r"\b[0-9a-f]{7,40}\b", md_section(text, "Scope") or text)) else "",
+            "pending": md_section(text, "Pending decisions"),
+            "stories": [x["id"] for x in stories if x["origin"].startswith(f"bugbash:{date}")],
+        })
+
+    history = []
+    if has_commits:
+        for line in git(root, "log", main_ref(root), "-n", "400",
+                        "--format=%as%x1f%h%x1f%s%x1f%(trailers:key=Story,valueonly,separator=%x2C)").splitlines():
+            parts = line.split("\x1f")
+            if len(parts) == 4 and parts[3].strip():
+                for sid in parts[3].split(","):
+                    history.append({"date": parts[0], "kind": "story", "id": sid.strip(), "commit": parts[1],
+                                    "title": by_id.get(sid.strip(), {}).get("title", parts[2])})
+    history += [{"date": b["date"], "kind": "bugbash", "id": b["date"], "commit": b["sha"][:7], "title": b["path"]}
+                for b in bugbashes]
+    history += [{"date": v[:10], "kind": "gate", "id": g, "commit": "", "title": "auto" if v.endswith("auto") else ""}
+                for g, v in gates.items() if v]
+    history.sort(key=lambda e: e["date"], reverse=True)
+
     scope = md_section(prd, "Scope")
     scope_in = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "In")
     scope_out = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "Out")
@@ -546,6 +694,7 @@ def collect(root: Path) -> dict:
         "stories": stories, "by_id": by_id, "epics": epics, "done": done,
         "has_commits": has_commits, "first_commit": first_commit, "github": github_base(root),
         "doctor": doctor, "errors": errors, "run": run, "counts": counts,
+        "adrs": adrs, "bugbashes": bugbashes, "history": history,
     }
 
 
@@ -576,18 +725,30 @@ def next_step(s: dict, lang: str) -> dict:
     if s["stories"] and any(x["status"] != "done" for x in s["stories"]):
         return {"title": t["next_blocked"], "detail": t["next_blocked_d"], "command": "/keelokit",
                 "anchor": "stage-backlog"}
+    last_story = max((e["date"] for e in s["history"] if e["kind"] == "story"), default="")
+    last_bb = max((b["date"] for b in s["bugbashes"]), default="")
+    if s["stories"] and last_story and last_bb < last_story:
+        return {"title": t["act_bugbash"], "detail": t["bb_none"] if not last_bb else t["next_more_d"],
+                "command": "/keelokit:bugbash", "anchor": "bugbash"}
     return {"title": t["next_more"], "detail": t["next_more_d"], "command": "/keelokit:backlog",
             "anchor": "stage-backlog"}
 
 
 def waiting_on_user(s: dict, lang: str) -> list[dict]:
     t, names = T[lang], {k: v[0] for k, v in STAGES[lang].items()}
-    items = [{"text": t["wait_gate"].format(stage=names[x["id"]]), "anchor": f"stage-{x['id']}"}
+    items = [{"text": t["wait_gate"].format(stage=names[x["id"]]), "anchor": f"stage-{x['id']}",
+              "ask": t["act_approve_t"].format(stage=names[x["id"]]), "act": t["act_approve"]}
              for x in s["stages"] if x["status"] == "review"]
     items += [{"text": t["wait_gap"].format(gap=g["id"], question=g["question"] or g["missing"]),
-               "anchor": "stage-intake"} for g in s["gaps"] if g["blocking"]]
+               "anchor": "stage-intake", "ask": t["act_answer_t"].format(gap=g["id"]), "act": t["act_answer"]}
+              for g in s["gaps"] if g["blocking"]]
     if s["errors"]:
         items.append({"text": t["wait_errors"].format(n=s["errors"]), "anchor": "stage-build"})
+    for b in s["bugbashes"]:
+        pending = [f for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente"))]
+        if pending:
+            items.append({"text": t["wait_bb"].format(n=len(pending), date=b["date"]), "anchor": f"bb-{b['date']}",
+                          "ask": t["act_decide_t"].format(date=b["date"]), "act": t["act_decide"]})
     if s["gates"] and not s["run"].get("mode"):
         items.append({"text": t["wait_decide"], "anchor": "decisions"})
     return items
@@ -808,8 +969,8 @@ code{font-family:var(--mono);font-size:.86em;background:var(--paper-2);padding:.
 /* body */
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:28px;align-items:start;padding-block:28px 56px}
 .col{display:flex;flex-direction:column;gap:12px;min-width:0}
-.side{position:sticky;top:16px}
-@media (max-width:980px){.layout{grid-template-columns:1fr}.side{position:static;order:-1}}
+.side{align-self:stretch}
+@media (max-width:980px){.layout{grid-template-columns:1fr}.side{order:-1}.ask{position:static}}
 .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;box-shadow:var(--shadow)}
 .card ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
 .card li{display:flex;gap:10px;align-items:baseline;font-size:15px}
@@ -921,6 +1082,37 @@ details.plain[open]>summary{margin-bottom:12px}
 .gloss{display:flex;flex-direction:column;gap:10px;margin:0}
 .gloss dt{font-weight:600}
 .gloss dd{margin:0;color:var(--ink-2);font-size:14px}
+/* actions and the ask box */
+.acts{display:flex;flex-wrap:wrap;gap:8px}
+.act{font:600 13px/1 var(--body);cursor:pointer;border-radius:999px;padding:9px 14px;border:1px solid var(--line-2);background:var(--paper);color:var(--ink);transition:border-color .15s ease,transform .15s ease}
+.act:hover{border-color:var(--accent);transform:translateY(-1px)}
+.act.primary{background:var(--accent);border-color:var(--accent);color:var(--paper)}
+.sea .act{background:var(--board);border-color:var(--board);color:#172126}
+.check .acts{margin-top:4px}
+.ask{position:sticky;top:16px;border-color:var(--line-2)}
+.ask textarea{width:100%;min-height:110px;resize:vertical;font:15px/1.5 var(--body);color:var(--ink);background:var(--ground);border:1px solid var(--line-2);border-radius:10px;padding:10px 12px}
+.ask textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+.ask .row{display:flex;gap:8px;flex-wrap:wrap}
+.ask .status{font-size:13px;color:var(--ink-3);margin:0;min-height:1.2em}
+.ask .status.ok{color:var(--ok)}
+.ask .status.warn{color:var(--attn)}
+.ask.flash{box-shadow:0 0 0 3px var(--live-soft),var(--shadow)}
+.card .waitlist .wi{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
+.card .waitlist .act{padding:5px 10px;font-size:12px}
+.setting ul{list-style:none;padding:0;margin:4px 0 0;display:flex;flex-direction:column;gap:4px}
+.setting ul li{font-size:14px}
+.setting ul li::before{display:none}
+
+/* sections outside the stage sequence */
+details.stage.extra>summary .n{font:600 13px var(--mono)}
+.sev{font:600 11px/1 var(--mono);padding:3px 6px;border-radius:5px;background:var(--idle-soft);color:var(--ink-2)}
+.sev.P0,.sev.P1{background:var(--bad-soft);color:var(--bad)}
+.sev.P2{background:var(--live-soft);color:var(--live)}
+.timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.timeline li{display:grid;grid-template-columns:92px minmax(0,1fr);gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:14px}
+.timeline li:first-child{border-top:0}
+.timeline time{font:12px/1.6 var(--mono);color:var(--ink-3)}
+.timeline .k{color:var(--ink-3)}
 footer{padding-block:0 32px;font-size:13px;color:var(--ink-3);display:flex;gap:6px 16px;flex-wrap:wrap;justify-content:space-between}
 footer code{background:none;padding:0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -950,6 +1142,39 @@ JS = """
   document.addEventListener('click',function(e){var a=e.target.closest('a[href^="#"]');if(!a)return;
     var id=a.getAttribute('href').slice(1);if(document.getElementById(id)){e.preventDefault();reveal(id)}});
   if(location.hash.length>1)reveal(location.hash.slice(1));
+
+  var box=document.getElementById('ask'), ta=document.getElementById('ask-text'), send=document.getElementById('ask-send'),
+      copyBtn=document.getElementById('ask-copy'), status=document.getElementById('ask-status'), comments=null, canSend='off';
+  if(!box)return;
+  function say(key,cls){status.textContent=box.getAttribute('data-'+key)||'';status.className='status'+(cls?' '+cls:'')}
+  function refresh(){
+    if(!comments){send.hidden=true;say('copy-only');return Promise.resolve()}
+    return comments.canSendToClaude().then(function(v){canSend=v},function(){canSend='off'}).then(function(){
+      send.hidden=canSend==='off';send.disabled=canSend!=='available';
+      if(canSend==='available')say('');else if(canSend==='no_session')say('no-session','warn');
+      else if(canSend==='writers_only')say('writers','warn');else say('copy-only');
+    });
+  }
+  document.querySelectorAll('[data-ask]').forEach(function(b){b.addEventListener('click',function(){
+    ta.value=b.getAttribute('data-ask');box.scrollIntoView({block:'nearest'});ta.focus();
+    ta.setSelectionRange(ta.value.length,ta.value.length);box.classList.add('flash');
+    setTimeout(function(){box.classList.remove('flash')},900);refresh();
+  })});
+  copyBtn.addEventListener('click',function(){var text=ta.value.trim();if(!text)return;
+    function ok(){say('copied','ok')}function fallback(){ta.select()}
+    try{navigator.clipboard.writeText(text).then(ok,fallback)}catch(e){fallback()}});
+  send.addEventListener('click',function(){var text=ta.value.trim();if(!text||!comments)return;send.disabled=true;
+    comments.anchorFor(box).then(function(anchor){return comments.sendToClaude({anchor:anchor,text:text})}).then(function(){
+      ta.value='';say('sent','ok');send.disabled=false;
+    },function(e){var code=e&&e.code;send.disabled=false;
+      if(code==='consent_required')say('consent','warn');else if(code==='rate_limited')say('rate','warn');
+      else if(code==='claude_unavailable'){say('no-session','warn');refresh()}
+      else if(code==='forbidden'||code==='not_granted'){comments=null;refresh()}else say('failed','warn');
+    });
+  });
+  var use=window.claude&&window.claude.use?window.claude.use('comments'):Promise.resolve(null);
+  refresh();
+  Promise.resolve(use).then(function(c){comments=c;refresh()},function(){comments=null;refresh()});
 })();
 """
 
@@ -979,6 +1204,10 @@ def doc_block(rel: str, text: str, links: Links, t: dict) -> str:
 def term(cmd: str, t: dict, light: bool = False) -> str:
     return (f'<div class="term{" light" if light else ""}"><span class="prompt">›</span><span class="cmdtext">{esc(cmd)}</span>'
             f'<button type="button" class="copy" data-copy="{esc(cmd)}" data-done="{esc(t["copied"])}">{esc(t["copy"])}</button></div>')
+
+
+def ask(label: str, text: str, primary: bool = False) -> str:
+    return f'<button type="button" class="act{" primary" if primary else ""}" data-ask="{esc(text)}">{esc(label)}</button>'
 
 
 def block(title: str, inner: str) -> str:
@@ -1069,20 +1298,22 @@ def story_row(st: dict, links: Links, t: dict) -> str:
         "gap": t["story_gap"].format(gaps=", ".join(st["gaps"])),
     }[status]
     link = ext_link(links.href(st["path"]), links, t)
+    build = f'<div class="acts">{ask(t["act_build_one"], "/keelokit:build " + st["id"], True)}</div>' if status == "ready" else ""
     deps = (f'<p class="muted">{esc(t["depends"])}: ' + ", ".join(f"<code>{esc(d)}</code>" for d in st["depends_on"]) + "</p>") \
         if st["depends_on"] else ""
     return (f'<details class="doc story" id="story-{esc(st["id"])}"><summary><span class="sid">{esc(st["id"])}</span>'
             f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
             f'<span class="pill {status}">{esc(label)}</span>{CHEV}</summary>'
-            f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{markdown(st["body"], links, st["path"])}</div></details>')
+            f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{build}'
+            f'{markdown(st["body"], links, st["path"])}</div></details>')
 
 
-def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, note: str = "") -> str:
+def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, note: str = "", action: str = "") -> str:
     done = sum(1 for x in items if x["status"] == "done")
     pct = round(100 * done / len(items)) if items else 0
     return (f'<details class="group"{" open" if open_ else ""}><summary><span class="gname">{title}</span>'
             f'<span class="count">{done}/{len(items)}</span><span class="bar"><i style="width:{pct}%"></i></span>{CHEV}</summary>'
-            f'<div class="group-body">{f"<p class=muted>{esc(note)}</p>" if note else ""}'
+            f'<div class="group-body">{f"<p class=muted>{esc(note)}</p>" if note else ""}{action}'
             + "".join(story_row(x, links, t) for x in items) + "</div></details>")
 
 
@@ -1091,8 +1322,12 @@ def backlog_block(s: dict, links: Links, t: dict) -> str:
     done = sum(1 for x in stories if x["status"] == "done")
     waves = sorted({x["wave"] for x in stories})
     live = next((w for w in waves if any(x["wave"] == w and x["status"] != "done" for x in stories)), None)
+    def wave_action(w):
+        ready = [x for x in stories if x["wave"] == w and x["status"] == "ready"]
+        return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), f"/keelokit:build {len(ready)}")}</div>' \
+            if len(ready) > 1 else ""
     by_wave = "".join(group(esc(t["wave"].format(n=w)), [x for x in stories if x["wave"] == w], links, t,
-                            w == live, t["wave_note"]) for w in waves)
+                            w == live, t["wave_note"], wave_action(w)) for w in waves)
     first_epic = next((x["epic"] for x in stories if x["status"] != "done"), None)
     by_epic = "".join(
         group(f'<code>{esc(e)}</code> {inline(goal) if goal else ""}', [x for x in stories if x["epic"] == e], links, t,
@@ -1127,27 +1362,104 @@ def modes_block(s: dict, t: dict) -> str:
 
 
 def decisions_card(s: dict, t: dict) -> str:
-    run = s["run"]
-    rows = []
+    run, root = s["run"], s["root"]
+    greenfield = s["layout"] == "project"
+    rows = [(t["type"], t["greenfield"] if greenfield else t["brownfield"],
+             t["greenfield_d"] if greenfield else t["brownfield_d"], True)]
     mode = run.get("mode")
     rows.append((t["run_mode"], t["run_auto"] if mode == "auto" else t["run_step"] if mode else "",
-                 t["run_auto_d"] if mode == "auto" else t["run_step_d"] if mode else ""))
+                 t["run_auto_d"] if mode == "auto" else t["run_step_d"] if mode else "", True))
     build = run.get("build")
-    value = (t["build_parallel"].format(n=run.get("parallel", 2)) if build == "parallel"
-             else t["build_serial"] if build else "")
-    rows.append((t["build_mode"], value, ""))
-    html_rows = []
-    for k, v, d in rows:
-        shown = f'<span class="v">{LOCK}{esc(v)}</span>' if v else f'<span class="v unset">{esc(t["undecided"])}</span>'
-        html_rows.append(f'<div class="setting"><span class="k">{esc(k)}</span>{shown}'
-                         + (f'<span class="d">{esc(d)}</span>' if d else "") + "</div>")
+    rows.append((t["build_mode"], t["build_parallel"].format(n=run.get("parallel", 2)) if build == "parallel"
+                 else t["build_serial"] if build else "", "", True))
+    apps = s["answers"].get("apps", "")
+    if not apps and (m := re.search(r"(?im)^apps?:\s*(.+)$", s["stack_doc"])):
+        apps = m.group(1)
+    apps = re.sub(r"[\[\]\"'*]", "", apps).strip().rstrip(".")
+    if apps:
+        rows.append((t["apps_k"], apps, "", False))
+    out = []
+    for k, v, d, locked in rows:
+        shown = f'<span class="v">{LOCK if locked else ""}{esc(v)}</span>' if v \
+            else f'<span class="v unset">{esc(t["undecided"])}</span>'
+        out.append(f'<div class="setting"><span class="k">{esc(k)}</span>{shown}'
+                   + (f'<span class="d">{esc(d)}</span>' if d else "") + "</div>")
+    if greenfield or s["adrs"]:
+        adrs = "".join(f'<li><a href="#stage-stack">{esc(a["title"])}</a>'
+                       + (f' <span class="muted">· {esc(a["status"])}</span>' if a["status"] else "") + "</li>"
+                       for a in s["adrs"])
+        out.append(f'<div class="setting"><span class="k">{esc(t["adrs_k"])}</span>'
+                   + (f"<ul>{adrs}</ul>" if adrs else f'<span class="d">{esc(t["no_adrs"])}</span>') + "</div>")
     when = f'<p class="muted">{esc(t["decided_on"].format(date=run["decided"]))}</p>' if run.get("decided") else ""
     return (f'<section class="card" id="decisions"><p class="eyebrow">{esc(t["decisions_h"])}</p>'
-            f'{"".join(html_rows)}{when}<p class="muted">{esc(t["locked_note"])}</p></section>')
+            f'{"".join(out)}{when}<p class="muted">{esc(t["locked_note"])}</p></section>')
+
+
+def extra_section(sid: str, mark: str, name: str, pill: str, summary: str, body: str, open_: bool) -> str:
+    return (f'<details class="stage extra" id="{sid}"{" open" if open_ else ""}><summary>'
+            f'<span class="n">{mark}</span><span class="nm">{esc(name)}</span>{pill}{CHEV}'
+            f'<span class="sum">{esc(summary)}</span></summary><div class="stage-body">{body}</div></details>')
+
+
+def bugbash_section(s: dict, links: Links, t: dict) -> str:
+    runs = s["bugbashes"]
+    def fixed(f): return f["status"].lower().startswith(("fixed", "corregid"))
+    def pending(f): return f["status"].lower().startswith(("pending", "pendiente"))
+    found = sum(len(b["findings"]) for b in runs)
+    summary = t["bb_sum"].format(n=len(runs), found=found, fixed=sum(fixed(f) for b in runs for f in b["findings"]),
+                                 stories=sum(len(b["stories"]) for b in runs)) if runs else t["bb_none"]
+    body = [f'<p class="what">{esc(t["bb_what"])}</p>',
+            f'<div class="acts">{ask(t["act_bugbash"], "/keelokit:bugbash", True)}</div>']
+    open_any = False
+    for i, b in enumerate(runs):
+        fs = b["findings"]
+        n_pending = sum(pending(f) for f in fs)
+        counts = t["bb_counts"].format(found=len(fs), fixed=sum(fixed(f) for f in fs), pending=n_pending,
+                                       open=sum(not fixed(f) and not pending(f) for f in fs))
+        rows = "".join(
+            f'<tr><td><span class="tag">{esc(f["id"])}</span></td><td><span class="sev {esc(f["severity"])}">{esc(f["severity"])}</span></td>'
+            f'<td>{inline(f["title"])}</td><td>{inline(f["status"])}</td><td>{inline(f["check"])}</td></tr>' for f in fs)
+        head = "".join(f"<th>{esc(c)}</th>" for c in t["bb_cols"])
+        inner = [f'<p class="muted">{esc(counts)}{" · " + esc(b["sha"][:9]) if b["sha"] else ""}</p>']
+        if rows:
+            inner.append(f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>')
+        if b["pending"]:
+            inner.append(block(esc(t["bb_pending"]), f'<div class="md bare">{markdown(b["pending"], links, b["path"])}</div>'
+                               f'<div class="acts">{ask(t["act_decide"], t["act_decide_t"].format(date=b["date"]), True)}</div>'))
+        if b["stories"]:
+            made = "".join(story_row(s["by_id"][x], links, t) for x in b["stories"] if x in s["by_id"])
+            inner.append(block(esc(t["bb_stories"]), made))
+        inner.append(doc_block(b["path"], b["text"], links, t))
+        is_open = n_pending > 0 or (i == 0 and not open_any)
+        open_any = open_any or is_open
+        body.append(f'<details class="group" id="bb-{esc(b["date"])}"{" open" if is_open else ""}><summary>'
+                    f'<span class="gname">{esc(t["bb_run"].format(date=b["date"]))}</span>'
+                    f'<span class="count">{len(fs)}</span>{CHEV}</summary><div class="group-body">{"".join(inner)}</div></details>')
+    waiting = any(pending(f) for b in runs for f in b["findings"])
+    pill = f'<span class="pill review">{esc(t["st_review"])}</span>' if waiting else ""
+    return extra_section("bugbash", "BB", t["bb"], pill, summary, "".join(body), waiting)
+
+
+def history_section(s: dict, t: dict, stage_names: dict) -> str:
+    events = s["history"][:60]
+    if not events:
+        return ""
+    items = []
+    for e in events:
+        if e["kind"] == "story":
+            what = f'<span class="k">{esc(t["h_story"])}</span> <code>{esc(e["id"])}</code> {esc(e["title"])}'
+        elif e["kind"] == "bugbash":
+            what = f'<a href="#bb-{esc(e["id"])}">{esc(t["h_bugbash"])}</a>'
+        else:
+            what = f'<span class="k">{esc(t["h_gate_auto"] if e["title"] == "auto" else t["h_gate"])}</span> {esc(stage_names.get(e["id"], e["id"]))}'
+        items.append(f'<li><time>{esc(e["date"])}</time><span>{what}</span></li>')
+    summary = t["history_sum"].format(n=len(s["history"]), date=events[0]["date"])
+    return extra_section("history", "↺", t["history"], "", summary, f'<ul class="timeline">{"".join(items)}</ul>', False)
 
 
 def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) -> str:
     t, stage_copy = T[lang], STAGES[lang]
+    names = {k: v[0] for k, v in stage_copy.items()}
     links = Links(s["github"], standalone, out_dir, s["root"])
     nxt, waiting = next_step(s, lang), waiting_on_user(s, lang)
     current = next((x for x in s["stages"] if x["status"] in ("review", "current")), None)
@@ -1159,7 +1471,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
     steps = []
     for n, st in enumerate(s["stages"], 1):
         steps.append(f'<li class="{st["status"]}"><a href="#stage-{st["id"]}"><span class="n">{n:02d}</span>'
-                     f'<span class="nm">{esc(stage_copy[st["id"]][0])}</span><span class="st">{esc(label(st))}</span></a></li>')
+                     f'<span class="nm">{esc(names[st["id"]])}</span><span class="st">{esc(label(st))}</span></a></li>')
     if s["stories"]:
         state = "current" if building else "todo"
         steps.append(f'<li class="{state}"><a href="#stage-build"><span class="n">{len(s["stages"]) + 1:02d}</span>'
@@ -1172,13 +1484,17 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
         if st["status"] == "review":
             items = "".join(f"<li>{esc(c)}</li>" for c in checks)
             check = (f'<div class="check"><p class="eyebrow">{esc(t["review"])}</p><ul>{items}</ul>'
-                     f'<p>{esc(t["how_approve"])}</p></div>')
+                     f'<p>{esc(t["how_approve"])}</p><div class="acts">'
+                     f'{ask(t["act_approve"], t["act_approve_t"].format(stage=name), True)}'
+                     f'{ask(t["act_change"], t["act_change_t"].format(stage=name))}</div></div>')
+        elif st["status"] == "current":
+            flow = "/keelokit:adopt" if s["layout"] == "harness" else "/keelokit:kickstart"
+            check = f'<div class="acts">{ask(t["next_continue"].format(stage=name), flow, True)}</div>'
         date = ""
         if st["date"]:
             date = f' · {esc((t["auto_on"] if st["auto"] else t["approved_on"]).format(date=st["date"]))}'
-        is_open = st is current
         sections.append(
-            f'<details class="stage {st["status"]}" id="stage-{st["id"]}"{" open" if is_open else ""}><summary>'
+            f'<details class="stage {st["status"]}" id="stage-{st["id"]}"{" open" if st is current else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(name)}</span>'
             f'<span class="pill {st["status"]}">{esc(label(st))}</span>{CHEV}'
             f'<span class="sum">{esc(stage_summary(s, st, t))}{date}</span></summary>'
@@ -1187,22 +1503,48 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
         n = len(s["stages"]) + 1
         state = "current" if building else "todo"
         done = sum(1 for x in s["stories"] if x["status"] == "done")
+        ready = [x for x in s["stories"] if x["status"] == "ready"]
+        acts = []
+        if ready:
+            acts.append(ask(t["act_build"].format(sid=ready[0]["id"]), f"/keelokit:build {ready[0]['id']}", True))
+        acts += [ask(t["act_bugbash"], "/keelokit:bugbash"), ask(t["act_feature"], t["act_feature_t"]),
+                 ask(t["act_doctor"], "/keelokit:doctor"), ask(t["act_refresh"], "/keelokit:dashboard")]
+        actions = block(esc(t["actions"]), f'<div class="acts">{"".join(acts)}</div>')
         health = block(esc(t["health"]), f'<pre class="out"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
         sections.append(
             f'<details class="stage {state}" id="stage-build"{" open" if building else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'
             f'<span class="pill {state}">{esc(t["st_" + state])}</span>{CHEV}'
             f'<span class="sum">{esc(t["sum_build"].format(done=done, total=len(s["stories"])))}</span></summary>'
-            f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{modes_block(s, t)}{health}</div></details>')
+            f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{actions}{modes_block(s, t)}{health}</div></details>')
+        sections.append(bugbash_section(s, links, t))
+    sections.append(history_section(s, t, names))
 
-    where = stage_copy[current["id"]][0] if current else (t["build_stage"] if building else t["all_gates"])
+    where = names[current["id"]] if current else (t["build_stage"] if building else t["all_gates"])
     where_pill = f'<span class="pill {current["status"]}">{esc(label(current))}</span>' if current else ""
-    wait_html = ("<ul>" + "".join(f'<li><a href="#{esc(w["anchor"])}">{inline(w["text"])}</a></li>' for w in waiting) + "</ul>") \
-        if waiting else f'<p class="muted">{esc(t["nothing_waiting"])}</p>'
-    cmd = (term(nxt["command"], t) + f'<span class="hint">{esc(t["copy_hint"])}</span>') if nxt["command"] else ""
+    wait_html = ('<ul class="waitlist">' + "".join(
+        f'<li><div class="wi"><a href="#{esc(w["anchor"])}">{inline(w["text"])}</a>'
+        + (ask(w["act"], w["ask"]) if w.get("ask") else "") + "</div></li>"
+        for w in waiting) + "</ul>") if waiting else f'<p class="muted">{esc(t["nothing_waiting"])}</p>'
+    cmd = ""
+    if nxt["command"]:
+        cmd = term(nxt["command"], t) + f'<div class="acts">{ask(t["ask_h"], nxt["command"])}</div>'
+    elif current and current["status"] == "review":
+        cmd = f'<div class="acts">{ask(t["act_approve"], t["act_approve_t"].format(stage=names[current["id"]]))}</div>'
     gloss = "".join(f"<div><dt>{esc(k)}</dt><dd>{esc(v)}</dd></div>" for k, v in GLOSSARY[lang])
     mode = s["run"].get("mode")
-    mode_chip = f'<span class="chip">{esc(t["run_auto"] if mode == "auto" else t["run_step"])}</span>' if mode else ""
+    chips = f'<span class="chip">{esc(t["greenfield"] if s["layout"] == "project" else t["brownfield"])}</span>'
+    if mode:
+        chips += f'<span class="chip">{esc(t["run_auto"] if mode == "auto" else t["run_step"])}</span>'
+    ask_box = (f'<section class="card ask" id="ask" data-sent="{esc(t["ask_sent"])}" data-copied="{esc(t["copied"])}" '
+               f'data-copy-only="{esc(t["ask_copy_only"])}" data-no-session="{esc(t["ask_no_session"])}" '
+               f'data-writers="{esc(t["ask_writers"])}" data-consent="{esc(t["ask_consent"])}" '
+               f'data-rate="{esc(t["ask_rate"])}" data-failed="{esc(t["ask_failed"])}">'
+               f'<label class="eyebrow" for="ask-text">{esc(t["ask_h"])}</label>'
+               f'<textarea id="ask-text" placeholder="{esc(t["ask_ph"])}"></textarea>'
+               f'<div class="row"><button type="button" class="act primary" id="ask-send" hidden>{esc(t["ask_send"])}</button>'
+               f'<button type="button" class="act" id="ask-copy">{esc(t["ask_copy"])}</button></div>'
+               f'<p class="status" id="ask-status" aria-live="polite"></p></section>')
     when = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     img = logo()
 
@@ -1211,7 +1553,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Fragment+Mono&family=Karla:wght@400;500;600&display=swap">
 <style>{CSS}</style>
-<header class="wrap top"><span class="brand">{f'<img src="{img}" alt="">' if img else ""}Keelokit</span><span class="crumb">/</span><span class="product">{esc(s["name"])}</span><span class="chips">{mode_chip}<span class="chip">v{esc(version)}</span></span></header>
+<header class="wrap top"><span class="brand">{f'<img src="{img}" alt="">' if img else ""}Keelokit</span><span class="crumb">/</span><span class="product">{esc(s["name"])}</span><span class="chips">{chips}<span class="chip">v{esc(version)}</span></span></header>
 <div class="sea"><div class="wrap">
 <section class="hero" aria-labelledby="where">
 <div><p class="eyebrow">{esc(t["eyebrow"])}</p><h1 id="where">{esc(s["name"])}</h1>
@@ -1226,6 +1568,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
 <section class="card"><p class="eyebrow">{esc(t["waiting"])}</p>{wait_html}</section>
 {decisions_card(s, t)}
 <details class="card plain"><summary class="eyebrow">{esc(t["glossary"])}{CHEV}</summary><dl class="gloss">{gloss}</dl></details>
+{ask_box}
 </aside>
 </main>
 <footer class="wrap"><span>{esc(t["footer"].format(when=when, version=version))}</span></footer>
@@ -1261,6 +1604,7 @@ def main() -> int:
         view["done"] = sorted(s["done"])
         view["next"] = next_step(s, lang)
         view["waiting"] = waiting_on_user(s, lang)
+        view["bugbashes"] = [{k: v for k, v in b.items() if k != "text"} for b in s["bugbashes"]]
         view["summaries"] = {x["id"]: stage_summary(s, x, T[lang]) for x in s["stages"]}
         print(json.dumps(view, indent=2, ensure_ascii=False))
         return 0

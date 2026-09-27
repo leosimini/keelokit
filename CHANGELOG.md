@@ -20,6 +20,13 @@
   protocol reserves for the human) — and for how stories are built (one at a time or up to N in
   parallel). Both live in `[run]` in `.keelokit/state.toml`; no skill asks again or changes them
   on its own. Automatic approvals are recorded as `"<date> auto"` and shown on the dashboard.
+- The dashboard shows the project type (greenfield or brownfield) and every decision taken (run
+  and build mode, apps, decision records), a **Bug bashes** section (each run's findings, what was
+  fixed, the check it left, pending decisions and the stories it fed into the backlog, traced by
+  a new optional story field `origin`) and a **History** of stories, bug bashes and approvals.
+- **Ask Claude** on the dashboard: action buttons (approve, ask for changes, answer a gap, build
+  a story or a wave, run a bug bash, add a feature…) fill a box that can be sent to the Claude
+  session watching the page, or copied into any chat.
 - The dashboard takes the look of keelokit.com (Cormorant Garamond, Karla, Fragment Mono; the
   foam and sea palette) and opens only what matters now: the stage in progress, the wave with
   work left; everything else collapses to a one-line summary.

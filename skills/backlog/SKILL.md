@@ -26,7 +26,9 @@ Anything in the PRD's "out" list never becomes a story.
   `${CLAUDE_PLUGIN_ROOT}/references/dimensions.md`: a screen implies at least `ux`, `ui`, `i18n`,
   `a11y`; an endpoint implies `api`, `contract`, `auth`), and `invariants` (the `INV-nnn` from
   `docs/context/domain.md` the story must keep; listing any means declaring `integrity`, and
-  touching a critical area from `.keelokit/critical.toml` means both). No `status`.
+  touching a critical area from `.keelokit/critical.toml` means both). No `status`. Optional
+  `origin` when the story comes from somewhere other than the first plan:
+  `"bugbash:<date> <finding id>"` or `"feature:<date>"` (a later feature intake).
 - Body sections, in order:
   1. **Context** — why, with references to `docs/context` / PRD sections, and a
      **Does NOT do** list.
