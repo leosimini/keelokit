@@ -123,6 +123,8 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} errores del harness para revisar",
         "build_stage": "Construcción",
+        "theme_dark": "Tema oscuro",
+        "theme_light": "Tema claro",
         "type": "Tipo de proyecto",
         "greenfield": "Producto nuevo (greenfield)",
         "brownfield": "Repositorio existente (brownfield)",
@@ -284,6 +286,8 @@ T = {
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} harness errors to review",
         "build_stage": "Build",
+        "theme_dark": "Dark theme",
+        "theme_light": "Light theme",
         "type": "Project type",
         "greenfield": "New product (greenfield)",
         "brownfield": "Existing repository (brownfield)",
@@ -927,6 +931,9 @@ code{font-family:var(--mono);font-size:.86em;background:var(--paper-2);padding:.
 .crumb{color:var(--ink-3)}
 .top .product{color:var(--ink-2);font-weight:500;overflow-wrap:anywhere}
 .top .chips{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.theme{display:inline-flex;align-items:center;gap:7px;font:600 12px/1 var(--body);color:var(--ink);background:var(--paper);border:1px solid var(--line-2);border-radius:999px;padding:6px 11px;cursor:pointer}
+.theme:hover{border-color:var(--accent)}
+.theme svg{width:14px;height:14px}
 .chip{font:12px/1 var(--mono);color:var(--ink-2);border:1px solid var(--line-2);padding:6px 10px;border-radius:999px;white-space:nowrap}
 
 /* the sea band: dark in both themes, like the site's sections */
@@ -1120,6 +1127,18 @@ footer code{background:none;padding:0}
 
 JS = """
 (function(){
+  var root=document.documentElement, marker=document.querySelector('[data-lang]'), lang=marker&&marker.getAttribute('data-lang');
+  if(lang)root.setAttribute('lang',lang);
+  var themeBtn=document.getElementById('theme');
+  function effective(){var a=root.getAttribute('data-theme');if(a==='dark'||a==='light')return a;
+    return window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}
+  function paintTheme(){if(!themeBtn)return;var dark=effective()==='dark';
+    themeBtn.setAttribute('aria-pressed',String(dark));
+    themeBtn.querySelector('.lbl').textContent=themeBtn.getAttribute(dark?'data-light':'data-dark');
+    themeBtn.querySelector('.moon').style.display=dark?'none':'';themeBtn.querySelector('.sun').style.display=dark?'':'none'}
+  try{var saved=localStorage.getItem('keelokit-theme');if(saved==='dark'||saved==='light')root.setAttribute('data-theme',saved)}catch(e){}
+  if(themeBtn){themeBtn.addEventListener('click',function(){var next=effective()==='dark'?'light':'dark';
+    root.setAttribute('data-theme',next);try{localStorage.setItem('keelokit-theme',next)}catch(e){}paintTheme()});paintTheme()}
   document.querySelectorAll('button[data-copy]').forEach(function(btn){
     btn.addEventListener('click',function(){
       var text=btn.getAttribute('data-copy'), label=btn.textContent;
@@ -1181,6 +1200,10 @@ JS = """
 LOCK = ('<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
         '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>')
 CHEV = '<span class="chev" aria-hidden="true"></span>'
+MOON = ('<svg class="moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+        '<path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7Z"/></svg>')
+SUN = ('<svg class="sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" style="display:none">'
+       '<circle cx="8" cy="8" r="3"/><path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3 3l1 1M12 12l1 1M3 13l1-1M12 4l1-1"/></svg>')
 
 
 def logo() -> str:
@@ -1545,6 +1568,8 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
                f'<div class="row"><button type="button" class="act primary" id="ask-send" hidden>{esc(t["ask_send"])}</button>'
                f'<button type="button" class="act" id="ask-copy">{esc(t["ask_copy"])}</button></div>'
                f'<p class="status" id="ask-status" aria-live="polite"></p></section>')
+    theme = (f'<button type="button" class="theme" id="theme" aria-pressed="false" data-dark="{esc(t["theme_dark"])}" '
+             f'data-light="{esc(t["theme_light"])}">{MOON}{SUN}<span class="lbl">{esc(t["theme_dark"])}</span></button>')
     when = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     img = logo()
 
@@ -1553,7 +1578,8 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Fragment+Mono&family=Karla:wght@400;500;600&display=swap">
 <style>{CSS}</style>
-<header class="wrap top"><span class="brand">{f'<img src="{img}" alt="">' if img else ""}Keelokit</span><span class="crumb">/</span><span class="product">{esc(s["name"])}</span><span class="chips">{chips}<span class="chip">v{esc(version)}</span></span></header>
+<div hidden data-lang="{lang}"></div>
+<header class="wrap top"><span class="brand">{f'<img src="{img}" alt="">' if img else ""}Keelokit</span><span class="crumb">/</span><span class="product">{esc(s["name"])}</span><span class="chips">{chips}<span class="chip">v{esc(version)}</span>{theme}</span></header>
 <div class="sea"><div class="wrap">
 <section class="hero" aria-labelledby="where">
 <div><p class="eyebrow">{esc(t["eyebrow"])}</p><h1 id="where">{esc(s["name"])}</h1>
@@ -1581,10 +1607,20 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
     return page
 
 
+LANG_NAMES = {"es": "es", "spa": "es", "español": "es", "espanol": "es", "spanish": "es",
+              "en": "en", "eng": "en", "english": "en", "inglés": "en", "ingles": "en"}
+
+
+def normalise_lang(value: str) -> str:
+    """`es`, `es-AR`, `es_UY.UTF-8`, `Español` → `es`. Unknown or missing → `en`."""
+    v = str(value).strip().lower()
+    return LANG_NAMES.get(v) or LANG_NAMES.get(re.split(r"[-_.]", v)[0], "en") if v else "en"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", type=Path, default=None)
-    ap.add_argument("--lang", choices=sorted(T), default=None)
+    ap.add_argument("--lang", default=None, help="es or en (es-AR, Español… also work)")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--standalone", action="store_true")
     ap.add_argument("--json", action="store_true")
@@ -1596,7 +1632,7 @@ def main() -> int:
         dash = tomllib.loads(read(root / ".keelokit/state.toml")).get("dashboard", {})
     except tomllib.TOMLDecodeError:
         dash = {}
-    lang = args.lang or (dash.get("lang") if dash.get("lang") in T else "en")
+    lang = normalise_lang(args.lang or dash.get("lang", ""))
 
     if args.json:
         view = {k: v for k, v in s.items() if k not in ("root", "by_id", "context", "prd", "stack_doc", "diagnosis")}

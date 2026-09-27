@@ -13,8 +13,11 @@ regenerating it is always safe.
 
 1. Project root: the nearest directory with `.keelokit/` (walk up from the cwd). During kickstart,
    the product folder.
-2. Language: `[dashboard] lang` in `.keelokit/state.toml` — the language of the interview. If it
-   is missing, add it (`lang = "es"` or `"en"`); it is the only setting the page reads.
+2. Language: `[dashboard] lang` in `.keelokit/state.toml` — the language the user works in with
+   you. If it is missing, or the user now works in another language, set it (`"es"` or `"en"`;
+   `es-AR` or `Español` also work) before building; the whole page follows it (texts, dates,
+   glossary, the requests its buttons prepare). Other languages fall back to English. Documents
+   are shown as written: kickstart writes them in English unless the user asked otherwise.
 3. Run:
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/skills/dashboard/scripts/dashboard.py" --root <root>
