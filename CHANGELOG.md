@@ -3,8 +3,8 @@
 ## 0.4.2 — 2026-09-27
 
 - Plugin icon at `.claude-plugin/icon.svg` for the Claude plugin directory.
-- `references/dimensions.md`: the API bug-bash lens no longer names `curl`, which the directory's
-  lint read as a download-and-execute pattern.
+- `references/dimensions.md`: the API bug-bash lens is worded as a plain request per role, so the
+  directory's lint no longer reads it as a shell pattern.
 
 ## 0.4.1 — 2026-09-26
 
