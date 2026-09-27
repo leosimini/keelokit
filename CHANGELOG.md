@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The plugin uploads to claude.ai (Customize → Plugins → Upload): the template's file names no
+  longer carry Copier conditions like `{% if 'api' in apps %}` — claude.ai rejects paths with `{`,
+  `%`, `'` or spaces. The conditions moved to `_exclude` in `copier.yml`; generated projects and
+  `harness-upgrade` are unchanged. A test keeps every path in the repo plain.
+
 ## 0.7.0 — 2026-09-27 — ship it
 
 - **The project's profile** (`.keelokit/profile.toml`): what the project is (`kind`: web product,

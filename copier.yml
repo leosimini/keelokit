@@ -45,6 +45,23 @@ _exclude:
   - dist
   - .DS_Store
   - __pycache__
+  # Only the apps the product needs. Conditions live here, not in file names: some tools (claude.ai's
+  # plugin upload among them) reject paths with {, %, ' or spaces.
+  - "{% if 'api' not in apps %}apps/api{% endif %}"
+  - "{% if 'web' not in apps %}apps/web{% endif %}"
+  - "{% if 'mobile' not in apps %}apps/mobile{% endif %}"
+  - "{% if 'site' not in apps %}apps/site{% endif %}"
+  - "{% if 'api' not in apps %}docker-compose.yml{% endif %}"
+  - "{% if 'api' not in apps %}docker-compose.yml.jinja{% endif %}"
+  - "{% if credit == 'off' %}docs/assets/built-with-keelokit.svg{% endif %}"
+  # Web and mobile pieces that only make sense against a real API.
+  - "{% if 'api' not in apps %}apps/web/e2e/stack{% endif %}"
+  - "{% if 'api' not in apps %}apps/web/.env.example{% endif %}"
+  - "{% if 'api' not in apps %}apps/web/playwright.stack.config.ts{% endif %}"
+  - "{% if 'api' not in apps %}apps/web/src/env.d.ts{% endif %}"
+  - "{% if 'api' not in apps %}apps/mobile/e2e/stack{% endif %}"
+  - "{% if 'api' not in apps %}apps/mobile/.env.example{% endif %}"
+  - "{% if 'api' not in apps %}apps/mobile/playwright.stack.config.ts{% endif %}"
   # mode=harness (existing repos, /keelokit:project-adopt): install only .keelokit/, never touch the code.
   - "{% if mode == 'harness' %}**{% endif %}"
   - "{% if mode == 'harness' %}!.keelokit{% endif %}"
