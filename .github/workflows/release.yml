@@ -24,6 +24,7 @@ jobs:
         with:
           fetch-depth: 0 # main and the existing tags
       - name: Check the release and tag it
+        id: tag
         run: |
           set -euo pipefail
           version=$(python3 -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')
@@ -32,6 +33,7 @@ jobs:
             || { echo "::error::release must point at a commit of main"; exit 1; }
           heading=$(grep -m1 "^## $version — " CHANGELOG.md) \
             || { echo "::error::CHANGELOG.md has no '## $version — <date>' entry"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ] \
               || { echo "::error::$tag is already on another commit; a release raises the version (scripts/release.sh)"; exit 1; }
@@ -46,3 +48,21 @@ jobs:
           git tag -a "$tag" -m "Keelokit $version$title"
           git push origin "$tag"
           echo "Tagged $tag: Keelokit $version$title"
+      # The GitHub Release is what keelokit.com links to: its notes are this version's CHANGELOG entry.
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "$TAG already has a release"; exit 0; fi
+          version=${TAG#v}
+          python3 - "$version" > notes.md <<'PY'
+          import re, sys
+          v = re.escape(sys.argv[1])
+          log = open("CHANGELOG.md").read()
+          m = re.search(rf"^## {v} — .*?\n(.*?)(?=^## |\Z)", log, re.S | re.M)
+          print(m.group(1).strip() if m else "")
+          PY
+          title=$(grep -m1 "^## $version — " CHANGELOG.md | sed "s/^## $version — [0-9-]*//; s/^ — //")
+          gh release create "$TAG" --verify-tag --title "Keelokit $version${title:+ — $title}" --notes-file notes.md

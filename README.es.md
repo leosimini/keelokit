@@ -42,6 +42,8 @@ código no es el que dice que está terminado.
 
 ## Seguir el avance
 
+<p align="center"><img src="docs/assets/dashboard-es.webp" width="900" alt="El tablero de Keelokit de un proyecto de ejemplo: la etapa actual, el próximo paso, todas las etapas y lo que te espera"></p>
+
 No hace falta leer logs de agentes para saber dónde está todo. `/keelokit:dashboard` arma una
 página desde el repo, en tu idioma y con el look de [keelokit.com](https://keelokit.com):
 

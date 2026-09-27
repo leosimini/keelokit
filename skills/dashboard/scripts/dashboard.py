@@ -1107,7 +1107,7 @@ details.plain[open]>summary{margin-bottom:12px}
 .card .waitlist .wi{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0}
 .card .waitlist .act{padding:5px 10px;font-size:12px}
 .setting ul{list-style:none;padding:0;margin:4px 0 0;display:flex;flex-direction:column;gap:4px}
-.setting ul li{font-size:14px}
+.setting ul li{font-size:14px;display:block}
 .setting ul li::before{display:none}
 
 /* sections outside the stage sequence */

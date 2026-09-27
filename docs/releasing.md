@@ -7,6 +7,7 @@
 | `main` | Where work lands, always green | Keelokit's own marketplace (`claude plugin marketplace add leosimini/keelokit`) |
 | `release` | The last released commit of `main` | The Claude plugin directory, which tracks this branch through a GitHub push webhook |
 | `vX.Y.Z` tags | One per release, made by the Release workflow | `kickstart`, `adopt` and `upgrade`, which fetch the template at `v` + the plugin's `version` |
+| GitHub Releases | One per tag, made by the same workflow; its notes are the version's CHANGELOG entry | people reading release notes, and keelokit.com's "Latest release" link |
 
 Three facts shape the process:
 
@@ -45,7 +46,7 @@ Three facts shape the process:
    - runs the unit tests and `claude plugin validate --strict`;
    - commits `release: X.Y.Z`;
    - pushes `main`, then `release`.
-4. Check that the **Release** workflow on GitHub created `vX.Y.Z`. It fails if the CHANGELOG
+4. Check that the **Release** workflow on GitHub created `vX.Y.Z` and its GitHub Release. It fails if the CHANGELOG
    has no entry for the version, if `release` isn't a commit of `main`, or if the tag already
    exists on another commit.
 5. In [claude.ai/directory/manage](https://claude.ai/directory/manage), follow the version's
@@ -55,7 +56,8 @@ Three facts shape the process:
 7. Review the sites, and take the chance to improve their wording:
    - [keelokit.com](https://keelokit.com) (`leosimini/keelokit.com`, deploys from `main` on
      Vercel). Its "Latest release" line updates by itself, because it reads the `release`
-     branch. By hand: the terminal examples in `src/lib/content.ts`, if `verify.sh`,
+     branch, and links to the version's GitHub Release. If the dashboard changed, regenerate its
+     screenshots (`public/img/dashboard/`) and the README's (`docs/assets/dashboard-*.webp`). By hand: the terminal examples in `src/lib/content.ts`, if `verify.sh`,
      `doctor.py`, `guard.py` or the number of rules changed, and the commands, agents, rules
      and CI steps in `src/i18n.ts`.
    - The Keelokit page on [leopoldosimini.com](https://leopoldosimini.com/keelokit)
