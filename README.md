@@ -2,7 +2,7 @@
 
 # Keelokit
 
-**My personal Claude Code harness for building apps in TypeScript monorepos.**
+**A Claude Code harness for building apps in TypeScript monorepos.**
 
 *[keelokit.com](https://keelokit.com) · [Leer en español](README.es.md)*
 
