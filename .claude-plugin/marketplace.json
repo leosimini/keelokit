@@ -1,6 +1,6 @@
 {
   "name": "keelokit",
-  "description": "Keelokit — Leopoldo Simini's personal Claude Code harness for TypeScript monorepos.",
+  "description": "Keelokit — a Claude Code harness for TypeScript monorepos.",
   "owner": {
     "name": "Leopoldo Simini",
     "url": "https://leopoldosimini.com"
@@ -9,7 +9,7 @@
     {
       "name": "keelokit",
       "source": "./",
-      "description": "A personal harness for building apps in TypeScript monorepos with Claude Code: rules backed by checks."
+      "description": "A harness for building apps in TypeScript monorepos with Claude Code: rules backed by checks."
     }
   ]
 }
