@@ -22,6 +22,28 @@ skipped lens in the report with its reason. The
 `integrity` lens attacks every invariant in `docs/context/domain.md` with its class's attack from
 `${CLAUDE_PLUGIN_ROOT}/references/invariants.md`, the way `agents/breaker.md` does for one story.
 
+## How it runs
+
+Where Claude Code can run workflows (the Workflow tool is available), steps 1–5 run as the
+plugin's workflow `keelokit:check-bugbash-flow`: the same procedure, with its shape fixed in code
+— lenses at most `maxParallel` at a time, every finding reproduced by an independent skeptic (two
+for P0 and P1, one on the session's model), rounds of a completeness critic until nothing new
+turns up, fixes one at a time each checked by an agent that didn't write it (a rejected fix is
+undone, not left half-done), and the report. Its intermediate results stay out of this
+conversation, and a run cut short resumes where it stopped.
+
+Start it with the Workflow tool, name `keelokit:check-bugbash-flow` (or `scriptPath`
+`${CLAUDE_PLUGIN_ROOT}/workflows/check-bugbash-flow.js`), and `args`:
+`{date, pluginRoot: "${CLAUDE_PLUGIN_ROOT}", scope: "incremental" | "full", lenses: [...] (only
+if the user named some), fix: true, maxParallel: 4, notes: "anything the user asked for"}`. Tell
+the user in one line what will run (scope, lenses, that fixes commit on the current branch and
+nothing is pushed) and that `/workflows` shows its progress. When it returns: show the summary,
+ask the pending decisions one by one, turn `stories` (and decisions the user has now taken)
+into backlog stories through `/keelokit:plan-backlog`, push per the project's flow, and refresh
+the dashboard.
+
+Without workflows, follow the steps below in this conversation.
+
 ## 1. Prepare
 
 1. Read product, users, roles, critical journeys per role. List the journeys.

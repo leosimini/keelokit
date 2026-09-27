@@ -42,7 +42,7 @@ código no es el que dice que está terminado.
 | **Construir** | |
 | `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
 | **Revisar** | |
-| `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva |
+| `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva. Corre como workflow (`/workflows` lo muestra en vivo) donde Claude Code los tiene |
 | `/keelokit:check-security` | Seguridad y privacidad a fondo: un mapa de los datos personales, la ley de privacidad de cada mercado, un modelo de amenazas de los recorridos críticos, escaneos de dependencias y de staging; corrige con un test y un control por clase |
 | `/keelokit:check-health` | ¿Cada regla sigue verificada? Sumar una regla, registrar una excepción |
 | **Publicar** | |

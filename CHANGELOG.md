@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The bug bash runs as a workflow** where Claude Code can run them: `check-bugbash` starts
+  `keelokit:check-bugbash-flow`, which fixes the procedure's shape in code — lenses from the
+  profile at most four at a time, every finding reproduced by an independent skeptic (two for
+  P0/P1), a completeness critic that sends more rounds while it finds gaps, merge by root cause,
+  fixes one at a time each checked by an agent that didn't write it (undone if rejected), and the
+  report. Its work stays out of the conversation, `/workflows` shows it live, and a run cut short
+  resumes. Without workflows the skill runs the same steps as before.
+- Finding prefixes for developer-facing lenses: `DX`, `DOC`, `PKG`.
+
 ## 0.7.1 — 2026-09-27
 
 - The plugin uploads to claude.ai (Customize → Plugins → Upload): the template's file names no

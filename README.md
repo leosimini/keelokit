@@ -40,7 +40,7 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | **Build** | |
 | `/keelokit:build-story` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
 | **Check** | |
-| `/keelokit:check-bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back |
+| `/keelokit:check-bugbash` | A bug hunt across data, API, integrity, UX, i18n, accessibility, security and more; every bug that got through adds a check for its whole class so it doesn't come back. Runs as a workflow (`/workflows` shows it live) where Claude Code has them |
 | `/keelokit:check-security` | Security and privacy in depth: a map of the personal data, the privacy law of each market, a threat model of the critical journeys, dependency and staging scans; fixes with a test and a check per class |
 | `/keelokit:check-health` | Is every rule still checked? Add a rule, register an exception |
 | **Ship** | |

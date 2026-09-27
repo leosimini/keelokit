@@ -6,7 +6,7 @@ This describes Keelokit as it is. For how to use it, see the [README](../README.
 
 | Place | What lives there | How it changes |
 |---|---|---|
-| **The plugin** (this repo, installed in Claude Code) | skills, agents, the hooks that call each project's guard | `claude plugin update` |
+| **The plugin** (this repo, installed in Claude Code) | skills, agents, workflows, the hooks that call each project's guard | `claude plugin update` |
 | **The template** (`copier.yml` + `template/`, same repo, tagged) | the monorepo skeleton and the house harness in `.keelokit/` | a project runs `/keelokit:harness-upgrade` (Copier's 3-way merge) |
 | **A project** (generated or adopted) | its code, `docs/context/`, `docs/prd.md`, `backlog/`, `.keelokit/answers.yml`, local rules and exceptions | by the people and agents working on it |
 
@@ -68,6 +68,26 @@ bump for agents, not a sandbox; the git hooks and CI are the backstop.
 | Keep up | `harness-upgrade`, `check-health` | rule changes, exceptions |
 
 Reserved for the human always: production deploys, money, legal, deleting data.
+
+## Workflows: where the shape of the work is code
+
+A skill says what to do in prose, and the session follows it. Where a skill already runs many
+agents on its own for a long stretch, the prose leaves the shape to the model: how many at once,
+how many rounds, whether every finding really got an independent check. Those parts are
+Claude Code workflows (`workflows/*.js`, run as `/keelokit:<name>`): a script decides who runs, in
+what order and with what limits; agents do the work; the conversation gets only the result, and a
+run cut short resumes where it stopped.
+
+| Workflow | Started by | Shape |
+|---|---|---|
+| `check-bugbash-flow` | `check-bugbash` | plan → lenses (≤ N at once) → a skeptic reproduces each finding (two for P0/P1) → completeness critic, more rounds while it finds gaps → merge by root cause → fixes one at a time, each checked by another agent, undone if rejected → report |
+
+The skill stays the way in, and the fallback: it prepares what needs the person (scope, what to
+say), starts the workflow when the session can run one, and afterwards asks the pending
+decisions. Nothing a person must decide happens inside a workflow — it has no way to ask — so
+decisions come back as results. Conversations (intake, PRD, stack, setup, releases) stay skills.
+`tests/test_workflows.py` keeps every script loadable: a pure-literal `meta` whose name is the file
+name, phases that match, no clock or randomness, a body that parses.
 
 The dashboard (`skills/project-dashboard/`) is how the human follows all of this: a script reads
 `.keelokit/state.toml`, `docs/`, `backlog/` and the `Story:` trailers and renders one page per

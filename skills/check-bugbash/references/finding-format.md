@@ -17,7 +17,8 @@
 ```
 
 Lens prefixes: `DATA`, `API`, `CTR`, `LOG`, `INT`, `AUTH`, `UX`, `UI`, `WEB`, `MOB`, `I18N`,
-`CPY`, `A11Y`, `SEC`, `NFR`, `CFG`, `OPS`. An `INT` finding names the invariant it breaks
+`CPY`, `A11Y`, `SEC`, `NFR`, `CFG`, `OPS`, and for a developer-facing project `DX`, `DOC`,
+`PKG`. An `INT` finding names the invariant it breaks
 (`INV-003`) and its class.
 
 ## Severity

@@ -7,7 +7,7 @@ from. The projects' own agreement is `template/AGENTS.md.jinja`; don't mix the t
 
 ```
 .claude-plugin/   plugin.json (name, version, description), marketplace.json, icon.svg
-skills/ agents/ hooks/ references/   the plugin
+skills/ agents/ workflows/ hooks/ references/   the plugin
 template/ copier.yml                 the project template (rendered from `template/`)
 tests/            unit tests for the guard and doctor
 scripts/          test-template.sh (generates projects and runs their checks), release.sh
@@ -18,7 +18,7 @@ docs/             design.md (how the pieces fit), releasing.md (how a version sh
 
 | What | Command |
 |---|---|
-| Guard and doctor tests | `python3 -m unittest discover -s tests` |
+| Guard, doctor, dashboard and workflow tests | `python3 -m unittest discover -s tests` |
 | Plugin manifests | `claude plugin validate . --strict` |
 | A generated project, end to end | `scripts/test-template.sh '["api","web"]'` (see its header) |
 
