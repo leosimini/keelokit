@@ -22,6 +22,8 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `critical.toml` — the project's critical areas and the mutation score they must keep (the
   product owns it; the template ships one example area).
 - `bin/guard.py` — one guard, two callers: Claude Code's PreToolUse hook and git's pre-commit.
+  Without python3 every Claude hook turns off and says so, and pre-commit stops the commit
+  with the reason (`tests/test_hooks.py` runs each hook without it).
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
 
 ## The project's profile

@@ -28,6 +28,11 @@
   Python's recursion limit, a `tool_input` that isn't an object), which Claude Code doesn't block
   on. Now both block (exit 2) and say why, as does any check that fails, so the guard ends in
   exactly 0 or 2. Already in 0.7.1; `harness-upgrade` brings the new guard.
+- Fixed (DX-7): without python3 only the SessionStart hook said so; the PreToolUse hook failed on
+  every call with a bare `exec: python3: not found` (exit 127) and the git pre-commit hook stopped
+  the commit with the same unexplained error. Now PreToolUse turns off with Keelokit's message, as
+  SessionStart does, and pre-commit stops the commit saying python3 is missing. Already in 0.7.1;
+  `claude plugin update` brings the hook and `harness-upgrade` the new `.githooks/pre-commit`.
 
 ## 0.7.1 — 2026-09-27
 

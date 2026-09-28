@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
 # Same guard the Claude hooks run: blocks committing .env files, secrets, and edits to
-# migrations that already exist on origin/main.
+# migrations that already exist on origin/main. Without python3 the commit stops: it mustn't
+# skip the guard silently.
+command -v python3 >/dev/null 2>&1 || { echo 'Keelokit: python3 not found, so the guard cannot check this commit. Install Python 3.11+.' >&2; exit 1; }
 exec python3 .keelokit/bin/guard.py git-pre-commit
