@@ -89,6 +89,7 @@ T = {
         "remote": "Repositorio en GitHub",
         "health": "Salud del harness",
         "health_log": "Salida del doctor (doctor.py --brief), tal como la imprime, en inglés:",
+        "health_ok": "El doctor no encontró errores",
         "backlog_total": ("{done} de {n} historia terminada", "{done} de {n} historias terminadas"),
         "by_wave": "Por ola",
         "by_epic": "Por épica",
@@ -315,6 +316,7 @@ T = {
         "remote": "GitHub repository",
         "health": "Harness health",
         "health_log": "The doctor's output (doctor.py --brief), as it prints it:",
+        "health_ok": "The doctor found no errors",
         "backlog_total": ("{done} of {n} story done", "{done} of {n} stories done"),
         "by_wave": "By wave",
         "by_epic": "By epic",
@@ -997,7 +999,7 @@ def next_step(s: dict, lang: str) -> dict:
                 "command": flow, "anchor": f"stage-{stage['id']}"}
     if s["errors"]:
         return {"title": t["next_doctor"], "detail": plural(t, "next_doctor_d", s["errors"]),
-                "command": "/keelokit:check-health", "anchor": "stage-build"}
+                "command": "/keelokit:check-health", "anchor": "health"}
     if blocking:
         return {"title": t["next_gaps"], "detail": plural(t, "next_gaps_d", len(blocking)),
                 "command": "/keelokit", "anchor": "stage-intake"}
@@ -1037,7 +1039,7 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
                "anchor": "stage-intake", "ask": t["act_answer_t"].format(gap=g["id"]), "act": t["act_answer"]}
               for g in s["gaps"] if g["blocking"]]
     if s["errors"]:
-        items.append({"text": plural(t, "wait_errors", s["errors"]), "anchor": "stage-build"})
+        items.append({"text": plural(t, "wait_errors", s["errors"]), "anchor": "health"})
     if s["no_main"]:
         items.append({"text": t["wait_no_main"], "anchor": "stage-build"})
     for b in s["bugbashes"]:
@@ -1551,8 +1553,9 @@ def ask(label: str, text: str, primary: bool = False) -> str:
     return f'<button type="button" class="act{" primary" if primary else ""}" data-ask="{esc(text)}">{esc(label)}</button>'
 
 
-def block(title: str, inner: str) -> str:
-    return f'<div class="block"><h3>{title}</h3>{inner}</div>'
+def block(title: str, inner: str, id_: str = "") -> str:
+    attr = f' id="{id_}"' if id_ else ""
+    return f'<div class="block"{attr}><h3>{title}</h3>{inner}</div>'
 
 
 def stage_summary(s: dict, stage: dict, t: dict) -> str:
@@ -1710,7 +1713,7 @@ def modes_block(s: dict, t: dict) -> str:
     return block(esc(t["modes"]), inner)
 
 
-def decisions_card(s: dict, t: dict) -> str:
+def decisions_card(s: dict, links: Links, t: dict) -> str:
     run, root = s["run"], s["root"]
     greenfield = s["layout"] == "project"
     rows = [(t["type"], t["greenfield"] if greenfield else t["brownfield"],
@@ -1745,7 +1748,12 @@ def decisions_card(s: dict, t: dict) -> str:
         out.append(f'<div class="setting"><span class="k">{esc(k)}</span>{shown}'
                    + (f'<span class="d">{esc(d)}</span>' if d else "") + "</div>")
     if greenfield or s["adrs"]:
-        adrs = "".join(f'<li><a href="#stage-stack">{esc(a["title"])}</a>'
+        # Only a new project has a Stack stage to open; an adopted repo's ADR opens as its file (UX-1).
+        def adr_link(a):
+            href = "#stage-stack" if greenfield else links.href(a["path"])
+            extra = "" if greenfield else ' target="_blank" rel="noopener"'
+            return f'<a href="{esc(href)}"{extra}>{esc(a["title"])}</a>' if href else esc(a["title"])
+        adrs = "".join(f'<li>{adr_link(a)}'
                        + (f' <span class="muted">· {esc(a["status"])}</span>' if a["status"] else "") + "</li>"
                        for a in s["adrs"])
         out.append(f'<div class="setting"><span class="k">{esc(t["adrs_k"])}</span>'
@@ -1933,6 +1941,11 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
             f'<span class="pill {st["status"]}">{esc(label(st))}</span>{CHEV}'
             f'<span class="sum">{esc(stage_summary(s, st, t))}{date}</span></summary>'
             f'<div class="stage-body"><p class="what">{esc(what)}</p>{check}{stage_body(s, st, links, t)}</div></details>')
+    # The doctor speaks English only: its output is a quoted log, marked as such (I18N-1). It lands
+    # at id="health" whether or not there is a backlog yet: the next step and the waiting list
+    # link there whenever it reports errors (UX-1).
+    log = (f'<p class="what">{esc(t["health_log"])}</p>'
+           f'<pre class="out" lang="en"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
     if s["stories"]:
         n = len(s["stages"]) + 1
         state = "current" if building else "todo"
@@ -1946,15 +1959,18 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
                  ask(t["act_setup"], "/keelokit:ship-setup"), ask(t["act_doctor"], "/keelokit:check-health"),
                  ask(t["act_refresh"], "/keelokit:project-dashboard")]
         actions = block(esc(t["actions"]), f'<div class="acts">{"".join(acts)}</div>')
-        # The doctor speaks English only: its output is a quoted log, marked as such (I18N-1).
-        health = block(esc(t["health"]), f'<p class="what">{esc(t["health_log"])}</p>'
-                                         f'<pre class="out" lang="en"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
+        health = block(esc(t["health"]), log, "health") if log else ""
         sections.append(
             f'<details class="stage {state}" id="stage-build"{" open" if building else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'
             f'<span class="pill {state}">{esc(t["st_" + state])}</span>{CHEV}'
             f'<span class="sum">{esc(plural(t, "sum_build", len(s["stories"]), done=done))}</span></summary>'
             f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{actions}{modes_block(s, t)}{health}</div></details>')
+    elif log:
+        pill = f'<span class="pill review">{esc(t["st_review"])}</span>' if s["errors"] else ""
+        summary = plural(t, "wait_errors", s["errors"]) if s["errors"] else t["health_ok"]
+        acts = f'<div class="acts">{ask(t["act_doctor"], "/keelokit:check-health", True)}</div>'
+        sections.append(extra_section("health", "DOC", t["health"], pill, summary, acts + log, bool(s["errors"])))
     later = s["stories"] or any(x["id"] in ("skeleton", "adopt") and x["status"] == "done" for x in s["stages"])
     hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]
     if hosted and (later or s["environments"] or s["has_deploy"]):
@@ -2014,7 +2030,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
 <div class="col">{"".join(sections)}</div>
 <aside class="col side">
 <section class="card"><p class="eyebrow">{esc(t["waiting"])}</p>{wait_html}</section>
-{decisions_card(s, t)}
+{decisions_card(s, links, t)}
 <details class="card plain"><summary class="eyebrow">{esc(t["glossary"])}{CHEV}</summary><dl class="gloss">{gloss}</dl></details>
 {ask_box}
 </aside>

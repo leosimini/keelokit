@@ -146,6 +146,13 @@
   `**Integrations:**` list inside Scope no longer counts as in scope, and a bold sub-label inside
   In or Out (`**Buyers**`) keeps its bullets there. Already in 0.7.1; `claude plugin update` brings
   the new dashboard.
+- Fixed (UX-1): before a backlog existed (an adopted repo at intake, a new project before its
+  stories, or every gate approved with no stories yet), the dashboard's "N harness errors to review"
+  item and its "fix the harness" next step linked to the Build section, which the page only draws
+  once there are stories, so the link went nowhere. The doctor's output now has its own Harness
+  health section until there is a backlog (inside Build after that), and both links open it. In an
+  adopted repo, the decisions card's ADRs linked to a Stack stage only new projects have; they now
+  open their file. Already in 0.7.0; `claude plugin update` brings the new dashboard.
 
 ## 0.7.1 — 2026-09-27
 

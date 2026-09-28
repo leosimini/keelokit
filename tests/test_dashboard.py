@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -41,6 +42,13 @@ def esc(text: str) -> str:
 
 def sh(cwd: Path, *cmd: str) -> str:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True).stdout
+
+
+def dead_links(html: str) -> list[str]:
+    """UX-1, the class: every in-page link (the next step, each waiting item, the stage strip, the
+    decisions card, the sections' own links) must land on an element the same page renders."""
+    ids = set(re.findall(r'\bid="([^"]+)"', html))
+    return sorted({h for h in re.findall(r'\bhref="#([^"]*)"', html) if html_lib.unescape(h) not in ids})
 
 
 class DashboardTest(unittest.TestCase):
@@ -81,7 +89,13 @@ class DashboardTest(unittest.TestCase):
 
     def page(self, *args: str) -> str:
         out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), *args).strip()
-        return Path(out).read_text()
+        html = Path(out).read_text()
+        self.assert_links_land(html)
+        return html
+
+    def assert_links_land(self, html: str) -> None:
+        """UX-1: every page a test renders goes through here (see dead_links)."""
+        self.assertEqual(dead_links(html), [], "in-page links with nothing to land on")
 
     def test_new_project_starts_at_intake(self):
         self.gates()
@@ -155,6 +169,44 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual([x["id"] for x in s["stages"]], ["intake", "adopt", "backlog"])
         self.assertEqual(s["stages"][1]["status"], "review")
         self.assertEqual(s["next"]["command"], None)
+
+    def test_UX_1_harness_errors_before_a_backlog_link_to_the_health_they_count(self):
+        """A repo with no backlog yet whose doctor reports errors: the waiting item and the next step
+        that count them must open the doctor's output, not a Build stage the page only renders once
+        there are stories. Both layouts, with a gate still pending (the waiting item) and with every
+        gate approved (the next step is then "fix the harness" itself)."""
+        cases = (("harness", ("intake",)), ("harness", ("intake", "adopt", "backlog")),
+                 ("project", ("intake", "product", "stack", "skeleton")),
+                 ("project", ("intake", "product", "stack", "skeleton", "backlog")))
+        for layout, gates in cases:
+            with self.subTest(layout=layout, gates=gates):
+                self.write(".keelokit/answers.yml", f"mode: {layout}\nproject_name: Legacy\n")
+                (self.root / ".keelokit/bin").mkdir(parents=True, exist_ok=True)
+                shutil.copy(DOCTOR, self.root / ".keelokit/bin/doctor.py")
+                (self.root / ".keelokit/harness").mkdir(parents=True, exist_ok=True)
+                shutil.copy(DOCTOR.parents[1] / "harness/rules.toml", self.root / ".keelokit/harness/rules.toml")
+                self.gates(*gates)
+                self.context()
+                self.write(".keelokit/profile.toml", 'kind = "web-product"\ntraits = []\n')
+                self.commit("chore: adopt")
+                s = self.state()
+                self.assertEqual(s["stories"], [])
+                self.assertGreater(s["errors"], 0, s["doctor"])
+                errors = [w for w in s["waiting"] if "harness error" in w["text"]]
+                self.assertEqual(len(errors), 1, s["waiting"])
+                anchors = {errors[0]["anchor"]}
+                if s["pending"] is None:  # every gate approved: fixing the harness is the next step
+                    self.assertEqual(s["next"]["command"], "/keelokit:check-health")
+                    anchors.add(s["next"]["anchor"])
+                self.assertEqual(len(anchors), 1, anchors)
+                anchor = anchors.pop()
+                html = self.page()  # asserts every in-page link lands
+                self.assertIn(f'href="#{anchor}"', html)
+                health = re.search(rf'id="{anchor}".*?</details>', html, re.S)
+                self.assertIsNotNone(health)
+                self.assertIn(html_lib.escape("\n".join(s["doctor"])), health[0])
+                self.assertIn('data-ask="/keelokit:check-health"', health[0])
+            self.assertEqual(s["pending"], None if gates[-1] == "backlog" else "backlog" if layout == "project" else "adopt")
 
     def test_run_decisions_and_automatic_approvals(self):
         self.gates("intake")
@@ -527,6 +579,123 @@ DOC_WORDS = {
            "pending": ("Decisiones pendientes", "Decisiones pendientes", "Decisiones pendientes (1)"),
            "notes": "Notas"},
 }
+
+
+def load_dashboard_marking_anchors():
+    """dashboard.py with every dict literal that has an "anchor" key (the next step, each waiting
+    item) wrapped in __anchor_site__(i, {...}), so a test knows which of them its states reached.
+    Returns the module, each site's line, and the set of sites hit so far."""
+    tree = ast.parse(DASHBOARD.read_text(), str(DASHBOARD))
+    lines: list[int] = []
+
+    class Mark(ast.NodeTransformer):
+        def visit_Dict(self, node):
+            self.generic_visit(node)
+            if not any(isinstance(k, ast.Constant) and k.value == "anchor" for k in node.keys):
+                return node
+            lines.append(node.lineno)
+            call = ast.Call(ast.Name("__anchor_site__", ast.Load()), [ast.Constant(len(lines) - 1), node], [])
+            return ast.copy_location(call, node)
+
+    tree = ast.fix_missing_locations(Mark().visit(tree))
+    hit: set[int] = set()
+    module = types.ModuleType("keelokit_dashboard_anchors")
+    module.__file__ = str(DASHBOARD)
+    module.__anchor_site__ = lambda i, d: (hit.add(i), d)[1]
+    exec(compile(tree, str(DASHBOARD), "exec"), module.__dict__)
+    return module, lines, hit
+
+
+class DashboardAnchorsLandTest(unittest.TestCase):
+    """UX-1, the class: the next step and the waiting list linked to #stage-build before the page
+    drew it. Tests render only the states their fixtures happen to build, so a branch no fixture
+    reaches could keep a dead link. Here a matrix of real projects (both layouts; no backlog, a mixed
+    one, a blocked one, a finished one, one without main; with and without bug bash and security
+    reports; the first gate pending, the last one, all approved) times what the doctor and the user
+    report (errors, blocking gaps, an unknown or drifted profile, an old harness, no run mode) is
+    rendered, every in-page link must land, and every dict with an "anchor" in dashboard.py must be
+    reached by some state in the matrix: a new one no state reaches fails here until a state does."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def project(self, layout: str, stories: str, reports: bool) -> Path:
+        root = self.tmp / f"{layout}-{stories}-{int(reports)}"
+        files = {
+            ".keelokit/answers.yml": f"_commit: v0.7.1\nmode: {layout}\nproject_name: Shop\n",
+            "docs/context/product.md": "# product\n", "docs/context/constraints.md": "# constraints\n",
+            "docs/context/domain.md": "# domain\n\n- **INV-001** [MUST] A booking is paid once.\n",
+            "docs/context/environments.md": "| Environment | Purpose | URL |\n|---|---|---|\n| staging | main | staging.shop.app |\n",
+            "docs/context/gaps.md": "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n"
+                                    "| GAP-001 | domain.md | window | Owner | How long? | no |\n",
+            "docs/decisions/0001-postgres.md": "# Use Postgres\n\nStatus: Accepted\n",
+            ".keelokit/profile.toml": 'kind = "web-product"\ntraits = ["hosted"]\n',
+        }
+        if layout == "project":
+            files["docs/prd.md"] = "# Shop — PRD\n\n## Success metrics\n| Metric | Target |\n|---|---|\n| Orders | 10 |\n"
+            files["docs/stack.md"] = "# Stack\n\nApps: api, web\n"
+        else:
+            files[".keelokit/exceptions.toml"] = ""
+            files["docs/diagnosis.md"] = "# Diagnosis\n"
+        deps = {"none": [], "mixed": [("A-001", ""), ("A-002", '"A-001"'), ("A-003", '"A-002"')],
+                "blocked": [("B-001", '"Z-999"')], "done": [("C-001", "")], "no_main": [("A-001", ""), ("A-002", '"A-001"')]}
+        for sid, dep in deps[stories]:
+            files[f"backlog/stories/{sid}-x.md"] = STORY.format(id=sid, epic=sid[0], title=f"t {sid}", wave=1, deps=dep, body="")
+        if reports:
+            table = "| Id | Lens | Severity | Title | Status | Fix commit | Check added |\n|---|---|---|---|---|---|---|\n"
+            files["docs/bugbash/2026-09-01/report.md"] = f"# Bug bash\n\n## Scope\nsha 3f9c2ab\n\n{table}| UX-9 | ux | P2 | x | pending decision | — | — |\n"
+            files["docs/security/2026-09-01/report.md"] = f"{table}| SEC-9 | logs | P1 | y | pending decision | — | — |\n"
+            files["docs/deploy.md"] = "# Deploy\n\n## staging\n- [x] Account\n- [ ] Domain\n"
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text)
+        sh(root, "git", "init", "-q", "-b", "main")
+        sh(root, "git", "config", "user.email", "t@example.com")
+        sh(root, "git", "config", "user.name", "T")
+        sh(root, "git", "add", "-A")
+        sh(root, "git", "commit", "-qm", "chore: skeleton")
+        done = {"mixed": "A-001", "done": "C-001", "no_main": "A-001"}.get(stories)
+        if stories == "no_main":
+            sh(root, "git", "checkout", "-q", "--detach")
+            sh(root, "git", "branch", "-q", "-D", "main")
+        if done:
+            sh(root, "git", "commit", "-q", "--allow-empty", "-m", f"feat: x\n\nStory: {done}")
+        return root
+
+    def test_UX_1_every_anchor_the_page_can_link_lands_in_every_state(self):
+        dashboard, lines, hit = load_dashboard_marking_anchors()
+        self.assertGreaterEqual(len(lines), 10, "the anchors moved: update load_dashboard_marking_anchors")
+        errors = ["Harness errors: 3 — run `pnpm run doctor`"]
+        reported = [
+            {},
+            {"doctor": errors, "errors": 3, "profile": {"kind": "unknown", "traits": []}, "harness": "0.1.0", "run": {},
+             "gaps": [{"id": "GAP-002", "file": "domain.md", "missing": "m", "owner": "o", "question": "q?", "blocking": True}]},
+            {"doctor": errors + ["Profile drift: the profile lists `hosted` but nothing in the repo shows it yet"],
+             "errors": 3, "drift": [{"trait": "hosted", "seen": None}], "run": {"mode": "auto"}},
+            {"doctor": ["Harness errors: 0"], "profile": None, "run": {"mode": "step"},
+             "gaps": [{"id": "GAP-002", "file": "domain.md", "missing": "m", "owner": "o", "question": "", "blocking": True}]},
+        ]
+        n = 0
+        for layout, order in dashboard.GATES.items():
+            for stories in ("none", "mixed", "blocked", "done", "no_main"):
+                for reports in (False, True):
+                    root = self.project(layout, stories, reports)
+                    for gates in (order[:0], order[:-1], order):
+                        (root / ".keelokit/state.toml").write_text(
+                            "[gates]\n" + "".join(f'{g} = "2026-09-20"\n' for g in gates))
+                        base = dashboard.collect(root)
+                        for i, extra in enumerate(reported):
+                            s = {**base, **extra}
+                            lang = ("en", "es")[n % 2]
+                            n += 1
+                            with self.subTest(layout=layout, stories=stories, reports=reports, gates=len(gates),
+                                              reported=i, lang=lang):
+                                html = dashboard.render(s, lang, bool(n % 3), self.tmp, "0.7.1")
+                                self.assertEqual(dead_links(html), [], "in-page links with nothing to land on")
+        missed = [lines[i] for i in range(len(lines)) if i not in hit]
+        self.assertEqual(missed, [], "dashboard.py lines with an anchor no state here renders: add a state that "
+                                     "reaches each one, so its link is checked")
 
 
 def load_dashboard():

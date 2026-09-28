@@ -49,7 +49,8 @@ regenerating it is always safe.
 The page never replaces the question. With the link, write in the user's language (in Spanish,
 waves are **olas de desarrollo**), in at most eight lines:
 - where the project is and the section to look at (`#stage-<gate>` anchors: `stage-intake`,
-  `stage-product`, `stage-stack`, `stage-skeleton`, `stage-adopt`, `stage-backlog`, `stage-build`);
+  `stage-product`, `stage-stack`, `stage-skeleton`, `stage-adopt`, `stage-backlog`, `stage-build`;
+  the doctor's output is at `health`);
 - what exactly is up for approval, in short (the scope in/out and the metrics; the apps; the
   waves and their stories) — never "do you approve?" without saying what;
 - the next step and its command.
