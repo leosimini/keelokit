@@ -273,6 +273,19 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.claude("Write", file_path=ci, content="continue-on-error: true"), 2)
         self.assertEqual(self.claude("Write", file_path=str(self.repo / "docs/x.md"), content="never use it.skip("), 0)
 
+    def test_LOG_202_continue_on_error_in_every_spelling(self):
+        ci = str(self.repo / ".github/workflows/ci.yml")
+        # Bare, capitalised or as an expression, each with no quote or a single or double one around
+        # it: YAML reads `"${{ true }}"` as `${{ true }}`.
+        forms = ["true", "True", "TRUE", "${{ true }}", "${{true}}", "${{ True }}"]
+        for value in [q + form + q for q in ("", "'", '"') for form in forms]:
+            with self.subTest(value=value):
+                self.assertEqual(self.claude("Write", file_path=ci, content=f"    continue-on-error: {value}\n"), 2)
+        for value in ["false", "${{ false }}", "'${{ false }}'", "${{ matrix.experimental }}",
+                      "\"${{ matrix.experimental }}\""]:
+            with self.subTest(value=value):
+                self.assertEqual(self.claude("Write", file_path=ci, content=f"    continue-on-error: {value}\n"), 0)
+
     def run_guard(self, *argv: str, stdin: str = "") -> subprocess.CompletedProcess:
         return subprocess.run(["python3", str(self.repo / ".keelokit/bin/guard.py"), *argv],
                               input=stdin, capture_output=True, text=True)

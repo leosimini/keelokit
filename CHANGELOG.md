@@ -66,6 +66,16 @@
   per epic and per bug bash run (8000 stories in one-story waves: 6.8 s); it now groups them in one
   pass (2 s, most of it the doctor). Same findings and the same page as before. Already in 0.7.1;
   `harness-upgrade` brings the new doctor, and `claude plugin update` the new dashboard.
+- Fixed (LOG-202): the doctor read a `ci:<job>` enforcer in one spelling only. A workflow whose jobs
+  weren't indented by exactly two spaces had every job reported as missing; a job switched off with
+  `if: false` (or `if: ${{ false }}`) and one with `continue-on-error: ${{ true }}` (or `True`,
+  `'true'`, `"${{ true }}"`) passed as alive; and a two-space key outside `jobs:` (`push:` under
+  `on:`) was taken for a job. It now reads jobs only under `jobs:`, at the indent the file uses,
+  flags a job that never runs, and reads `true`/`false` in any case, bare or as `${{ true }}`, each
+  unquoted or in single or double quotes. The guard blocks `continue-on-error` in the same
+  spellings. A computed expression (`${{ 0 }}`, `${{ !true }}`) is still read as not constant. Already in 0.7.1; `harness-upgrade` brings the new
+  doctor and guard. A job with `if: false` that enforces a rule is now an ERROR: remove the `if:` or
+  register an exception with /keelokit:check-health.
 
 ## 0.7.1 — 2026-09-27
 

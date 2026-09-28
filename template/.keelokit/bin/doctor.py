@@ -13,9 +13,9 @@ Without main or origin/main (a shallow CI checkout) nothing counts as done and t
 `--scope` exits 2, and `--critical --changed` lists every critical file: never HEAD for main.
 
 Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the rule
-and has active cases, a lint rule that is on, a CI job with real steps and no continue-on-error, a
-git hook that is installed) unless an approved exception is active; exceptions are complete and
-not expired; every file it reads is UTF-8 (TOML ones valid, with values of the kinds SHAPES
+and has active cases, a lint rule that is on, a CI job with real steps, no continue-on-error and no
+`if: false` (bare, `${{ false }}` or quoted) at any indent, a git hook that is installed) unless an approved exception
+is active; exceptions are complete and not expired; every file it reads is UTF-8 (TOML ones valid, with values of the kinds SHAPES
 expects) and every path it looks up from them (enforcers, `when`, critical areas) stays inside the
 repo, or that is an error too, never a crash; docs/context is complete, precise and its gaps are
 tracked; every invariant in domain.md has an id and a class; critical areas point at real paths;
@@ -247,9 +247,16 @@ def main_base() -> str | None:
 
 
 def ci_job(job: str) -> str | None:
-    """The text of a top-level job in any workflow, or None."""
+    """The text of a job under `jobs:` in any workflow, or None. The jobs sit at the indent of the
+    first one, whatever the file uses (LOG-202), and a job ends at the next line no deeper than its
+    name; comment lines don't end it, and keys under `on:` or elsewhere are never jobs."""
     for path in (ROOT / ".github/workflows").glob("*.y*ml"):
-        m = re.search(rf"(?ms)^  {re.escape(job)}:\s*\n(.*?)(?=^  \S|\Z)", read(path) or "")
+        jobs = re.search(r"(?ms)^jobs:[ \t]*(?:#[^\n]*)?\n(.*?)(?=^[^\s#]|\Z)", read(path) or "")
+        indent = jobs and re.search(r"(?m)^( +)[^\s#]", jobs.group(1))
+        if not indent:
+            continue
+        n = len(indent.group(1))
+        m = re.search(rf"(?ms)^ {{{n}}}{re.escape(job)}:[ \t]*(?:#[^\n]*)?\n(.*?)(?=^ {{0,{n}}}[^\s#]|\Z)", jobs.group(1))
         if m:
             return m.group(1)
     return None
@@ -288,6 +295,10 @@ def hook_remedy(hooks_dir: str, target: str) -> str:
 
 
 SETUP_STEPS = re.compile(r"(checkout|setup-node|action-setup|setup-uv|setup-python|upload-artifact|cache)@")
+# A YAML value GitHub Actions always reads as true or false, in each spelling (LOG-202): true, True,
+# ${{ true }}, each bare or inside a matching quote ('true', "${{ true }}": YAML drops the quotes).
+# An expression such as ${{ matrix.experimental }} is neither.
+ALWAYS = {v: rf"(?i:(?P<q>['\"]?)(?:{v}|\$\{{\{{\s*{v}\s*\}}\}})(?P=q))[ \t]*(?:#.*)?$" for v in ("true", "false")}
 
 
 def test_titles(text: str) -> list[str]:
@@ -305,8 +316,11 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
         block = ci_job(target)
         if block is None:
             return f"CI job '{target}' does not exist"
-        if re.search(r"(?m)^\s*continue-on-error:\s*true", block):
+        if re.search(rf"(?m)^\s*continue-on-error:[ \t]*{ALWAYS['true']}", block):
             return f"CI job '{target}' has continue-on-error"
+        key = re.match(r"(?:[ \t]*(?:#.*)?\n)*( *)", block).group(1)  # the indent of the job's own keys
+        if re.search(rf"(?m)^{key}if:[ \t]*{ALWAYS['false']}", block):
+            return f"CI job '{target}' never runs (if: false)"
         steps = re.findall(r"(?m)^\s*-?\s*(?:run|uses):\s*(.+)$", block)
         real = [s for s in steps if not SETUP_STEPS.search(s) and s.strip().strip("'\"") not in ("true", "exit 0", ":", "")]
         return None if real else f"CI job '{target}' has no real step"

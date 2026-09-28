@@ -34,6 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: 'true'
+  off:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm test
 """
 
 STORY = """\
@@ -123,6 +128,98 @@ class DoctorTest(unittest.TestCase):
         ]:
             self.assertIn(f"rule {bad}: ", out)
             self.assertIn(why, out)
+
+    def test_LOG_202_ci_enforcer_reads_every_spelling_of_a_job(self):
+        # One spelling of each construct used to be recognised: a 2-space job indent, a literal
+        # `true`, and no job-level `if:`. Any other spelling hid a dead job or lost a live one.
+        self.write(".github/workflows/four.yml", """\
+            name: Four
+            on:
+                push:
+            jobs:
+
+                # a comment before the first job
+                build:
+                    runs-on: ubuntu-latest
+            # a comment at column 0 inside the job
+                    steps:
+                        - uses: actions/checkout@v4
+                        - run: npm test
+                gated:
+                    if: github.event_name == 'push'
+                    runs-on: ubuntu-latest
+                    steps:
+                        - if: false
+                          run: echo skipped
+                        - run: npm test
+                off:
+                    if: false
+                    runs-on: ubuntu-latest
+                    steps:
+                        - run: npm test
+                offexpr:
+                    if: ${{ false }}
+                    runs-on: ubuntu-latest
+                    steps:
+                        - run: npm test
+                softexpr:
+                    runs-on: ubuntu-latest
+                    continue-on-error: ${{ true }}
+                    steps:
+                        - run: npm test
+                softquoted:
+                    runs-on: ubuntu-latest
+                    continue-on-error: 'True'
+                    steps:
+                        - run: npm test
+                maybe:
+                    runs-on: ubuntu-latest
+                    continue-on-error: ${{ matrix.experimental }}
+                    steps:
+                        - run: npm test
+            """)
+        # A key under `on:` that shares a job's name and indent is not a job.
+        self.write(".github/workflows/other.yml", "on:\n  push:\n    branches: [main]\n")
+        # Every always-true/always-false spelling: bare, capitalised or as an expression, each with
+        # no quote or a single or double one around it (YAML reads `"${{ false }}"` as `${{ false }}`).
+        forms = ("{v}", "{V}", "${{{{ {v} }}}}", "${{{{{v}}}}}", "${{{{ {V} }}}}")
+        spellings = [q + form + q for q in ("", "'", '"') for form in forms]
+        four = (self.root / ".github/workflows/four.yml").read_text() + "".join(
+            f"    off{i}:\n        if: {s.format(v='false', V='False')}\n        runs-on: ubuntu-latest\n"
+            f"        steps:\n            - run: npm test\n"
+            f"    soft{i}:\n        runs-on: ubuntu-latest\n        continue-on-error: {s.format(v='true', V='True')}\n"
+            f"        steps:\n            - run: npm test\n"
+            for i, s in enumerate(spellings))
+        self.rules(
+            self.rule("R-BUILD", "ci:build"),
+            self.rule("R-GATED", "ci:gated"),
+            self.rule("R-MAYBE", "ci:maybe"),
+            self.rule("R-PUSH", "ci:push"),
+            self.rule("R-OFF", "ci:off"),
+            self.rule("R-OFFEXPR", "ci:offexpr"),
+            self.rule("R-SOFTEXPR", "ci:softexpr"),
+            self.rule("R-SOFTQ", "ci:softquoted"),
+            *(self.rule(f"R-{kind.upper()}{i}", f"ci:{kind}{i}") for i in range(len(spellings)) for kind in ("off", "soft")),
+        )
+        # The class, not the case: the same workflow at every indent width YAML allows.
+        for width in (2, 3, 4, 8):
+            self.write(".github/workflows/four.yml", re.sub(
+                r"(?m)^((?:    )+)", lambda m: " " * (width * len(m.group(1)) // 4), four))
+            out = self.doctor()
+            for ok in ("R-BUILD", "R-GATED", "R-MAYBE"):
+                with self.subTest(width=width, rule=ok):
+                    self.assertNotIn(f"rule {ok}:", out)
+            for bad, why, spelling in [
+                ("R-PUSH", "CI job 'push' does not exist", None),
+                ("R-OFF", "CI job 'off' never runs (if: false)", "false"),
+                ("R-OFFEXPR", "CI job 'offexpr' never runs (if: false)", "${{ false }}"),
+                ("R-SOFTEXPR", "CI job 'softexpr' has continue-on-error", "${{ true }}"),
+                ("R-SOFTQ", "CI job 'softquoted' has continue-on-error", "'True'"),
+                *((f"R-OFF{i}", f"CI job 'off{i}' never runs (if: false)", s.format(v="false", V="False")) for i, s in enumerate(spellings)),
+                *((f"R-SOFT{i}", f"CI job 'soft{i}' has continue-on-error", s.format(v="true", V="True")) for i, s in enumerate(spellings)),
+            ]:
+                with self.subTest(width=width, rule=bad, spelling=spelling):
+                    self.assertIn(f"rule {bad}: {why}", out)
 
     def test_exception_turns_error_into_warning(self):
         self.rules(self.rule("R-HOOK", "git-hook:pre-commit"))
@@ -312,16 +409,30 @@ class DoctorTest(unittest.TestCase):
         reads_main = re.compile(r"doctor\.py|pnpm (mutation|verify)|scripts/(verify|mutation)\.sh|gitleaks[^\n]*\bgit\b")
         paths = sorted([*(repo / "template/.github/workflows").glob("*.y*ml*"), *(repo / ".github/workflows").glob("*.y*ml")])
         self.assertTrue(paths)
+        # Jobs are read with the doctor's own ci_job() (LOG-202), from a scratch repo holding one
+        # workflow at a time, with the template's Jinja tags dropped (every app's jobs at once).
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            (scratch / ".keelokit/bin").mkdir(parents=True)
+            (scratch / ".github/workflows").mkdir(parents=True)
+            (scratch / ".keelokit/bin/doctor.py").write_text(DOCTOR.read_text())
+            ci_job = runpy.run_path(str(scratch / ".keelokit/bin/doctor.py"), run_name="doctor")["ci_job"]
+            jobs = []
+            for path in paths:
+                text = re.sub(r"\{%.*?%\}", "", path.read_text())
+                (scratch / ".github/workflows/ci.yml").write_text(text)
+                for job in dict.fromkeys(re.findall(r"(?m)^\s+([\w-]+):", text)):
+                    if (body := ci_job(job)) is not None:
+                        jobs.append((path, job, body))
+        self.assertGreaterEqual(len(jobs), 10)
         checked = 0
-        for path in paths:
-            for m in re.finditer(r"(?ms)^  ([\w-]+):\s*\n(.*?)(?=^  \S|\Z)", path.read_text().split("\njobs:", 1)[-1]):
-                job, body = m.groups()
-                if not reads_main.search(body):
-                    continue
-                checked += 1
-                self.assertRegex(body, r"uses: actions/checkout@[^\n]*\n\s+with:\n(\s+[\w-]+:[^\n]*\n)*?\s+fetch-depth: 0",
-                                 f"{path.relative_to(repo)}: job '{job}' reads history against main but its "
-                                 "checkout is shallow; add `fetch-depth: 0`")
+        for path, job, body in jobs:
+            if not reads_main.search(body):
+                continue
+            checked += 1
+            self.assertRegex(body, r"uses: actions/checkout@[^\n]*\n\s+with:\n(\s+[\w-]+:[^\n]*\n)*?\s+fetch-depth: 0",
+                             f"{path.relative_to(repo)}: job '{job}' reads history against main but its "
+                             "checkout is shallow; add `fetch-depth: 0`")
         self.assertGreaterEqual(checked, 3)  # secrets, checks, mutation in the template
 
     def test_INT_2_a_hand_edited_state_or_exception_is_an_error_not_a_traceback(self):
@@ -504,7 +615,7 @@ class DoctorTest(unittest.TestCase):
         body = source.split("def enforcer_problem", 1)[1].split("\ndef ", 1)[0]
         kinds = {k for m in re.finditer(r"kind (?:==|in) ([^:]+):", body) for k in re.findall(r'"([a-z-]+)"', m.group(1))}
         failing = {  # kind → enforcers that fail it, one per way it can fail
-            "ci": ["ci:missing", "ci:soft", "ci:empty"],
+            "ci": ["ci:missing", "ci:soft", "ci:empty", "ci:off"],
             "git-hook": ["git-hook:pre-commit", "git-hook:pre-push", "git-hook:../x"],
             "claude-hook": ["claude-hook:nothere.py"],
             "test": ["test:missing.test.ts", "test:somedir", "test:b.test.ts", "test:*/none.test.ts", "test:/abs.test.ts"],

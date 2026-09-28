@@ -47,7 +47,8 @@ TAMPER = [
     (r"(?<![\w.])x(it|test|describe)\s*\(", "a disabled test"),
     (r"eslint-disable", "an eslint-disable comment"),
     (r"@ts-(ignore|nocheck)", "a @ts-ignore / @ts-nocheck"),
-    (r"continue-on-error:\s*true", "continue-on-error in CI"),
+    # Every spelling of an always-true value (LOG-202): true, True, ${{ true }}, each bare or quoted.
+    (r"continue-on-error:\s*(?i:['\"]?(?:true\b|\$\{\{\s*true\s*\}\}))", "continue-on-error in CI"),
 ]
 # git's own options come before the subcommand, and -C, -c and these long ones take the next word
 # as their value (`git -C dir commit -n`). A value may be quoted ('' by now) or hold `\ `.

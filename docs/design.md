@@ -38,8 +38,8 @@ security review, ship-setup, ship-release and the dashboard read it to decide wh
 ## What `doctor` checks — and what it can't
 
 It checks that each MUST rule has an enforcer and that the enforcer looks alive: a test file
-that names the rule and has active tests, a lint rule that is on, a CI job with real steps and no
-`continue-on-error`, a git hook that is installed, a config line that is present. It checks
+that names the rule and has active tests, a lint rule that is on, a CI job with real steps, no
+`continue-on-error` and no `if: false` (bare, `${{ false }}` or quoted, at any indent), a git hook that is installed, a config line that is present. It checks
 exceptions (complete, not expired), `docs/context` (files present, no vague phrases, every gap
 tracked, every invariant with an id and a class), critical areas (their paths exist), the
 backlog (well-formed stories, declared dimensions, scenario ids, no two stories of a wave
