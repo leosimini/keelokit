@@ -15,6 +15,14 @@
   saw nothing changed. Now nothing counts as done and the doctor reports it, `--scope` exits 2 and
   `--critical --changed` takes every critical file. The generated CI's `checks` job fetches full
   history (`fetch-depth: 0`) so the doctor sees `origin/main`; `harness-upgrade` brings it.
+- Fixed (LOG-1): the guard checked the text an Edit writes for skipped tests, `eslint-disable`,
+  `@ts-ignore` and `continue-on-error`, but not the same text written from the shell (`echo … >>`,
+  here-documents, `tee`, `sed -i`, `awk`), and interpreter code (`python3 -c`, `node -e` or
+  `--eval=`, `npx tsx -e`, code piped into `python3`) could write `.env`. Now every shell writer
+  gets the same checks, `sh -c '…'` included. What a command only reads or matches is not new text,
+  so reading `.env`, `grep`, and removing a skip or a suppression (`sed -i '/eslint-disable/d'`,
+  `.replace('// eslint-disable\n', '')`, `grep -v … > tmp`) still pass, as do prose (`*.md`) and
+  `.keelokit/`. `harness-upgrade` brings the new guard.
 
 ## 0.7.1 — 2026-09-27
 
