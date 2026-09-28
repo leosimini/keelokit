@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Unreleased — a stricter guard, safer links and workflows, and accessibility fixes
 
 - **Security:** the guard knows more kinds of keys (npm, GitLab, JWT, Azure storage) and catches a
   key split across two edits. Before a commit, it now scans each staged file whole, so a key split
