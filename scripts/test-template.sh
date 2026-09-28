@@ -14,7 +14,9 @@ while [ $# -gt 0 ]; do
   case $1 in
     --postgis) postgis=true ;;
     --adopt) adopt=true ;;
-    --update-from) from=${2:?--update-from needs a tag}; shift ;;
+    --update-from)
+      case ${2:-} in ''|-*) echo '--update-from needs a tag' >&2; exit 2 ;; esac
+      from=$2; shift ;;
     -*) echo "unknown option: $1" >&2; exit 2 ;;
     *) apps=$1 ;;
   esac
