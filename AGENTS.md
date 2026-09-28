@@ -18,9 +18,18 @@ docs/             design.md (how the pieces fit), releasing.md (how a version sh
 
 | What | Command |
 |---|---|
+| Everything CI checks, locally (the pre-push hook runs it) | `scripts/verify.sh` |
 | Guard, doctor, dashboard, workflow and verify tests | `python3 -m unittest discover -s tests` (test_verify.py needs pnpm) |
 | Plugin manifests | `claude plugin validate . --strict` |
 | A generated project, end to end | `scripts/test-template.sh '["api","web"]'` (see its header) |
+
+## Keelokit on Keelokit
+
+This repo runs on its own harness (`.keelokit/`, adopted 2026-09-28): `docs/context/`, `backlog/`,
+the doctor in CI, the guard in your Claude sessions. Once per clone, `git config core.hooksPath
+.githooks` turns on the git hooks (the guard before a commit, `scripts/verify.sh` before a push).
+`/keelokit` says where things stand; stories are built with `/keelokit:build-story`, one at a time.
+None of this ships in the plugin: `scripts/package.sh` leaves it out.
 
 ## Releases
 

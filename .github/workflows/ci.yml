@@ -37,6 +37,47 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: python3 -m unittest discover -s tests -v
 
+  # SEC-1: no secret anywhere in the history (.gitleaks.toml leaves out the guard tests' fake keys).
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # The gitleaks CLI (free), not gitleaks-action (needs a paid license on organisation repos).
+      - name: gitleaks (full history)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact --no-banner --config /repo/.gitleaks.toml /repo
+
+  # Keelokit runs on its own harness (.keelokit/): the doctor checks that every house rule still has a
+  # working check — CTX-1, TRACE-1, INV-1, CRIT-1, QA-1 — the same way it does in a generated project.
+  checks:
+    name: Harness doctor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # origin/main: the doctor counts a story done only from main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      # What `git config core.hooksPath .githooks` does once in a clone (AGENTS.md), so the git-hook checks see the hooks.
+      - run: git config core.hooksPath .githooks
+      - run: python3 .keelokit/bin/doctor.py --ci
+
+  # SAST-1: static analysis of the Python the plugin runs on people's machines, and of secrets.
+  sast:
+    name: Static analysis (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: semgrep/semgrep:1.178.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: semgrep scan --config p/python --config p/secrets --error --metrics=off
+
   manifests:
     name: Plugin manifests
     runs-on: ubuntu-latest

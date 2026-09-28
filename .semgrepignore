@@ -1,0 +1,2 @@
+# Semgrep (SAST-1) skips the bug bash reports: they quote fake secrets as evidence.
+docs/bugbash/

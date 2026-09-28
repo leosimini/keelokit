@@ -1,5 +1,13 @@
 [gates]
+intake = "2026-09-28"
+adopt = "2026-09-28"
+backlog = "2026-09-28"
 
 [dashboard]
 lang = "es"
 url = "https://claude.ai/artifact/UQSFizBPxuGyU1V9Yjy9BM"
+
+[run]
+mode = "step"        # stops after each stage and each story for Leo's review
+build = "serial"     # one story at a time: most stories touch the guard, the doctor or the dashboard
+decided = "2026-09-28"

@@ -1335,7 +1335,8 @@ class DoctorScaleTest(unittest.TestCase):
         dashboard = DASHBOARD
 
         def run(root: Path):
-            lines, chars, _ = self.work(root, "--root", str(root), "--out", str(root / "d.html"), "--lang", "en", script=dashboard)
+            # The report: the page that lays out every story (the operational page lists them once per wave).
+            lines, chars, _ = self.work(root, "--root", str(root), "--report", "--out", str(root / "d.html"), "--lang", "en", script=dashboard)
             page = (root / "d.html").read_text()
             n = len(list((root / "backlog/stories").glob("*.md")))
             # Every story once by wave and once by epic, and the ones a bug bash made under its run too.

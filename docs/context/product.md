@@ -17,7 +17,7 @@ the same classes of bug keep reaching users. (S1, S2)
 |---|---|---|---|
 | Generated projects that pass `pnpm verify --all` on the first run | 100% of the CI matrix | every release | S3 |
 | Upgrade from the previous release passes without manual fixes | 100% | every release | S3 |
-| Bugs found by a bug bash that escaped a story's own tests | falling, release over release | [GAP-003] | S2 |
+| Bugs found by a bug bash that escaped a story's own tests | counted per release from the bug bash of 2026-09-27 (the baseline, `docs/escapes.md`); a number to beat is set after two releases of data | every release | S2 (decided 2026-09-28) |
 
 ## Out of scope for launch
 - Stacks other than the house stack for new products; other stacks come in through `project-adopt`. (S1)

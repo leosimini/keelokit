@@ -6,3 +6,9 @@
 # reason = "Third-party map SDK needs a literal colour for its marker."
 # approver = "Leo"
 # expires = "2026-12-31"
+
+[[exception]]
+rule = "MUT-1"
+reason = "Keelokit's own code (the guard, the doctor, the dashboard) is Python and has no mutation tool yet, and no critical area is declared in .keelokit/critical.toml. Story HARN-001 adds mutmut for the guard and the doctor, the code that decides what an agent may do."
+approver = "Leo"
+expires = "2027-01-31"
