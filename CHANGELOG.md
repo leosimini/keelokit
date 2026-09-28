@@ -16,6 +16,11 @@
   read-only page — every stage with its documents, bug bashes and security reviews with their
   findings, environments, decisions and history — as an Artifact you can share or a standalone
   HTML file. It has no buttons that send requests: it's for reading.
+- **Every release carries the plugin ready to install:** `keelokit-plugin.zip`, attached to its
+  GitHub Release, with the manifest at the zip's root and only the plugin inside (skills, agents,
+  hooks, references and the project template — not the repository's CI, tests or scripts). Upload
+  it in Claude (*Customize → Plugins → Upload*). The README and keelokit.com link to the latest
+  one. *Source code (zip)* stays the whole repository, not the file to upload.
 - **The bug bash runs as a workflow** where Claude Code can run them: `check-bugbash` starts
   `keelokit:check-bugbash-flow`, which fixes the procedure's shape in code — lenses from the
   profile at most four at a time, every finding reproduced by an independent skeptic (two for

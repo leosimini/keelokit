@@ -43,12 +43,17 @@ Three facts shape the process:
 3. Run `scripts/release.sh X.Y.Z` on an up-to-date `main`. It does the following:
    - renames `## Unreleased` to `## X.Y.Z — <today>`;
    - sets `version`;
-   - runs the unit tests and `claude plugin validate --strict`;
+   - runs the unit tests, `claude plugin validate --strict` and `scripts/package.sh`;
    - commits `release: X.Y.Z`;
    - pushes `main`, then `release`.
-4. Check that the **Release** workflow on GitHub created `vX.Y.Z` and its GitHub Release. It fails if the CHANGELOG
-   has no entry for the version, if `release` isn't a commit of `main`, or if the tag already
-   exists on another commit.
+4. Check that the **Release** workflow on GitHub created `vX.Y.Z` and its GitHub Release, with
+   **keelokit-plugin.zip** attached and the notes' *Install* section saying what it contains. It
+   fails if the CHANGELOG has no entry for the version, if `release` isn't a commit of `main`, if
+   the tag already exists on another commit, or if the zip doesn't pass `scripts/package.sh`'s
+   checks. That zip is what people install from while the plugin isn't in the directory; the
+   README and keelokit.com link to `releases/latest/download/keelokit-plugin.zip`, so it must be
+   on every release. To attach it to a release that lacks it: Actions → Release → *Run workflow*
+   with the tag.
 5. In [claude.ai/directory/manage](https://claude.ai/directory/manage), follow the version's
    scan and select **Publish** if auto-publish is off.
 6. If the release changed the template, point the "update from" row of `.github/workflows/ci.yml`

@@ -8,6 +8,9 @@
 
 *[keelokit.com](https://keelokit.com) · [Leer en español](README.es.md)*
 
+<p align="center"><a href="https://github.com/leosimini/keelokit/releases/latest/download/keelokit-plugin.zip"><b>⬇ Download the latest version from GitHub</b></a> (<code>keelokit-plugin.zip</code>) · <a href="https://github.com/leosimini/keelokit/releases">all versions</a><br>
+<sub>The plugin ready to install: in Claude, <i>Customize → Plugins → Upload</i>. Each version's zip is on its release page.</sub></p>
+
 I'm [Leopoldo Simini](https://leopoldosimini.com). I've been writing software for many years
 and starting things for most of my life. Coding agents changed how I build: ideas that used to
 wait for a team or a free month now get a real first version. Keelokit is the harness I use for
@@ -98,6 +101,8 @@ You need Node 22 with pnpm 10, Python 3.11+, [uv](https://docs.astral.sh/uv/) (i
 claude plugin marketplace add leosimini/keelokit
 claude plugin install keelokit@keelokit
 ```
+
+Or [download `keelokit-plugin.zip`](https://github.com/leosimini/keelokit/releases/latest/download/keelokit-plugin.zip) and upload it in Claude (*Customize → Plugins → Upload*).
 
 Then, in an empty folder, open Claude Code and run `/keelokit:project-new`. In a repo you already
 have, run `/keelokit:project-adopt`. To generate from your own fork, set `KEELOKIT_TEMPLATE=gh:<you>/keelokit`.

@@ -48,6 +48,7 @@ EOF
 
 python3 -m unittest discover -s tests -q
 if command -v claude >/dev/null; then claude plugin validate . --strict; fi
+scripts/package.sh HEAD "$(mktemp -d)/keelokit-plugin.zip"  # the zip the Release workflow will attach
 
 git commit -q -am "release: $version"
 git push origin main

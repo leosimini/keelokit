@@ -1,11 +1,18 @@
 # Tags each release. A push to `release` gets the tag `v<version>` from .claude-plugin/plugin.json:
 # project-new, project-adopt and harness-upgrade fetch the template at that tag, so a version without its tag breaks
 # them. Tags are made here, never by hand. The process is in docs/releasing.md.
+# Every GitHub Release also gets keelokit-plugin.zip, the plugin ready to install (scripts/package.sh); run this
+# workflow by hand with a tag to attach it to a release that doesn't have it yet.
 name: Release
 
 on:
   push:
     branches: [release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing release tag (vX.Y.Z) to attach its plugin zip to
+        required: true
 
 concurrency:
   group: release
@@ -17,8 +24,11 @@ permissions:
 jobs:
   tag:
     name: Tag v<version>
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,3 +76,50 @@ jobs:
           PY
           title=$(grep -m1 "^## $version — " CHANGELOG.md | sed "s/^## $version — [0-9-]*//; s/^ — //")
           gh release create "$TAG" --verify-tag --title "Keelokit $version${title:+ — $title}" --notes-file notes.md
+
+  # The zip to install from while the plugin isn't in the directory, attached to the release with a fixed name so
+  # https://github.com/<repo>/releases/latest/download/keelokit-plugin.zip always gives the latest version.
+  package:
+    name: Attach keelokit-plugin.zip
+    needs: tag
+    if: always() && (needs.tag.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Build it from the tag and check it
+        env:
+          TAG: ${{ inputs.tag || needs.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+          git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "::error::no tag $TAG"; exit 1; }
+          scripts/package.sh "$TAG" dist/keelokit-plugin.zip
+          version=$(unzip -p dist/keelokit-plugin.zip .claude-plugin/plugin.json | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+          [ "v$version" = "$TAG" ] || { echo "::error::$TAG's plugin.json says $version"; exit 1; }
+      - name: Attach it and say what it is
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || needs.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/keelokit-plugin.zip --clobber
+          gh release view "$TAG" --json body -q .body > notes.md
+          if ! grep -q 'keelokit:install' notes.md; then
+            cat >> notes.md <<EOF
+
+          <!-- keelokit:install -->
+          ## Install
+
+          **[keelokit-plugin.zip](https://github.com/$REPO/releases/download/$TAG/keelokit-plugin.zip)** is this version of the plugin, ready to install: on claude.ai or in the Claude desktop app, *Customize → Plugins → Upload* and pick the file.
+
+          What it contains, at the zip's root: \`.claude-plugin/\` (the manifest), \`skills/\` (the \`/keelokit\` commands), \`agents/\` (verifier, reviewer, breaker, context auditor), \`workflows/\` (when the version has them), \`hooks/\` (the guard and the session check), \`references/\`, and the project template (\`template/\` and \`copier.yml\`) that \`project-new\`, \`project-adopt\` and \`harness-upgrade\` use. It leaves out what only the repository needs: its CI, tests and scripts.
+
+          *Source code (zip)* is the whole repository, to read or contribute to; it isn't the file to upload.
+          EOF
+            gh release edit "$TAG" --notes-file notes.md
+          fi
+          echo "Attached keelokit-plugin.zip to $TAG"
