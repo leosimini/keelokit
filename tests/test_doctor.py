@@ -1,7 +1,12 @@
 """Doctor behaviour on a tiny project. Run: python3 -m unittest discover -s tests"""
+import contextlib
+import io
+import json
 import re
+import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -317,6 +322,62 @@ class DoctorTest(unittest.TestCase):
                                  "checkout is shallow; add `fetch-depth: 0`")
         self.assertGreaterEqual(checked, 3)  # secrets, checks, mutation in the template
 
+    def test_INT_2_a_hand_edited_state_or_exception_is_an_error_not_a_traceback(self):
+        """INT-2 (and LOG-2): an invalid state.toml or an exception whose `expires` isn't a date
+        crashed every mode, even the SessionStart `--brief`. Each is an ERROR like any other."""
+        self.rules(self.rule("R-HOOK", "git-hook:pre-commit"))
+        for rel, text, error in [
+            (".keelokit/state.toml", "[gates\nthis is not valid toml", ".keelokit/state.toml: invalid TOML"),
+            (".keelokit/exceptions.toml",
+             '[[exception]]\nrule = "R-HOOK"\nreason = "r"\napprover = "Leo"\nexpires = "not-a-date"\n',
+             "exception for R-HOOK: 'expires' is not a date (YYYY-MM-DD) or 'permanent' ('not-a-date')"),
+        ]:
+            with self.subTest(rel):
+                self.write(rel, text)
+                brief = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--brief"], cwd=self.root, capture_output=True, text=True)
+                self.assertEqual((brief.returncode, brief.stderr), (0, ""))
+                self.assertIn("Harness errors:", brief.stdout)
+                ci = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--ci"], cwd=self.root, capture_output=True, text=True)
+                self.assertEqual((ci.returncode, ci.stderr), (1, ""))  # INV-006
+                self.assertIn(f"ERROR {error}", ci.stdout)
+                (self.root / rel).unlink()
+
+    def test_INT_2_bytes_directories_and_paths_outside_the_repo_are_errors_not_tracebacks(self):
+        """INT-2, the rest of the class: a hand-edited file saved as Latin-1 (a Spanish user's
+        state.toml or story), a directory where an enforcer reads a file (`test:apps/web`,
+        `file:apps#x`), an absolute glob and a critical area outside the repo each crashed the doctor."""
+        (self.root / "apps/web").mkdir(parents=True)
+        self.write("backlog/stories/AUTH-002-b.md", STORY.format(id="AUTH-002", wave=1, touches='"apps/api/"'))
+        self.commit("init")
+        cases = [
+            (".keelokit/state.toml", b'[gates]\nintake = "raz\xf3n"\n', ".keelokit/state.toml: not UTF-8 (byte 0xf3"),
+            ("backlog/stories/AUTH-001-a.md",
+             STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"').replace('title = "t"', 'title = "Autenticaci\xf3n"').encode("latin-1"),
+             "backlog/stories/AUTH-001-a.md: not UTF-8 (byte 0xf3"),
+            (".keelokit/rules.local.toml", self.rule("L-1", "test:apps/web").encode(), "rule L-1: 'apps/web' is a directory"),
+            (".keelokit/rules.local.toml", self.rule("L-1", "file:apps#x").encode(), "rule L-1: apps: is a directory"),
+            (".keelokit/rules.local.toml", self.rule("L-1", "test:/tmp/*").encode(), "rule L-1: '/tmp/*' must be a path relative to the repo root"),
+            (".keelokit/critical.toml", b'[[area]]\nname = "etc"\nwhy = "w"\npaths = ["/etc/hostname"]\n',
+             ".keelokit/critical.toml: area 'etc' path '/etc/hostname' must be a path relative to the repo root"),
+        ]
+        for rel, data, error in cases:
+            with self.subTest(error):
+                (self.root / rel).write_bytes(data)
+                for args, code in ([["--brief"], 0], [["--ci"], 1], [["--critical", "--changed"], None], [["--scope", "AUTH-001"], None]):
+                    run = subprocess.run(["python3", ".keelokit/bin/doctor.py", *args], cwd=self.root, capture_output=True, text=True)
+                    self.assertNotIn("Traceback", run.stdout + run.stderr, args)
+                    self.assertIn(run.returncode, (code,) if code is not None else (0, 1, 2), (args, run.stdout, run.stderr))
+                ci = self.doctor("--ci")
+                self.assertIn(f"ERROR {error}", ci)
+                (self.root / rel).unlink()
+        # A done story whose invariant isn't a plain id (it went into a regex unescaped).
+        self.write("backlog/stories/AUTH-003-c.md", STORY.format(id="AUTH-003", wave=2, touches='"apps/c/"')
+                   .replace('dimensions = ["api"]', 'dimensions = ["integrity"]\ninvariants = ["INV-(1"]'))
+        self.commit("feat: c\n\nStory: AUTH-003")
+        run = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--ci"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual((run.returncode, run.stderr), (1, ""))
+        self.assertIn("no active test title cites invariant INV-(1", run.stdout)
+
     def test_profile_decides_which_rules_apply_and_warns_on_drift(self):
         self.rules(
             self.rule("R-UI", "test:missing.test.ts") + 'needs = ["ui"]\n',
@@ -354,6 +415,301 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("Escapes logged: 2", out)
         self.assertIn("ESC-002 needs", out)
         self.assertNotIn("ESC-001 needs", out)
+
+
+# Every kind of TOML value, and the kinds of doctor's SHAPES each one is (none: always wrong).
+LITERALS = {
+    '"x"': {"text"}, '"2030-01-01"': {"text"}, "7": {"whole"}, "1.5": set(), "true": set(),
+    "2030-01-01T00:00:00Z": set(), "2030-01-01T00:00:00": set(), "2030-01-01": {"date"}, "07:00:00": set(),
+    '["x"]': {"texts"}, "[]": {"texts", "tables"}, "[1]": set(), '["x", 1]': set(),
+    "{a = 1}": {"table"}, "[{a = 1}]": {"tables"},
+}
+# Path content for every key the doctor looks up on disk: → outside (the repo), dir, file, missing or glob.
+PATH_VALUES = {
+    "": "outside", "  ": "outside", "/etc/hostname": "outside", "/tmp/*": "outside", "..": "outside",
+    "../x": "outside", "src/../../x": "outside", "C:\\x": "outside", "\\\\srv\\x": "outside", "x\0y": "outside",
+    "src": "dir", "src/": "dir", "src/pay/a.ts": "file", "missing.ts": "missing",
+    "src/*": "glob", "*": "glob", "**": "glob", "src/**/*.ts": "glob", "a/**b": "glob", "[": "glob",
+}
+# A healthy project holding every file the doctor reads: top-level keys, then [[entries]].
+HEALTHY = {
+    ".keelokit/harness/rules.toml": ({}, {"rule": [{"id": '"R-1"', "level": '"MUST"', "rule": '"r"', "why": '"w"',
+                                                     "enforced_by": '["file:README.md"]', "when": '"README.md"', "needs": "[]"}]}),
+    ".keelokit/rules.local.toml": ({}, {"rule": [{"id": '"L-1"', "level": '"MUST"', "rule": '"r"', "why": '"w"',
+                                                   "enforced_by": '["file:README.md"]', "when": '["README.md"]', "needs": "[]"}]}),
+    ".keelokit/exceptions.toml": ({}, {"exception": [{"rule": '"R-1"', "reason": '"r"', "approver": '"Leo"', "expires": '"permanent"'}]}),
+    ".keelokit/profile.toml": ({"kind": '"plugin"', "traits": '["developer-facing"]'}, {}),
+    ".keelokit/critical.toml": ({"mutation_break": "70"}, {"area": [{"name": '"money"', "why": '"w"', "paths": '["src/pay"]'}]}),
+    ".keelokit/state.toml": ({"gates": '{intake = "2026-09-27"}'}, {}),
+    "backlog/stories/*.md": ({"id": '"AUTH-001"', "epic": '"AUTH"', "title": '"t"', "wave": "1", "depends_on": "[]",
+                              "touches": '["apps/a/"]', "dimensions": '["api"]', "invariants": "[]", "origin": '"x"'}, {}),
+}
+# Keys the docs define in these files that the doctor never reads (the dashboard does).
+NOT_READ = {".keelokit/profile.toml": {"detected"}, ".keelokit/state.toml": {"dashboard", "run"}}
+
+
+def documented_keys(text: str) -> tuple[set[str], dict[str, set[str]]]:
+    """Top-level keys and [[entry]] keys a documented example sets, commented out or not."""
+    top: set[str] = set()
+    entries: dict[str, set[str]] = {}
+    section = None
+    for line in text.splitlines():
+        if m := re.match(r"\s*#?\s*\[\[(\w+)\]\]\s*$", line):
+            section = entries.setdefault(m.group(1), set())
+            top.add(m.group(1))
+        elif m := re.match(r"\s*#?\s*\[(\w+)\]\s*$", line):
+            top.add(m.group(1))
+            section = set()  # a table's own keys: the doctor reads the table whole
+        elif m := re.match(r"\s*#?\s*(\w+)\s*=\s*\S", line):
+            (top if section is None else section).add(m.group(1))
+    return top, entries
+
+
+class DoctorInputContractTest(unittest.TestCase):
+    """The class behind INT-2: people and agents edit the files the doctor reads by hand, and a
+    value it doesn't expect (bad TOML, a date that isn't one, a number where a list goes) crashed
+    every mode, the SessionStart `--brief` included. For every file and key the doctor reads and
+    every kind of TOML value: never a traceback, `--brief` exits 0, and a kind its SHAPES don't
+    allow is an ERROR that names the file, so `--ci` exits 1 (INV-006)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.api = runpy.run_path(str(DOCTOR), run_name="doctor")
+        cls.code = compile(DOCTOR.read_text(), str(DOCTOR), "exec")
+        cls.repo = Path(__file__).resolve().parents[1]
+
+    def test_every_toml_the_doctor_reads_goes_through_its_shapes(self):
+        source = DOCTOR.read_text()
+        loaders = {m.group(1) for m in re.finditer(r"(?ms)^def (\w+)\(.*?(?=^def |\Z)", source)
+                   if "tomllib.loads(" in m.group(0)}
+        self.assertEqual(loaders, {"read_toml", "read_story"}, "parse TOML only through read_toml (or read_story)")
+        self.assertIn('misshapen(meta, SHAPES["backlog/stories/*.md"][0])', source)
+        for rel in re.findall(r'(?:read_toml|load_toml)\(ROOT / "([^"]+)"', source):
+            self.assertIn(rel, self.api["SHAPES"], f"{rel} is read but has no shape")
+        self.assertEqual(set(HEALTHY), set(self.api["SHAPES"]), "give HEALTHY a valid example of every shaped file")
+
+    def test_every_documented_key_has_a_shape(self):
+        docs = {
+            ".keelokit/harness/rules.toml": ["template/.keelokit/harness/rules.toml"],
+            ".keelokit/rules.local.toml": ["template/.keelokit/rules.local.toml"],
+            ".keelokit/exceptions.toml": ["template/.keelokit/exceptions.toml"],
+            ".keelokit/profile.toml": ["template/.keelokit/profile.toml.jinja"],
+            ".keelokit/critical.toml": ["template/.keelokit/critical.toml.jinja"],
+            "backlog/stories/*.md": [],
+        }
+        texts = {rel: "\n".join((self.repo / f).read_text() for f in files) for rel, files in docs.items()}
+        readme = (self.repo / "template/backlog/README.md").read_text()
+        texts["backlog/stories/*.md"] = re.search(r"(?s)```\n\+\+\+\n(.*?)\+\+\+", readme).group(1)
+        # state.toml has no template: the skills name its tables (`[gates]` in `.keelokit/state.toml`).
+        skills = "\n".join(p.read_text() for p in self.repo.glob("skills/*/SKILL.md"))
+        near = r"`\[(\w+)\][^`\n]*`[^\n]*`\.keelokit/state\.toml`|`\.keelokit/state\.toml`[^\n]*?`\[(\w+)\]"
+        tables = {t for pair in re.findall(near, skills) for t in pair if t}
+        self.assertIn("gates", tables)
+        texts[".keelokit/state.toml"] = "\n".join(f"[{t}]" for t in sorted(tables))
+        self.assertEqual(set(texts), set(self.api["SHAPES"]))
+        for rel, text in texts.items():
+            top, entries = documented_keys(text)
+            shape_top, shape_entries = self.api["SHAPES"][rel]
+            self.assertTrue(top, rel)
+            self.assertEqual(top - set(shape_top) - NOT_READ.get(rel, set()), set(), f"{rel}: give these keys a shape")
+            for key, keys in entries.items():
+                self.assertEqual(keys - set(shape_entries.get(key, {})), set(), f"{rel} [[{key}]]: give these keys a shape")
+
+    def run_doctor(self, root: Path, *args: str) -> tuple[int, str]:
+        """`python3 .keelokit/bin/doctor.py <args>` in `root`, in this process (compiled once: it's fast)."""
+        out, argv = io.StringIO(), sys.argv
+        sys.argv = ["doctor.py", *args]
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                exec(self.code, {"__name__": "__main__", "__file__": str(root / ".keelokit/bin/doctor.py")})
+            code = 0
+        except SystemExit as e:
+            code = e.code
+        finally:
+            sys.argv = argv
+        return code, out.getvalue()
+
+    @staticmethod
+    def render(rel: str, top: dict, entries: dict) -> str:
+        lines = [f"{k} = {v}" for k, v in top.items()]
+        for key, items in entries.items():
+            for item in items:
+                lines += [f"[[{key}]]", *(f"{k} = {v}" for k, v in item.items())]
+        text = "\n".join(lines) + "\n"
+        return f"+++\n{text}+++\nScenario: [S1] works\n" if rel.endswith(".md") else text
+
+    def fixture(self, rel: str) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        files = {".keelokit/bin/doctor.py": DOCTOR.read_text(), "README.md": "# r\n", "src/pay/a.ts": "export {}\n",
+                 "docs/context/gaps.md": "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n"}
+        files |= {f"docs/context/{f}.md": f"# {f}\n" for f in ("product", "domain", "constraints", "environments")}
+        files[".keelokit/harness/rules.toml"] = self.render(".keelokit/harness/rules.toml", *HEALTHY[".keelokit/harness/rules.toml"])
+        if rel == "backlog/stories/*.md":
+            second = {**HEALTHY[rel][0], "id": '"AUTH-002"', "touches": '["apps/b/"]'}
+            files["backlog/stories/AUTH-002-b.md"] = self.render(rel, second, {})
+        for f, text in files.items():
+            (root / f).parent.mkdir(parents=True, exist_ok=True)
+            (root / f).write_text(text)
+        for cmd in (["init", "-q", "-b", "main"], ["-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qm", "init", "--allow-empty"]):
+            subprocess.run(["git", *cmd], cwd=root, check=True, capture_output=True)
+        return root
+
+    def check(self, root: Path, rel: str, text: str, wrong: bool, why: str) -> None:
+        path = root / (rel.replace("*", "AUTH-001-a"))
+        path.write_text(text)
+        name = path.relative_to(root).as_posix()
+        with self.subTest(why):
+            code, out = self.run_doctor(root, "--brief")
+            self.assertEqual(code, 0, out)
+            code, out = self.run_doctor(root, "--ci")
+            self.assertIn(code, (1,) if wrong else (0, 1), out)
+            if wrong:
+                self.assertRegex(out, rf"(?m)^  ERROR {re.escape(name)}: ", out)
+            else:
+                self.assertNotRegex(out, rf"(?m)^  ERROR {re.escape(name)}: .*must be", out)
+            if rel == ".keelokit/critical.toml":
+                self.assertIn(self.run_doctor(root, "--critical", "--changed")[0], (0, 1))
+            if rel.endswith(".md"):
+                self.assertIn(self.run_doctor(root, "--scope", "AUTH-001")[0], (0, 1, 2))
+
+    def test_no_value_in_any_file_crashes_the_doctor(self):
+        for rel, (top, entries) in HEALTHY.items():
+            root = self.fixture(rel)
+            self.check(root, rel, self.render(rel, top, entries), False, f"{rel} healthy")
+            code, out = self.run_doctor(root, "--ci")
+            self.assertEqual(code, 0, out)
+            broken = "[oops\nnot = toml = at all\n"
+            self.check(root, rel, f"+++\n{broken}+++\n" if rel.endswith(".md") else broken, True, f"{rel} invalid TOML")
+            shape_top, shape_entries = self.api["SHAPES"][rel]
+            for literal, kinds in LITERALS.items():
+                for key, allowed in shape_top.items():
+                    wrong = not kinds & set(allowed.split("|"))
+                    t, e = {**top, key: literal}, {k: v for k, v in entries.items() if k != key}
+                    self.check(root, rel, self.render(rel, t, e), wrong, f"{rel} {key} = {literal}")
+                for key, entry_shape in shape_entries.items():
+                    for field, allowed in entry_shape.items():
+                        wrong = not kinds & set(allowed.split("|"))
+                        e = {**entries, key: [{**entries[key][0], field: literal}]}
+                        self.check(root, rel, self.render(rel, top, e), wrong, f"{rel} [[{key}]] {field} = {literal}")
+                if rel == ".keelokit/state.toml":  # a gate's value is only read as set or not
+                    self.check(root, rel, self.render(rel, {"gates": f"{{intake = {literal}}}"}, {}), False, f"gate = {literal}")
+
+    def test_every_file_and_glob_goes_through_a_guarded_reader(self):
+        """The class: a file or glob the doctor reads straight (`read_text`, `open`, `glob` of a
+        hand-edited pattern) crashes on bytes, a directory or a path it doesn't expect."""
+        source = DOCTOR.read_text()
+        funcs = {m.group(1): m.group(0) for m in re.finditer(r"(?ms)^def (\w+)\(.*?(?=^def |^if __name__|\Z)", source)}
+        readers = {name for name, body in funcs.items() if re.search(r"\.read_text\(|\.read_bytes\(|(?<![\w.])open\(", body)}
+        self.assertEqual(readers, {"read_file"}, "read files only through read_file/read")
+        globs = {name for name, body in funcs.items() for arg in re.findall(r"\.r?glob\(([^)]*)\)", body)
+                 if not re.fullmatch(r'"[^"{}]*"', arg.strip())}
+        # load_profile globs TRAIT_EVIDENCE, a constant; any pattern from a file goes through repo_glob.
+        self.assertEqual(globs, {"repo_glob", "load_profile"}, "glob a pattern from a file only through repo_glob")
+
+    def full_fixture(self) -> tuple[Path, dict[str, bool]]:
+        """A healthy project where the doctor reads every kind of file it reads; → file → lenient."""
+        root = self.fixture(".keelokit/profile.toml")
+        render = lambda rel, top=None, entries=None: self.render(rel, *(HEALTHY[rel] if top is None else (top, entries)))
+        rules = {"rule": [{**HEALTHY[".keelokit/harness/rules.toml"][1]["rule"][0],
+                           "enforced_by": '["file:src/pay/a.ts#export", "test:apps/a/x.test.ts", "ci:checks", "lint:no-console"]'}]}
+        exceptions = {"exception": [{**HEALTHY[".keelokit/exceptions.toml"][1]["exception"][0], "rule": '"L-1"'}]}
+        story = "backlog/stories/AUTH-001-a.md"
+        files = {
+            ".keelokit/harness/rules.toml": render(".keelokit/harness/rules.toml", {}, rules),
+            ".keelokit/exceptions.toml": render(".keelokit/exceptions.toml", {}, exceptions),
+            **{rel: render(rel) for rel in (".keelokit/rules.local.toml", ".keelokit/profile.toml",
+                                            ".keelokit/critical.toml", ".keelokit/state.toml")},
+            story: self.render("backlog/stories/*.md", *HEALTHY["backlog/stories/*.md"]),
+            ".keelokit/answers.yml": "mode: project\n",
+            ".github/workflows/ci.yml": CI,
+            "eslint.config.mjs": "rules: { 'no-console': 'error' }\n",
+            "apps/a/x.test.ts": "// R-1\ntest('AUTH-001.S1 works', () => {})\n",
+            "docs/escapes.md": "# Escapes\n",
+        }
+        for f, text in files.items():
+            (root / f).parent.mkdir(parents=True, exist_ok=True)
+            (root / f).write_text(text)
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qm", "x\n\nStory: AUTH-001"],
+                       cwd=root, check=True, capture_output=True)
+        reads = {f: f == "apps/a/x.test.ts" for f in files}
+        reads |= {f"docs/context/{f}": False for f in ("product.md", "domain.md", "constraints.md", "environments.md", "gaps.md")}
+        reads["src/pay/a.ts"] = False  # file:src/pay/a.ts#export
+        return root, reads
+
+    def survives(self, root: Path) -> tuple[int, str]:
+        """Every mode runs to the end (no exception escapes); → --ci's exit code and output."""
+        self.assertEqual(self.run_doctor(root, "--brief")[0], 0)
+        self.assertIn(self.run_doctor(root, "--critical", "--changed")[0], (0, 1))
+        self.assertIn(self.run_doctor(root, "--scope", "AUTH-001")[0], (0, 1, 2))
+        return self.run_doctor(root, "--ci")
+
+    def test_no_file_saved_in_another_encoding_or_turned_directory_crashes_the_doctor(self):
+        """Every file the doctor reads, saved as Latin-1 or replaced by a directory: an ERROR that
+        names it (a test file it only scans for titles may hold any bytes), never a traceback."""
+        root, reads = self.full_fixture()
+        code, out = self.run_doctor(root, "--ci")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Backlog: 1/1 done", out)
+        for f, lenient in reads.items():
+            path = root / f
+            original = path.read_bytes()
+            with self.subTest(f"{f} in Latin-1"):
+                path.write_bytes(original + b"\n# raz\xf3n\n")
+                code, out = self.survives(root)
+                if lenient:
+                    self.assertEqual(code, 0, out)
+                else:
+                    self.assertEqual(code, 1, out)
+                    self.assertIn(f"{f}: not UTF-8 (byte 0xf3", out)
+            with self.subTest(f"{f} is a directory"):
+                path.unlink()
+                (path / "x").mkdir(parents=True)
+                try:
+                    code, out = self.survives(root)
+                    self.assertEqual(code, 1, out)
+                    self.assertRegex(out, rf"ERROR .*{re.escape(f)}'?:? is a directory")
+                finally:
+                    shutil.rmtree(path)
+            path.write_bytes(original)
+        self.assertEqual(self.run_doctor(root, "--ci")[0], 0)
+
+    def test_no_path_in_any_file_crashes_the_doctor_or_reads_outside_the_repo(self):
+        """Every key whose value the doctor looks up on disk (an enforcer's path or glob, `when`, a
+        critical area) with every kind of path content: one outside the repo (absolute, `..`,
+        empty, a NUL) is an ERROR, a directory where it reads a file is an ERROR, and none crashes.
+        `touches` is only compared as text, so it just must not crash."""
+        root, _ = self.full_fixture()
+        outside = r"(is empty|contains a NUL character|must be a path relative to the repo root|must stay inside the repo)"
+        rules_rel, critical_rel, story_rel = ".keelokit/harness/rules.toml", ".keelokit/critical.toml", "backlog/stories/AUTH-001-a.md"
+        healthy = {f: (root / f).read_text() for f in (rules_rel, critical_rel, story_rel)}
+        for value, what in PATH_VALUES.items():
+            lit = json.dumps(value)
+            cases = []
+            for kind, suffix in [("test", ""), ("file", ""), ("file", "#export"), ("script", ""), ("claude-hook", ""), ("git-hook", "")]:
+                ref = json.dumps(f"{kind}:{value}{suffix}")
+                text = re.sub(r"(?m)^enforced_by = .*$", lambda _: f"enforced_by = [{ref}]", healthy[rules_rel])
+                expect = outside if what == "outside" else "is a directory" if what == "dir" and (kind == "test" or suffix) else None
+                cases.append((rules_rel, text, rf"rule R-1: .*{expect}" if expect else None, f"{kind}:{value!r}{suffix}"))
+            for when in (lit, f"[{lit}]"):
+                text = re.sub(r"(?m)^when = .*$", lambda _: f"when = {when}", healthy[rules_rel])
+                cases.append((rules_rel, text, rf"rule R-1: when .*{outside}" if what == "outside" else None, f"when = {when}"))
+            text = re.sub(r"(?m)^paths = .*$", lambda _: f"paths = [{lit}]", healthy[critical_rel])
+            cases.append((critical_rel, text, rf"{critical_rel}: area 'money' path .*{outside}" if what == "outside" else None, f"paths {value!r}"))
+            text = re.sub(r"(?m)^touches = .*$", lambda _: f"touches = [{lit}]", healthy[story_rel])
+            cases.append((story_rel, text, None, f"touches {value!r}"))
+            for rel, text, error, why in cases:
+                with self.subTest(why):
+                    (root / rel).write_text(text)
+                    try:
+                        code, out = self.survives(root)
+                        self.assertNotIn("invalid TOML", out)
+                        if error:
+                            self.assertEqual(code, 1, out)
+                            self.assertRegex(out, rf"(?m)^  ERROR {error}")
+                    finally:
+                        (root / rel).write_text(healthy[rel])
 
 
 if __name__ == "__main__":

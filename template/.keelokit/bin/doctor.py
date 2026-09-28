@@ -12,16 +12,18 @@
 Without main or origin/main (a shallow CI checkout) nothing counts as done and the doctor says so,
 `--scope` exits 2, and `--critical --changed` lists every critical file: never HEAD for main.
 
-Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the
-rule and has active cases, a lint rule that is on, a CI job with real steps and no
-continue-on-error, a git hook that is installed) unless an approved exception is active;
-exceptions are complete and not expired; docs/context is complete, precise and its gaps are
-tracked; every invariant in domain.md has an id and a class; critical areas point at real
-paths; backlog stories are well-formed, stories in one wave don't touch the same paths or the
-same critical area, a story touching a critical area declares `integrity` and its invariants,
-and every scenario and invariant of a done story is cited by an active test title; the escape
-log names the check each escaped bug left behind. A story is done when a commit reachable from
-main carries the trailer `Story: <ID>` — status is never stored in a file.
+Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the rule
+and has active cases, a lint rule that is on, a CI job with real steps and no continue-on-error, a
+git hook that is installed) unless an approved exception is active; exceptions are complete and
+not expired; every file it reads is UTF-8 (TOML ones valid, with values of the kinds SHAPES
+expects) and every path it looks up from them (enforcers, `when`, critical areas) stays inside the
+repo, or that is an error too, never a crash; docs/context is complete, precise and its gaps are
+tracked; every invariant in domain.md has an id and a class; critical areas point at real paths;
+backlog stories are well-formed, stories in one wave don't touch the same paths or the same
+critical area, a story touching a critical area declares `integrity` and its invariants, and every
+scenario and invariant of a done story is cited by an active test title; the escape log names the
+check each escaped bug left behind. A story is done when a commit reachable from main carries the
+trailer `Story: <ID>` — status is never stored in a file.
 """
 import sys
 
@@ -88,6 +90,34 @@ TRAIT_EVIDENCE = {
 }
 STRUCTURAL = {"api", "database", "web", "mobile", "site"}  # hosted: a static host may leave nothing in the repo
 
+# What each TOML file the doctor reads may hold (top-level keys, then each [[entry]]'s): key → the
+# kinds of value it accepts. People and agents edit these files by hand, so a value of another kind
+# is an ERROR that names the file and the key, and that value or entry is left out; never a
+# traceback (INT-2). tests/test_doctor.py holds every key the templates document to a shape here.
+KINDS = {
+    "text": ("text", lambda v: isinstance(v, str)),
+    "texts": ("a list of text", lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)),
+    "whole": ("a whole number", lambda v: isinstance(v, int) and not isinstance(v, bool)),
+    "date": ("a date", lambda v: isinstance(v, dt.date) and not isinstance(v, dt.datetime)),
+    "table": ("a table", lambda v: isinstance(v, dict)),
+    "tables": ("a list of tables", lambda v: isinstance(v, list) and all(isinstance(x, dict) for x in v)),
+}
+RULE_SHAPE = {"id": "text", "level": "text", "rule": "text", "why": "text", "enforced_by": "texts",
+              "when": "text|texts", "needs": "texts"}
+SHAPES = {
+    ".keelokit/harness/rules.toml": ({"rule": "tables"}, {"rule": RULE_SHAPE}),
+    ".keelokit/rules.local.toml": ({"rule": "tables"}, {"rule": RULE_SHAPE}),
+    ".keelokit/exceptions.toml": ({"exception": "tables"},
+                                  {"exception": {"rule": "text", "reason": "text", "approver": "text", "expires": "text|date"}}),
+    ".keelokit/profile.toml": ({"kind": "text", "traits": "texts"}, {}),
+    ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
+                                {"area": {"name": "text", "why": "text", "paths": "texts"}}),
+    ".keelokit/state.toml": ({"gates": "table"}, {}),
+    # Story front matter (backlog/README.md).
+    "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
+                              "touches": "texts", "dimensions": "texts", "invariants": "texts", "origin": "text"}, {}),
+}
+
 GATES = {
     "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:project-new
     "harness": ["intake", "adopt", "backlog"],  # /keelokit:project-adopt on an existing repo
@@ -99,14 +129,97 @@ profile_drift: list[str] = []
 not_applicable: list[str] = []
 
 
-def load_toml(path: Path, key: str) -> list[dict]:
-    if not path.exists():
-        return []
+def misshapen(table: dict, shape: dict[str, str]) -> dict[str, str]:
+    """Each key of `table` whose value isn't a kind `shape` allows → "'wave' must be a whole number (found '2')"."""
+    return {
+        key: f"'{key}' must be {' or '.join(KINDS[k][0] for k in allowed.split('|'))} (found {repr(table[key])[:60]})"
+        for key, allowed in shape.items()
+        if key in table and not any(KINDS[k][1](table[key]) for k in allowed.split("|"))
+    }
+
+
+def rel(path: Path) -> str:
     try:
-        return tomllib.loads(path.read_text()).get(key, [])
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def read_file(path: Path, lenient: bool = False) -> tuple[str | None, str | None]:
+    """(text, None), or (None, why) when the file can't be read: a directory, bytes that aren't UTF-8
+    (a file saved as Latin-1), no permission. The doctor reads every file through here, so a
+    hand-edited one is an error that names it, never a traceback (INT-2). `lenient` drops the bytes
+    that aren't UTF-8 instead (source files it only scans for test titles)."""
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore" if lenient else "strict"), None
+    except UnicodeDecodeError as e:
+        return None, f"{rel(path)}: not UTF-8 (byte {e.object[e.start]:#04x} at offset {e.start}); save it as UTF-8"
+    except IsADirectoryError:
+        return None, f"{rel(path)}: is a directory, not a file"
+    except (OSError, ValueError) as e:
+        return None, f"{rel(path)}: can't be read ({getattr(e, 'strerror', None) or e})"
+
+
+def read(path: Path, lenient: bool = False) -> str | None:
+    """The text of a file, or None with the reason among the errors (once)."""
+    text, why = read_file(path, lenient)
+    if why and why not in errors:
+        errors.append(why)
+    return text
+
+
+def outside(value: str) -> str | None:
+    """Why a path from a hand-edited file (an enforcer, `when`, a critical area) isn't one inside the
+    repo, or None when it is: absolute paths, `..`, empty ones and NULs read outside it or crash."""
+    if not value.strip():
+        return "is empty"
+    if "\0" in value:
+        return "contains a NUL character"
+    if value.startswith(("/", "\\")) or re.match(r"[A-Za-z]:[\\/]", value):
+        return "must be a path relative to the repo root"
+    if ".." in re.split(r"[\\/]", value):
+        return "must stay inside the repo (no '..')"
+    return None
+
+
+def repo_glob(pattern: str) -> tuple[list[Path], str | None]:
+    """The files (not directories) a glob from a hand-edited file matches, or why it can't be used."""
+    if why := outside(pattern):
+        return [], why
+    try:
+        return [p for p in ROOT.glob(pattern) if p.is_file()], None
+    except (ValueError, NotImplementedError, OSError) as e:  # 'a/**b', a pattern pathlib refuses
+        return [], f"is not a glob pathlib accepts ({e})"
+
+
+def read_toml(path: Path, shape: str) -> dict | None:
+    """A TOML file, keeping only the values SHAPES[shape] allows; anything else is an error that names
+    the file and is left out. None when the file is missing, unreadable or isn't valid TOML."""
+    if not path.exists() or (text := read(path)) is None:
+        return None
+    name = rel(path)
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
-        errors.append(f"{path.relative_to(ROOT)}: invalid TOML ({e})")
-        return []
+        errors.append(f"{name}: invalid TOML ({e})")
+        return None
+    top, entries = SHAPES[shape]
+    bad = misshapen(data, top)
+    errors.extend(f"{name}: {why}" for why in bad.values())
+    data = {k: v for k, v in data.items() if k not in bad}
+    for key, entry_shape in entries.items():
+        kept = []
+        for i, entry in enumerate(data.get(key, []), 1):
+            if bad := misshapen(entry, entry_shape):
+                errors.append(f"{name}: [[{key}]] #{i}: {'; '.join(bad.values())}")
+            else:
+                kept.append(entry)
+        data[key] = kept
+    return data
+
+
+def load_toml(path: Path, key: str) -> list[dict]:
+    return (read_toml(path, path.relative_to(ROOT).as_posix()) or {}).get(key, [])
 
 
 def git(*args: str) -> str:
@@ -135,7 +248,7 @@ def main_base() -> str | None:
 def ci_job(job: str) -> str | None:
     """The text of a top-level job in any workflow, or None."""
     for path in (ROOT / ".github/workflows").glob("*.y*ml"):
-        m = re.search(rf"(?ms)^  {re.escape(job)}:\s*\n(.*?)(?=^  \S|\Z)", path.read_text())
+        m = re.search(rf"(?ms)^  {re.escape(job)}:\s*\n(.*?)(?=^  \S|\Z)", read(path) or "")
         if m:
             return m.group(1)
     return None
@@ -144,13 +257,17 @@ def ci_job(job: str) -> str | None:
 SETUP_STEPS = re.compile(r"(checkout|setup-node|action-setup|setup-uv|setup-python|upload-artifact|cache)@")
 
 
-def test_titles(path: Path) -> list[str]:
-    return [m.group(2) for m in TEST_TITLE_RE.finditer(path.read_text(errors="ignore"))]
+def test_titles(text: str) -> list[str]:
+    return [m.group(2) for m in TEST_TITLE_RE.finditer(text)]
 
 
 def enforcer_problem(rid: str, ref: str) -> str | None:
     """Why this enforcer can't be trusted to enforce the rule, or None if it looks alive."""
     kind, _, target = ref.partition(":")
+    if kind in ("test", "file", "script", "claude-hook", "git-hook"):
+        path = target.partition("#")[0] if kind in ("file", "script") else target
+        if why := outside(path):
+            return f"'{path}' {why}"
     if kind == "ci":
         block = ci_job(target)
         if block is None:
@@ -169,19 +286,27 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
     if kind == "claude-hook":
         return None if (ROOT / ".keelokit/bin" / target).exists() else f"'.keelokit/bin/{target}' is missing"
     if kind == "test":
-        files = list(ROOT.glob(target)) if any(c in target for c in "*?[") else [ROOT / target]
-        files = [f for f in files if f.exists()]
+        if any(c in target for c in "*?["):
+            files, why = repo_glob(target)
+            if why:
+                return f"'{target}' {why}"
+        elif (ROOT / target).is_dir():
+            return f"'{target}' is a directory: name a test file, or a glob such as '{target.rstrip('/')}/**/*.spec.ts'"
+        else:
+            files = [ROOT / target] if (ROOT / target).exists() else []
         if not files:
             return f"no test at '{target}'"
         # A glob (apps/*/e2e/*.spec.ts) is satisfied when at least one match names the rule and
         # has an active test; a plain path must do both itself.
-        live = [f for f in files if re.search(rf"\b{re.escape(rid)}\b", f.read_text(errors="ignore")) and test_titles(f)]
+        texts = {f: t for f in files if (t := read_file(f, lenient=True)[0]) is not None}
+        live = [f for f, t in texts.items() if re.search(rf"\b{re.escape(rid)}\b", t) and test_titles(t)]
         if live:
             return None
         rel = ", ".join(str(f.relative_to(ROOT)) for f in files)
         return f"{rel}: no active test that names {rid} (add a comment or title citing it)"
     if kind == "lint":
-        texts = [c.read_text() for c in [*ROOT.glob("eslint.config.*"), *ROOT.glob(".eslintrc*")]]
+        configs = [*ROOT.glob("eslint.config.*"), *ROOT.glob(".eslintrc*")]
+        texts = [t for c in configs if (t := read(c)) is not None]
         rule = re.escape(target)
         if any(re.search(rf"['\"]{rule}['\"]\s*:\s*\[?\s*['\"]?(off|0)\b", t) for t in texts):
             return f"lint rule '{target}' is turned off somewhere"
@@ -191,8 +316,12 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
         path, _, needle = target.partition("#")  # file:tsconfig.base.json#"strict": true
         if not (ROOT / path).exists():
             return f"'{path}' does not exist"
-        if needle and needle not in (ROOT / path).read_text():
-            return f"'{path}' does not contain {needle}"
+        if needle:
+            text, why = read_file(ROOT / path)
+            if why:
+                return why
+            if needle not in text:
+                return f"'{path}' does not contain {needle}"
         return None
     if kind == "review":
         return None if target else "review enforcer needs an agent name"
@@ -236,7 +365,11 @@ def check_exceptions(rule_ids: set[str]) -> set[str]:
         expires = e["expires"]
         if expires != "permanent":
             if isinstance(expires, str):
-                expires = dt.date.fromisoformat(expires)
+                try:
+                    expires = dt.date.fromisoformat(expires)
+                except ValueError:
+                    errors.append(f"exception for {rid}: 'expires' is not a date (YYYY-MM-DD) or 'permanent' ({expires!r})")
+                    continue
             if expires < today:
                 errors.append(f"exception for {rid}: expired on {expires}")
                 continue
@@ -250,10 +383,7 @@ def load_profile() -> dict | None:
     path = ROOT / ".keelokit/profile.toml"
     if not path.exists():
         return None
-    try:
-        profile = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as e:
-        errors.append(f".keelokit/profile.toml: invalid TOML ({e})")
+    if (profile := read_toml(path, ".keelokit/profile.toml")) is None:
         return None
     traits = set(profile.get("traits", []))
     if profile.get("kind", "unknown") == "unknown":
@@ -275,7 +405,10 @@ def load_profile() -> dict | None:
 def check_rules(rules: dict[str, dict], excepted: set[str], profile: dict | None = None) -> None:
     for rid, r in rules.items():
         when = r.get("when")
-        if when and not any((ROOT / w).exists() for w in ([when] if isinstance(when, str) else when)):
+        whens = [when] if isinstance(when, str) else when or []
+        if bad := [f"'{w}' {why}" for w in whens if (why := outside(w))]:
+            errors.append(f"rule {rid}: when {', '.join(bad)}")
+        if when and not any((ROOT / w).exists() for w in whens if not outside(w)):
             continue
         if profile is not None and not set(r.get("needs", [])) <= profile["traits"]:
             not_applicable.append(rid)
@@ -301,10 +434,11 @@ def check_context() -> tuple[int, int]:
     if missing:
         errors.append(f"docs/context missing {', '.join(missing)} — run the intake (/keelokit:plan-intake)")
         return 0, 0
-    gaps_text = (ctx / "gaps.md").read_text()
+    gaps_text = read(ctx / "gaps.md") or ""
     tracked = {m.group(1): line for line in gaps_text.splitlines() if (m := GAP_ROW_RE.match(line))}
     for f in CONTEXT_FILES[:-1]:
-        text = (ctx / f).read_text()
+        if (text := read(ctx / f)) is None:
+            continue
         low = re.sub(r"(?s)<!--.*?-->", "", text).lower()
         for phrase in VAGUE:
             if phrase in low:
@@ -319,9 +453,9 @@ def check_invariants() -> dict[str, str]:
     """Invariants defined in docs/context/domain.md, id → class."""
     path = ROOT / "docs/context/domain.md"
     found: dict[str, str] = {}
-    if not path.exists():
+    if not path.exists() or (text := read(path)) is None:
         return found
-    text = re.sub(r"(?s)<!--.*?-->", "", path.read_text())
+    text = re.sub(r"(?s)<!--.*?-->", "", text)
     for iid, rest in INV_DEF_RE.findall(text):
         m = INV_CLASS_RE.search(rest)
         if iid in found:
@@ -337,10 +471,7 @@ def load_critical() -> tuple[list[dict], int]:
     path = ROOT / ".keelokit/critical.toml"
     if not path.exists():
         return [], 0
-    try:
-        data = tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError as e:
-        errors.append(f".keelokit/critical.toml: invalid TOML ({e})")
+    if (data := read_toml(path, ".keelokit/critical.toml")) is None:
         return [], 0
     threshold = data.get("mutation_break", 70)  # scripts/mutation.sh uses the same default
     if not isinstance(threshold, int) or not 0 <= threshold <= 100:
@@ -352,10 +483,15 @@ def load_critical() -> tuple[list[dict], int]:
         if not a.get("name") or not a.get("why") or not a.get("paths"):
             errors.append(f".keelokit/critical.toml: area '{name}' needs name, why and paths")
             continue
+        paths = []
         for p in a["paths"]:
+            if why := outside(p):
+                errors.append(f".keelokit/critical.toml: area '{name}' path '{p}' {why}")
+                continue
             if not (ROOT / p).exists():
                 errors.append(f".keelokit/critical.toml: area '{name}' points at '{p}', which does not exist")
-        areas.append(a)
+            paths.append(p)
+        areas.append({**a, "paths": paths})
     return areas, threshold
 
 
@@ -384,7 +520,7 @@ def check_escapes() -> int:
     if not path.exists():
         return 0
     rows = 0
-    for line in path.read_text().splitlines():
+    for line in (read(path) or "").splitlines():
         if not (m := ESCAPE_ROW_RE.match(line)):
             continue
         rows += 1
@@ -405,7 +541,8 @@ def done_story_ids() -> set[str]:
 
 
 def read_story(path: Path) -> dict | None:
-    text = path.read_text()
+    if (text := read(path)) is None:
+        return None
     m = re.match(r"\+\+\+\n(.*?)\n\+\+\+\n", text, re.S)
     if not m:
         errors.append(f"{path.relative_to(ROOT)}: missing +++ TOML front matter")
@@ -414,6 +551,9 @@ def read_story(path: Path) -> dict | None:
         meta = tomllib.loads(m.group(1))
     except tomllib.TOMLDecodeError as e:
         errors.append(f"{path.relative_to(ROOT)}: invalid front matter ({e})")
+        return None
+    if bad := misshapen(meta, SHAPES["backlog/stories/*.md"][0]):
+        errors.append(f"{path.relative_to(ROOT)}: front matter {'; '.join(bad.values())}")
         return None
     meta["_scenarios"] = SCENARIO_RE.findall(text[m.end():])
     return meta
@@ -426,7 +566,7 @@ def cited_titles() -> str:
         for path in (ROOT / base).rglob("*") if (ROOT / base).exists() else []:
             rel = path.relative_to(ROOT).as_posix()
             if path.is_file() and "node_modules" not in rel and TEST_FILE_RE.search(rel):
-                titles += test_titles(path)
+                titles += test_titles(read(path, lenient=True) or "")
     return "\n".join(titles)
 
 
@@ -496,7 +636,7 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         ]
         if untested:
             errors.append(f"story {sid} is done but no active test title cites {', '.join(untested)} (TRACE-1)")
-        unproven = [i for i in stories[sid].get("invariants", []) if not re.search(rf"\b{i}\b", corpus)]
+        unproven = [i for i in stories[sid].get("invariants", []) if not re.search(rf"\b{re.escape(i)}\b", corpus)]
         if unproven:
             errors.append(f"story {sid} is done but no active test title cites invariant {', '.join(unproven)} (INV-1)")
     ready = [
@@ -508,14 +648,16 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
 
 
 def gate_state() -> dict:
-    path = ROOT / ".keelokit/state.toml"
-    return tomllib.loads(path.read_text()).get("gates", {}) if path.exists() else {}
+    return (read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {}).get("gates", {})
 
 
 def check_scope(sid: str) -> int:
     """Files this branch changed outside the story's `touches` (scope creep or a missing path)."""
-    stories = {m.get("id"): m for p in (ROOT / "backlog/stories").glob(f"{sid}-*.md") if (m := read_story(p))}
+    stories = {m.get("id"): m for p in sorted((ROOT / "backlog/stories").glob("*.md"))
+               if p.name.startswith(f"{sid}-") and (m := read_story(p))}  # sid is never a glob
     if sid not in stories:
+        for e in errors:  # a story file the doctor can't read says why
+            print(e)
         print(f"No story {sid} in backlog/stories")
         return 1
     story = stories[sid]
@@ -587,7 +729,7 @@ def main() -> int:
     backlog = check_backlog(invariants, areas)
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
-    layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", answers.read_text()) else "project"
+    layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", read(answers) or "") else "project"
     gate_names = GATES[layout]
     pending = next((g for g in gate_names if not gates.get(g)), None)
 

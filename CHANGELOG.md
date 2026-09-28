@@ -33,6 +33,18 @@
   the commit with the same unexplained error. Now PreToolUse turns off with Keelokit's message, as
   SessionStart does, and pre-commit stops the commit saying python3 is missing. Already in 0.7.1;
   `claude plugin update` brings the hook and `harness-upgrade` the new `.githooks/pre-commit`.
+- Fixed (INT-2, LOG-2): a hand-edited `.keelokit/state.toml` that wasn't valid TOML, or an exception
+  whose `expires` wasn't a date, crashed the doctor with a traceback in every mode, the SessionStart
+  `--brief` included; so did a value of the wrong kind in any file it reads (`wave = "1"`,
+  `gates = "…"`, a number or a date where a list goes), and a string where a list goes
+  (`traits = "ui"`, `paths = "src"`) was read letter by letter. It also crashed on any file it reads
+  saved in another encoding than UTF-8 (a `state.toml` or a story saved as Latin-1) or turned into a
+  directory, an enforcer pointing at a directory (`test:apps/web`, `file:apps#x`) or an absolute
+  glob (`test:/tmp/*`), and a critical area outside the repo (`paths = ["/etc/hostname"]` crashed
+  `--critical`); an absolute or `..` path in an enforcer or `when` was looked up outside the repo.
+  Now each is an ERROR naming the file, the key or the path, the value or entry is left out,
+  `--brief` still prints its summary and `--ci` exits 1. Already in 0.7.1; `harness-upgrade` brings
+  the new doctor.
 
 ## 0.7.1 — 2026-09-27
 
