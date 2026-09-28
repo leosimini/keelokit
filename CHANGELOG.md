@@ -153,6 +153,12 @@
   health section until there is a backlog (inside Build after that), and both links open it. In an
   adopted repo, the decisions card's ADRs linked to a Stack stage only new projects have; they now
   open their file. Already in 0.7.0; `claude plugin update` brings the new dashboard.
+- Fixed (UX-2): the dashboard's "Build wave N in parallel" button sent `/keelokit:build-story` with
+  only a count, which build-story spends on the first wave with ready stories, so with two waves
+  ready the wave 2 button built wave 1; the next step's hint had the same count. Both now send the
+  wave's stories by id (`/keelokit:build-story AUTH-002 AUTH-003`), and `build-story` takes several
+  ids of one wave and builds exactly those in parallel. Already in 0.7.0; `claude plugin update`
+  brings the new dashboard and skill.
 
 ## 0.7.1 — 2026-09-27
 

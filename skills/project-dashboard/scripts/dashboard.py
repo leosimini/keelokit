@@ -118,8 +118,8 @@ T = {
         "next_gaps": "Responder las preguntas que bloquean",
         "next_gaps_d": ("Hay {n} pregunta abierta que bloquea el avance.", "Hay {n} preguntas abiertas que bloquean el avance."),
         "next_build": "Construir {sid}: {title}",
-        "next_build_d": ("Hay {n} historia lista en la ola {wave}.",
-                         "Hay {n} historias listas en la ola {wave}. En serie: una por vez. En paralelo: «/keelokit:build-story {n}»."),
+        "next_build_d": ("{ids} es la única historia lista en la ola {wave}.",
+                         "Hay {n} historias listas en la ola {wave}. En serie: una por vez. En paralelo: «/keelokit:build-story {ids}»."),
         "next_blocked": "Destrabar la próxima ola",
         "next_blocked_d": "Ninguna historia está lista: cada una espera a otra que todavía no terminó.",
         "next_more": "Planificar lo que sigue",
@@ -345,8 +345,8 @@ T = {
         "next_gaps": "Answer the blocking questions",
         "next_gaps_d": ("{n} open question blocks progress.", "{n} open questions block progress."),
         "next_build": "Build {sid}: {title}",
-        "next_build_d": ("{n} story is ready in wave {wave}.",
-                         "{n} stories are ready in wave {wave}. One at a time, or in parallel with \"/keelokit:build-story {n}\"."),
+        "next_build_d": ("{ids} is the only story ready in wave {wave}.",
+                         "{n} stories are ready in wave {wave}. One at a time, or in parallel with \"/keelokit:build-story {ids}\"."),
         "next_blocked": "Unblock the next wave",
         "next_blocked_d": "No story is ready: each one waits for another that isn't done yet.",
         "next_more": "Plan what comes next",
@@ -1008,7 +1008,7 @@ def next_step(s: dict, lang: str) -> dict:
         first = ready[0]
         same = [x for x in ready if x["wave"] == first["wave"]]
         return {"title": t["next_build"].format(sid=first["id"], title=first["title"]),
-                "detail": plural(t, "next_build_d", len(same), wave=first["wave"]),
+                "detail": plural(t, "next_build_d", len(same), wave=first["wave"], ids=story_ids(same)),
                 "command": f"/keelokit:build-story {first['id']}", "anchor": "stage-build"}
     if s["stories"] and any(x["status"] != "done" for x in s["stories"]):
         return {"title": t["next_blocked"], "detail": t["next_blocked_d"], "command": "/keelokit",
@@ -1549,6 +1549,11 @@ def term(cmd: str, t: dict, light: bool = False) -> str:
             f'<button type="button" class="copy" data-copy="{esc(cmd)}" data-done="{esc(t["copied"])}">{esc(t["copy"])}</button></div>')
 
 
+def story_ids(stories: list) -> str:
+    """The ids a build-story prompt sends, in backlog order: "AUTH-001 AUTH-002"."""
+    return " ".join(x["id"] for x in stories)
+
+
 def ask(label: str, text: str, primary: bool = False) -> str:
     return f'<button type="button" class="act{" primary" if primary else ""}" data-ask="{esc(text)}">{esc(label)}</button>'
 
@@ -1676,8 +1681,10 @@ def backlog_block(s: dict, links: Links, t: dict) -> str:
     waves = sorted(in_wave)
     live = next((w for w in waves if any(x["status"] != "done" for x in in_wave[w])), None)
     def wave_action(w):
+        # The button names the wave's ready stories: a count means "the first ready story and more
+        # of its wave" to build-story, which is another wave while an earlier one has ready work (UX-2).
         ready = [x for x in in_wave[w] if x["status"] == "ready"]
-        return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), f"/keelokit:build-story {len(ready)}")}</div>' \
+        return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), "/keelokit:build-story " + story_ids(ready))}</div>' \
             if len(ready) > 1 else ""
     by_wave = "".join(group(esc(t["wave"].format(n=w)), in_wave[w], links, t,
                             w == live, t["wave_note"], wave_action(w)) for w in waves)

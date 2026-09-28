@@ -51,6 +51,19 @@ def dead_links(html: str) -> list[str]:
     return sorted({h for h in re.findall(r'\bhref="#([^"]*)"', html) if html_lib.unescape(h) not in ids})
 
 
+def build_buttons(html: str) -> list[tuple[str, list[str]]]:
+    """Every button that starts /keelokit:build-story, as (its label, the arguments it sends)."""
+    found = re.findall(r'data-ask="/keelokit:build-story([^"]*)">([^<]*)<', html)
+    return [(html_lib.unescape(label), html_lib.unescape(args).split()) for args, label in found]
+
+
+def vague_build_buttons(html: str) -> list[str]:
+    """UX-2, the class: a button is tied to what its label names (a story, a wave), so it sends
+    those stories by id. A bare count means "the first ready story and more of its wave" to
+    build-story, which is another wave whenever an earlier one still has ready work."""
+    return [label for label, args in build_buttons(html) if not args or any(a.isdigit() for a in args)]
+
+
 class DashboardTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -91,6 +104,7 @@ class DashboardTest(unittest.TestCase):
         out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), *args).strip()
         html = Path(out).read_text()
         self.assert_links_land(html)
+        self.assertEqual(vague_build_buttons(html), [], "build buttons that don't name their stories")
         return html
 
     def assert_links_land(self, html: str) -> None:
@@ -233,6 +247,39 @@ class DashboardTest(unittest.TestCase):
         # Only the stage waiting for the user is open.
         self.assertIn('<details class="stage review" id="stage-product" open>', html)
         self.assertIn('<details class="stage done" id="stage-intake">', html)
+
+    def test_UX_2_build_wave_button_names_the_stories_of_its_wave(self):
+        """Two waves with ready work at once: each "Build wave N in parallel" button sends wave N's
+        ready stories by id, not a count build-story would spend on the first ready wave."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog")
+        self.context()
+        self.story("AUTH-001", 1)
+        self.story("AUTH-002", 1)
+        self.story("SHOP-001", 2)
+        self.story("SHOP-002", 2)
+        self.story("SHOP-003", 2, '"AUTH-001"')
+        self.story("CART-001", 3)
+        self.commit("chore: skeleton")
+        html = self.page()
+        waves = {label: args for label, args in build_buttons(html) if "wave" in label}
+        self.assertEqual(waves, {"Build wave 1 in parallel": ["AUTH-001", "AUTH-002"],
+                                 "Build wave 2 in parallel": ["SHOP-001", "SHOP-002"]})
+        # One ready story is no wave to build in parallel: wave 3 gets no button.
+        self.assertNotIn("Build wave 3 in parallel", html)
+        # The next step's hint names the same stories as the button of its wave.
+        detail = self.state()["next"]["detail"]
+        self.assertIn('"/keelokit:build-story AUTH-001 AUTH-002"', detail)
+        self.assertNotRegex(detail, r"build-story \d")
+        # The same in Spanish.
+        self.gates("intake", "product", "stack", "skeleton", "backlog", lang="es")
+        html = self.page()
+        self.assertIn('data-ask="/keelokit:build-story SHOP-001 SHOP-002">Construir la ola 2 en paralelo<', html)
+        self.assertIn("«/keelokit:build-story AUTH-001 AUTH-002»", self.state()["next"]["detail"])
+
+    @staticmethod
+    def story_list(text: str) -> list[str]:
+        """Counts where the next step's hint should name stories."""
+        return re.findall(r"build-story \d", text)
 
     def test_bug_bash_history_and_the_stories_it_fed(self):
         self.gates("intake", "product", "stack", "skeleton", "backlog")
@@ -639,9 +686,11 @@ class DashboardAnchorsLandTest(unittest.TestCase):
             files[".keelokit/exceptions.toml"] = ""
             files["docs/diagnosis.md"] = "# Diagnosis\n"
         deps = {"none": [], "mixed": [("A-001", ""), ("A-002", '"A-001"'), ("A-003", '"A-002"')],
-                "blocked": [("B-001", '"Z-999"')], "done": [("C-001", "")], "no_main": [("A-001", ""), ("A-002", '"A-001"')]}
+                "blocked": [("B-001", '"Z-999"')], "done": [("C-001", "")], "no_main": [("A-001", ""), ("A-002", '"A-001"')],
+                "waves": [("A-001", ""), ("A-002", ""), ("W-001", ""), ("W-002", "")]}
         for sid, dep in deps[stories]:
-            files[f"backlog/stories/{sid}-x.md"] = STORY.format(id=sid, epic=sid[0], title=f"t {sid}", wave=1, deps=dep, body="")
+            wave = 2 if sid.startswith("W") else 1
+            files[f"backlog/stories/{sid}-x.md"] = STORY.format(id=sid, epic=sid[0], title=f"t {sid}", wave=wave, deps=dep, body="")
         if reports:
             table = "| Id | Lens | Severity | Title | Status | Fix commit | Check added |\n|---|---|---|---|---|---|---|\n"
             files["docs/bugbash/2026-09-01/report.md"] = f"# Bug bash\n\n## Scope\nsha 3f9c2ab\n\n{table}| UX-9 | ux | P2 | x | pending decision | — | — |\n"
@@ -676,9 +725,9 @@ class DashboardAnchorsLandTest(unittest.TestCase):
             {"doctor": ["Harness errors: 0"], "profile": None, "run": {"mode": "step"},
              "gaps": [{"id": "GAP-002", "file": "domain.md", "missing": "m", "owner": "o", "question": "", "blocking": True}]},
         ]
-        n = 0
+        n = waves_seen = 0
         for layout, order in dashboard.GATES.items():
-            for stories in ("none", "mixed", "blocked", "done", "no_main"):
+            for stories in ("none", "mixed", "blocked", "done", "no_main", "waves"):
                 for reports in (False, True):
                     root = self.project(layout, stories, reports)
                     for gates in (order[:0], order[:-1], order):
@@ -693,6 +742,9 @@ class DashboardAnchorsLandTest(unittest.TestCase):
                                               reported=i, lang=lang):
                                 html = dashboard.render(s, lang, bool(n % 3), self.tmp, "0.7.1")
                                 self.assertEqual(dead_links(html), [], "in-page links with nothing to land on")
+                                self.assertEqual(vague_build_buttons(html), [], "build buttons that don't name their stories")
+                                waves_seen += sum("W-001 W-002" in " ".join(args) for _, args in build_buttons(html))
+        self.assertGreater(waves_seen, 0, "no state rendered a wave's build button: UX-2's check saw nothing")
         missed = [lines[i] for i in range(len(lines)) if i not in hit]
         self.assertEqual(missed, [], "dashboard.py lines with an anchor no state here renders: add a state that "
                                      "reaches each one, so its link is checked")

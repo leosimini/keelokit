@@ -1,6 +1,6 @@
 ---
 name: build-story
-description: Build one backlog story end to end with independent checks — done-contract from its dimensions and invariants, acceptance tests written by the verifier before any code, implementation, a cold review and an adversarial breaker before landing (again after the rebase if main moved), verification in the running app, then merge. Use when the user says "build the next story", "implement AUTH-003", "next", "continue the backlog", "construí la siguiente historia", "implementá AUTH-003", "seguí con el backlog", or picks a ready story from /keelokit. With a count ("build 3"), runs that many ready stories of the same wave in parallel worktrees. "--light" for small, low-risk stories.
+description: Build one backlog story end to end with independent checks — done-contract from its dimensions and invariants, acceptance tests written by the verifier before any code, implementation, a cold review and an adversarial breaker before landing (again after the rebase if main moved), verification in the running app, then merge. Use when the user says "build the next story", "implement AUTH-003", "next", "continue the backlog", "construí la siguiente historia", "implementá AUTH-003", "seguí con el backlog", or picks a ready story from /keelokit. With a count ("build 3") or several ids of one wave ("build AUTH-002 AUTH-003"), runs those ready stories in parallel worktrees. "--light" for small, low-risk stories.
 ---
 
 # Build — the builder never grades its own work
@@ -29,9 +29,12 @@ else runs **full**. Say which mode and why in one line.
 
 ## 1. Pick
 
-`python3 .keelokit/bin/doctor.py --brief` → first ready story, or the one the user named. For N
+`python3 .keelokit/bin/doctor.py --brief` → first ready story, or the ones the user named. For N
 stories: only from the same wave (doctor guarantees their `touches` and critical areas don't
-overlap), one worktree each (`git worktree add ../<repo>-<ID> -b <id-lower>`), steps 2–7 per
+overlap). A count N takes the first ready story and the next ready ones of its wave; several ids
+(`/keelokit:build-story AUTH-002 AUTH-003`, what the dashboard's "Build wave N" button sends)
+take exactly those, and one that isn't ready or is in another wave is left out with the reason
+said. One worktree each (`git worktree add ../<repo>-<ID> -b <id-lower>`), steps 2–7 per
 story in parallel. Give each worktree its own ports:
 `E2E_PORT=41<n>0 E2E_MOBILE_PORT=81<n>0 E2E_API_PORT=31<n>0` (n = 1..N).
 
