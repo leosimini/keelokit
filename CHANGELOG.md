@@ -114,6 +114,12 @@
   `/keelokit:ship-release` writes, `## X.Y.Z — <date>`, as Keelokit's own release does; an entry
   written by hand without ` — <date>` no longer counts. Already in 0.7.0; `harness-upgrade` brings
   the new `.github/workflows/release.yml`.
+- Fixed (DX-4, DX-5): a product name starting with a digit ("3D Store") stopped `project-new` and
+  `project-adopt` at copier with a traceback, because the slug derived from it started with a
+  digit, which copier's own check rejects; accented letters became dashes ("Peña" → `pe-a`). The
+  slug now folds accents (`pena`, `strasse`, `lodz`) and puts `app-` in front of a digit or of a
+  name with no Latin letters (`app-3d-store`), and `project-new` lets copier derive it. Already in
+  0.7.1; affects new projects only (an existing project keeps its slug).
 
 ## 0.7.1 — 2026-09-27
 

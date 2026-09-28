@@ -35,8 +35,10 @@ Rules for the whole run:
 ## 0. Where
 
 Ask for the product's name and one sentence of what it is, and propose the folder
-`~/Development/<slug>`. Create it (empty) once the user agrees. If it exists and is not empty,
-ask before using it.
+`~/Development/<slug>`, where the slug is the name as the template derives it: lowercase ASCII
+(accents folded: "Peña S.A." → `pena-s-a`), anything else a dash, and `app-` in front when it
+would start with a digit or be empty ("3D Store" → `app-3d-store`). Create it (empty) once the
+user agrees. If it exists and is not empty, ask before using it.
 
 Create `.keelokit/state.toml` with `[dashboard] lang = "<the user's language code>"`.
 
@@ -127,11 +129,14 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
    `.keelokit/answers.yml` `_src_path` points at a git source.
 2. Generate into the product folder (existing `docs/` is kept):
    ```bash
-   uvx copier==9.18.2 copy --defaults --vcs-ref v<version> \
-     --data project_name="<name>" --data project_slug="<slug>" \
+   uvx copier==9.18.2 copy --defaults --vcs-ref v<version> --data project_name="<name>" \
      --data description="<one sentence>" --data 'apps=["api","web"]' --data postgis=false \
      "${KEELOKIT_TEMPLATE:-gh:leosimini/keelokit}" <folder>
    ```
+   Copier derives the package slug from the name (as in step 0). Add
+   `--data project_slug=<slug>` only for one the user chose, and only if it starts with a letter
+   and has nothing but lowercase letters, digits and dashes: `--defaults` never asks again, so
+   copier stops with a traceback on any other.
 3. `git init -b main`, `pnpm install`, then `pnpm verify` and `pnpm mutation --all`. Fix until
    green — the fix belongs in the generated project only if it is product-specific; if the
    template itself is wrong, say so: it must be fixed in Keelokit.

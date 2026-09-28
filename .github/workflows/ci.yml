@@ -33,6 +33,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+      # tests/test_copier.py renders copier.yml's defaults with copier's own Jinja (uv run --with).
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: python3 -m unittest discover -s tests -v
 
   manifests:

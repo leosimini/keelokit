@@ -83,7 +83,24 @@ project_name:
 project_slug:
   type: str
   help: Package/repo slug (lowercase, dashes)
-  default: "{{ project_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+  # The name in ASCII (Peña S.A. → pena-s-a, Straße → strasse: the Latin letters of Western, Central
+  # and Northern Europe), anything else a dash, and app- in front when that would start with a digit
+  # or leave nothing (3D Store → app-3d-store, 東京 → app). Keelokit runs copier with --defaults,
+  # which never asks again, so the default must pass the validator below (tests/test_copier.py).
+  default: >-
+    {{ project_name | lower | regex_replace('[\u0300-\u036f]', '')
+    | regex_replace('ß', 'ss') | regex_replace('æ', 'ae') | regex_replace('œ', 'oe')
+    | regex_replace('þ', 'th') | regex_replace('ĳ', 'ij')
+    | regex_replace('[àáâãäåāăą]', 'a') | regex_replace('[çćĉċč]', 'c')
+    | regex_replace('[ðďđ]', 'd') | regex_replace('[èéêëēĕėęě]', 'e')
+    | regex_replace('[ĝğġģ]', 'g') | regex_replace('[ĥħ]', 'h') | regex_replace('[ìíîïĩīĭįı]', 'i')
+    | regex_replace('[ĵ]', 'j') | regex_replace('[ķĸ]', 'k') | regex_replace('[ĺļľŀł]', 'l')
+    | regex_replace('[ñńņňŉŋ]', 'n') | regex_replace('[òóôõöøōŏő]', 'o')
+    | regex_replace('[ŕŗř]', 'r') | regex_replace('[śŝşšſș]', 's') | regex_replace('[ţťŧț]', 't')
+    | regex_replace('[ùúûüũūŭůűų]', 'u') | regex_replace('[ŵ]', 'w') | regex_replace('[ýÿŷ]', 'y')
+    | regex_replace('[źżž]', 'z')
+    | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '')
+    | regex_replace('^(?![a-z])', 'app-') | regex_replace('-+$', '') }}
   validator: "{% if not (project_slug | regex_search('^[a-z][a-z0-9-]*$')) %}lowercase letters, digits and dashes{% endif %}"
 
 description:
