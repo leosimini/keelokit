@@ -11,11 +11,11 @@
 <p align="center"><a href="https://github.com/leosimini/keelokit/releases/latest/download/keelokit-plugin.zip"><b>⬇ Descargá la última versión desde GitHub</b></a> (<code>keelokit-plugin.zip</code>) · <a href="https://github.com/leosimini/keelokit/releases">todas las versiones</a><br>
 <sub>El plugin listo para instalar: en Claude, <i>Customize → Plugins → Upload</i>. El zip de cada versión está en su página de release.</sub></p>
 
-Soy [Leopoldo Simini](https://leopoldosimini.com). Hace muchos años que escribo software y casi
-toda la vida que emprendo cosas. Los agentes de código cambiaron mi forma de construir: ideas que
-antes esperaban un equipo o un mes libre ahora tienen una primera versión real. Keelokit es el
-harness que uso para eso —mi stack, mis reglas, mi forma de trabajar— y lo mantengo como hobby,
-los fines de semana y en noches de música y código, aprendiendo sobre la marcha.
+Hace muchos años que escribo software y casi toda la vida que emprendo cosas. Los agentes de
+código cambiaron mi forma de construir: ideas que antes esperaban un equipo o un mes libre ahora
+tienen una primera versión real. Keelokit es el harness que uso para eso —mi stack, mis reglas,
+mi forma de trabajar— y lo mantengo como hobby, los fines de semana y en noches de música y
+código, aprendiendo sobre la marcha.
 
 Lo comparto por si le sirve a alguien que está dando sus primeros pasos con agentes, o a
 emprendedores y equipos —técnicos o no— que están armando la base de su primer MVP. Es opinado y
