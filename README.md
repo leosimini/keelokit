@@ -52,7 +52,7 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 
 ## Following along
 
-<p align="center"><img src="docs/assets/dashboard-en.webp" width="900" alt="The Keelokit dashboard of a sample project: the current stage, the next step, every stage and what waits for you"></p>
+<p align="center"><img src="docs/assets/dashboard-en.webp" width="900" alt="The Keelokit dashboard of a sample project: where it is, the next step, what waits for you and the development waves"></p>
 
 You don't need to read agent logs to know where things are. `/keelokit:project-dashboard` builds one
 short page from the repo, in your language, with the look of [keelokit.com](https://keelokit.com),
