@@ -106,7 +106,7 @@ For each confirmed finding (P0 → P3, product-rule changes excluded):
 
 ## 5. Report — `docs/bugbash/<date>/report.md`
 
-- Scope (sha), lenses run, personas, what couldn't be verified and why.
+- A `## Scope` section first: the sha, lenses run, personas, what couldn't be verified and why.
 - Table: id · lens · severity · title · status (`fixed` / `pending decision` / `open` /
   `story <ID>`) · fix commit · **check added**.
 - A `## Pending decisions` section for the human: options + recommendation each.

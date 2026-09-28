@@ -982,7 +982,8 @@ REPO = DASHBOARD.parents[3]
 # `## Heading` or `**Label:**`), or, for the decision records, name their sections in prose.
 HEADING_SOURCES = {
     "metrics": ["skills/project-new/references/prd-template.md"],
-    "scope": ["skills/project-new/references/prd-template.md", "workflows/check-bugbash-flow.js"],
+    "scope": ["skills/project-new/references/prd-template.md", "skills/check-bugbash/SKILL.md", "skills/check-security/SKILL.md",
+              "workflows/check-bugbash-flow.js"],
     "in": ["skills/project-new/references/prd-template.md"],
     "out": ["skills/project-new/references/prd-template.md"],
     "pending": ["skills/check-bugbash/SKILL.md", "skills/check-security/SKILL.md", "workflows/check-bugbash-flow.js"],
@@ -1073,6 +1074,29 @@ class DashboardDocHeadingsTest(unittest.TestCase):
                 with self.subTest(key=key, file=rel):
                     pattern = rf"(?i)\b{name}\b" if key in IN_PROSE else rf"(?mi)(^|[\"`]|^\s*[-*] )(#+ |\*\*){name}\b"
                     self.assertTrue(re.search(pattern, text), f"{rel} doesn't write {name!r}")
+
+    def test_DOC_203_every_skill_that_writes_a_report_the_dashboard_reads_writes_the_headings_it_reads(self):
+        """DOC-203: check-security's report format named its Scope in prose while the dashboard reads
+        the report's sha from `## Scope`, so the sha came from the whole report's first hex word. The
+        class: a skill writes a report the dashboard parses without the headings the parser reads.
+        Every folder reports() is called on, every section it reads there, and every skill whose
+        report section writes into that folder must write that section as a heading."""
+        func = next(n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef) and n.name == "reports")
+        keys = {c.args[1].value for c in ast.walk(func) if isinstance(c, ast.Call)
+                and getattr(c.func, "id", "") == "md_section" and isinstance(c.args[1], ast.Constant)}
+        folders = {c.args[0].value for c in ast.walk(self.tree) if isinstance(c, ast.Call)
+                   and getattr(c.func, "id", "") == "reports" and isinstance(c.args[0], ast.Constant)}
+        self.assertTrue(keys >= {"scope", "pending"} and folders >= {"docs/security", "docs/bugbash"}, (keys, folders))
+        for folder in sorted(folders):
+            writers = [p for p in sorted(REPO.glob("skills/*/SKILL.md"))
+                       if re.search(rf"(?m)^#+ .*Report\b.*`{re.escape(folder)}/<date>/report\.md`", p.read_text())]
+            self.assertTrue(writers, f"no skill writes {folder}/<date>/report.md")
+            for path, key in ((p, k) for p in writers for k in sorted(keys)):
+                rel = path.relative_to(REPO).as_posix()
+                with self.subTest(folder=folder, file=rel, key=key):
+                    self.assertIn(rel, HEADING_SOURCES[key], f"{rel} writes {folder} reports: list it for {key!r}")
+                    name = re.escape(self.dashboard.HEADINGS[key]["en"][0])
+                    self.assertRegex(path.read_text(), rf"`#+ {name}\b", f"{rel} must require the literal `## {name}` heading")
 
     def test_I18N_2_a_heading_matches_whole_words_in_any_case_and_accents(self):
         md = self.dashboard.md_section

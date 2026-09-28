@@ -70,7 +70,7 @@ story with `origin = "security:<date> <finding id>"` (`/keelokit:plan-backlog`).
 
 ## 5. Report — `docs/security/<date>/report.md`
 
-Scope (sha, staging URL), what was checked and what couldn't be; the findings table
+`## Scope` first (sha, staging URL, what was checked and what couldn't be); the findings table
 (id · area · severity P0–P3 · title · status · fix commit · check added) with the same statuses as a
 bug bash; `## Pending decisions` (privacy choices and legal questions, with options); the data map's
 changes. Refresh the dashboard: its Security section reads these reports.
