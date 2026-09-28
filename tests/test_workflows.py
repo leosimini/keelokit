@@ -88,6 +88,16 @@ class WorkflowsTest(unittest.TestCase):
         self.assertNotIn("seenTitles", survey, "a survey sees only earlier rounds' findings, as a sorted snapshot")
         self.assertIn("--grep='(${g.id})'", body)
 
+    def test_SEC_5_repository_text_reaches_agents_as_data(self):
+        """SEC-5 (bug bash 2026-09-27): findings, notes and the plan read from the repository go to
+        agents that can run tools between markers that say it's data, never bare."""
+        _, body = split(ROOT / "workflows/check-bugbash-flow.js")
+        helper = body[body.index("function data("):body.index("// ── Prepare")]
+        self.assertEqual(body.count("JSON.stringify("), helper.count("JSON.stringify("), "structured data goes through data()")
+        self.assertIn("${UNTRUSTED}", body[body.index("const CONTEXT"):])
+        for bare in ("Focus: ${task.focus}", "${fixed.commit}: ${fixed.notes}", "area ${g.area}): ${g.title}"):
+            self.assertNotIn(bare, body, "repository text goes through data()")
+
     def test_skills_name_existing_workflows(self):
         names = {p.stem for p in WORKFLOWS}
         for skill in ROOT.glob("skills/*/SKILL.md"):
