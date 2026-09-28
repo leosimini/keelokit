@@ -35,7 +35,8 @@ código no es el que dice que está terminado.
 | **Proyecto** | |
 | `/keelokit:project-new` | De una idea a un esqueleto que funciona: una entrevista que escribe el contexto del producto, un PRD corto, el stack, un monorepo generado con CI y un primer backlog |
 | `/keelokit:project-adopt` | Para un repo existente: suma solo el harness (`.keelokit/`), mapea sus reglas a los checks que el repo ya tiene, deja el resto como excepciones con fecha y muestra en el tablero lo que encontró |
-| `/keelokit:project-dashboard` | Una página con cada etapa, lo que espera tu revisión, las historias por ola de desarrollo y por épica, los entornos, los bug bashes y las revisiones de seguridad, las decisiones tomadas y botones para pedirle a Claude el próximo paso |
+| `/keelokit:project-dashboard` | La página desde la que trabajás, siempre al día: dónde está el proyecto, el próximo paso con su comando para copiar, lo que te espera, las olas de desarrollo con cada historia, la salud y los entornos |
+| `/keelokit:project-report` | El estado completo, de solo lectura: cada etapa con sus documentos, los bug bashes, las revisiones de seguridad, las decisiones y el historial, para compartir o exportar como archivo |
 | **Planificar** | |
 | `/keelokit:plan-intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
 | `/keelokit:plan-backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
@@ -53,21 +54,26 @@ código no es el que dice que está terminado.
 
 ## Seguir el avance
 
-<p align="center"><img src="docs/assets/dashboard-es.webp" width="900" alt="El tablero de Keelokit de un proyecto de ejemplo: la etapa actual, el próximo paso, todas las etapas y lo que te espera"></p>
+<p align="center"><img src="docs/assets/dashboard-es.webp" width="900" alt="El tablero de Keelokit de un proyecto de ejemplo: dónde está, el próximo paso, lo que te espera y las olas de desarrollo"></p>
 
 No hace falta leer logs de agentes para saber dónde está todo. `/keelokit:project-dashboard` arma una
-página desde el repo, en tu idioma y con el look de [keelokit.com](https://keelokit.com):
+página corta desde el repo, en tu idioma y con el look de [keelokit.com](https://keelokit.com), y la
+mantiene en vivo: cada actualización cambia la página abierta sin volver a pasarla por el chat.
 
-- **Cada etapa con su estado.** Solo está abierto lo que importa ahora: la etapa que espera tu
-  revisión muestra qué mirar (el alcance y las métricas del PRD, el stack, las historias por ola
-  de desarrollo y por épica) con los documentos a la vista; el resto se pliega en una línea.
-- **Lo que te espera y las decisiones tomadas:** greenfield o brownfield, cómo trabaja Keelokit,
-  cómo se construyen las historias, las aplicaciones y las decisiones registradas.
-- **Bug bashes e historial:** qué encontró cada cacería de errores, qué se corrigió, qué control
-  dejó y qué sumó al backlog; y cada historia, bug bash y aprobación, en orden.
-- **Pedile a Claude:** cada acción de la página (aprobar, pedir cambios, construir una historia o
-  una ola, hacer un bug bash, sumar una funcionalidad) llena una caja que podés enviar a la
-  sesión de Claude que mira el tablero, o copiar en cualquier chat.
+- **Dónde estás y el próximo paso:** las etapas como una línea de avance, lo único que hay que
+  hacer ahora y su comando, listo para copiar.
+- **Lo que te espera:** aprobaciones, decisiones que dejó un bug bash o una revisión de seguridad
+  (con la opción recomendada), entornos a medio configurar, actualizaciones del harness; cada una
+  con su pedido listo para copiar o enviar a la sesión de Claude que mira el tablero.
+- **Olas de desarrollo:** cada historia bajo su ola, con el link a su archivo en el repo: hecha,
+  lista para construir (copiá su comando) o esperando a otra.
+- **Salud y entornos:** el doctor, el último bug bash y la última revisión de seguridad, staging y
+  producción, y los links a los documentos del proyecto.
+
+Para otra persona, o para guardar una copia, `/keelokit:project-report` genera el **reporte
+completo**: de solo lectura, con cada etapa y sus documentos, lo que encontró cada bug bash y cada
+revisión de seguridad, las decisiones y el historial, como página para compartir o archivo HTML
+para exportar.
 
 Al empezar elegís, una sola vez, cómo trabaja Keelokit: **por etapas** (se detiene para que
 revises cada una) o **automático** (avanza solo y se detiene únicamente donde hace falta una

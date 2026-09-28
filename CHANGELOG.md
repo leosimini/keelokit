@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A lighter, live dashboard, built to spend as few tokens as possible.** `/keelokit:project-dashboard`
+  is now the page you work from: where the project is, the next step and its command to copy, what
+  waits for you (approvals and the decisions bug bashes and security reviews left, with the
+  recommended option), the development waves with every story linked to its file, health and
+  environments, links to the project's documents. It is published once as a shell with its design
+  and kept current through the artifact's database: a refresh writes one small data document from
+  a file, so the page never goes through the chat again — a refresh costs a small fraction of the
+  tokens a full page did (the shell is about 20 KB, published once; the data about 8 KB, written
+  without passing through the conversation) — and an open page updates by itself, keeping what you
+  had open. Where the session has no database, the same page is published whole.
+- **Status report to share or export:** `/keelokit:project-report` generates the complete,
+  read-only page — every stage with its documents, bug bashes and security reviews with their
+  findings, environments, decisions and history — as an Artifact you can share or a standalone
+  HTML file. It has no buttons that send requests: it's for reading.
 - **The bug bash runs as a workflow** where Claude Code can run them: `check-bugbash` starts
   `keelokit:check-bugbash-flow`, which fixes the procedure's shape in code — lenses from the
   profile at most four at a time, every finding reproduced by an independent skeptic (two for

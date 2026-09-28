@@ -92,9 +92,16 @@ decisions come back as results. Conversations (intake, PRD, stack, setup, releas
 name, phases that match, no clock or randomness, a body that parses.
 
 The dashboard (`skills/project-dashboard/`) is how the human follows all of this: a script reads
-`.keelokit/state.toml`, `docs/`, `backlog/` and the `Story:` trailers and renders one page per
-project, published as an Artifact when the session can. It stores nothing, so it is always
-rebuilt from the repo. Every Keelokit page shares its look (`skills/project-dashboard/references/design.md`).
+`.keelokit/state.toml`, `docs/`, `backlog/` and the `Story:` trailers and renders two pages from
+the same state. The **dashboard** is short and operational (next step, what waits, waves, health)
+and live: its shell — design and code, no project data — is published once as an Artifact with a
+database, and every refresh writes one data document (`dash/ops`) from a file with ArtifactData,
+so the page's content never passes through the conversation and an open page updates itself.
+The shell's id is a hash of its HTML, recorded as `[dashboard] shell`; it's republished only when
+that changes (a new design, another language). The **report** (`--report`, `project-report`) is
+the complete page — every stage with its documents, findings, history — read-only, to share as
+its own Artifact or export as a standalone file. Neither stores anything; both are rebuilt from the
+repo. Every Keelokit page shares its look (`skills/project-dashboard/references/design.md`).
 
 ## Bugs come in classes
 

@@ -25,6 +25,7 @@ import argparse  # noqa: E402
 import base64  # noqa: E402
 import bisect  # noqa: E402
 import datetime as dt  # noqa: E402
+import hashlib  # noqa: E402
 import html  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
@@ -2004,30 +2005,24 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
     chips = f'<span class="chip">{esc(t["greenfield"] if s["layout"] == "project" else t["brownfield"])}</span>'
     if mode:
         chips += f'<span class="chip">{esc(t["run_auto"] if mode == "auto" else t["run_step"])}</span>'
-    ask_box = (f'<section class="card ask" id="ask" data-sent="{esc(t["ask_sent"])}" data-copied="{esc(t["copied"])}" '
-               f'data-copy-only="{esc(t["ask_copy_only"])}" data-no-session="{esc(t["ask_no_session"])}" '
-               f'data-writers="{esc(t["ask_writers"])}" data-consent="{esc(t["ask_consent"])}" '
-               f'data-rate="{esc(t["ask_rate"])}" data-failed="{esc(t["ask_failed"])}">'
-               f'<label class="eyebrow" for="ask-text">{esc(t["ask_h"])}</label>'
-               f'<textarea id="ask-text" placeholder="{esc(t["ask_ph"])}"></textarea>'
-               f'<div class="row"><button type="button" class="act primary" id="ask-send" hidden>{esc(t["ask_send"])}</button>'
-               f'<button type="button" class="act" id="ask-copy">{esc(t["ask_copy"])}</button></div>'
-               f'<p class="status" id="ask-status" aria-live="polite"></p></section>')
     theme = (f'<button type="button" class="theme" id="theme" aria-pressed="false" data-dark="{esc(t["theme_dark"])}" '
              f'data-light="{esc(t["theme_light"])}" aria-label="{esc(t["theme_dark"])}" title="{esc(t["theme_dark"])}">{MOON}{SUN}</button>')
     when = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     img = logo()
 
-    page = f"""<title>{esc(t["title"].format(name=s["name"]))}</title>
+    o = OPS_T[lang]
+    page = f"""<title>{esc(o["report_title"].format(name=s["name"]))}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Fragment+Mono&family=Karla:wght@400;500;600&display=swap">
-<style>{CSS}</style>
+<style>{CSS}
+/* the report is read-only: nothing on it sends or prepares requests */
+button[data-ask]{{display:none}}.acts:not(:has(:not([data-ask]))){{display:none}}</style>
 <div hidden data-lang="{lang}"></div>
 <header class="wrap top"><span class="brand">{f'<img src="{img}" alt="">' if img else ""}Keelokit</span><span class="crumb">/</span><span class="product">{esc(s["name"])}</span><span class="chips">{chips}<span class="chip">v{esc(version)}</span>{theme}</span></header>
 <div class="sea"><div class="wrap">
 <section class="hero" aria-labelledby="where">
-<div><p class="eyebrow">{esc(t["eyebrow"])}</p><h1 id="where">{esc(s["name"])}</h1>
+<div><p class="eyebrow">{esc(o["report_eyebrow"])}</p><h1 id="where">{esc(s["name"])}</h1>
 <p class="lead">{esc(t["current_stage"])}: <em>{esc(where)}</em>{where_pill}</p></div>
 <div class="next"><p class="eyebrow">{esc(t["next"])}</p><a class="title" href="#{esc(nxt["anchor"])}">{esc(nxt["title"])}</a><p>{esc(nxt["detail"])}</p>{cmd}</div>
 </section>
@@ -2039,10 +2034,9 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
 <section class="card"><p class="eyebrow">{esc(t["waiting"])}</p>{wait_html}</section>
 {decisions_card(s, links, t)}
 <details class="card plain"><summary class="eyebrow">{esc(t["glossary"])}{CHEV}</summary><dl class="gloss">{gloss}</dl></details>
-{ask_box}
 </aside>
 </main>
-<footer class="wrap">{credit_block(s, t)}<span>{esc(t["footer"].format(when=when, version=version))}</span></footer>
+<footer class="wrap">{credit_block(s, t)}<span>{esc(o["report_footer"].format(when=when, version=version))}</span></footer>
 <script>{JS}</script>
 """
     if standalone:
@@ -2050,6 +2044,594 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
                 f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head>\n'
                 f"<body>{page}</body></html>\n")
     return page
+
+
+# ---------------------------------------------------------------------------------------------
+# The operational dashboard: one short page for day-to-day work — where the project is, the next
+# step and its command, what waits for you, the waves with their stories, health and environments.
+# The full page above is the report (`--report`), to read end to end, share or export.
+
+OPS_T = {
+    "es": {
+        "updated": "Actualizado {when}", "refresh": "Copiar el pedido para actualizar el tablero",
+        "stage_of": "Etapa {n} de {total} · {stage}", "all_done": "Todas las etapas aprobadas",
+        "serial": "Una historia a la vez", "parallel": "Hasta {n} historias en paralelo",
+        "copy": "Copiar", "copied": "Copiado", "copied_ask": "Copiado. Completalo en el chat o abajo.",
+        "copy_failed": "No se pudo copiar. El texto es: ", "copy_ask": "Copiar pedido",
+        "wait_n": "Te esperan", "nothing": "Nada te espera ahora.",
+        "k_decision": "Decisión", "k_gate": "Aprobación", "k_gap": "Pregunta abierta", "k_health": "Harness",
+        "k_maint": "Mantenimiento", "k_env": "Entorno", "k_setup": "Configuración",
+        "bb_of": "bug bash del {date}", "sec_of": "revisión de seguridad del {date}", "deploy_guide": "guía de despliegue",
+        "decide_bb": "Sobre {id} del bug bash del {date}: ", "decide_sec": "Sobre {id} de la revisión de seguridad del {date}: ",
+        "env_missing": ("Falta {n} paso para {env}: {steps}.", "Faltan {n} pasos para {env}: {steps}."),
+        "waves": "Olas de desarrollo", "of_stories": "{done} de {total} historias", "backlog": "Backlog completo",
+        "wave": "Ola {n}", "wave_done": "terminada", "no_wave": "Sin ola",
+        "s_done": "Hecha", "s_ready": "Lista · copiar", "s_waits": "Espera a {ids}", "s_gap": "Espera respuesta a {gaps}",
+        "from_bb": "del bug bash", "from_sec": "de seguridad", "from_feature": "funcionalidad nueva",
+        "review": "Para revisar", "review_docs": "Documentos", "approve": "Aprobar", "change": "Pedir cambios",
+        "health": "Salud y entornos", "doctor_ok": "Harness sin errores",
+        "doctor_err": ("{n} error del harness", "{n} errores del harness"),
+        "bb_line": "{fixed} de {total} corregidos", "to_backlog": ("{n} pasó al backlog", "{n} pasaron al backlog"),
+        "decisions_n": ("{n} decisión", "{n} decisiones"), "env_ready": "{env} listo", "env_prep": "{env} en preparación",
+        "steps": "{done}/{total} pasos", "docs": "Documentos del proyecto",
+        "d_context": "Contexto", "d_prd": "PRD", "d_stack": "Stack", "d_backlog": "Backlog", "d_decisions": "Decisiones ({n})",
+        "report": "Generar el reporte completo", "report_ask": "/keelokit:project-report",
+        "ask_h": "Pedile a Claude", "ask_ph": "Un botón de arriba lo completa, o escribí tu pedido…",
+        "send": "Enviar a Claude", "sent": "Enviado a la sesión de Claude.",
+        "no_session": "Ninguna sesión de Claude está mirando este tablero: copiá el pedido y pegalo en el chat.",
+        "credit": "Firmado «Built with Keelokit»", "credit_off": "Sin firma de Keelokit",
+        "live_wait": "Cargando el tablero…",
+        "report_title": "Reporte de {name}", "report_eyebrow": "Reporte del proyecto",
+        "report_footer": "Reporte generado el {when} a partir del repositorio · Keelokit {version} · Solo lectura: para trabajar, /keelokit:project-dashboard",
+        "live_off": "Esta vista no puede leer los datos del tablero. Pedile a Claude /keelokit:project-dashboard.",
+        "live_stale": "Hay una versión nueva del diseño del tablero. Pedile a Claude /keelokit:project-dashboard para actualizarlo.",
+    },
+    "en": {
+        "updated": "Updated {when}", "refresh": "Copy the request to refresh the dashboard",
+        "stage_of": "Stage {n} of {total} · {stage}", "all_done": "Every stage approved",
+        "serial": "One story at a time", "parallel": "Up to {n} stories in parallel",
+        "copy": "Copy", "copied": "Copied", "copied_ask": "Copied. Finish it in the chat or below.",
+        "copy_failed": "Couldn't copy. The text is: ", "copy_ask": "Copy request",
+        "wait_n": "Waiting on you", "nothing": "Nothing waits for you right now.",
+        "k_decision": "Decision", "k_gate": "Approval", "k_gap": "Open question", "k_health": "Harness",
+        "k_maint": "Maintenance", "k_env": "Environment", "k_setup": "Setup",
+        "bb_of": "bug bash of {date}", "sec_of": "security review of {date}", "deploy_guide": "deploy guide",
+        "decide_bb": "About {id} from the bug bash of {date}: ", "decide_sec": "About {id} from the security review of {date}: ",
+        "env_missing": ("{n} step left for {env}: {steps}.", "{n} steps left for {env}: {steps}."),
+        "waves": "Development waves", "of_stories": "{done} of {total} stories", "backlog": "Whole backlog",
+        "wave": "Wave {n}", "wave_done": "done", "no_wave": "No wave",
+        "s_done": "Done", "s_ready": "Ready · copy", "s_waits": "Waits for {ids}", "s_gap": "Waits for an answer to {gaps}",
+        "from_bb": "from a bug bash", "from_sec": "from security", "from_feature": "new feature",
+        "review": "Ready for review", "review_docs": "Documents", "approve": "Approve", "change": "Ask for changes",
+        "health": "Health and environments", "doctor_ok": "Harness without errors",
+        "doctor_err": ("{n} harness error", "{n} harness errors"),
+        "bb_line": "{fixed} of {total} fixed", "to_backlog": ("{n} went to the backlog", "{n} went to the backlog"),
+        "decisions_n": ("{n} decision", "{n} decisions"), "env_ready": "{env} ready", "env_prep": "{env} being set up",
+        "steps": "{done}/{total} steps", "docs": "Project documents",
+        "d_context": "Context", "d_prd": "PRD", "d_stack": "Stack", "d_backlog": "Backlog", "d_decisions": "Decisions ({n})",
+        "report": "Generate the full report", "report_ask": "/keelokit:project-report",
+        "ask_h": "Ask Claude", "ask_ph": "A button above fills this in, or write your request…",
+        "send": "Send to Claude", "sent": "Sent to the Claude session.",
+        "no_session": "No Claude session is watching this dashboard: copy the request and paste it in the chat.",
+        "credit": "Signed “Built with Keelokit”", "credit_off": "No Keelokit credit",
+        "live_wait": "Loading the dashboard…",
+        "report_title": "{name} report", "report_eyebrow": "Project report",
+        "report_footer": "Report generated {when} from the repository · Keelokit {version} · Read-only: to work on the project, /keelokit:project-dashboard",
+        "live_off": "This view can't read the dashboard's data. Ask Claude for /keelokit:project-dashboard.",
+        "live_stale": "There's a new version of the dashboard's design. Ask Claude for /keelokit:project-dashboard to update it.",
+    },
+}
+
+
+MONTHS = {"es": "ene feb mar abr may jun jul ago sep oct nov dic".split(),
+          "en": "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()}
+
+
+def short_date(value: str, lang: str, time: str = "") -> str:
+    """2026-09-24 → "24 sep" / "Sep 24" (and ", 11:20" with a time); anything else as written."""
+    try:
+        d = dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return value
+    m = MONTHS[lang][d.month - 1]
+    day = f"{d.day} {m}" if lang == "es" else f"{m} {d.day}"
+    return f"{day}, {time}" if time else day
+
+
+def n_of(o: dict, key: str, n: int, **kw) -> str:
+    one, many = o[key]
+    return (one if n == 1 else many).format(n=n, **kw)
+
+
+def pending_lines(text: str) -> dict[str, str]:
+    """`- **CPY-1** — what to decide…` lines of a report's Pending decisions → {id: text}."""
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(("- **", "* **")):
+            continue
+        rest = line[4:]
+        fid, sep, after = rest.partition("**")
+        if sep and fid:
+            out[fid.strip()] = after.lstrip(" —–-:").strip()
+    return out
+
+
+def ops_link(href: str | None, text: str, cls: str = "") -> str:
+    c = f' class="{cls}"' if cls else ""
+    return f'<a{c} href="{esc(href)}">{esc(text)}</a>' if href else f'<span{c}>{esc(text)}</span>'
+
+
+def ops_btn(label: str, text: str, cls: str = "quiet", aria: str = "") -> str:
+    a = f' aria-label="{esc(aria)}"' if aria else ""
+    return f'<button type="button" class="{cls}" data-ask="{esc(text)}"{a}>{esc(label)}</button>'
+
+
+def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) -> dict:
+    """The operational page's parts: `when` (the refresh time) and `html` (everything below the top bar)."""
+    t, o, stage_copy = T[lang], OPS_T[lang], STAGES[lang]
+    names = {k: v[0] for k, v in stage_copy.items()}
+    links = Links(s["github"], standalone, out_dir, s["root"])
+    nxt = next_step(s, lang)
+    current = next((x for x in s["stages"] if x["status"] in ("review", "current")), None)
+    building = current is None and bool(s["stories"])
+    total = len(s["stages"]) + (1 if s["stories"] else 0)
+
+    # The voyage: where the project is, its fixed decisions, the stepper, the next step.
+    if current:
+        idx = s["stages"].index(current) + 1
+        where = o["stage_of"].format(n=idx, total=total, stage=names[current["id"]])
+    elif building:
+        where = o["stage_of"].format(n=total, total=total, stage=t["build_stage"])
+    else:
+        where = o["all_done"]
+    chips = [t["greenfield"] if s["layout"] == "project" else t["brownfield"]]
+    mode, build = s["run"].get("mode"), s["run"].get("build")
+    if mode:
+        chips.append(t["run_auto"] if mode == "auto" else t["run_step"])
+    if build == "parallel":
+        chips.append(o["parallel"].format(n=s["run"].get("parallel", 2)))
+    elif build:
+        chips.append(o["serial"])
+    steps = [(names[x["id"]], x["status"]) for x in s["stages"]]
+    if s["stories"]:
+        steps.append((t["build_stage"], "current" if building else "todo"))
+    step_html = "".join(
+        ('<li class="now" aria-current="step">' if st in ("review", "current") else f'<li class="{"done" if st == "done" else ""}">')
+        + f"<span>{esc(n)}</span></li>" for n, st in steps)
+    story_of = {x["id"]: x for x in s["stories"]}
+    title_href = None
+    if nxt["command"] and nxt["command"].startswith("/keelokit:build-story "):
+        sid = nxt["command"].split()[-1]
+        title_href = links.href(story_of[sid]["path"]) if sid in story_of else None
+    title = ops_link(title_href, nxt["title"])
+    cmd = ""
+    if nxt["command"]:
+        cmd = (f'<div class="term"><code>{esc(nxt["command"])}</code>'
+               f'{ops_btn(o["copy"], nxt["command"], "primary")}</div>')
+    elif current and current["status"] == "review":
+        name = names[current["id"]]
+        cmd = (f'<div class="row">{ops_btn(o["approve"], t["act_approve_t"].format(stage=name), "primary")}'
+               f'{ops_btn(o["change"], t["act_change_t"].format(stage=name))}</div>')
+    voyage = (f'<section class="card voyage" aria-labelledby="name"><div class="sea"><div><p class="eyebrow">{esc(where)}</p>'
+              f'<h1 id="name">{esc(s["name"])}</h1></div>'
+              f'<div class="chips">{"".join(f"<span class=chip>{esc(c)}</span>" for c in chips)}</div>'
+              f'<ol class="steps" style="--n:{len(steps)}">{step_html}</ol></div>'
+              f'<div class="next"><p class="eyebrow">{esc(t["next"])}</p><h2>{title}</h2>{cmd}'
+              f'<p class="muted">{inline(nxt["detail"])}</p></div></section>')
+
+    # What waits for the person, most specific first.
+    items = []
+    for x in s["stages"]:
+        if x["status"] == "review":
+            name = names[x["id"]]
+            items.append(("", o["k_gate"], "", t["wait_gate"].format(stage=name), "",
+                          ops_btn(o["approve"], t["act_approve_t"].format(stage=name))))
+    for g in s["gaps"]:
+        if g["blocking"]:
+            items.append(("", o["k_gap"], "", f'{g["id"]}: {g["question"] or g["missing"]}', "",
+                          ops_btn(o["copy_ask"], t["act_answer_t"].format(gap=g["id"]))))
+    for runs, of, ask_key in ((s["bugbashes"], "bb_of", "decide_bb"), (s["security"], "sec_of", "decide_sec")):
+        for b in runs:
+            texts = pending_lines(b["pending"])
+            source = ops_link(links.href(b["path"]), o[of].format(date=short_date(b["date"], lang)))
+            for f in b["findings"]:
+                if f["status"].lower().startswith(("pending", "pendiente")):
+                    text = texts.get(f["id"], f["title"])
+                    items.append((f["severity"], o["k_decision"], source, f'<span class="id">{esc(f["id"])}</span> {inline(text)}',
+                                  "html", ops_btn(o["copy_ask"], o[ask_key].format(id=f["id"], date=b["date"]))))
+    if s["errors"]:
+        items.append(("", o["k_health"], "", n_of(o, "doctor_err", s["errors"]), "",
+                      ops_btn(o["copy_ask"], "/keelokit:check-health")))
+    if s["no_main"]:
+        items.append(("", o["k_setup"], "", t["wait_no_main"], "", ""))
+    hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]
+    if hosted:
+        for e in s["environments"]:
+            left = [x["text"] for x in e["steps"] if not x["done"]]
+            if e["steps"] and left:
+                items.append(("", o["k_env"], ops_link(links.href("docs/deploy.md"), o["deploy_guide"]),
+                              n_of(o, "env_missing", len(left), env=e["name"], steps="; ".join(left)), "soft",
+                              ops_btn(o["copy_ask"], "/keelokit:ship-setup")))
+    if s["profile"] and s["profile"]["kind"] in ("", "unknown"):
+        items.append(("", o["k_setup"], "", t["wait_profile_unknown"], "soft", ops_btn(o["copy_ask"], "/keelokit:check-health")))
+    elif s["drift"]:
+        items.append(("", o["k_setup"], "", drift_sentence(s["drift"][0], t), "soft", ops_btn(o["copy_ask"], "/keelokit:check-health")))
+    if behind(s):
+        items.append(("", o["k_maint"], "", t["wait_harness"].format(have=s["harness"], new=s["plugin_version"]), "soft",
+                      ops_btn(o["copy_ask"], "/keelokit:harness-upgrade")))
+    if s["gates"] and not s["run"].get("mode"):
+        items.append(("", o["k_setup"], "", t["wait_decide"], "soft", ops_btn(o["copy_ask"], "/keelokit")))
+    rows = []
+    for sev, kind, source, text, flag, btn in items:
+        body = text if flag == "html" else inline(text)
+        sev_html = f'<span class="sev">{esc(sev)}</span>' if sev else ""
+        src = f" · {source}" if source else ""
+        cls = ' class="soft"' if flag == "soft" else ""
+        rows.append(f'<li{cls}><p class="kind">{sev_html}{esc(kind)}{src}</p><p class="txt">{body}</p>{btn}</li>')
+    wait = (f'<section class="card sec" aria-labelledby="wait-h"><div class="head"><p class="eyebrow" id="wait-h">{esc(o["wait_n"])}</p>'
+            f'<span class="count">{len(rows)}</span></div>'
+            + (f'<ul class="wait">{"".join(rows)}</ul>' if rows else f'<p class="muted">{esc(o["nothing"])}</p>') + "</section>")
+
+    # The work: a stage up for review before the backlog exists, the waves once it does.
+    work = ""
+    if current and current["status"] == "review":
+        name, what, checks = stage_copy[current["id"]]
+        docs = "".join(f"<li>{ops_link(links.href(p), p)}</li>" for p in current.get("outputs", []))
+        work = (f'<section class="card sec" aria-labelledby="review-h"><div class="head"><p class="eyebrow" id="review-h">'
+                f'{esc(o["review"])} · {esc(name)}</p></div><p>{esc(what)}</p>'
+                f'<ul class="checks">{"".join(f"<li>{esc(c)}</li>" for c in checks)}</ul>'
+                + (f'<p class="eyebrow">{esc(o["review_docs"])}</p><ul class="docs">{docs}</ul>' if docs else "") + "</section>")
+    if s["stories"]:
+        waves = {}
+        for x in s["stories"]:
+            waves.setdefault(x["wave"], []).append(x)
+        blocks = []
+        for w in sorted(waves, key=lambda k: (k == 0, k)):
+            group = waves[w]
+            done = sum(1 for x in group if x["status"] == "done")
+            bars = "".join(f'<i class="{"d" if x["status"] == "done" else "r" if x["status"] == "ready" else ""}"></i>' for x in group)
+            frac = f'{esc(o["wave_done"])} · {done}/{len(group)}' if done == len(group) else f"{done}/{len(group)}"
+            lis = []
+            for x in group:
+                dot = {"done": "d", "ready": "r"}.get(x["status"], "")
+                tag = ""
+                if x["origin"].startswith("bugbash:"):
+                    tag = f'<span class="tag">{esc(o["from_bb"])}</span>'
+                elif x["origin"].startswith("security:"):
+                    tag = f'<span class="tag">{esc(o["from_sec"])}</span>'
+                elif x["origin"].startswith("feature:"):
+                    tag = f'<span class="tag">{esc(o["from_feature"])}</span>'
+                if x["status"] == "done":
+                    st = f'<span class="st">{esc(o["s_done"])}</span>'
+                elif x["status"] == "ready":
+                    st = ops_btn(o["s_ready"], f"/keelokit:build-story {x['id']}", "cp", f"/keelokit:build-story {x['id']}")
+                elif x["status"] == "gap":
+                    st = f'<span class="st">{esc(o["s_gap"].format(gaps=", ".join(x["gaps"])))}</span>'
+                else:
+                    st = f'<span class="st">{esc(o["s_waits"].format(ids=", ".join(x.get("waits", []))))}</span>'
+                lis.append(f'<li><span class="dot {dot}"></span>{ops_link(links.href(x["path"]), x["id"], "id")}'
+                           f'<span class="t">{esc(x["title"])}{tag}</span>{st}</li>')
+            label = o["wave"].format(n=w) if w else o["no_wave"]
+            blocks.append(f'<details class="wave"{"" if done == len(group) else " open"}><summary><b>{esc(label)}</b>'
+                          f'<span class="bar">{bars}</span><span class="frac">{frac}</span></summary>'
+                          f'<ul class="stories">{"".join(lis)}</ul></details>')
+        done_all = sum(1 for x in s["stories"] if x["status"] == "done")
+        work += (f'<section class="card sec" aria-labelledby="waves-h"><div class="head"><p class="eyebrow" id="waves-h">{esc(o["waves"])}</p>'
+                 f'<span class="count">{esc(o["of_stories"].format(done=done_all, total=len(s["stories"])))}</span>'
+                 f'{ops_link(links.href("backlog/epics.md"), o["backlog"], "aside")}</div>'
+                 f'<div class="waves">{"".join(blocks)}</div></section>')
+
+    # Health and environments: one line each, with the report it comes from.
+    hl = []
+    if s["doctor"] or s["gates"]:
+        if s["errors"]:
+            hl.append(("warn", "●", n_of(o, "doctor_err", s["errors"]), "doctor"))
+        else:
+            hl.append(("ok", "✓", esc(o["doctor_ok"]), "doctor"))
+    for runs, of in ((s["bugbashes"], "bb_of"), (s["security"], "sec_of")):
+        if runs:
+            b = runs[0]
+            fixed = sum(1 for f in b["findings"] if f["status"].lower().startswith(("fixed", "corregid")))
+            pend = sum(1 for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente")))
+            line = ops_link(links.href(b["path"]), o[of].format(date=short_date(b["date"], lang)).capitalize()) + ": " + esc(
+                o["bb_line"].format(fixed=fixed, total=len(b["findings"])))
+            if b["stories"]:
+                line += ", " + esc(n_of(o, "to_backlog", len(b["stories"])))
+            hl.append(("warn" if pend else "ok", "●" if pend else "✓", line, n_of(o, "decisions_n", pend) if pend else ""))
+    if hosted:
+        for e in s["environments"]:
+            if not e["steps"]:
+                continue
+            done = sum(1 for x in e["steps"] if x["done"])
+            ready = done == len(e["steps"])
+            name = ops_link(links.href("docs/deploy.md"), e["name"].capitalize())
+            text = (o["env_ready"] if ready else o["env_prep"]).replace("{env}", name)
+            if e["url"] and ready:
+                text += f' · <span class="id">{esc(e["url"])}</span>'
+            hl.append(("ok" if ready else "warn", "✓" if ready else "●", text,
+                       o["steps"].format(done=done, total=len(e["steps"]))))
+    health = ""
+    if hl:
+        health = (f'<section class="card sec" aria-labelledby="health-h"><p class="eyebrow" id="health-h">{esc(o["health"])}</p>'
+                  f'<ul class="health">{"".join(f"<li><span class={c}>{m}</span><span>{x}</span><span class=note>{esc(n)}</span></li>" for c, m, x, n in hl)}</ul></section>')
+
+    # Documents and the report.
+    docs = []
+    for rel, key in (("docs/context/product.md", "d_context"), ("docs/prd.md", "d_prd"), ("docs/stack.md", "d_stack"),
+                     ("backlog/epics.md", "d_backlog")):
+        if (s["root"] / rel).exists():
+            docs.append(ops_link(links.href(rel), o[key]))
+    if s["adrs"]:
+        docs.append(ops_link(links.href("docs/decisions/"), o["d_decisions"].format(n=len(s["adrs"]))))
+    level = s["credit"] if s["credit"] in ("visible", "quiet", "off") else "visible"
+    credit = esc(o["credit_off"] if level == "off" else o["credit"])
+    foot = (f'<footer class="foot"><nav aria-label="{esc(o["docs"])}">{"".join(docs)}</nav>'
+            f'<span class="right">{ops_btn(o["report"], o["report_ask"])}</span>'
+            f'<span class="meta">{credit} · Keelokit {esc(version)}</span></footer>')
+    now = dt.datetime.now().astimezone()
+    when = short_date(now.date().isoformat(), lang, now.strftime("%H:%M"))
+    return {"when": o["updated"].format(when=when), "html": voyage + wait + work + health + foot}
+
+
+OPS_CSS = """
+:root{--ground:#F6F1E8;--paper:#FFFDF8;--sunk:#EFE8DA;--ink:#172126;--ink-2:#4A5552;--ink-3:#747B76;--line:#E3DCCF;--line-2:#D3C9B6;
+--accent:#114D96;--ok:#1C7559;--ok-soft:#DDF2E9;--attn:#AD540F;--attn-soft:#FBE7D4;--live:#7A5C00;--idle:#8A8F88;--idle-soft:#ECE5D8;
+--board:#FBC82A;--foam:#F6F1E8;--foam-2:rgba(246,241,232,.78);--foam-3:rgba(246,241,232,.56);
+--display:"Cormorant Garamond",Georgia,serif;--body:"Karla",system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"Fragment Mono",ui-monospace,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--ground:#040F28;--paper:#081834;--sunk:#0C2147;--ink:#F6F1E8;--ink-2:rgba(246,241,232,.76);--ink-3:rgba(246,241,232,.54);--line:rgba(246,241,232,.12);--line-2:rgba(246,241,232,.22);--accent:#8FC0F2;--ok:#8FE0C4;--ok-soft:rgba(143,224,196,.12);--attn:#FFAE6B;--attn-soft:rgba(238,123,36,.15);--live:#FBC82A;--idle:rgba(246,241,232,.5);--idle-soft:rgba(246,241,232,.07)}}
+:root[data-theme="dark"]{color-scheme:dark;--ground:#040F28;--paper:#081834;--sunk:#0C2147;--ink:#F6F1E8;--ink-2:rgba(246,241,232,.76);--ink-3:rgba(246,241,232,.54);--line:rgba(246,241,232,.12);--line-2:rgba(246,241,232,.22);--accent:#8FC0F2;--ok:#8FE0C4;--ok-soft:rgba(143,224,196,.12);--attn:#FFAE6B;--attn-soft:rgba(238,123,36,.15);--live:#FBC82A;--idle:rgba(246,241,232,.5);--idle-soft:rgba(246,241,232,.07)}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.55 var(--body);padding-inline:16px;padding-block:18px 40px}
+.page{max-width:680px;margin-inline:auto;display:grid;gap:14px}
+[data-slot="body"]{display:contents}
+a{color:var(--accent);text-underline-offset:3px;text-decoration-thickness:1px}a:hover{text-decoration-thickness:2px}
+.id{font:12.5px/1.3 var(--mono);letter-spacing:-.01em}
+a.id{text-decoration:none;border-bottom:1px solid currentColor;justify-self:start}
+p{margin:0}
+.eyebrow{font:600 11px/1.2 var(--body);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+.muted{color:var(--ink-3);font-size:13.5px}
+.muted code{font:12.5px var(--mono)}
+:focus-visible{outline:2px solid var(--attn);outline-offset:2px;border-radius:6px}
+.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.top img{width:22px;height:22px;border-radius:6px}
+.top b{font-weight:600}.top .crumb{color:var(--ink-3);white-space:nowrap}
+.top .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.icon{width:32px;height:32px;border-radius:50%;border:1px solid var(--line-2);background:var(--paper);color:var(--ink-2);display:grid;place-items:center;cursor:pointer;padding:0}
+.icon:hover{border-color:var(--accent);color:var(--accent)}.icon svg{width:15px;height:15px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:16px}
+.voyage{overflow:hidden}
+.sea{color:var(--foam);background:linear-gradient(165deg,#1A64B0 0%,#0B3574 55%,#040F28 100%);padding:18px 20px 16px;display:grid;gap:14px}
+.sea .eyebrow{color:var(--foam-3)}
+.sea h1{font:600 34px/1 var(--display);margin:6px 0 0}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:12px/1 var(--body);color:var(--foam-2);border:1px solid rgba(246,241,232,.22);padding:5px 9px;border-radius:999px}
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(var(--n),1fr);gap:6px}
+.steps li{display:grid;gap:6px;font-size:11.5px;color:var(--foam-3);min-width:0}
+.steps li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.steps li::before{content:"";height:4px;border-radius:2px;background:rgba(246,241,232,.22)}
+.steps .done::before{background:#8FE0C4}.steps .now{color:var(--foam)}.steps .now::before{background:var(--board)}
+.next{padding:16px 20px 18px;display:grid;gap:10px}
+.next h2{font:italic 500 23px/1.2 var(--display);margin:0}
+.next h2 a{color:inherit;text-decoration:none}.next h2 a:hover{text-decoration:underline}
+.term{display:flex;align-items:center;gap:10px;background:var(--sunk);border-radius:10px;padding:7px 7px 7px 12px}
+.term code{flex:1;font:13px/1.4 var(--mono);overflow-wrap:anywhere}
+.term code::before{content:"› ";color:var(--live)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+button{font:600 12.5px/1 var(--body);border-radius:999px;padding:8px 13px;cursor:pointer;white-space:nowrap;border:1px solid transparent}
+.primary{background:var(--board);color:#172126}.primary:hover{filter:brightness(.96)}
+.quiet{background:transparent;color:var(--accent);border-color:var(--line-2)}.quiet:hover{border-color:var(--accent)}
+.quiet:disabled{opacity:.5;cursor:default}
+.sec{padding:16px 20px;display:grid;gap:12px}
+.head{display:flex;align-items:baseline;gap:6px 10px;flex-wrap:wrap}
+.head .count{font:12px/1 var(--mono);color:var(--ink-3)}
+.head .aside{margin-left:auto;font-size:13.5px;white-space:nowrap}
+.wait{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.wait li{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:start;padding:11px 12px 11px 14px;border-radius:12px;background:var(--attn-soft)}
+.wait li.soft{background:var(--sunk)}
+.wait .kind{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--attn);font-weight:600}
+.wait .soft .kind{color:var(--ink-3)}
+.wait .txt{grid-column:1}.wait .txt code{font:12.5px var(--mono)}
+.wait button{grid-column:2;grid-row:1/span 2;align-self:center}
+.sev{font:600 11px/1 var(--mono);padding:3px 5px;border-radius:5px;background:var(--attn);color:var(--paper)}
+.checks,.docs{margin:0;padding-left:18px;display:grid;gap:4px}
+.docs{list-style:none;padding:0}
+.waves{display:grid}
+details.wave{border-top:1px solid var(--line)}details.wave:first-child{border-top:0}
+.wave summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding-block:11px}
+.wave summary::-webkit-details-marker{display:none}
+.wave summary b{font:600 19px/1 var(--display);min-width:56px}
+.bar{display:flex;gap:3px}.bar i{flex:1;height:7px;border-radius:2px;background:var(--idle-soft)}
+.bar .d{background:var(--ok)}.bar .r{background:var(--board)}
+.frac{font:12.5px/1 var(--mono);color:var(--ink-3);display:flex;gap:8px;align-items:center;font-variant-numeric:tabular-nums}
+.frac::after{content:"";width:7px;height:7px;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);transform:rotate(45deg);transition:transform .15s}
+details[open] .frac::after{transform:rotate(-135deg)}
+.stories{list-style:none;margin:0 0 12px;padding:0;display:grid}
+.stories li{display:grid;grid-template-columns:12px 96px 1fr auto;gap:10px;align-items:center;padding:7px 0;border-top:1px dashed var(--line)}
+.stories li:first-child{border-top:0}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--idle-soft);border:1.5px solid var(--idle)}
+.dot.d{background:var(--ok);border-color:var(--ok)}.dot.r{background:var(--board);border-color:#C99A0E}
+.st{font-size:12.5px;color:var(--ink-3);text-align:right}
+.tag{font-size:11.5px;color:var(--attn);margin-left:6px;white-space:nowrap}
+.cp{border:0;background:none;padding:2px 4px;color:var(--accent);font:600 12px/1 var(--body);text-decoration:underline;text-underline-offset:3px}
+.health{list-style:none;margin:0;padding:0;display:grid}
+.health li{display:grid;grid-template-columns:18px 1fr auto;gap:10px;align-items:baseline;padding:8px 0;border-top:1px solid var(--line)}
+.health li:first-child{border-top:0}
+.ok{color:var(--ok)}.warn{color:var(--attn)}
+.health .note{font-size:13px;color:var(--ink-3)}
+.foot{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;font-size:13.5px;color:var(--ink-3);padding-inline:4px}
+.foot nav{display:flex;gap:12px;flex-wrap:wrap}.foot .right{margin-left:auto}.foot .meta{width:100%;font-size:12.5px}
+.ask{padding:14px 16px;display:grid;gap:8px}
+.ask textarea{width:100%;min-height:64px;resize:vertical;font:14px/1.5 var(--body);color:var(--ink);background:var(--sunk);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.ask .status{font-size:13px;color:var(--ink-3)}
+.stale{padding:10px 14px;border-radius:12px;background:var(--attn-soft);color:var(--attn);font-size:14px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translate(-50%,8px);opacity:0;background:var(--ink);color:var(--ground);font-size:13px;padding:8px 14px;border-radius:999px;transition:.18s;pointer-events:none;max-width:calc(100% - 32px)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+@media (max-width:560px){
+  .steps li span{display:none}.steps{gap:4px}
+  .stories li{grid-template-columns:12px 1fr auto}.stories li .t{grid-column:2/4;grid-row:2;font-size:14px}
+  .wait li{grid-template-columns:1fr}.wait button{grid-column:1;grid-row:auto;justify-self:start}
+  .sea h1{font-size:30px}.top .when{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+"""
+
+OPS_JS = """
+(function(){
+  var root=document.documentElement, marker=document.querySelector('[data-lang]');
+  if(marker)root.setAttribute('lang',marker.getAttribute('data-lang'));
+  var toast=document.getElementById('toast'), timer, box=document.getElementById('ask'), ta=document.getElementById('ask-text'),
+      send=document.getElementById('ask-send'), status=document.getElementById('ask-status'), comments=null;
+  function msg(k){return toast.getAttribute('data-'+k)||''}
+  function say(text){toast.textContent=text;toast.classList.add('on');clearTimeout(timer);timer=setTimeout(function(){toast.classList.remove('on')},2200)}
+  function copy(text,partial){
+    function ok(){say(partial?msg('copied-ask'):msg('copied')+': '+text)}
+    function fail(){say(msg('failed')+text)}
+    try{navigator.clipboard.writeText(text).then(ok,fail)}catch(e){fail()}
+  }
+  function refresh(){
+    if(!comments){send.hidden=true;return Promise.resolve()}
+    return comments.canSendToClaude().then(function(v){return v},function(){return 'off'}).then(function(v){
+      send.hidden=v==='off';send.disabled=v!=='available';
+      status.textContent=v==='no_session'?box.getAttribute('data-no-session'):'';
+    });
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest('button[data-ask]');if(!b)return;
+    var text=b.getAttribute('data-ask'), partial=/[:：]\\s$/.test(text);
+    copy(text,partial);
+    if(box){ta.value=text;if(partial){ta.focus();ta.setSelectionRange(text.length,text.length)}refresh()}
+  });
+  if(box){
+    document.getElementById('ask-copy').addEventListener('click',function(){var t=ta.value.trim();if(t)copy(t,false)});
+    send.addEventListener('click',function(){var t=ta.value.trim();if(!t||!comments)return;send.disabled=true;
+      comments.anchorFor(box).then(function(a){return comments.sendToClaude({anchor:a,text:t})}).then(function(){
+        ta.value='';status.textContent=box.getAttribute('data-sent');send.disabled=false},
+      function(){send.disabled=false;status.textContent=box.getAttribute('data-no-session');refresh()});
+    });
+  }
+  var theme=document.getElementById('theme');
+  function dark(){var a=root.getAttribute('data-theme');return a?a==='dark':!!(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)}
+  function paint(){theme.setAttribute('aria-label',theme.getAttribute(dark()?'data-light':'data-dark'))}
+  try{var saved=localStorage.getItem('keelokit-theme');if(saved==='dark'||saved==='light')root.setAttribute('data-theme',saved)}catch(e){}
+  theme.addEventListener('click',function(){var n=dark()?'light':'dark';root.setAttribute('data-theme',n);
+    try{localStorage.setItem('keelokit-theme',n)}catch(e){}paint()});
+  paint();
+  function use(name){return Promise.resolve(window.claude&&window.claude.use?window.claude.use(name):null).catch(function(){return null})}
+  use('comments').then(function(c){comments=c;refresh()});
+
+  var live=document.getElementById('live');
+  if(!live)return;
+  // The live page: its content is one document in the artifact's database, which Claude rewrites
+  // on every refresh; open waves stay open across updates.
+  var slot=document.querySelector('[data-slot="body"]'), when=document.getElementById('when'), shown=false;
+  function note(key){if(shown)return;var p=document.createElement('p');p.className='muted';p.textContent=live.getAttribute('data-'+key);
+    slot.textContent='';slot.appendChild(p)}
+  function key(d){var s=d.querySelector('summary');return s?s.textContent:''}
+  use('db').then(function(db){
+    if(!db){note('off');return}
+    db.doc('dash/ops').onSnapshot(function(snap){
+      var d=snap.exists?snap.data():null;if(!d||typeof d.html!=='string'){note('off');return}
+      var open=null;if(shown){open={};slot.querySelectorAll('details').forEach(function(x){open[key(x)]=x.open})}
+      slot.innerHTML=d.html;when.textContent=d.when||'';
+      if(open)slot.querySelectorAll('details').forEach(function(x){var k=key(x);if(k in open)x.open=open[k]});
+      document.getElementById('live-stale').hidden=!d.shell||d.shell===live.getAttribute('data-shell');
+      shown=true;
+    },function(){note('off')});
+  });
+})();
+"""
+
+REFRESH_ICON = ('<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">'
+                '<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg>')
+THEME_ICON = ('<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">'
+              '<path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5Z"/></svg>')
+
+
+def ops_page(name: str, lang: str, parts: dict | None, standalone: bool = False) -> tuple[str, str]:
+    """The operational page and its shell id. Without parts it is the live shell: the same page,
+    empty, filled from the artifact's database document `dash/ops` and kept current by it."""
+    t, o = T[lang], OPS_T[lang]
+    live = parts is None
+    body = parts["html"] if parts else f'<p class="muted">{esc(o["live_wait"])}</p>'
+    when = parts["when"] if parts else ""
+    marker = (f'<div hidden id="live" data-shell="SHELL" data-off="{esc(o["live_off"])}"></div>'
+              f'<p class="stale" id="live-stale" hidden>{esc(o["live_stale"])}</p>') if live else ""
+    img = logo()
+    page = f"""<title>{esc(t["title"].format(name=name))}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;1,500&family=Fragment+Mono&family=Karla:wght@400;500;600&display=swap">
+<style>{OPS_CSS}</style>
+<div hidden data-lang="{lang}"></div>
+<div class="page">
+<header class="top">{f'<img src="{img}" alt="">' if img else ""}<b>Keelokit</b><span class="crumb">/ {esc(name)}</span>
+<span class="right"><span class="muted when" id="when">{esc(when)}</span>{ops_btn("", "/keelokit:project-dashboard", "icon", o["refresh"]).replace("></button>", ">" + REFRESH_ICON + "</button>")}
+<button type="button" class="icon" id="theme" data-dark="{esc(t["theme_dark"])}" data-light="{esc(t["theme_light"])}" aria-label="{esc(t["theme_dark"])}">{THEME_ICON}</button></span></header>
+{marker}<div data-slot="body">{body}</div>
+<section class="card ask" id="ask" data-sent="{esc(o["sent"])}" data-no-session="{esc(o["no_session"])}">
+<label class="eyebrow" for="ask-text">{esc(o["ask_h"])}</label>
+<textarea id="ask-text" placeholder="{esc(o["ask_ph"])}"></textarea>
+<div class="row"><button type="button" class="primary" id="ask-send" hidden>{esc(o["send"])}</button><button type="button" class="quiet" id="ask-copy">{esc(o["copy"])}</button></div>
+<p class="status" id="ask-status" aria-live="polite"></p></section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" data-copied="{esc(o["copied"])}" data-copied-ask="{esc(o["copied_ask"])}" data-failed="{esc(o["copy_failed"])}"></div>
+<script>{OPS_JS}</script>
+"""
+    shell_id = hashlib.sha256(page.encode()).hexdigest()[:12] if live else ""
+    page = page.replace('data-shell="SHELL"', f'data-shell="{shell_id}"', 1)
+    if standalone:
+        page = (f'<!doctype html>\n<html lang="{lang}"><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"></head>\n'
+                f"<body>{page}</body></html>\n")
+    return page, shell_id
+
+
+def set_dashboard_key(path: Path, key: str, value: str) -> None:
+    """Set `key = "value"` in the [dashboard] table of state.toml, keeping everything else as written."""
+    lines = read(path).splitlines()
+    new = f'{key} = "{value}"'
+    start = next((i for i, x in enumerate(lines) if x.strip() == "[dashboard]"), None)
+    if start is None:
+        lines += ([""] if lines and lines[-1].strip() else []) + ["[dashboard]", new]
+    else:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        hit = next((i for i in range(start + 1, end) if lines[i].split("=")[0].strip() == key), None)
+        if hit is None:
+            lines.insert(start + 1, new)
+        else:
+            lines[hit] = new
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def live(root: Path, s: dict, lang: str, version: str, dash: dict, args) -> int:
+    """The live shell (published once, again only when its design changes) and its one data
+    document, written to the artifact's database on every refresh without passing through the chat."""
+    out = args.out or root / ".keelokit/out/live"
+    page, shell_id = ops_page(s["name"], lang, None)
+    if args.shell_published:
+        try:
+            set_dashboard_key(root / ".keelokit/state.toml", "shell", shell_id)
+        except OSError as e:
+            return fail(1, f"can't write {e.filename} ({e.strerror or e})")
+        print(json.dumps({"shell": shell_id, "recorded": ".keelokit/state.toml"}))
+        return 0
+    doc = {"shell": shell_id, **render_ops(s, lang, False, out, version)}
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        if out.parent == root / ".keelokit/out" and not (out.parent / ".gitignore").exists():
+            (out.parent / ".gitignore").write_text("*\n")
+        (out / "shell.html").write_text(page, encoding="utf-8")
+        (out / "ops.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        return fail(1, f"can't write {e.filename or out} ({e.strerror or e}); pass --out <a folder you can write>")
+    print(json.dumps({
+        "url": dash.get("url", ""),
+        "shell": {"file": str((out / "shell.html").resolve()), "id": shell_id,
+                  "publish": dash.get("shell") != shell_id or not dash.get("url")},
+        "data": {"collection": "dash", "doc_id": "ops", "file_path": str((out / "ops.json").resolve())},
+    }, indent=1, ensure_ascii=False))
+    return 0
 
 
 LANG_NAMES = {"es": "es", "spa": "es", "español": "es", "espanol": "es", "spanish": "es",
@@ -2069,6 +2651,11 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--standalone", action="store_true")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--report", action="store_true", help="the full report instead of the operational page")
+    ap.add_argument("--live", action="store_true",
+                    help="write the live shell and its data document for the artifact's database, and print what to do")
+    ap.add_argument("--shell-published", action="store_true",
+                    help="with --live: record in state.toml that the shell just written is the published one")
     args = ap.parse_args()
 
     try:
@@ -2097,12 +2684,17 @@ def main() -> int:
         print(json.dumps(view, indent=2, ensure_ascii=False))
         return 0
 
-    out = args.out or root / ".keelokit/out/dashboard.html"
+    out = args.out or root / f".keelokit/out/{'report' if args.report else 'dashboard'}.html"
     try:
         version = json.loads(read(PLUGIN_ROOT / ".claude-plugin/plugin.json")).get("version", "")
     except json.JSONDecodeError:
         version = ""
-    page = render(s, lang, args.standalone, out.parent, version)
+    if args.live:
+        return live(root, s, lang, version, dash, args)
+    if args.report:
+        page = render(s, lang, args.standalone, out.parent, version)
+    else:
+        page = ops_page(s["name"], lang, render_ops(s, lang, args.standalone, out.parent, version), args.standalone)[0]
     try:  # a read-only checkout, a folder where the page goes, a full disk: say so, no traceback
         out.parent.mkdir(parents=True, exist_ok=True)
         if out.parent == root / ".keelokit/out" and not (out.parent / ".gitignore").exists():

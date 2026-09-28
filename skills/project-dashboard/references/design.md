@@ -1,5 +1,11 @@
 # Keelokit pages — design
 
+Two pages share this look: the **dashboard** (operational, short, live — `render_ops` and
+`OPS_CSS` in `scripts/dashboard.py`: top bar, the voyage card with the stepper and the next step,
+what waits for you, the development waves with their stories, health and environments, documents)
+and the **report** (`--report`: the complete page described below, read-only — its request
+buttons and the Ask Claude box are not rendered).
+
 Every page Keelokit shows a person (today, the project dashboard) carries the look of
 [keelokit.com](https://keelokit.com), so it reads as part of the product. The spec lives in code:
 `scripts/dashboard.py` holds the tokens, the CSS and the components below. A new page reuses that
