@@ -1,0 +1,58 @@
+# Next sessions
+
+Where things stand after 0.8.1 (2026-09-28), and what's left, in the order to take it. Not a
+story file: the doctor and the dashboard read only `stories/`.
+
+## Where things stand
+
+- **0.8.1 is out**: tag `v0.8.1`, GitHub Release with `keelokit-plugin.zip`, `release` branch
+  pushed, CI green on `main` (its upgrade test starts from v0.8.1).
+- **keelokit.com** is live with 0.8.1: "startups", the new crew rule, the keel lead in a personal
+  voice, no "card" line, and screenshots of the Fleetly sample. The version and the zip link come
+  from the latest GitHub release by themselves.
+- The screenshot generator lives in the keelokit.com repo, `tools/dashboard-shots/` (sample
+  project `fixture.py` + `shots.py`; see its docstring).
+
+## For Leo, by hand
+
+- [ ] Press **Publish** for 0.8.1 at claude.ai/directory/manage (auto-publish is off).
+
+## Bug bash 2026-09-27: open findings
+
+Full records in `docs/bugbash/2026-09-27/` (each lens file) and its `report.md`.
+
+- [ ] **LOG-303** (P1, not reproduced yet): `next_step()` lets any pending stage pre-empt doctor
+  errors, blocking gaps and a stale harness. Reproduce first.
+- [ ] **LOG-304** (P1, not reproduced yet): check_backlog's critical-area-without-integrity check
+  stops firing once the story merges. Reproduce first.
+- [ ] **A11Y-4** (P2): every document's "Open file" link has the same accessible name and sits
+  inside `<summary>`.
+- [ ] **A11Y-101** (P2): with no GitHub remote, the Artifact dashboard drops every "Open file" link.
+- [ ] **UX-5** (P2): the dashboard shows nothing about a bug bash while it runs, not even "none yet".
+- [ ] **PKG-3** (P2): `scripts/test-template.sh` corrupts itself when run twice at once on one machine.
+- [ ] **LOG-3** (P3): `rm`/`touch` of an `.env` file is blocked with a "don't write .env" message.
+
+The fix pass runs through subagents; their weekly limit resets **Oct 2, 21:00 UTC**.
+
+## Bug bash 2026-09-27: decisions still open
+
+Each has its options and a recommendation under `## Pending decisions` in the report: CPY-5,
+I18N-3, UX-4, UX-3, A11Y-3, INT-101, LOG-205, LOG-206, LOG-211, INT-201, DOC-201, DOC-202.
+The SEC ones were decided on 2026-09-28 and are done.
+
+## Stories (backlog/stories)
+
+- [ ] **HARN-001** (wave 1): mutation testing for the guard and the doctor (lifts the MUT-1
+  exception, which expires 2027-01-31).
+- [ ] **HARN-003** (wave 1): an exception scoped to some paths, honoured by the guard (GAP-001).
+- [ ] **HARN-002** (wave 2): the lint enforcer check reads what a config really enables (LOG-209).
+- [ ] **HARN-004** (wave 3): the hooks stop running the project's own `.keelokit/bin` code
+  unchecked (SEC-3, options B or C).
+
+## Smaller things
+
+- [ ] README screenshots (`docs/assets/dashboard-{en,es}.webp`) still show the old sample
+  project; regenerate them with Fleetly (`tools/dashboard-shots/` in keelokit.com).
+- [ ] SEC-6: to keep the dashboard link out of a public repo, the link would move to a git-ignored
+  local file (option B). `state.toml` can't be ignored, since it also holds the gates.
+- [ ] Next release: a bug bash first (`/keelokit:check-bugbash`), then `scripts/release.sh`.
