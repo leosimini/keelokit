@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Every release carries the plugin ready to install:** `keelokit-plugin.zip`, attached to its
+  GitHub Release, with the manifest at the zip's root and only the plugin inside (skills, agents,
+  hooks, references and the project template — not the repository's CI, tests or scripts). Upload
+  it in Claude (*Customize → Plugins → Upload*). The README and keelokit.com link to the latest
+  one. *Source code (zip)* stays the whole repository, not the file to upload.
+
 ## 0.7.1 — 2026-09-27
 
 - The plugin uploads to claude.ai (Customize → Plugins → Upload): the template's file names no

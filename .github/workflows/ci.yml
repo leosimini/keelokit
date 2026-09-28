@@ -43,6 +43,8 @@ jobs:
           assert f"\n## {version} — " in open("CHANGELOG.md").read(), f"CHANGELOG.md has no entry for {version}"
           print("ok CHANGELOG.md", version)
           EOF
+      # The zip every release attaches (keelokit-plugin.zip): the manifest at its root, only the plugin inside.
+      - run: scripts/package.sh HEAD dist/keelokit-plugin.zip
 
   template:
     name: Template (${{ matrix.name }})
