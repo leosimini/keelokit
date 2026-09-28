@@ -84,13 +84,17 @@ class GuardTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self.bash(cmd), 0)
 
-    def blocks(self, command: str) -> bool:
-        """The guard's verdict on a Bash command, in-process (claude() only prints and exits on it)."""
+    def module(self):
+        """The guard loaded in-process, for checks too many to run one process each."""
         if not hasattr(self, "_guard"):
             spec = importlib.util.spec_from_file_location("guard", self.repo / ".keelokit/bin/guard.py")
             self._guard = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(self._guard)
-        return self._guard.bash_problem(command) is not None
+        return self._guard
+
+    def blocks(self, command: str) -> bool:
+        """The guard's verdict on a Bash command, in-process (claude() only prints and exits on it)."""
+        return self.module().bash_problem(command) is not None
 
     def test_LOG_4_hook_bypass_follows_git_option_grammar(self):
         """LOG-4: `-uno` was blocked as `commit -n` because the token held an n, while
@@ -258,6 +262,84 @@ class GuardTest(unittest.TestCase):
         ci = str(self.repo / ".github/workflows/ci.yml")
         self.assertEqual(self.claude("Write", file_path=ci, content="continue-on-error: true"), 2)
         self.assertEqual(self.claude("Write", file_path=str(self.repo / "docs/x.md"), content="never use it.skip("), 0)
+
+    def run_guard(self, *argv: str, stdin: str = "") -> subprocess.CompletedProcess:
+        return subprocess.run(["python3", str(self.repo / ".keelokit/bin/guard.py"), *argv],
+                              input=stdin, capture_output=True, text=True)
+
+    def test_DX_6_unknown_mode_blocks_and_says_so(self):
+        # Any mode but the two it has used to exit 0 without a word, like a clean run.
+        for argv in [(), ("--help",), ("claude",), ("--Claude",), ("--bogus-mode",)]:
+            with self.subTest(argv=argv):
+                run = self.run_guard(*argv)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("unknown mode", run.stderr)
+                self.assertIn("--claude or git-pre-commit", run.stderr)
+
+    def test_DX_6_unreadable_hook_input_blocks_with_the_reason(self):
+        # A crash exits 1, which Claude Code treats as non-blocking: the call went through.
+        for stdin in ["", "not json {{{", "[]", '"Bash"', "42", "null", '{"tool_name": "Bash", "tool_input": "oops"}',
+                      '{"tool_name": "Write", "tool_input": ["a"]}', '{"tool_name": "Bash", "tool_input": 3}',
+                      # Nesting past the recursion limit raises RecursionError, not ValueError.
+                      "[" * 100000, '{"tool_name": "Bash", "tool_input": {"command": "ls", "x": ' + "[" * 100000 + "]" * 100000 + "}}"]:
+            with self.subTest(stdin=stdin[:60]):
+                run = self.run_guard("--claude", stdin=stdin)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("Keelokit guard: couldn't read the hook input", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+
+    def test_DX_6_every_raw_stdin_gets_block_or_pass(self):
+        """The parse step itself, fed stdin of every kind: whatever the reader or the JSON decoder
+        raises (bad bytes, deep nesting, a closed stdin) must end in 0 or 2, never a crash."""
+        import contextlib
+        import io
+        import sys
+
+        guard = self.module()
+        ok = '{"tool_name": "Bash", "tool_input": {"command": "ls"}}'
+        raws = ["", " ", ok, ok[:-1], ok + ok, "\ufeff" + ok, "\x00", "NaN", "1e999", '"\\ud800"',
+                "[" * 100000, "{" * 100000, '{"a":' * 100000, "[" * 100000 + "]" * 100000,
+                '{"tool_name": "Bash", "tool_input": {"command": ' + "[" * 100000 + "]" * 100000 + "}}"]
+        streams = [io.StringIO(r) for r in raws] + [None, io.BytesIO(b"\xff\xfe"), io.TextIOWrapper(io.BytesIO(b"\xff\xfe"))]
+        for i, stream in enumerate(streams):
+            with self.subTest(case=i, raw=raws[i][:40] if i < len(raws) else repr(stream)):
+                err = io.StringIO()
+                stdin, sys.stdin = sys.stdin, stream
+                try:
+                    with contextlib.redirect_stderr(err):
+                        code = guard.main(["--claude"])
+                finally:
+                    sys.stdin = stdin
+                self.assertIn(code, (0, 2), err.getvalue())
+                if code == 2:
+                    self.assertTrue(err.getvalue().strip(), "a block must say why")
+
+    def test_DX_6_every_hook_input_shape_gets_block_or_pass(self):
+        """The contract is exactly {0: let through, 2: block}; any other outcome (a crash exits 1)
+        lets the call through unchecked. Every field the guard reads, in every tool, with every
+        JSON type, must end in one of the two — checked in-process through main()."""
+        import contextlib
+        import io
+        import sys
+
+        guard = self.module()
+        fields = ["command", "file_path", "notebook_path", "content", "new_string", "new_source", "edits"]
+        values = [None, True, 7, 1.5, "x", ["x"], [{"new_string": 7}], {"k": "v"}]
+        for tool in [None, 7, "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read"]:
+            for field in fields:
+                for value in values:
+                    event = json.dumps({"tool_name": tool, "tool_input": {field: value}})
+                    with self.subTest(tool=tool, field=field, value=value):
+                        err = io.StringIO()
+                        stdin, sys.stdin = sys.stdin, io.StringIO(event)
+                        try:
+                            with contextlib.redirect_stderr(err):
+                                code = guard.main(["--claude"])
+                        finally:
+                            sys.stdin = stdin
+                        self.assertIn(code, (0, 2), err.getvalue())
+                        if code == 2:
+                            self.assertTrue(err.getvalue().strip(), "a block must say why")
 
     def pre_commit(self) -> int:
         return sh(self.repo, "python3", ".keelokit/bin/guard.py", "git-pre-commit").returncode

@@ -4,7 +4,9 @@
     python3 .keelokit/bin/guard.py --claude          Claude Code PreToolUse hook (JSON on stdin)
     python3 .keelokit/bin/guard.py git-pre-commit    git pre-commit hook
 
-Exit 2 blocks (Claude shows stderr to the agent); exit 1 blocks a git commit.
+Exit 2 blocks (Claude shows stderr to the agent); exit 1 blocks a git commit. Claude Code lets a
+call through on any exit but 2, so for Claude the guard ends in exactly 0 or 2: an unknown mode,
+hook input it can't read or a check that fails all block, with the reason on stderr.
 Rules enforced: SEC-1, SEC-2, QA-2, QA-4, DB-1, AGENT-1 (.keelokit/harness/rules.toml).
 
 It is a speed bump for agents, not a sandbox: a determined shell (variables, eval, scripts)
@@ -158,22 +160,39 @@ def edit_payload(tool: str, args: dict) -> tuple[str, str]:
     return path, "\n".join(p for p in parts if p)
 
 
-def claude() -> int:
-    event = json.load(sys.stdin)
-    tool, args = event.get("tool_name", ""), event.get("tool_input", {}) or {}
+def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
-        why = bash_problem(args.get("command", ""))
-    else:
-        path, text = edit_payload(tool, args)
-        why = None
-        if path and is_env_file(path):
-            why = "SEC-2: real values go in the secret store; edit .env.example instead"
-        elif path and applied_migration(path):
-            why = "DB-1: this migration is already on origin/main; create a new one"
-        elif secret_in(text):
-            why = f"SEC-1: looks like a {secret_in(text)}; reference it from the secret store"
-        elif label := tamper_in(text, path):
-            why = f"QA-4: {label} needs the human's yes — ask in chat, don't silence the check"
+        return bash_problem(args.get("command", ""))
+    path, text = edit_payload(tool, args)
+    if path and is_env_file(path):
+        return "SEC-2: real values go in the secret store; edit .env.example instead"
+    if path and applied_migration(path):
+        return "DB-1: this migration is already on origin/main; create a new one"
+    if secret_in(text):
+        return f"SEC-1: looks like a {secret_in(text)}; reference it from the secret store"
+    if label := tamper_in(text, path):
+        return f"QA-4: {label} needs the human's yes — ask in chat, don't silence the check"
+    return None
+
+
+def claude() -> int:
+    # A crash would exit 1, which Claude Code doesn't block on: every failure blocks instead.
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            raise ValueError(f"expected a JSON object, got {type(event).__name__}")
+        args = event.get("tool_input") or {}
+        if not isinstance(args, dict):
+            raise ValueError(f"tool_input is a {type(args).__name__}, not an object")
+    except Exception as e:  # bad JSON or bytes, nesting past the recursion limit, no stdin at all
+        print(f"Keelokit guard: couldn't read the hook input ({type(e).__name__}: {e}), so the call is blocked",
+              file=sys.stderr)
+        return 2
+    try:
+        why = tool_problem(event.get("tool_name", ""), args)
+    except Exception as e:
+        print(f"Keelokit guard: couldn't check this call ({type(e).__name__}: {e}), so it is blocked", file=sys.stderr)
+        return 2
     if why:
         print(f"Blocked by Keelokit — {why}", file=sys.stderr)
         return 2
@@ -218,6 +237,15 @@ def git_pre_commit() -> int:
     return 1 if problems else 0
 
 
+def main(argv: list[str]) -> int:
+    mode = argv[0] if argv else ""
+    if mode == "--claude":
+        return claude()
+    if mode == "git-pre-commit":
+        return git_pre_commit()
+    print(f"Keelokit guard: unknown mode {mode or '(none)'} (use --claude or git-pre-commit)", file=sys.stderr)
+    return 2
+
+
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else ""
-    sys.exit(claude() if mode == "--claude" else git_pre_commit() if mode == "git-pre-commit" else 0)
+    sys.exit(main(sys.argv[1:]))

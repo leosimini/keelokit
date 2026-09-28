@@ -23,6 +23,11 @@
   only as an option letter of a bundle, not as another option's value, `-n` after `--` is a path,
   and every prefix git accepts for `--no-verify` and `--mirror` is blocked (`--no-verify-signatures`
   and `--force-with-lease` pass). Already in 0.7.1; `harness-upgrade` brings the new guard.
+- Fixed (DX-6): the guard exited 0 without a word when called with a mode it doesn't know, and
+  crashed with exit 1 on hook input it couldn't read (empty or non-JSON stdin, JSON nested past
+  Python's recursion limit, a `tool_input` that isn't an object), which Claude Code doesn't block
+  on. Now both block (exit 2) and say why, as does any check that fails, so the guard ends in
+  exactly 0 or 2. Already in 0.7.1; `harness-upgrade` brings the new guard.
 
 ## 0.7.1 — 2026-09-27
 
