@@ -2,6 +2,7 @@
 import builtins
 import contextlib
 import errno
+import html as html_lib
 import importlib.util
 import io
 import json
@@ -30,6 +31,10 @@ dimensions = ["api"]
 +++
 {body}
 """
+
+
+def esc(text: str) -> str:
+    return html_lib.escape(text, quote=False)
 
 
 def sh(cwd: Path, *cmd: str) -> str:
@@ -248,7 +253,41 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("What we found", html)
         self.assertIn("Next.js 14", html)
         self.assertIn("Existing repository (brownfield)", html)
-        self.assertIn("Of 3 rules: 1 covered by what the repo already had · 1 dated exceptions", html)
+        self.assertIn("Of 3 rules: 1 covered by what the repo already had · 1 dated exception ·", html)
+
+    def one_of_each(self, lang: str) -> None:
+        """A harness project where every count the page shows is 1."""
+        self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n")
+        self.write(".keelokit/harness/rules.toml", '[[rule]]\nid = "A"\n')
+        self.write(".keelokit/rules.local.toml", '[[rule]]\nid = "A"\nenforced_by = ["ci:test"]\n')
+        self.write(".keelokit/exceptions.toml", '[[exception]]\nrule = "A"\nreason = "r"\napprover = "Ana"\nexpires = "2026-12-31"\n')
+        self.gates("intake", "adopt", "backlog", lang=lang)
+        self.write("docs/context/gaps.md", "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n"
+                                           "| GAP-001 | domain.md | window | Owner | How long? | yes |\n")
+        self.write("docs/context/environments.md", "| Environment | Purpose | URL |\n|---|---|---|\n| staging | main | s.shop.app |\n")
+        self.write("docs/deploy.md", "# Deploy\n\n## staging\n- [x] Fly.io account\n")
+        self.story("AUTH-001", 1)
+        self.commit("chore: adopt")
+
+    def test_CPY_6_a_count_of_one_reads_in_the_singular(self):
+        for lang, singular, plural in (
+                ("en", ["Of 1 rule: 1 covered by what the repo already had · 1 dated exception ·", "1 exception recorded",
+                        "1 open question (1 blocking)", "1 story · 1 wave · 1 epic", "0 of 1 story done",
+                        "1 of 1 step ready", "1 of 1 environment ready", "1 open question blocks progress."],
+                 ["1 rules", "1 dated exceptions", "1 exceptions", "1 open questions", "1 stories", "1 waves", "1 epics",
+                  "1 steps", "1 environments"]),
+                ("es", ["De 1 regla: 1 cubierta por lo que el repo ya tenía · 1 excepción con fecha ·", "1 excepción registrada",
+                        "1 pregunta abierta (1 bloquea)", "1 historia · 1 ola · 1 épica", "0 de 1 historia terminada",
+                        "1 de 1 paso listo", "1 de 1 entorno listo", "Hay 1 pregunta abierta que bloquea el avance."],
+                 ["1 reglas", "1 cubiertas", "1 excepciones", "1 preguntas", "1 bloquean", "1 historias", "1 olas",
+                  "1 épicas", "1 pasos", "1 entornos"])):
+            with self.subTest(lang=lang):
+                self.one_of_each(lang)
+                html = self.page("--lang", lang)
+                for text in singular:
+                    self.assertIn(esc(text), html)
+                for text in plural:
+                    self.assertNotIn(text, html)
 
     def test_credit_defaults_and_levels(self):
         self.gates("intake")
@@ -306,6 +345,67 @@ def load_dashboard():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# COPY-1 for the dashboard's own copy (the I18N-1 idea: no "1 items"). A number followed by a word
+# needs a singular, so it lives in a (one, other) pair rendered by plural(). Placeholders that are
+# text, not numbers, may sit before a word, and so may a number before a word that doesn't agree
+# with it ("up to {n} at once", "{inn} in scope").
+TEXT_PLACEHOLDERS = {"name", "when", "new", "date"}
+NOT_A_NOUN = {"a", "at", "de", "en", "in", "of", "out", "afuera"}
+PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+
+
+class DashboardCopyTest(unittest.TestCase):
+    """CPY-6: the page read "1 exceptions recorded" because every count was a flat template. The
+    class: any count before a word, in any string of T, in either language."""
+
+    def setUp(self):
+        self.dashboard = load_dashboard()
+        self.T = self.dashboard.T
+
+    def test_CPY_6_both_languages_have_the_same_keys_shapes_and_placeholders(self):
+        es, en = self.T["es"], self.T["en"]
+        self.assertEqual(set(es), set(en))
+        for key in es:
+            with self.subTest(key=key):
+                self.assertIs(type(es[key]), type(en[key]))
+                self.assertIn(type(es[key]), (str, list, dict, tuple))
+                if isinstance(es[key], dict):
+                    self.assertEqual(set(es[key]), set(en[key]))
+                if isinstance(es[key], tuple):
+                    self.assertEqual((len(es[key]), len(en[key])), (2, 2), "a count is a (one, other) pair")
+                    forms = [*es[key], *en[key]]
+                    self.assertIn("n", PLACEHOLDER_RE.findall(forms[1]), "a pair counts {n}")
+                    self.assertEqual(len({frozenset(PLACEHOLDER_RE.findall(f)) - {"n"} for f in forms}), 1)
+                elif isinstance(es[key], str):
+                    self.assertEqual(set(PLACEHOLDER_RE.findall(es[key])), set(PLACEHOLDER_RE.findall(en[key])))
+
+    def test_CPY_6_no_count_sits_before_a_word_outside_a_pair(self):
+        for lang, t in self.T.items():
+            for key, value in t.items():
+                if isinstance(value, tuple):
+                    continue
+                texts = value.values() if isinstance(value, dict) else value if isinstance(value, list) else [value]
+                for m in (m for text in texts for m in re.finditer(r"\{(\w+)\}\s+([^\W\d_]+)", text)):
+                    with self.subTest(lang=lang, key=key, text=m.group(0)):
+                        self.assertTrue(m.group(1) in TEXT_PLACEHOLDERS or m.group(2).lower() in NOT_A_NOUN,
+                                        f"{key}: a count before a word needs a singular; make it a (one, other) "
+                                        "pair and render it with plural()")
+
+    def test_CPY_6_pairs_render_through_plural_and_plain_strings_through_format(self):
+        source = DASHBOARD.read_text()
+        pairs = {k for k, v in self.T["en"].items() if isinstance(v, tuple)}
+        formatted = set(re.findall(r't\["(\w+)"\]\.format\(', source))
+        pluralised = set(re.findall(r'plural\(t, "(\w+)"', source))
+        self.assertEqual(formatted & pairs, set(), "a pair has no .format(): render it with plural()")
+        self.assertEqual(pluralised - pairs, set(), "plural() takes a (one, other) pair")
+        self.assertEqual(pairs - pluralised, set(), "a pair nothing renders")
+
+    def test_CPY_6_plural_picks_one_only_for_one(self):
+        t = {"k": ("{n} rule of {x}", "{n} rules of {x}")}
+        self.assertEqual([self.dashboard.plural(t, "k", n, x="A") for n in (0, 1, 2)],
+                         ["0 rules of A", "1 rule of A", "2 rules of A"])
 
 
 # Every filesystem primitive that writes. The source may write only through these (the structural

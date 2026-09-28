@@ -124,6 +124,10 @@
   exist (or is a file), and crashed with a traceback when it couldn't write its page (a read-only
   checkout, a folder where the page goes). Now the first exits 2 and the second 1, each with one
   line naming the path and, for a write, pointing at `--out` or `--json`. Already in 0.7.1.
+- Fixed (CPY-6): the dashboard had no singular, so a count of one read "1 exceptions recorded",
+  "Of 1 rules", "1 open questions" or "1 historias" (and the same for errors, stories, waves,
+  epics, steps and environments). Every count now agrees with its number, in English and Spanish.
+  Already in 0.7.1.
 
 ## 0.7.1 — 2026-09-27
 

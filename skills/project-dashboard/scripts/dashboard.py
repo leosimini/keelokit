@@ -87,7 +87,7 @@ T = {
         "first_commit": "Primer commit",
         "remote": "Repositorio en GitHub",
         "health": "Salud del harness",
-        "backlog_total": "{done} de {total} historias terminadas",
+        "backlog_total": ("{done} de {n} historia terminada", "{done} de {n} historias terminadas"),
         "by_wave": "Por ola",
         "by_epic": "Por épica",
         "wave": "Ola de desarrollo {n}",
@@ -113,18 +113,19 @@ T = {
         "next_continue": "Seguir con la etapa «{stage}»",
         "next_continue_d": "Keelokit retoma desde donde quedó.",
         "next_gaps": "Responder las preguntas que bloquean",
-        "next_gaps_d": "Hay {n} preguntas abiertas que bloquean el avance.",
+        "next_gaps_d": ("Hay {n} pregunta abierta que bloquea el avance.", "Hay {n} preguntas abiertas que bloquean el avance."),
         "next_build": "Construir {sid}: {title}",
-        "next_build_d": "Hay {n} historias listas en la ola {wave}. En serie: una por vez. En paralelo: «/keelokit:build-story {n}».",
+        "next_build_d": ("Hay {n} historia lista en la ola {wave}.",
+                         "Hay {n} historias listas en la ola {wave}. En serie: una por vez. En paralelo: «/keelokit:build-story {n}»."),
         "next_blocked": "Destrabar la próxima ola",
         "next_blocked_d": "Ninguna historia está lista: cada una espera a otra que todavía no terminó.",
         "next_more": "Planificar lo que sigue",
         "next_more_d": "Todas las historias están terminadas. Sumá la próxima parte del producto.",
         "next_doctor": "Revisar la salud del harness",
-        "next_doctor_d": "El doctor encontró {n} errores.",
+        "next_doctor_d": ("El doctor encontró {n} error.", "El doctor encontró {n} errores."),
         "wait_gate": "Aprobar «{stage}»",
         "wait_gap": "{gap}: {question}",
-        "wait_errors": "{n} errores del harness para revisar",
+        "wait_errors": ("{n} error del harness para revisar", "{n} errores del harness para revisar"),
         "wait_no_main": "No hay main ni origin/main: ninguna historia cuenta como terminada hasta que lo traigas (git fetch origin main)",
         "build_stage": "Construcción",
         "profile_k": "Qué es el proyecto",
@@ -151,9 +152,9 @@ T = {
         "env_h": "Entornos",
         "env_what": "Dónde corre el producto: staging, para probar cada cambio antes de que lo vean los usuarios, y producción, donde están los usuarios. Cada entorno tiene su lista de pasos, verificados uno por uno.",
         "env_none": "Todavía no hay guía de despliegue. /keelokit:ship-setup la arma, hace lo que no necesita tus cuentas y verifica cada paso.",
-        "env_steps": "{done} de {total} pasos listos",
+        "env_steps": ("{done} de {n} paso listo", "{done} de {n} pasos listos"),
         "env_nosteps": "Sin pasos todavía",
-        "env_sum": "{ready} de {total} entornos listos",
+        "env_sum": ("{ready} de {n} entorno listo", "{ready} de {n} entornos listos"),
         "act_setup": "Preparar los entornos",
         "act_release": "Sacar una versión",
         "act_security": "Revisar seguridad y privacidad",
@@ -168,7 +169,10 @@ T = {
         "found_hosting": "Despliegue",
         "found_tests": "Tests",
         "rules_h": "Reglas de la casa en este repo",
-        "rules_counts": "De {house} reglas: {mapped} cubiertas por lo que el repo ya tenía · {exc} excepciones con fecha · el resto, con los controles de Keelokit",
+        "rules_counts": "De {house}: {mapped} · {exc} · el resto, con los controles de Keelokit",
+        "n_rules": ("{n} regla", "{n} reglas"),
+        "n_mapped": ("{n} cubierta por lo que el repo ya tenía", "{n} cubiertas por lo que el repo ya tenía"),
+        "n_dated_exc": ("{n} excepción con fecha", "{n} excepciones con fecha"),
         "exc_cols": ["Regla", "Motivo", "Aprobó", "Vence"],
         "harness_k": "Harness",
         "harness_behind": "v{have} · hay v{new}",
@@ -249,15 +253,22 @@ T = {
         "what_means": "Qué significa cada opción",
         "current_stage": "Etapa actual",
         "all_gates": "Todas las etapas aprobadas",
-        "sum_intake": "{docs} documentos · {gaps} preguntas abiertas ({blocking} bloquean) · {inv} invariantes",
-        "sum_product": "{metrics} métricas · {inn} en el alcance · {out} afuera",
+        "sum_intake": "{docs} · {gaps} ({blocking}) · {inv}",
+        "n_docs": ("{n} documento", "{n} documentos"),
+        "n_open_q": ("{n} pregunta abierta", "{n} preguntas abiertas"),
+        "n_blocking": ("{n} bloquea", "{n} bloquean"),
+        "n_inv": ("{n} invariante", "{n} invariantes"),
+        "sum_product": "{metrics} · {inn} en el alcance · {out} afuera",
+        "n_metrics": ("{n} métrica", "{n} métricas"),
         "sum_stack": "Aplicaciones: {apps}",
         "sum_skeleton": "Primer commit {commit}",
-        "sum_adopt": "{exc} excepciones registradas",
-        "sum_backlog": "{total} historias · {waves} olas · {epics} épicas",
-        "sum_build": "{done} de {total} historias terminadas",
+        "sum_adopt": ("{n} excepción registrada", "{n} excepciones registradas"),
+        "sum_backlog": "{total} · {waves} · {epics}",
+        "n_stories": ("{n} historia", "{n} historias"),
+        "n_waves": ("{n} ola", "{n} olas"),
+        "n_epics": ("{n} épica", "{n} épicas"),
+        "sum_build": ("{done} de {n} historia terminada", "{done} de {n} historias terminadas"),
         "sum_none": "Todavía no empezó",
-        "stories_n": "{n} historias",
         "build_what": "Cada historia la construye un agente y la controlan otros, independientes: uno escribe las pruebas antes del código, otro revisa los cambios y otro intenta romperlos. Recién entonces entra al producto.",
     },
     "en": {
@@ -299,7 +310,7 @@ T = {
         "first_commit": "First commit",
         "remote": "GitHub repository",
         "health": "Harness health",
-        "backlog_total": "{done} of {total} stories done",
+        "backlog_total": ("{done} of {n} story done", "{done} of {n} stories done"),
         "by_wave": "By wave",
         "by_epic": "By epic",
         "wave": "Development wave {n}",
@@ -325,18 +336,19 @@ T = {
         "next_continue": "Continue the \"{stage}\" stage",
         "next_continue_d": "Keelokit resumes where it stopped.",
         "next_gaps": "Answer the blocking questions",
-        "next_gaps_d": "{n} open questions block progress.",
+        "next_gaps_d": ("{n} open question blocks progress.", "{n} open questions block progress."),
         "next_build": "Build {sid}: {title}",
-        "next_build_d": "{n} stories are ready in wave {wave}. One at a time, or in parallel with \"/keelokit:build-story {n}\".",
+        "next_build_d": ("{n} story is ready in wave {wave}.",
+                         "{n} stories are ready in wave {wave}. One at a time, or in parallel with \"/keelokit:build-story {n}\"."),
         "next_blocked": "Unblock the next wave",
         "next_blocked_d": "No story is ready: each one waits for another that isn't done yet.",
         "next_more": "Plan what comes next",
         "next_more_d": "Every story is done. Add the next slice of the product.",
         "next_doctor": "Check the harness health",
-        "next_doctor_d": "The doctor found {n} errors.",
+        "next_doctor_d": ("The doctor found {n} error.", "The doctor found {n} errors."),
         "wait_gate": "Approve \"{stage}\"",
         "wait_gap": "{gap}: {question}",
-        "wait_errors": "{n} harness errors to review",
+        "wait_errors": ("{n} harness error to review", "{n} harness errors to review"),
         "wait_no_main": "No main or origin/main here: no story counts as done until you fetch it (git fetch origin main)",
         "build_stage": "Build",
         "profile_k": "What the project is",
@@ -363,9 +375,9 @@ T = {
         "env_h": "Environments",
         "env_what": "Where the product runs: staging, to try every change before users see it, and production, where the users are. Each environment has its list of steps, each one verified.",
         "env_none": "No deploy guide yet. /keelokit:ship-setup writes it, does what doesn't need your accounts and verifies every step.",
-        "env_steps": "{done} of {total} steps ready",
+        "env_steps": ("{done} of {n} step ready", "{done} of {n} steps ready"),
         "env_nosteps": "No steps yet",
-        "env_sum": "{ready} of {total} environments ready",
+        "env_sum": ("{ready} of {n} environment ready", "{ready} of {n} environments ready"),
         "act_setup": "Set up the environments",
         "act_release": "Release a version",
         "act_security": "Review security and privacy",
@@ -380,7 +392,10 @@ T = {
         "found_hosting": "Deploys",
         "found_tests": "Tests",
         "rules_h": "House rules in this repo",
-        "rules_counts": "Of {house} rules: {mapped} covered by what the repo already had · {exc} dated exceptions · the rest, by Keelokit's own checks",
+        "rules_counts": "Of {house}: {mapped} · {exc} · the rest, by Keelokit's own checks",
+        "n_rules": ("{n} rule", "{n} rules"),
+        "n_mapped": ("{n} covered by what the repo already had", "{n} covered by what the repo already had"),
+        "n_dated_exc": ("{n} dated exception", "{n} dated exceptions"),
         "exc_cols": ["Rule", "Reason", "Approved by", "Expires"],
         "harness_k": "Harness",
         "harness_behind": "v{have} · v{new} available",
@@ -461,15 +476,22 @@ T = {
         "what_means": "What each option means",
         "current_stage": "Current stage",
         "all_gates": "Every stage approved",
-        "sum_intake": "{docs} documents · {gaps} open questions ({blocking} blocking) · {inv} invariants",
-        "sum_product": "{metrics} metrics · {inn} in scope · {out} out",
+        "sum_intake": "{docs} · {gaps} ({blocking}) · {inv}",
+        "n_docs": ("{n} document", "{n} documents"),
+        "n_open_q": ("{n} open question", "{n} open questions"),
+        "n_blocking": ("{n} blocking", "{n} blocking"),
+        "n_inv": ("{n} invariant", "{n} invariants"),
+        "sum_product": "{metrics} · {inn} in scope · {out} out",
+        "n_metrics": ("{n} metric", "{n} metrics"),
         "sum_stack": "Apps: {apps}",
         "sum_skeleton": "First commit {commit}",
-        "sum_adopt": "{exc} exceptions recorded",
-        "sum_backlog": "{total} stories · {waves} waves · {epics} epics",
-        "sum_build": "{done} of {total} stories done",
+        "sum_adopt": ("{n} exception recorded", "{n} exceptions recorded"),
+        "sum_backlog": "{total} · {waves} · {epics}",
+        "n_stories": ("{n} story", "{n} stories"),
+        "n_waves": ("{n} wave", "{n} waves"),
+        "n_epics": ("{n} epic", "{n} epics"),
+        "sum_build": ("{done} of {n} story done", "{done} of {n} stories done"),
         "sum_none": "Not started yet",
-        "stories_n": "{n} stories",
         "build_what": "Each story is built by one agent and checked by others that work independently: one writes the tests before the code, one reviews the changes and one tries to break them. Only then does it land in the product.",
     },
 }
@@ -545,6 +567,16 @@ GLOSSARY = {
         ("Automatic mode", "Keelokit goes on alone and stops only where the house rules call for a person."),
     ],
 }
+
+
+
+def plural(t: dict, key: str, n: int, **kw) -> str:
+    """A count in words. t[key] is a (one, other) pair: `one` when n is 1, `other` for the rest,
+    zero included, in both languages. Every number that sits before a word goes through here, and
+    a phrase with several counts takes them already rendered; tests/test_dashboard.py holds T to it."""
+    one, other = t[key]
+    return (one if n == 1 else other).format(n=n, **kw)
+
 
 # ---------------------------------------------------------------------------------------------
 # Reading the repo
@@ -886,17 +918,17 @@ def next_step(s: dict, lang: str) -> dict:
         return {"title": t["next_continue"].format(stage=names[stage["id"]]), "detail": t["next_continue_d"],
                 "command": flow, "anchor": f"stage-{stage['id']}"}
     if s["errors"]:
-        return {"title": t["next_doctor"], "detail": t["next_doctor_d"].format(n=s["errors"]),
+        return {"title": t["next_doctor"], "detail": plural(t, "next_doctor_d", s["errors"]),
                 "command": "/keelokit:check-health", "anchor": "stage-build"}
     if blocking:
-        return {"title": t["next_gaps"], "detail": t["next_gaps_d"].format(n=len(blocking)),
+        return {"title": t["next_gaps"], "detail": plural(t, "next_gaps_d", len(blocking)),
                 "command": "/keelokit", "anchor": "stage-intake"}
     ready = [x for x in s["stories"] if x["status"] == "ready"]
     if ready:
         first = ready[0]
         same = [x for x in ready if x["wave"] == first["wave"]]
         return {"title": t["next_build"].format(sid=first["id"], title=first["title"]),
-                "detail": t["next_build_d"].format(n=len(same), wave=first["wave"]),
+                "detail": plural(t, "next_build_d", len(same), wave=first["wave"]),
                 "command": f"/keelokit:build-story {first['id']}", "anchor": "stage-build"}
     if s["stories"] and any(x["status"] != "done" for x in s["stories"]):
         return {"title": t["next_blocked"], "detail": t["next_blocked_d"], "command": "/keelokit",
@@ -927,7 +959,7 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
                "anchor": "stage-intake", "ask": t["act_answer_t"].format(gap=g["id"]), "act": t["act_answer"]}
               for g in s["gaps"] if g["blocking"]]
     if s["errors"]:
-        items.append({"text": t["wait_errors"].format(n=s["errors"]), "anchor": "stage-build"})
+        items.append({"text": plural(t, "wait_errors", s["errors"]), "anchor": "stage-build"})
     if s["no_main"]:
         items.append({"text": t["wait_no_main"], "anchor": "stage-build"})
     for b in s["bugbashes"]:
@@ -1450,10 +1482,11 @@ def stage_summary(s: dict, stage: dict, t: dict) -> str:
     if stage["status"] == "todo" and not stage["outputs"]:
         return t["sum_none"]
     if sid == "intake":
-        return t["sum_intake"].format(docs=len(s["context"]), gaps=len(s["gaps"]),
-                                      blocking=sum(g["blocking"] for g in s["gaps"]), inv=len(s["invariants"]))
+        return t["sum_intake"].format(docs=plural(t, "n_docs", len(s["context"])), gaps=plural(t, "n_open_q", len(s["gaps"])),
+                                      blocking=plural(t, "n_blocking", sum(g["blocking"] for g in s["gaps"])),
+                                      inv=plural(t, "n_inv", len(s["invariants"])))
     if sid == "product" and s["prd"]:
-        return t["sum_product"].format(metrics=c["metrics"], inn=c["in"], out=c["out"])
+        return t["sum_product"].format(metrics=plural(t, "n_metrics", c["metrics"]), inn=c["in"], out=c["out"])
     if sid == "stack":
         apps = s["answers"].get("apps", "")
         if not apps and (m := re.search(r"(?im)^apps?:\s*(.+)$", s["stack_doc"])):
@@ -1463,10 +1496,11 @@ def stage_summary(s: dict, stage: dict, t: dict) -> str:
     if sid == "skeleton" and s["first_commit"]:
         return t["sum_skeleton"].format(commit=s["first_commit"].split()[0])
     if sid == "adopt":
-        return t["sum_adopt"].format(exc=c["exceptions"])
+        return plural(t, "sum_adopt", c["exceptions"])
     if sid == "backlog" and s["stories"]:
-        return t["sum_backlog"].format(total=len(s["stories"]), waves=len({x["wave"] for x in s["stories"]}),
-                                       epics=len({x["epic"] for x in s["stories"]}))
+        return t["sum_backlog"].format(total=plural(t, "n_stories", len(s["stories"])),
+                                       waves=plural(t, "n_waves", len({x["wave"] for x in s["stories"]})),
+                                       epics=plural(t, "n_epics", len({x["epic"] for x in s["stories"]})))
     return t["sum_none"]
 
 
@@ -1574,7 +1608,7 @@ def backlog_block(s: dict, links: Links, t: dict) -> str:
     epics_doc = doc_block("backlog/epics.md", read(s["root"] / "backlog/epics.md"), links, t) \
         if (s["root"] / "backlog/epics.md").exists() else ""
     pct = round(100 * done / len(stories))
-    return (f'<div class="toolbar"><strong>{esc(t["backlog_total"].format(done=done, total=len(stories)))}</strong>'
+    return (f'<div class="toolbar"><strong>{esc(plural(t, "backlog_total", len(stories), done=done))}</strong>'
             f'<span class="bar"><i style="width:{pct}%"></i></span>'
             f'<span class="seg" role="group"><button type="button" data-show="wave" aria-pressed="true">{esc(t["by_wave"])}</button>'
             f'<button type="button" data-show="epic" aria-pressed="false">{esc(t["by_epic"])}</button></span></div>'
@@ -1713,7 +1747,7 @@ def environments_section(s: dict, t: dict) -> str:
         state = "done" if ready(e) else ("current" if done else "todo")
         cards.append(
             f'<div class="env"><div class="env-head"><h4>{esc(e["name"])}</h4>'
-            f'<span class="pill {state}">{esc(t["env_steps"].format(done=done, total=total) if total else t["env_nosteps"])}</span></div>'
+            f'<span class="pill {state}">{esc(plural(t, "env_steps", total, done=done) if total else t["env_nosteps"])}</span></div>'
             + (f'<p class="muted">{inline(e["purpose"])}</p>' if e["purpose"] else "")
             + (f'<p><a href="{esc(href)}" target="_blank" rel="noopener">{esc(url)}</a></p>' if href else "")
             + (f'<span class="bar"><i style="width:{pct}%"></i></span>' if total else "")
@@ -1724,7 +1758,7 @@ def environments_section(s: dict, t: dict) -> str:
         body += f'<p class="muted">{inline(t["env_none"])}</p>'
     body += f'<div class="acts">{ask(t["act_setup"], "/keelokit:ship-setup", True)}{ask(t["act_release"], "/keelokit:ship-release")}</div>'
     n_ready = sum(ready(e) for e in envs)
-    summary = t["env_sum"].format(ready=n_ready, total=len(envs)) if envs else t["sum_none"]
+    summary = plural(t, "env_sum", len(envs), ready=n_ready) if envs else t["sum_none"]
     return extra_section("environments", "ENV", t["env_h"], "", summary, body, False)
 
 
@@ -1747,7 +1781,7 @@ def found_block(s: dict, links: Links, t: dict) -> str:
             body = "".join(f'<tr><td><span class="tag">{esc(e.get("rule", ""))}</span></td><td>{inline(str(e.get("reason", "")))}</td>'
                            f'<td>{esc(str(e.get("approver", "")))}</td><td>{esc(str(e.get("expires", "")))}</td></tr>' for e in exc)
             table = f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
-        parts.append(block(esc(t["rules_h"]), f'<p>{esc(t["rules_counts"].format(house=m["house"], mapped=m["mapped"], exc=len(exc)))}</p>{table}'))
+        parts.append(block(esc(t["rules_h"]), f'<p>{esc(t["rules_counts"].format(house=plural(t, "n_rules", m["house"]), mapped=plural(t, "n_mapped", m["mapped"]), exc=plural(t, "n_dated_exc", len(exc))))}</p>{table}'))
     return "".join(parts)
 
 
@@ -1841,7 +1875,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
             f'<details class="stage {state}" id="stage-build"{" open" if building else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'
             f'<span class="pill {state}">{esc(t["st_" + state])}</span>{CHEV}'
-            f'<span class="sum">{esc(t["sum_build"].format(done=done, total=len(s["stories"])))}</span></summary>'
+            f'<span class="sum">{esc(plural(t, "sum_build", len(s["stories"]), done=done))}</span></summary>'
             f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{actions}{modes_block(s, t)}{health}</div></details>')
     later = s["stories"] or any(x["id"] in ("skeleton", "adopt") and x["status"] == "done" for x in s["stages"])
     hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]
