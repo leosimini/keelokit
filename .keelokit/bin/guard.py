@@ -64,7 +64,7 @@ GIT_NO_HOOKS = [
     # A short-option bundle skips hooks when -n is one of its letters: flags that take no value
     # (as in `git commit -h`), then n, then maybe one option whose value is the rest (-nm"msg").
     # In -uno or -mn the n is a value, not -n.
-    (rf"{GIT}commit\b{GIT_ARGS}\s-[aeiopqsvz]*n[aeinopqsvz]*([FmcCtSu]\S*)?{BUNDLE_END}",
+    (rf"{GIT}commit\b{GIT_ARGS}\s-[aeiopqsvz]*n[aeinopqsvz]*([FmcCtSuU]\S*)?{BUNDLE_END}",
      "QA-2: `commit -n` skips the git hooks"),
     (r"keelokit\.allowTamper", "QA-4: only a human may allow a skipped test or silenced check"),
     # Config names are case-insensitive: core.hookspath is core.hooksPath.
