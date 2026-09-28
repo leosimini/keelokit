@@ -9,7 +9,7 @@
     {
       "name": "keelokit",
       "source": "./",
-      "description": "A harness for building apps in TypeScript monorepos with Claude Code: rules backed by checks."
+      "description": "A Claude Code harness for building apps in TypeScript monorepos: intake, PRD, a generated skeleton with CI, backlog, independent verification and rules backed by checks."
     }
   ]
 }
