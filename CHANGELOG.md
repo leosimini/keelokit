@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Security:** the guard knows more kinds of keys (npm, GitLab, JWT, Azure storage) and catches a
+  key split across two edits. Before a commit, it now scans each staged file whole, so a key split
+  across two commits is also caught (SEC-1). `harness-upgrade` brings the new guard.
+- **Security:** a link in a project document can't point outside the project in the dashboard or the
+  report: `/etc/passwd` or a `../..` chain shows as plain text (SEC-4).
+- **Security:** the bug bash workflow passes to its agents, marked as data and never as
+  instructions, everything the repository says and every finding earlier agents wrote (SEC-5).
+- The README says plainly what opening a repo with Keelokit on means: the plugin's hooks run the
+  project's own `.keelokit/bin` code, so open only repos whose `.keelokit/` you trust (SEC-3). It
+  also says the dashboard's link is saved in `.keelokit/state.toml` (SEC-6).
+- The report writes dates in its language: "28 sep 2026" or "Sep 28, 2026" (I18N-5).
+- Keyboard focus is visible everywhere on the dashboard and the report, including the blue band
+  (A11Y-102). A screen reader announces "Copied" when you copy a command from the report (A11Y-6).
+- Fixed: security reviews and bug bashes write their scope under a `## Scope` heading, where the
+  dashboard reads the report's commit (DOC-203). `harness-upgrade` names every harness file the
+  project keeps, `profile.toml` and `critical.toml` included (DOC-102). The plugin describes itself
+  with one sentence in both manifests (CPY-4). The report's review pill uses a palette colour (UI-3).
+
 ## 0.8.0 — 2026-09-28 — a live dashboard, a report to share, the plugin ready to install
 
 - **A lighter, live dashboard, built to spend as few tokens as possible.** `/keelokit:project-dashboard`
