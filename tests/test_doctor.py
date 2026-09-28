@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
+DASHBOARD = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
 
 CI = """\
 name: CI
@@ -321,6 +322,70 @@ class DoctorTest(unittest.TestCase):
         out = self.doctor("--scope", "AUTH-001")
         self.assertIn("apps/web/src/App.tsx", out)
         self.assertNotIn("signup.ts", out)
+
+    def test_INT_202_every_file_under_backlog_stories_is_a_story_a_warning_or_an_error(self):
+        """The class: the doctor and the dashboard read the same backlog/stories/*.md, so they must
+        sort every file the same way. A file that doesn't open with a `+++` line isn't a Keelokit story
+        (an adopted repo's own tickets, a README, YAML front matter): the doctor warns and ignores it,
+        and the dashboard doesn't list it. A file that opens with `+++` is a story: shown when the
+        doctor accepts it, and an ERROR naming it when it can't (the dashboard never drops one the
+        doctor passes, and the doctor never drops one silently)."""
+        self.rules()
+        valid = STORY.format(id="{id}", wave=1, touches='"apps/{id}/"')
+        files = {  # name → (content, what it is)
+            "GH-042.md": ("# GH-042: login is slow\n\nSteps: open /login.\n", "not a story"),
+            "README.md": ("# Our tickets\n\nOne file per ticket.\n", "not a story"),
+            "empty.md": ("", "not a story"),
+            "yaml.md": ("---\ntitle: from another tool\n---\nbody\n", "not a story"),
+            "later.md": ("Notes\n+++\nid = \"AUTH-009\"\n+++\n", "not a story"),
+            "AUTH-001-ok.md": (valid.replace("{id}", "AUTH-001"), "story"),
+            "AUTH-002-ok.md": (valid.replace("{id}", "AUTH-002"), "story"),
+            "AUTH-003-toml.md": ("+++\nid = \n+++\nScenario: [S1] x\n", "broken"),
+            "AUTH-004-open.md": ("+++\nid = \"AUTH-004\"\nScenario: [S1] x\n", "broken"),
+            "AUTH-005-crlf.md": (valid.replace("{id}", "AUTH-005").replace("\n", "\r\n"), "story"),
+            "AUTH-006-bom.md": ("﻿" + valid.replace("{id}", "AUTH-006"), "broken"),
+            "AUTH-007-noid.md": ("+++\ntitle = \"x\"\n+++\nScenario: [S1] x\n", "broken"),
+            "AUTH-008-notes.md": ("Notes for AUTH-008, not a story.\n", "not a story"),
+            "AUTH-010-eof.md": (valid.replace("{id}", "AUTH-010").split("```")[0].rstrip("\n"), "story"),
+        }
+        for name, (text, _) in files.items():
+            (self.root / "backlog/stories").mkdir(parents=True, exist_ok=True)
+            (self.root / "backlog/stories" / name).write_bytes(text.encode())
+        self.commit("init")
+        out = self.doctor()
+        lines = out.splitlines()
+        dash = json.loads(subprocess.run(
+            [sys.executable, str(DASHBOARD), "--root", str(self.root), "--json"],
+            capture_output=True, text=True, check=True).stdout)
+        shown = {Path(s["path"]).name for s in dash["stories"]}
+        for name, (_, kind) in files.items():
+            with self.subTest(name):
+                said = [l for l in lines if f"backlog/stories/{name}" in l]
+                errs = [l for l in said if l.lstrip().startswith("ERROR")]
+                warns = [l for l in said if l.lstrip().startswith("warn")]
+                if kind == "not a story":
+                    self.assertEqual(errs, [], out)
+                    self.assertTrue(any("not a Keelokit story" in l for l in warns), out)
+                    self.assertNotIn(name, shown)
+                elif kind == "story":
+                    self.assertEqual(said, [], out)
+                    self.assertIn(name, shown)
+                else:
+                    self.assertTrue(errs, f"a broken story must be an ERROR naming it:\n{out}")
+                    self.assertNotIn(name, shown)
+        self.assertIn("Backlog: 0/5 done", out)  # the four stories and AUTH-007's, with its errors
+        # Only non-stories: the doctor stays healthy and --ci passes (INV-006 works both ways).
+        for name, (_, kind) in files.items():
+            if kind == "broken" or name == "AUTH-010-eof.md":  # the last has no scenarios, so no body
+                (self.root / "backlog/stories" / name).unlink()
+        self.commit("drop broken")
+        self.assertIn("harness healthy", self.doctor())
+        ci = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--ci"], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(ci.returncode, 0, ci.stdout)
+        # --scope on an id whose only file isn't a story says why it found no story.
+        scope = self.doctor("--scope", "AUTH-008")
+        self.assertIn("No story AUTH-008", scope)
+        self.assertIn("backlog/stories/AUTH-008-notes.md: not a Keelokit story", scope)
 
 
     def integrity_story(self, sid: str, wave: int, touches: str, dims: str, invariants: str = "") -> None:
@@ -704,7 +769,7 @@ class DoctorTest(unittest.TestCase):
         self.write("docs/context/domain.md", "- [INV-001] no class\n")
         self.write("docs/escapes.md", "| ESC-001 | | | | | |\n")
         self.write("backlog/stories/AUTH-001-x.md", "+++\nid = \"AUTH-001\"\nstatus = \"done\"\ndepends_on = [\"X-1\"]\n+++\n")
-        self.write("backlog/stories/bad.md", "no front matter\n")
+        self.write("backlog/stories/bad.md", "+++\nfront matter never closed\n")
         shapes = {
             "no package.json": {},
             "generated project": {"package.json": json.dumps({"packageManager": "pnpm@10.33.0", "scripts": {
@@ -1267,7 +1332,7 @@ class DoctorScaleTest(unittest.TestCase):
 
     def test_NFR_1_dashboard_work_grows_linearly_with_the_backlog(self):
         """The dashboard reads the same backlog (and runs `doctor --brief`, in its own process)."""
-        dashboard = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
+        dashboard = DASHBOARD
 
         def run(root: Path):
             lines, chars, _ = self.work(root, "--root", str(root), "--out", str(root / "d.html"), "--lang", "en", script=dashboard)

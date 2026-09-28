@@ -622,9 +622,15 @@ def done_story_ids() -> set[str]:
 def read_story(path: Path) -> dict | None:
     if (text := read(path)) is None:
         return None
-    m = re.match(r"\+\+\+\n(.*?)\n\+\+\+\n", text, re.S)
+    m = re.match(r"\+\+\+\n(.*?)\n\+\+\+(?:\n|$)", text, re.S)
     if not m:
-        errors.append(f"{path.relative_to(ROOT)}: missing +++ TOML front matter")
+        if not re.match(r"\ufeff?\+\+\+[ \t]*(?:\n|$)", text):
+            # No `+++` first line: not a Keelokit story (an adopted repo's own tickets, a README).
+            # The dashboard doesn't list it either (INT-202).
+            warnings.append(f"{path.relative_to(ROOT)}: not a Keelokit story (no +++ front matter), ignored")
+            return None
+        errors.append(f"{path.relative_to(ROOT)}: +++ front matter must be a '+++' line, TOML, then a '+++' line"
+                      " (no BOM, no spaces after +++)")
         return None
     try:
         meta = tomllib.loads(m.group(1))
@@ -776,7 +782,7 @@ def check_scope(sid: str) -> int:
     stories = {m.get("id"): m for p in sorted((ROOT / "backlog/stories").glob("*.md"))
                if p.name.startswith(f"{sid}-") and (m := read_story(p))}  # sid is never a glob
     if sid not in stories:
-        for e in errors:  # a story file the doctor can't read says why
+        for e in errors + warnings:  # a story file the doctor can't read or ignored says why
             print(e)
         print(f"No story {sid} in backlog/stories")
         return 1

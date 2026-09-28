@@ -95,6 +95,14 @@
   pass that starts no process per file, so a `.venv` or generated tree doesn't slow every push.
   `project-new` commits everything after `pnpm install`. Already in 0.7.1; `harness-upgrade` brings
   the new `scripts/verify.sh`.
+- Fixed (INT-202): the doctor reported an ERROR for every `.md` under `backlog/stories/` without
+  `+++` front matter, so an adopted repo that already kept its own tickets or a README there failed
+  `doctor --ci` over files Keelokit never wrote, while the dashboard skipped them without a word.
+  A file whose first line isn't `+++` is now not a story: a warning names it and both leave it out.
+  One that opens with `+++` is still a story, and an ERROR when its front matter doesn't parse;
+  front matter that closes at the end of the file now parses, as it does in the dashboard, and
+  `doctor --scope <ID>` says why it found no story. Already in 0.7.1; `harness-upgrade` brings the
+  new doctor.
 
 ## 0.7.1 — 2026-09-27
 

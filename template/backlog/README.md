@@ -3,7 +3,8 @@
 - `epics.md` — epics in priority order, each with its goal and the stories it groups.
 - `stories/<ID>-<slug>.md` — one story per file. `pnpm run doctor` validates them.
 
-Story front matter is TOML between `+++` lines:
+Story front matter is TOML between `+++` lines, from the first line of the file (a `.md` here that
+doesn't start with `+++` isn't a story: doctor warns and ignores it, and the dashboard doesn't list it):
 
 ```
 +++
