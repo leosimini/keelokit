@@ -31,6 +31,7 @@ import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 import tomllib  # noqa: E402
+import unicodedata  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[3]
@@ -619,12 +620,48 @@ def answers(root: Path) -> dict:
     return out
 
 
-def md_section(text: str, title: str) -> str:
-    """Body of the first `## <title>` section (up to the next heading of the same or higher level)."""
+# The sections and fields the dashboard reads out of documents it doesn't write: the PRD
+# (skills/project-new/references/prd-template.md), the bug bash and security reports (their skills
+# and workflows/check-bugbash-flow.js), the decision records (template/docs/decisions/README.md:
+# Status, Context, Decision, Consequences) and docs/stack.md (its apps, from project-new). A project
+# writes them in its own language (project-new writes English unless the user asks otherwise),
+# whatever the page's language, so each one is found by its name in every language of T, ignoring
+# case and accents. A section's heading matches a name as whole words and may go on after it ("In
+# (MVP):", "Decisiones pendientes (2)"); `**Label:**` lines are headings too for "in" and "out", which
+# the PRD writes that way inside Scope. A field is a `Label: value` line (or `**Label:** value`) naming
+# it exactly, or for "status" a heading naming it with the value on the next line.
+HEADINGS = {
+    "metrics": {"en": ("Success metrics",), "es": ("Métricas de éxito", "Métricas")},
+    "scope": {"en": ("Scope",), "es": ("Alcance",)},
+    "in": {"en": ("In",), "es": ("Dentro", "Incluido")},
+    "out": {"en": ("Out",), "es": ("Afuera", "Fuera", "Excluido")},
+    "pending": {"en": ("Pending decisions",), "es": ("Decisiones pendientes",)},
+    "status": {"en": ("Status",), "es": ("Estado",)},
+    "apps": {"en": ("Apps", "App"), "es": ("Apps", "App", "Aplicaciones", "Aplicación")},
+}
+
+
+def fold(text: str) -> str:
+    """Lower case without accents, with runs of spaces as one, for comparing headings."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return " ".join(plain.casefold().split())
+
+
+def is_named(title: str, key: str, whole: bool = False) -> bool:
+    """Whether `title` names `key` of HEADINGS in some language: exactly with `whole`, otherwise as its
+    first words ("In (MVP):", "Dentro del MVP", but not "Integrations" or "In-store")."""
+    title = fold(title)
+    return any(title == n or (not whole and title.startswith(n) and title[len(n)] in " (:")
+               for n in (fold(x) for xs in HEADINGS[key].values() for x in xs))
+
+
+def md_section(text: str, key: str) -> str:
+    """Body of the first heading that names section `key` of HEADINGS, in any language (up to the next
+    heading of the same or higher level)."""
     lines = text.splitlines()
     for i, line in enumerate(lines):
         m = re.match(r"^(#{1,6})\s+(.*)$", line)
-        if m and m.group(2).strip().lower().startswith(title.lower()):
+        if m and is_named(m.group(2), key):
             level = len(m.group(1))
             body = []
             for nxt in lines[i + 1:]:
@@ -633,6 +670,20 @@ def md_section(text: str, title: str) -> str:
                     break
                 body.append(nxt)
             return "\n".join(body).strip()
+    return ""
+
+
+def md_field(text: str, key: str, heading: bool = False) -> str:
+    """Value of the first `Label: value` line (also `**Label:** value`, `- Label: value`) whose label
+    names field `key` of HEADINGS in any language; with `heading`, also a heading that names it, with
+    the value on the next line. A label with nothing after it takes the next line too."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^\s*(?:[-*]\s+)?\**\s*([^:*#\n]+?)\s*\**\s*:\s*\**\s*(.*)$", line)
+        h = re.match(r"^#{1,6}\s+(.+?)\s*$", line) if heading else None
+        if (m and is_named(m.group(1), key, whole=True)) or (h and is_named(h.group(1), key, whole=True)):
+            value = m.group(2).strip() if m else ""
+            return value or next((x.strip() for x in lines[i + 1:] if x.strip()), "")
     return ""
 
 
@@ -787,7 +838,7 @@ def collect(root: Path) -> dict:
     for d in decisions:
         text = read(d)
         title = m.group(1).strip() if (m := re.search(r"(?m)^#\s+(.+)$", text)) else d.stem
-        status = m.group(1).strip() if (m := re.search(r"(?im)^(?:status:\s*|##\s*status\s*\n+)\s*([^\n]+)", text)) else ""
+        status = md_field(text, "status", heading=True)
         adrs.append({"path": d.relative_to(root).as_posix(), "title": title, "status": status})
 
     # Stories by `origin`, sorted, so each run finds the ones it made (their origin starts with
@@ -814,8 +865,8 @@ def collect(root: Path) -> dict:
             date = report.parent.name
             runs.append({
                 "date": date, "path": report.relative_to(root).as_posix(), "text": text, "findings": findings,
-                "sha": m.group(0) if (m := re.search(r"\b[0-9a-f]{7,40}\b", md_section(text, "Scope") or text)) else "",
-                "pending": md_section(text, "Pending decisions"),
+                "sha": m.group(0) if (m := re.search(r"\b[0-9a-f]{7,40}\b", md_section(text, "scope") or text)) else "",
+                "pending": md_section(text, "pending"),
                 "stories": made_by(f"{origin}:{date}"),
             })
         return runs
@@ -887,11 +938,13 @@ def collect(root: Path) -> dict:
     except json.JSONDecodeError:
         plugin_version = ""
 
-    scope = md_section(prd, "Scope")
-    scope_in = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "In")
-    scope_out = md_section(scope.replace("**In", "## In").replace("**Out", "## Out"), "Out")
+    # **In (MVP):** is a heading; other bold lines (**Buyers**) stay text inside In or Out.
+    scope = re.sub(r"(?m)^\*\*([^*\n]+?)\*\*\s*$",
+                   lambda m: f"## {m[1]}" if is_named(m[1], "in") or is_named(m[1], "out") else m[0], md_section(prd, "scope"))
+    scope_in = md_section(scope, "in")
+    scope_out = md_section(scope, "out")
     counts = {
-        "metrics": max(len(table_rows(md_section(prd, "Success metrics"))) - 1, 0),
+        "metrics": max(len(table_rows(md_section(prd, "metrics"))) - 1, 0),
         "in": len(re.findall(r"(?m)^\s*[-*]\s", scope_in)),
         "out": len(re.findall(r"(?m)^\s*[-*]\s", scope_out)),
         "exceptions": len(re.findall(r"(?m)^\s*\[\[exception\]\]", read(root / ".keelokit/exceptions.toml"))),
@@ -1514,8 +1567,7 @@ def stage_summary(s: dict, stage: dict, t: dict) -> str:
         return t["sum_product"].format(metrics=plural(t, "n_metrics", c["metrics"]), inn=c["in"], out=c["out"])
     if sid == "stack":
         apps = s["answers"].get("apps", "")
-        if not apps and (m := re.search(r"(?im)^apps?:\s*(.+)$", s["stack_doc"])):
-            apps = m.group(1)
+        apps = apps or md_field(s["stack_doc"], "apps")
         apps = re.sub(r"[\[\]\"'*]", "", apps).strip().rstrip(".")
         return t["sum_stack"].format(apps=apps) if apps else t["sum_none"]
     if sid == "skeleton" and s["first_commit"]:
@@ -1546,8 +1598,8 @@ def stage_body(s: dict, stage: dict, links: Links, t: dict) -> str:
             parts.append(block(esc(t["invariants"]), f'<div class="md bare"><ul>{items}</ul></div>'))
         parts.append(block(esc(t["docs"]), "".join(doc_block(f"docs/context/{f}", x, links, t) for f, x in s["context"].items())))
     elif sid == "product" and s["prd"]:
-        for key, title in (("metrics", "Success metrics"), ("scope", "Scope")):
-            if body := md_section(s["prd"], title):
+        for key in ("metrics", "scope"):
+            if body := md_section(s["prd"], key):
                 parts.append(block(esc(t[key]), f'<div class="md bare">{markdown(body, links, "docs/prd.md")}</div>'))
         parts.append(block(esc(t["docs"]), doc_block("docs/prd.md", s["prd"], links, t)))
     elif sid == "stack" and stage["status"] != "todo":
@@ -1676,8 +1728,7 @@ def decisions_card(s: dict, t: dict) -> str:
     rows.append((t["build_mode"], t["build_parallel"].format(n=run.get("parallel", 2)) if build == "parallel"
                  else t["build_serial"] if build else "", "", True))
     apps = s["answers"].get("apps", "")
-    if not apps and (m := re.search(r"(?im)^apps?:\s*(.+)$", s["stack_doc"])):
-        apps = m.group(1)
+    apps = apps or md_field(s["stack_doc"], "apps")
     apps = re.sub(r"[\[\]\"'*]", "", apps).strip().rstrip(".")
     stack = s["survey"].get("stack") or s["survey"].get("detected", {}).get("stack")
     if not greenfield and stack:

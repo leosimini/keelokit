@@ -1,4 +1,5 @@
 """Dashboard state and page on a tiny project. Run: python3 -m unittest discover -s tests"""
+import ast
 import builtins
 import contextlib
 import errno
@@ -336,6 +337,126 @@ class DashboardTest(unittest.TestCase):
                       "doesn't list it", [w["text"] for w in self.state()["waiting"]])
         self.assertEqual(self.state()["drift"], [{"trait": "web", "seen": "apps/web"}, {"trait": "mobile", "seen": None}])
 
+    def docs_in(self, lang: str, variant: int = 0) -> None:
+        """A PRD (the shape of prd-template.md), a bug bash report and a security report (the shape
+        their skills write), in `lang`, each with the same content: 2 metrics, 1 thing in scope,
+        2 out, the sha in the scope section (another sha before it) and one pending decision. A
+        `**…:**` label in the scope that isn't In/Out, and whose name starts like one, has 3 bullets."""
+        words = DOC_WORDS[lang]
+        h = {k: v[variant % len(v)] if isinstance(v, tuple) else v for k, v in words.items()}
+        self.write("docs/prd.md", f"""\
+            # Shop — PRD
+
+            {h['status']}: approved (2026-01-02) · Owner: Ana
+
+            ## {h['problem']}
+            Buyers can't pay online.
+
+            ## {h['metrics']}
+            | Metric | Target | By | How |
+            |---|---|---|---|
+            | Orders | 10 | 2026-12 | db |
+            | Returns | 2% | 2026-12 | db |
+
+            ## {h['scope']}
+            **{h['integrations']}:**
+            - Stripe
+            - Mercado Pago
+            - Post
+
+            **{h['in']}:**
+            - Checkout — for buyers
+
+            **{h['out']}:**
+            - Loyalty — later
+            - Gift cards — later
+
+            ## {h['risks']}
+            None yet.
+            """)
+        for folder, day in (("bugbash", "2026-09-26"), ("security", "2026-10-01")):
+            self.write(f"docs/{folder}/{day}/report.md", f"""\
+                # Report {day}
+
+                ## {h['summary']}
+                Follows up 1111111.
+
+                ## {h['scope']}
+                sha 3f9c2ab, full.
+
+                | Id | Lens | Severity | Title | Status | Fix commit | Check added |
+                |---|---|---|---|---|---|---|
+                | CPY-1 | copy | P1 | Promises SMS | {h['pending_status']} | — | — |
+
+                ## {h['pending']}
+                - CPY-1: change the text or add SMS.
+
+                ## {h['notes']}
+                Nothing else.
+                """)
+
+    def test_I18N_2_a_prd_and_reports_in_any_page_language_read_the_same_in_every_language(self):
+        """md_section() matched only English headings, so a Spanish PRD showed 0 metrics, 0 in scope,
+        0 out and no Metrics/Scope blocks, and a Spanish report lost its pending decisions (and read
+        its sha from the wrong section). The class: a section the dashboard reads out of a document
+        by its heading, in a document written in any language T speaks, under a page in any of them."""
+        expected = {"metrics": 2, "in": 1, "out": 2}
+        for docs in DOC_WORDS:
+            for variant in range(max(len(v) for v in DOC_WORDS[docs].values() if isinstance(v, tuple))):
+                for page in ("en", "es"):
+                    with self.subTest(docs=docs, variant=variant, page=page):
+                        self.gates("intake", "product", lang=page)
+                        self.context()
+                        self.docs_in(docs, variant)
+                        s = self.state()
+                        self.assertEqual({k: s["counts"][k] for k in expected}, expected)
+                        for run in (s["bugbashes"][0], s["security"][0]):
+                            self.assertEqual(run["sha"], "3f9c2ab", run["path"])
+                            self.assertEqual(run["pending"], "- CPY-1: change the text or add SMS.", run["path"])
+                        html = self.page("--lang", page)
+                        t = load_dashboard().T[page]
+                        for key in ("metrics", "scope"):
+                            self.assertIn(f'<div class="block"><h3>{esc(t[key])}</h3><div class="md bare">', html)
+                        self.assertIn("Orders", html.split(f'<h3>{esc(t["metrics"])}</h3>')[1].split("</div></div>")[0])
+                        self.assertEqual(html.count(f'<div class="block"><h3>{esc(t["bb_pending"])}</h3>'), 2)
+
+    def test_I18N_2_a_decision_record_and_the_stack_read_their_fields_in_every_language(self):
+        """The ADR's status came from an English-only regex (`Status:` or `## Status`), and the stack's
+        apps from `^apps?:` over docs/stack.md, so a Spanish ADR showed no status and a Spanish
+        stack.md no apps. Same class as the PRD: a field read out of a document by an English name."""
+        adrs = {"en": ("## Status\n\nAccepted\n", "Status: Accepted\n", "**Status:** Accepted\n", "- Status: Accepted\n"),
+                "es": ("## Estado\n\nAceptada\n", "Estado: Aceptada\n", "**Estado:** Aceptada\n", "- **Estado**: Aceptada\n",
+                       "ESTADO:\nAceptada\n")}
+        stacks = {"en": ("Apps: web, api\n", "**Apps:** web, api\n", "App: web, api\n"),
+                  "es": ("Aplicaciones: web, api\n", "**Aplicaciones:** web, api\n", "Aplicación: web, api\n", "Apps: web, api\n")}
+        word = {"en": "Accepted", "es": "Aceptada"}
+        for docs in ("en", "es"):
+            for variant in range(max(len(adrs[docs]), len(stacks[docs]))):
+                for page in ("en", "es"):
+                    with self.subTest(docs=docs, variant=variant, page=page):
+                        self.gates("intake", "product", "stack", lang=page)
+                        self.context()
+                        self.write("docs/prd.md", "# Shop — PRD\n")
+                        adr = adrs[docs][variant % len(adrs[docs])]
+                        self.write("docs/decisions/0001-queue.md", f"# 0001 — A queue\n\n{adr}\n## Context\nStatus quo: none.\n")
+                        self.write("docs/stack.md", f"# Stack\n\n{stacks[docs][variant % len(stacks[docs])]}\nPostGIS: no.\n")
+                        s = self.state()
+                        self.assertEqual([a["status"] for a in s["adrs"]], [word[docs]])
+                        html = self.page("--lang", page)
+                        self.assertIn(f'A queue</a> <span class="muted">· {word[docs]}</span>', html)
+                        self.assertIn(esc(load_dashboard().T[page]["sum_stack"].format(apps="web, api")), html)
+
+    def test_I18N_2_a_bold_label_inside_in_or_out_groups_its_bullets(self):
+        """Turning every bold line of Scope into a heading ended In at the first sub-label: a PRD that
+        groups its bullets under **Buyers** counted 0 in scope. Only In and Out are headings."""
+        for label in ("**Buyers**", "**Buyers:**", "**Integrations**", "**In-store pickup**"):
+            with self.subTest(label=label):
+                self.gates("intake")
+                self.context()
+                self.write("docs/prd.md", f"# Shop — PRD\n\n## Scope\n**In (MVP):**\n{label}\n- Checkout\n- Cart\n\n"
+                                          f"**Sellers**\n- Payouts\n\n**Out (explicitly):**\n**Later**\n- Gift cards\n\n## Risks\n- x\n")
+                self.assertEqual({k: self.state()["counts"][k] for k in ("in", "out")}, {"in": 3, "out": 1})
+
     def test_credit_defaults_and_levels(self):
         self.gates("intake")
         self.context()
@@ -385,6 +506,27 @@ class DashboardTest(unittest.TestCase):
         html = self.page("--standalone")
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn('href="https://github.com/acme/shop/blob/main/docs/context/gaps.md"', html)
+
+
+# I18N-2: the headings of the PRD and the reports as someone would write them in each language of
+# the page (project-new writes documents in English unless the user asks otherwise). A tuple is
+# ways of writing the same heading; each variant renders one of them. Written by hand, so the test
+# does not read the dashboard's own list of names back to itself.
+DOC_WORDS = {
+    "en": {"status": "Status", "problem": "Problem", "metrics": ("Success metrics", "SUCCESS METRICS"),
+           "scope": ("Scope", "Scope (MVP)"), "integrations": "Integrations",
+           "in": ("In (MVP)", "In"), "out": ("Out (explicitly)", "Out"), "risks": "Risks",
+           "summary": "Summary", "pending_status": "pending decision",
+           "pending": ("Pending decisions", "Pending decisions (2)"), "notes": "Notes"},
+    "es": {"status": "Estado", "problem": "Problema",
+           "metrics": ("Métricas de éxito", "Metricas de exito", "MÉTRICAS DE ÉXITO"),
+           "scope": ("Alcance", "Alcance (MVP)", "Alcance"), "integrations": "Integraciones",
+           "in": ("Dentro (MVP)", "Dentro", "Dentro del MVP"),
+           "out": ("Afuera (a propósito)", "Fuera (explícitamente)", "Fuera"), "risks": "Riesgos",
+           "summary": "Resumen", "pending_status": "pendiente de decisión",
+           "pending": ("Decisiones pendientes", "Decisiones pendientes", "Decisiones pendientes (1)"),
+           "notes": "Notas"},
+}
 
 
 def load_dashboard():
@@ -495,6 +637,173 @@ class DashboardReadsTheDoctorTest(unittest.TestCase):
 # case below), so failing each of them in turn covers every write the dashboard makes.
 WRITERS = ("write_text", "write_bytes", "mkdir", "touch", "open", "rename", "replace", "symlink_to",
            "hardlink_to", "unlink", "rmdir", "chmod")
+
+
+REPO = DASHBOARD.parents[3]
+# Where each English name of HEADINGS comes from: the documents that write those headings (as a
+# `## Heading` or `**Label:**`), or, for the decision records, name their sections in prose.
+HEADING_SOURCES = {
+    "metrics": ["skills/project-new/references/prd-template.md"],
+    "scope": ["skills/project-new/references/prd-template.md", "workflows/check-bugbash-flow.js"],
+    "in": ["skills/project-new/references/prd-template.md"],
+    "out": ["skills/project-new/references/prd-template.md"],
+    "pending": ["skills/check-bugbash/SKILL.md", "skills/check-security/SKILL.md", "workflows/check-bugbash-flow.js"],
+    "status": ["template/docs/decisions/README.md", "skills/project-new/SKILL.md"],
+    "apps": ["skills/project-new/SKILL.md"],
+}
+IN_PROSE = {"status"}
+# Words a pattern in dashboard.py may match literally without HEADINGS, because no language changes
+# them: ids and tags (GAP-001, INV-001, [MUST NOT]), the acronym in "<Product> — PRD", a TOML key and
+# table (rules.toml's `id = "`, exceptions.toml's `[[exception]]`) and the parts of a GitHub URL.
+# A phrase of two words or more that a pattern takes from doctor.py's output passes when doctor.py
+# prints it (English by design, I18N-1).
+NEUTRAL_WORDS = {"gap", "inv", "must", "not", "prd", "id", "exception", "http", "https", "git", "github", "com", "ssh"}
+RE_CALLS = {"compile", "match", "fullmatch", "search", "findall", "finditer", "sub", "subn", "split"}
+
+
+def literal_runs(pattern: str) -> list[str]:
+    """The runs of text a regex matches literally ("apps?" → "app", "s"), from Python's own parser."""
+    try:
+        import re._parser as parser
+    except ImportError:  # Python < 3.11
+        import sre_parse as parser
+    runs, cur = [], []
+
+    def flush():
+        if cur:
+            runs.append("".join(cur))
+            cur.clear()
+
+    def walk(sub):
+        for op, av in sub:
+            name = str(op)
+            if name == "LITERAL":
+                cur.append(chr(av))
+                continue
+            flush()
+            if name == "SUBPATTERN":
+                walk(av[3])
+            elif name == "BRANCH":
+                for alt in av[1]:
+                    walk(alt)
+                    flush()
+            elif name.endswith("_REPEAT"):
+                walk(av[2])
+            elif name in ("ASSERT", "ASSERT_NOT"):
+                walk(av[1])
+            elif name == "ATOMIC_GROUP":
+                walk(av)
+            elif name == "GROUPREF_EXISTS":
+                walk(av[1])
+                flush()
+                walk(av[2] or [])
+            flush()
+
+    walk(parser.parse(pattern))
+    flush()
+    return runs
+
+
+class DashboardDocHeadingsTest(unittest.TestCase):
+    """I18N-2: md_section() took one English heading from each caller, and an ADR's status and the
+    stack's apps came from English-only regexes, so a PRD, report, decision record or stack.md written
+    in Spanish lost its metrics, scope, pending decisions, status or apps. The class: a document the
+    dashboard reads by a name only one language writes. Every section or field it reads is a key of
+    HEADINGS, named in every language of T; no caller passes a name of its own, no heading of the
+    documents it reads appears anywhere else in its code, and no pattern matches a word literally
+    unless no language changes it."""
+
+    def setUp(self):
+        self.dashboard = load_dashboard()
+        self.tree = ast.parse(DASHBOARD.read_text())
+        tables = {"T", "STAGES", "GLOSSARY", "HEADINGS"}
+        self.skip = {id(n) for node in self.tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id in tables for t in node.targets) for n in ast.walk(node)}
+
+    def test_I18N_2_every_section_is_named_in_every_language_of_the_page(self):
+        for key, names in self.dashboard.HEADINGS.items():
+            with self.subTest(key=key):
+                self.assertEqual(set(names), set(self.dashboard.T), "a section needs its name in every language of T")
+                self.assertTrue(all(isinstance(n, tuple) and n and all(x.strip() for x in n) for n in names.values()))
+
+    def test_I18N_2_the_english_names_are_the_headings_the_documents_write(self):
+        self.assertEqual(set(HEADING_SOURCES), set(self.dashboard.HEADINGS), "say where each section's heading is written")
+        for key, files in HEADING_SOURCES.items():
+            name = re.escape(self.dashboard.HEADINGS[key]["en"][0])
+            for rel in files:
+                text = (REPO / rel).read_text()
+                with self.subTest(key=key, file=rel):
+                    pattern = rf"(?i)\b{name}\b" if key in IN_PROSE else rf"(?mi)(^|[\"`]|^\s*[-*] )(#+ |\*\*){name}\b"
+                    self.assertTrue(re.search(pattern, text), f"{rel} doesn't write {name!r}")
+
+    def test_I18N_2_a_heading_matches_whole_words_in_any_case_and_accents(self):
+        md = self.dashboard.md_section
+        self.assertEqual(md("## Integrations\nx\n## In (MVP):\ny\n", "in"), "y")
+        self.assertEqual(md("## In-store\nx\n## In\ny\n", "in"), "y")
+        self.assertEqual(md("## Métricas\nx\n", "metrics"), "x")
+        self.assertEqual(md("### METRICAS DE EXITO\nx\n## next\n", "metrics"), "x")
+        self.assertEqual(md("## Alcanceextra\nx\n", "scope"), "")
+        with self.assertRaises(KeyError):
+            md("## Scope\nx\n", "Scope")  # a caller names a section, never a heading
+
+    def test_I18N_2_a_field_is_a_label_or_a_heading_naming_it_exactly(self):
+        field = self.dashboard.md_field
+        self.assertEqual(field("Status quo: bad\nStatus: Accepted\n", "status"), "Accepted")
+        self.assertEqual(field("# T\n\n## ESTADO\n\nAceptada\n", "status", heading=True), "Aceptada")
+        self.assertEqual(field("## Estado\nAceptada\n", "status"), "")  # a heading only when asked for
+        self.assertEqual(field("**Aplicación:** web\n", "apps"), "web")
+        with self.assertRaises(KeyError):
+            field("Status: x\n", "Status")
+
+    def test_I18N_2_no_caller_reads_a_document_by_a_heading_of_its_own(self):
+        headings = set()
+        for key, files in HEADING_SOURCES.items():
+            for rel in set(files):
+                text = (REPO / rel).read_text()
+                found = re.findall(r"(?m)^#+ +(.+)$|^\*\*([^*]+)\*\*", text)
+                headings |= {h.strip(" :*").split(" (")[0] for pair in found for h in pair if h}
+                headings |= {w for m in re.findall(r"\b[A-Z]\w+(?:, [A-Z]\w+){2,}", text) for w in m.split(", ")}
+        headings = {h for h in headings if h and "<" not in h and "$" not in h}
+        self.assertTrue({"Success metrics", "Scope", "In", "Out", "Risks", "Status", "Consequences"} <= headings, headings)
+        readers = {"md_section", "md_field", "is_named"}
+        for node in ast.walk(self.tree):
+            if id(node) in self.skip:
+                continue
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") in readers:
+                arg = node.args[1]
+                with self.subTest(line=node.lineno):
+                    self.assertTrue(isinstance(arg, ast.Name) or (isinstance(arg, ast.Constant) and arg.value in self.dashboard.HEADINGS),
+                                    f"{node.func.id}() takes a key of HEADINGS")
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                bare = node.value.strip(" #*:")
+                with self.subTest(line=node.lineno, value=node.value):
+                    self.assertFalse(bare in headings and bare not in self.dashboard.HEADINGS,
+                                     "a document's heading in the code reads only English: add it to HEADINGS")
+
+    def test_I18N_2_no_pattern_matches_a_word_that_a_language_changes(self):
+        """A heading or label buried in a regex (`(?im)^status:`, `^apps?:`) reads only the language it
+        is written in. Every pattern is a literal (so this can read it), and every word it matches
+        literally is in NEUTRAL_WORDS or is text doctor.py prints."""
+        doctor = DOCTOR.read_text()
+        self.assertEqual(literal_runs(r"(?im)^(?:status:\s*|##\s*status\s*\n+)"), ["status:", "##", "status", "\n"])
+        self.assertEqual(literal_runs(r"(?im)^apps?:\s*(.+)$"), ["app", "s", ":"])
+        patterns = 0
+        for node in ast.walk(self.tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in RE_CALLS
+                    and getattr(node.func.value, "id", "") == "re"):
+                continue
+            arg = node.args[0]
+            with self.subTest(line=node.lineno):
+                self.assertTrue(isinstance(arg, ast.Constant) and isinstance(arg.value, str),
+                                "a pattern is a string literal, so this test can read it")
+                patterns += 1
+                for run in literal_runs(arg.value):
+                    words = {w.lower() for w in re.findall(r"[A-Za-z]{2,}", run)} - NEUTRAL_WORDS
+                    if len(words) > 1 and run.strip() in doctor:
+                        continue  # a phrase doctor.py prints, not one word that also happens to be in it
+                    self.assertFalse(words, f"{arg.value!r} matches {sorted(words)} literally: name it in HEADINGS "
+                                            "and read it with md_section() or md_field()")
+        self.assertGreater(patterns, 20)
 
 
 class DashboardIOContractTest(unittest.TestCase):

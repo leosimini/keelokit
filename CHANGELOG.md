@@ -135,6 +135,17 @@
   own language, and the health block quotes the doctor's output as a log, under a caption that says
   it is in English (and marked `lang="en"` for screen readers). Already in 0.7.0;
   `claude plugin update` brings the new dashboard.
+- Fixed (I18N-2): the dashboard found what it reads in the documents only by their English names,
+  so a PRD written in Spanish showed "0 métricas · 0 en el alcance · 0 afuera" and no metrics or
+  scope blocks, a Spanish bug bash or security report lost its pending decisions (and its "Decide"
+  button) and could show a sha from the wrong section, a decision record with `Estado: Aceptada`
+  (or `## Estado`) showed no status, and a `docs/stack.md` that says `Aplicaciones:` showed no apps.
+  Each one is now found by its name in English or Spanish (`Métricas de éxito`, `Alcance`,
+  `Dentro`, `Afuera`/`Fuera`, `Decisiones pendientes`, `Estado`, `Aplicaciones`), whatever the
+  page's language, ignoring case and accents. A heading has to match whole words, so a
+  `**Integrations:**` list inside Scope no longer counts as in scope, and a bold sub-label inside
+  In or Out (`**Buyers**`) keeps its bullets there. Already in 0.7.1; `claude plugin update` brings
+  the new dashboard.
 
 ## 0.7.1 — 2026-09-27
 
