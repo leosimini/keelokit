@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 import unittest
 from pathlib import Path
 
@@ -880,6 +881,229 @@ class DoctorInputContractTest(unittest.TestCase):
                             self.assertRegex(out, rf"(?m)^  ERROR {error}")
                     finally:
                         (root / rel).write_text(healthy[rel])
+
+
+
+class CountingRe(types.ModuleType):
+    """The `re` module, counting the characters every search, match, split or substitution is handed:
+    a scan inside one C call that a line count can't see (DoctorScaleTest)."""
+
+    SCANS = {"search": 1, "match": 1, "fullmatch": 1, "finditer": 1, "findall": 1, "split": 1, "sub": 2, "subn": 2}
+
+    def __init__(self, tally) -> None:
+        super().__init__("re")
+        self._tally = tally
+        for name, at in self.SCANS.items():
+            setattr(self, name, self._counted(getattr(re, name), at))
+
+    def _counted(self, fn, at):
+        def counted(pattern, *args, **kwargs):
+            if len(args) >= at and isinstance(args[at - 1], str):
+                self._tally(len(args[at - 1]))
+            return fn(getattr(pattern, "real", pattern), *args, **kwargs)
+        return counted
+
+    def compile(self, pattern, flags=0):
+        return CountingPattern(re.compile(getattr(pattern, "real", pattern), flags), self._tally)
+
+    def __getattr__(self, name):
+        return getattr(re, name)
+
+
+class CountingPattern:
+    def __init__(self, real, tally) -> None:
+        self.real, self._tally = real, tally
+        for name, at in CountingRe.SCANS.items():
+            setattr(self, name, self._counted(getattr(real, name), at - 1))
+
+    def _counted(self, fn, at):
+        def counted(*args, **kwargs):
+            if len(args) > at and isinstance(args[at], str):
+                self._tally(len(args[at]))
+            return fn(*args, **kwargs)
+        return counted
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+class DoctorScaleTest(unittest.TestCase):
+    """The class behind NFR-1: the doctor runs at every SessionStart (`--brief`, and again under
+    the dashboard), and its backlog checks compared every pair of pending stories and searched
+    every test title once per done story; the dashboard grouped its stories by scanning the whole
+    backlog once per wave, per epic and per bug bash run. So a backlog of a few thousand stories
+    stalled the session for seconds. The work of both must grow in step with the backlog.
+
+    The fixture grows every backlog dimension together: stories, one big wave of pending stories,
+    many one-story waves, epics, done stories and the test titles that cite them, a critical area,
+    and bug bash runs that made stories. The work is counted, not timed, so the test is
+    deterministic: the lines of Python run (`sys.settrace`), and the characters handed to a scan
+    that runs inside one C call (every `re` search, match, split and substitution, and `str`
+    methods such as `find`, `count`, `split` and `replace`, plus the length of any list or set a
+    method like `index`, `count` or `sort` walks), at n, 2n and 4n stories; work that grows with a
+    product of two dimensions shows as an n² term (see `assert_linear`). Not seen: a scan with no
+    call to hook, such as `x in text` or a builtin like `sorted()` or `set()` over a whole
+    container, per story, nor work per invariant id (the fixture keeps one); keep those one per
+    backlog."""
+
+    SIZES = (100, 200, 400)  # n, 2n, 4n
+    SCALE = 5000  # stories: "a few thousand" (NFR-1)
+
+    WAVE_STORY = """\
+        +++
+        id = "{sid}"
+        epic = "{epic}"
+        title = "Story {sid}"
+        wave = {wave}
+        depends_on = []
+        touches = [{touches}]
+        dimensions = [{dims}]
+        invariants = [{invs}]
+        origin = "{origin}"
+        +++
+        Scenario: [S1] works
+        Scenario: [S2] also works
+        """
+
+    # str, bytes, list, tuple, set and dict methods whose work grows with the object they're called on.
+    WALKS = {"find", "rfind", "index", "rindex", "count", "replace", "split", "rsplit", "splitlines",
+             "partition", "rpartition", "lower", "upper", "casefold", "translate", "encode", "decode",
+             "expandtabs", "strip", "lstrip", "rstrip", "remove", "copy", "sort", "reverse", "union",
+             "intersection", "difference", "symmetric_difference", "issubset", "issuperset", "isdisjoint"}
+
+    def backlog(self, n: int) -> Path:
+        """n stories (n a multiple of 20): half pending in one big wave, half in one-story waves,
+        four per epic, a quarter done and cited by tests, one bug bash run per ten stories, each
+        of which made a story; plus two pending stories that clash on a path and a critical area.
+        Every id, path and number has a fixed width, so each story costs the same to read."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+
+        def write(rel: str, text: str) -> None:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(textwrap.dedent(text))
+
+        write(".keelokit/bin/doctor.py", DOCTOR.read_text())
+        for f in ("product", "constraints", "environments"):
+            write(f"docs/context/{f}.md", f"# {f}\n")
+        write("docs/context/domain.md", "- [INV-001] [MUST] Conserved — class: conservation (S1)\n")
+        write("docs/context/gaps.md", "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n")
+        write(".keelokit/critical.toml", '[[area]]\nname = "money"\nwhy = "w"\npaths = ["apps/api/src/pay/"]\n')
+        write("apps/api/src/pay/charge.ts", "export const charge = 1;\n")
+        done, titles, epics = [], [], []
+        for i in range(n):
+            epic = f"E{i // 4:04d}"
+            sid = f"{epic}-{i % 4:03d}"
+            wave = 1000 if i % 2 else 1001 + i // 2
+            integrity = i % 4 == 0
+            day = f"2026-{1 + i // 10 // 28 % 12:02d}-{1 + i // 10 % 28:02d}"
+            origin = f"bugbash:{day} B{i // 10:04d}-1" if i % 10 == 3 else "plan"
+            write(f"backlog/stories/{sid}-s.md", self.WAVE_STORY.format(
+                sid=sid, epic=epic, wave=wave, origin=origin,
+                touches=f'"apps/web/src/f{i:05d}/", "packages/shared/src/p{i:05d}.ts"',
+                dims='"api", "integrity"' if integrity else '"api"', invs='"INV-001"' if integrity else ""))
+            if i % 4 == 0:
+                done.append(sid)
+                epics.append(f"| {epic} | Goal {epic} |")
+                titles += [f"it('{sid}.S1 ok', () => {{}})", f"it('{sid}.S2 ok', () => {{}})"]
+            if i % 10 == 3:
+                write(f"docs/bugbash/{day}/report.md", f"# Bug bash {day}\n\n## Scope\n\nabcdef1\n\n"
+                      "| Id | Lens | Sev | Title | Status | Commit | Check |\n|---|---|---|---|---|---|---|\n"
+                      f"| B{i // 10:04d}-1 | nfr | P2 | Slow | story {sid} | | |\n")
+        for sid in ("PAY-001", "PAY-002"):
+            write(f"backlog/stories/{sid}-s.md", self.WAVE_STORY.format(
+                sid=sid, epic="PAY", wave=1000, origin="plan", touches='"apps/api/src/pay/"',
+                dims='"api", "integrity"', invs='"INV-001"'))
+        write("backlog/epics.md", "| Epic | Goal |\n|---|---|\n" + "\n".join(epics) + "\n")
+        write("apps/web/cites.test.ts", "\n".join(titles + ["it('INV-001 conserved', () => {})"]) + "\n")
+        for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"],
+                    ["add", "-A"], ["commit", "-qm", "feat: backlog\n\n" + "\n".join(f"Story: {s}" for s in done)]):
+            subprocess.run(["git", *cmd], cwd=root, capture_output=True, check=True)
+        return root
+
+    def work(self, root: Path, *args: str, script: Path | None = None) -> tuple[int, int, str]:
+        """Lines of Python and characters scanned in C calls that the doctor (or `script`) runs for
+        `args` in `root`, its own and the standard library's, and what it printed."""
+        path = script or root / ".keelokit/bin/doctor.py"
+        code = compile(path.read_text(), str(path), "exec")
+        lines = chars = 0
+        out, argv, real_re = io.StringIO(), sys.argv, sys.modules["re"]
+
+        def tally(k: int) -> None:
+            nonlocal chars
+            chars += k
+
+        def trace(frame, event, arg):
+            nonlocal lines
+            if event == "call" and frame.f_code.co_filename == __file__:
+                return None  # the counting itself isn't the script's work
+            lines += event == "line"
+            return trace
+
+        def profile(frame, event, arg):
+            if event == "c_call" and getattr(arg, "__name__", "") in self.WALKS:
+                if isinstance(own := getattr(arg, "__self__", None), (str, bytes, list, tuple, set, frozenset, dict)):
+                    tally(len(own))
+
+        sys.argv = ["doctor.py", *args]
+        sys.modules["re"] = CountingRe(tally)  # what the script's own `import re` binds
+        sys.settrace(trace)
+        sys.setprofile(profile)
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out), contextlib.suppress(SystemExit):
+                exec(code, {"__name__": "__main__", "__file__": str(path)})
+        finally:
+            sys.setprofile(None)
+            sys.settrace(None)
+            sys.modules["re"] = real_re
+            sys.argv = argv
+        return lines, chars, out.getvalue()
+
+    def assert_linear(self, run) -> list[str]:
+        """Runs `run(root)` on backlogs of each size (after one warm-up run, so no count pays for
+        imports or compiling a pattern) and fails if either kind of work grows faster than the
+        backlog: through the three counts, work = a + b·n + c·n², and at SCALE stories the c·n²
+        part must stay under a tenth of the b·n part. So a product of two dimensions fails even
+        when it is still small next to the per-story work at these sizes."""
+        roots = [self.backlog(n) for n in self.SIZES]
+        run(roots[0])
+        counts = [run(root) for root in roots]
+        n = self.SIZES[0]
+        for k, kind in enumerate(("lines of Python", "characters scanned in C calls")):
+            w = [c[k] for c in counts]
+            first, second = w[1] - w[0], w[2] - w[1]
+            c = (second - 2 * first) / (6 * n * n)
+            b = (first - 3 * c * n * n) / n
+            self.assertGreater(b, 0, kind)
+            self.assertLessEqual(c * self.SCALE, b / 10, f"{kind} grow faster than the backlog: {w} at {self.SIZES} stories, "
+                                 f"an n² part of {c * self.SCALE ** 2:.0f} next to {b * self.SCALE:.0f} at {self.SCALE}")
+        return [c[2] for c in counts]
+
+    def test_NFR_1_doctor_work_grows_linearly_with_the_backlog(self):
+        for args in (("--brief",), ()):
+            with self.subTest(mode=" ".join(args) or "full"):
+                outs = self.assert_linear(lambda root: self.work(root, *args))
+                if not args:  # the checks still find what they look for, in the big wave too
+                    for out in outs:
+                        self.assertIn("stories PAY-001 and PAY-002 share wave 1000 but both touch apps/api/src/pay/", out)
+                        self.assertIn("stories PAY-001 and PAY-002 share wave 1000 and critical area money", out)
+                        self.assertNotIn("is done but no active test title", out)
+                        self.assertEqual(out.count(" share wave "), 2, out)
+
+    def test_NFR_1_dashboard_work_grows_linearly_with_the_backlog(self):
+        """The dashboard reads the same backlog (and runs `doctor --brief`, in its own process)."""
+        dashboard = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
+
+        def run(root: Path):
+            lines, chars, _ = self.work(root, "--root", str(root), "--out", str(root / "d.html"), "--lang", "en", script=dashboard)
+            page = (root / "d.html").read_text()
+            n = len(list((root / "backlog/stories").glob("*.md")))
+            # Every story once by wave and once by epic, and the ones a bug bash made under its run too.
+            self.assertEqual(page.count('class="doc story"'), 2 * n + (n - 2) // 10)
+            return lines, chars, page
+
+        for page in self.assert_linear(run):
+            self.assertIn("Story E0000-003", page)  # a story a bug bash made is listed under its run
 
 
 if __name__ == "__main__":

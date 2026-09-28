@@ -608,6 +608,44 @@ def overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 
+def ancestors(path: str) -> list[str]:
+    """Every b with overlaps(path, b) because path lies under it: 'a/b/c' → ['a', 'a/b']."""
+    return [path[:k] for k, c in enumerate(path) if c == "/"]
+
+
+def wave_clashes(pending: list[str], stories: dict, areas: list[dict]) -> list[tuple[str, str]]:
+    """Pairs of pending stories (in `pending` order) that share a wave and a path or critical area.
+    Found through an index of paths and areas per wave, not by comparing every pair: the
+    SessionStart `--brief` runs this on every backlog, however big (NFR-1)."""
+    order = {sid: i for i, sid in enumerate(pending)}
+    waves: dict = {}
+    for sid in pending:
+        waves.setdefault(stories[sid].get("wave"), []).append(sid)
+    pairs = set()
+    for group in waves.values():
+        exact: dict[str, set] = {}  # path → stories that touch it
+        under: dict[str, set] = {}  # path → stories that touch something under it
+        in_area: dict[str, set] = {}  # critical area → stories that touch it
+        for sid in group:
+            for t in stories[sid].get("touches", []):
+                exact.setdefault(t := t.rstrip("/"), set()).add(sid)
+                for up in ancestors(t):
+                    under.setdefault(up, set()).add(sid)
+            for name in areas_hit(stories[sid].get("touches", []), areas):
+                in_area.setdefault(name, set()).add(sid)
+        for sid in group:
+            near = set()
+            for t in stories[sid].get("touches", []):
+                near |= exact.get(t := t.rstrip("/"), set()) | under.get(t, set())
+                for up in ancestors(t):
+                    near |= exact.get(up, set())
+            for sids in in_area.values():
+                if sid in sids:
+                    near |= sids
+            pairs |= {(sid, o) for o in near if order[o] > order[sid]}
+    return sorted(pairs, key=lambda p: (order[p[0]], order[p[1]]))
+
+
 def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
     stories = {}
     for path in sorted((ROOT / "backlog/stories").glob("*.md")):
@@ -651,25 +689,28 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         for iid in sorted(set(invariants) - kept):
             warnings.append(f"invariant {iid} ({invariants[iid]}) is kept by no story yet")
     pending = [s for s in stories if s not in done]
-    for i, a in enumerate(pending):
-        for b in pending[i + 1:]:
-            if stories[a].get("wave") != stories[b].get("wave"):
-                continue
-            clash = [f"{x}" for x in stories[a].get("touches", []) for y in stories[b].get("touches", []) if overlaps(x, y)]
-            if clash:
-                errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} but both touch {', '.join(clash)} — move one to a later wave")
-            shared = set(areas_hit(stories[a].get("touches", []), areas)) & set(areas_hit(stories[b].get("touches", []), areas))
-            if shared:
-                errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time")
+    for a, b in wave_clashes(pending, stories, areas):
+        clash = [f"{x}" for x in stories[a].get("touches", []) for y in stories[b].get("touches", []) if overlaps(x, y)]
+        if clash:
+            errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} but both touch {', '.join(clash)} — move one to a later wave")
+        shared = set(areas_hit(stories[a].get("touches", []), areas)) & set(areas_hit(stories[b].get("touches", []), areas))
+        if shared:
+            errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time")
     corpus = cited_titles() if done else ""
+    # One pass over the titles, not one search per done story (NFR-1): every `<text>.S<n>` citation
+    # (.S1 must not match .S10), keyed by the text's last characters at each length a done id has.
+    lengths = {len(sid) for sid in done}
+    cited = {(corpus[max(0, m.start() - n):m.start()], m.group(1))
+             for m in re.finditer(r"\.([Ss]\d+)\b", corpus) for n in lengths}
+    proven: dict[str, bool] = {}  # one search per invariant, not per story
     for sid in sorted(done):
-        untested = [
-            f"{sid}.{s}" for s in stories[sid]["_scenarios"]
-            if not re.search(rf"{re.escape(sid)}\.{s}\b", corpus)  # .S1 must not match .S10
-        ]
+        untested = [f"{sid}.{s}" for s in stories[sid]["_scenarios"] if (sid, s) not in cited]
         if untested:
             errors.append(f"story {sid} is done but no active test title cites {', '.join(untested)} (TRACE-1)")
-        unproven = [i for i in stories[sid].get("invariants", []) if not re.search(rf"\b{re.escape(i)}\b", corpus)]
+        for i in stories[sid].get("invariants", []):
+            if i not in proven:
+                proven[i] = bool(re.search(rf"\b{re.escape(i)}\b", corpus))
+        unproven = [i for i in stories[sid].get("invariants", []) if not proven[i]]
         if unproven:
             errors.append(f"story {sid} is done but no active test title cites invariant {', '.join(unproven)} (INV-1)")
     ready = [

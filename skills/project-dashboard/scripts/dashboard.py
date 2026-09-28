@@ -21,6 +21,7 @@ if sys.version_info < (3, 11):
 
 import argparse  # noqa: E402
 import base64  # noqa: E402
+import bisect  # noqa: E402
 import datetime as dt  # noqa: E402
 import html  # noqa: E402
 import json  # noqa: E402
@@ -749,6 +750,17 @@ def collect(root: Path) -> dict:
         status = m.group(1).strip() if (m := re.search(r"(?im)^(?:status:\s*|##\s*status\s*\n+)\s*([^\n]+)", text)) else ""
         adrs.append({"path": d.relative_to(root).as_posix(), "title": title, "status": status})
 
+    # Stories by `origin`, sorted, so each run finds the ones it made (their origin starts with
+    # "<kind>:<date>", one block of the sorted list) without a scan of the backlog per run (NFR-1).
+    origins = sorted((x["origin"], i) for i, x in enumerate(stories))
+
+    def made_by(prefix: str) -> list[str]:
+        at, hits = bisect.bisect_left(origins, (prefix,)), []
+        while at < len(origins) and origins[at][0].startswith(prefix):
+            hits.append(origins[at][1])
+            at += 1
+        return [stories[i]["id"] for i in sorted(hits)]
+
     def reports(folder: str, origin: str) -> list[dict]:
         runs = []
         for report in sorted((root / folder).glob("*/report.md"), reverse=True) if (root / folder).is_dir() else []:
@@ -764,7 +776,7 @@ def collect(root: Path) -> dict:
                 "date": date, "path": report.relative_to(root).as_posix(), "text": text, "findings": findings,
                 "sha": m.group(0) if (m := re.search(r"\b[0-9a-f]{7,40}\b", md_section(text, "Scope") or text)) else "",
                 "pending": md_section(text, "Pending decisions"),
-                "stories": [x["id"] for x in stories if x["origin"].startswith(f"{origin}:{date}")],
+                "stories": made_by(f"{origin}:{date}"),
             })
         return runs
 
@@ -1539,19 +1551,24 @@ def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, not
 def backlog_block(s: dict, links: Links, t: dict) -> str:
     stories = s["stories"]
     done = sum(1 for x in stories if x["status"] == "done")
-    waves = sorted({x["wave"] for x in stories})
-    live = next((w for w in waves if any(x["wave"] == w and x["status"] != "done" for x in stories)), None)
+    # Grouped in one pass, not one scan of the backlog per wave or epic (NFR-1).
+    in_wave: dict = {}
+    in_epic: dict = {}
+    for x in stories:
+        in_wave.setdefault(x["wave"], []).append(x)
+        in_epic.setdefault(x["epic"], []).append(x)
+    waves = sorted(in_wave)
+    live = next((w for w in waves if any(x["status"] != "done" for x in in_wave[w])), None)
     def wave_action(w):
-        ready = [x for x in stories if x["wave"] == w and x["status"] == "ready"]
+        ready = [x for x in in_wave[w] if x["status"] == "ready"]
         return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), f"/keelokit:build-story {len(ready)}")}</div>' \
             if len(ready) > 1 else ""
-    by_wave = "".join(group(esc(t["wave"].format(n=w)), [x for x in stories if x["wave"] == w], links, t,
+    by_wave = "".join(group(esc(t["wave"].format(n=w)), in_wave[w], links, t,
                             w == live, t["wave_note"], wave_action(w)) for w in waves)
     first_epic = next((x["epic"] for x in stories if x["status"] != "done"), None)
     by_epic = "".join(
-        group(f'<code>{esc(e)}</code> {inline(goal) if goal else ""}', [x for x in stories if x["epic"] == e], links, t,
-              e == first_epic)
-        for e, goal in s["epics"].items() if any(x["epic"] == e for x in stories))
+        group(f'<code>{esc(e)}</code> {inline(goal) if goal else ""}', in_epic[e], links, t, e == first_epic)
+        for e, goal in s["epics"].items() if e in in_epic)
     epics_doc = doc_block("backlog/epics.md", read(s["root"] / "backlog/epics.md"), links, t) \
         if (s["root"] / "backlog/epics.md").exists() else ""
     pct = round(100 * done / len(stories))

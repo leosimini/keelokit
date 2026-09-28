@@ -58,6 +58,14 @@
   `.keelokit/exceptions.toml`, `.keelokit/critical.toml`, `.keelokit/rules.local.toml` and, if you
   kept the example, `packages/shared/src/allocate.test.ts`. Find them with
   `git grep -n 'pnpm doctor'` and say `pnpm run doctor` (or `python3 .keelokit/bin/doctor.py`).
+- Fixed (NFR-1): the doctor compared every pair of pending stories to find wave clashes, and
+  searched every test title once per done story, so a backlog of a few thousand stories slowed
+  every mode, the SessionStart `--brief` and the dashboard included (2000 stories in one wave: 8 s).
+  It now indexes each wave's paths and critical areas and reads the test titles once: 2000 stories
+  take 0.2 s. The dashboard also grouped its stories by scanning the whole backlog once per wave,
+  per epic and per bug bash run (8000 stories in one-story waves: 6.8 s); it now groups them in one
+  pass (2 s, most of it the doctor). Same findings and the same page as before. Already in 0.7.1;
+  `harness-upgrade` brings the new doctor, and `claude plugin update` the new dashboard.
 
 ## 0.7.1 — 2026-09-27
 
