@@ -33,7 +33,8 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | **Project** | |
 | `/keelokit:project-new` | From an idea to a working skeleton: an interview that writes the product context, a short PRD, the stack, a generated monorepo with CI, and a first backlog |
 | `/keelokit:project-adopt` | For an existing repo: adds only the harness (`.keelokit/`), maps its rules to the checks the repo already has, lists the rest as dated exceptions, and shows on the dashboard what it found |
-| `/keelokit:project-dashboard` | One page with every stage, what waits for your review, stories by development wave and by epic, environments, bug bashes and security reviews, the decisions taken, and buttons that ask Claude for the next step |
+| `/keelokit:project-dashboard` | The page you work from, kept live: where the project is, the next step with its command to copy, what waits for you, the development waves with every story, health and environments |
+| `/keelokit:project-report` | The complete status, read-only: every stage with its documents, bug bashes, security reviews, decisions and history, to share or export as a file |
 | **Plan** | |
 | `/keelokit:plan-intake` | Reads what you already have, then asks only what's missing; what nobody knows yet is written down as an open question |
 | `/keelokit:plan-backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
@@ -54,18 +55,22 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 <p align="center"><img src="docs/assets/dashboard-en.webp" width="900" alt="The Keelokit dashboard of a sample project: the current stage, the next step, every stage and what waits for you"></p>
 
 You don't need to read agent logs to know where things are. `/keelokit:project-dashboard` builds one
-page from the repo, in your language, with the look of [keelokit.com](https://keelokit.com):
+short page from the repo, in your language, with the look of [keelokit.com](https://keelokit.com),
+and keeps it live: each refresh updates the open page without sending it through the chat again.
 
-- **Every stage with its status.** Only what matters now is open: the stage waiting for your
-  review shows what to check (the PRD's scope and metrics, the stack, the stories by development
-  wave and by epic) with the documents inline; the rest folds into one-line summaries.
-- **What waits for you and the decisions taken:** greenfield or brownfield, how Keelokit runs,
-  how stories are built, the apps, the recorded decisions.
-- **Bug bashes and history:** what each bug hunt found, what got fixed, the check it left, what
-  it added to the backlog; and every story, bug bash and approval in order.
-- **Ask Claude:** every action on the page (approve, ask for changes, build a story or a wave,
-  run a bug bash, add a feature) fills a box you can send to the Claude session watching the
-  page, or copy into any chat.
+- **Where you are and the next step:** the stages as a stepper, the one thing to do next and its
+  command, ready to copy.
+- **What waits for you:** approvals, decisions a bug bash or a security review left (with the
+  recommended option), environments still being set up, harness updates — each with its request
+  ready to copy or send to the Claude session watching the page.
+- **Development waves:** every story under its wave, linked to its file in the repo, done, ready
+  to build (copy its command) or waiting for another.
+- **Health and environments:** the doctor, the last bug bash and security review, staging and
+  production — and links to the project's documents.
+
+For someone else, or to keep a copy, `/keelokit:project-report` generates the **full report**:
+read-only, every stage with its documents, the findings of every bug bash and security review,
+the decisions and the history — as a page to share or an HTML file to export.
 
 At the start you choose, once, how Keelokit works: **stage by stage** (it stops for you to
 review each stage) or **automatic** (it goes on alone and stops only where a person is required:

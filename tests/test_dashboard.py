@@ -88,10 +88,16 @@ class DashboardTest(unittest.TestCase):
         return json.loads(sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--json"))
 
     def page(self, *args: str) -> str:
-        out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), *args).strip()
+        """The full report, which shows everything the repo says (most tests read it)."""
+        out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--report", *args).strip()
         html = Path(out).read_text()
         self.assert_links_land(html)
         return html
+
+    def ops(self, *args: str) -> str:
+        """The operational dashboard, the page people work from."""
+        out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), *args).strip()
+        return Path(out).read_text()
 
     def assert_links_land(self, html: str) -> None:
         """UX-1: every page a test renders goes through here (see dead_links)."""
@@ -268,7 +274,8 @@ class DashboardTest(unittest.TestCase):
         self.assertIn('id="bugbash" open', html)
         self.assertIn('data-ask="/keelokit:build-story AUTH-002"', html)
         self.assertIn("New product (greenfield)", html)
-        self.assertIn('id="ask-send"', html)
+        self.assertNotIn('id="ask-send"', html, "the report is read-only")
+        self.assertIn('id="ask-send"', self.ops(), "the dashboard can send requests to Claude")
 
     def test_environments_security_and_harness_notice(self):
         self.gates("intake", "product", "stack", "skeleton")
@@ -545,7 +552,7 @@ class DashboardTest(unittest.TestCase):
         self.write("docs/prd.md", "# Shop — PRD\n\n<script>alert(1)</script> **in**\n")
         html = self.page()
         self.assertFalse(html.lstrip().startswith("<!doctype"))
-        self.assertTrue(html.startswith("<title>Tablero de Shop</title>"))
+        self.assertTrue(html.startswith("<title>Reporte de Shop</title>"))
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt; <strong>in</strong>", html)
         self.assertIn('id="stage-product"', html)
@@ -558,6 +565,90 @@ class DashboardTest(unittest.TestCase):
         html = self.page("--standalone")
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn('href="https://github.com/acme/shop/blob/main/docs/context/gaps.md"', html)
+
+    def building(self, lang: str = "en") -> None:
+        """A project in build: one story done, one ready, one waiting for it, a bug bash with a
+        pending decision, and an environment half set up."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog", lang=lang)
+        self.context()
+        self.write(".keelokit/answers.yml", "mode: project\nproject_name: Shop\n")
+        self.story("AUTH-001", 1)
+        self.story("AUTH-002", 2, deps='"AUTH-001"')
+        self.write("backlog/stories/CART-001-x.md", STORY.format(id="CART-001", epic="CART", title="t CART-001", wave=2,
+                                                                 deps='"AUTH-002"', body="").replace(
+            'dimensions = ["api"]', 'dimensions = ["api"]\norigin = "bugbash:2026-09-24 UX-3"'))
+        self.write("docs/bugbash/2026-09-24/report.md",
+                   "# Bug bash\n\n## Scope\nsha 4be91c0\n\n## Findings\n\n"
+                   "| Id | Lens | Severity | Title | Status | Fix commit | Check added |\n|---|---|---|---|---|---|---|\n"
+                   "| CPY-1 | copy | P1 | The page promises SMS | pending decision | — | — |\n"
+                   "| UX-2 | ux | P2 | Empty agenda spins | fixed | 9d8e7f6 | E2E step |\n\n"
+                   "## Pending decisions\n\n- **CPY-1** — the page promises SMS; the PRD says WhatsApp. Recommendation: (a).\n")
+        self.write("docs/context/environments.md", "| Environment | Purpose | URL |\n|---|---|---|\n| staging | main | s.shop.app |\n")
+        self.write("docs/deploy.md", "# Deploy\n\n## staging\n- [x] Fly.io account\n- [ ] Domain and HTTPS\n")
+        self.commit("chore: start")
+        self.commit("feat: sign in\n\nStory: AUTH-001")
+
+    def test_the_dashboard_is_the_short_operational_page(self):
+        self.building()
+        html = self.ops("--standalone")
+        for text in ("Stage 6 of 6 · Build", "/keelokit:build-story AUTH-002", "Waiting on you", "CPY-1",
+                     "the page promises SMS; the PRD says WhatsApp", "Development waves", "1 of 3 stories",
+                     "Waits for AUTH-002", "from a bug bash", "1 step left for staging: Domain and HTTPS.",
+                     "Health and environments", 'data-ask="/keelokit:project-report"'):
+            self.assertIn(esc(text), html)
+        # Every story links to its file, and a ready one copies its command.
+        self.assertIn('backlog/stories/AUTH-002-x.md', html)
+        self.assertIn('data-ask="/keelokit:build-story AUTH-002"', html)
+        # It carries no stage documents: those are the report's.
+        self.assertNotIn('class="stage ', html)
+        self.assertLess(len(html), len(self.page()))
+
+    def test_the_report_is_read_only(self):
+        self.building()
+        html = self.page()
+        self.assertIn("<title>Shop report</title>", html)
+        self.assertNotIn('id="ask"', html, "no Ask Claude box on a report")
+        self.assertIn("button[data-ask]{display:none}", html, "no button that prepares a request")
+        self.assertIn(esc("the page promises SMS"), html)
+
+    def test_live_writes_a_shell_without_project_data_and_one_data_document(self):
+        self.building()
+        out = json.loads(sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--live"))
+        shell = Path(out["shell"]["file"]).read_text()
+        doc = json.loads(Path(out["data"]["file_path"]).read_text())
+        self.assertEqual((out["data"]["collection"], out["data"]["doc_id"]), ("dash", "ops"))
+        self.assertTrue(out["shell"]["publish"], "nothing is published yet")
+        self.assertNotIn("AUTH-002", shell)
+        self.assertIn(f'data-shell="{out["shell"]["id"]}"', shell)
+        self.assertEqual(doc["shell"], out["shell"]["id"])
+        self.assertIn("AUTH-002", doc["html"])
+        self.assertLess(len(json.dumps(doc)), 256 * 1024)
+        # Recording the published shell makes the next refresh a data write only, until the design changes.
+        with (self.root / ".keelokit/state.toml").open("a") as f:
+            f.write('url = "https://claude.ai/artifact/abc"\n')
+        sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--live", "--shell-published")
+        state = (self.root / ".keelokit/state.toml").read_text()
+        self.assertIn(f'shell = "{out["shell"]["id"]}"', state)
+        self.assertIn('lang = "en"', state, "the rest of [dashboard] stays")
+        self.assertIn("[gates]", state)
+        self.story("AUTH-003", 3)
+        again = json.loads(sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--live"))
+        self.assertEqual(again["shell"]["id"], out["shell"]["id"], "new data never changes the shell")
+        self.assertFalse(again["shell"]["publish"], again)
+        self.assertEqual(again["url"], "https://claude.ai/artifact/abc")
+
+    def test_live_shell_changes_with_the_language(self):
+        self.building()
+        en = json.loads(sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--live"))["shell"]["id"]
+        es = json.loads(sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--live", "--lang", "es"))["shell"]["id"]
+        self.assertNotEqual(en, es)
+
+    def test_operational_page_in_spanish(self):
+        self.building("es")
+        html = self.ops()
+        for text in ("Etapa 6 de 6 · Construcción", "Te esperan", "Olas de desarrollo", "Espera a AUTH-002",
+                     "del bug bash", "Salud y entornos", "Generar el reporte completo", "24 sep"):
+            self.assertIn(esc(text), html)
 
 
 # I18N-2: the headings of the PRD and the reports as someone would write them in each language of
@@ -885,7 +976,7 @@ class DashboardDocHeadingsTest(unittest.TestCase):
     def setUp(self):
         self.dashboard = load_dashboard()
         self.tree = ast.parse(DASHBOARD.read_text())
-        tables = {"T", "STAGES", "GLOSSARY", "HEADINGS"}
+        tables = {"T", "OPS_T", "STAGES", "GLOSSARY", "HEADINGS"}
         self.skip = {id(n) for node in self.tree.body if isinstance(node, ast.Assign)
                      and any(isinstance(t, ast.Name) and t.id in tables for t in node.targets) for n in ast.walk(node)}
 
