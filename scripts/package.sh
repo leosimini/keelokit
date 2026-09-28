@@ -8,7 +8,7 @@
 # references/, and the project template (template/ + copier.yml) that project-new, project-adopt
 # and harness-upgrade use — plus README, CHANGELOG and LICENSE. It leaves out what only this
 # repository needs: its CI (.github/), its tests and scripts, its own Keelokit harness and project
-# docs (.keelokit/, docs/context, docs/bugbash, docs/security), and its working agreement. The
+# docs (.keelokit/, docs/context, docs/bugbash, docs/security, docs/escapes.md), and its working agreement. The
 # Release workflow attaches it to every GitHub Release as keelokit-plugin.zip.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -24,7 +24,7 @@ rm -f "$out"
 
 git archive --format=zip -o "$out" "$ref" -- . \
   ':(exclude).github' ':(exclude).claude' ':(exclude).keelokit' ':(exclude)tests' ':(exclude)scripts' \
-  ':(exclude)docs/context' ':(exclude)docs/bugbash' ':(exclude)docs/security' ':(exclude)AGENTS.md' \
+  ':(exclude)docs/context' ':(exclude)docs/bugbash' ':(exclude)docs/security' ':(exclude)docs/escapes.md' ':(exclude)AGENTS.md' \
   ':(exclude).gitignore' ':(exclude).githooks'
 
 python3 - "$out" <<'EOF'
