@@ -135,7 +135,8 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
 3. `git init -b main`, `pnpm install`, then `pnpm verify` and `pnpm mutation --all`. Fix until
    green — the fix belongs in the generated project only if it is product-specific; if the
    template itself is wrong, say so: it must be fixed in Keelokit.
-4. First commit: `chore: skeleton from Keelokit v<version>`.
+4. First commit, of everything (`git add -A`: `pnpm-lock.yaml` included, or `pnpm verify` can't
+   compare it with origin/main): `chore: skeleton from Keelokit v<version>`.
 5. Ask whether to create a private GitHub repo (`gh repo create <slug> --private --source . --push`).
 6. Staging: the API deploys to Fly.io from CI. Offer `/keelokit:ship-setup` now: it writes the
    deploy guide, does what needs none of the user's credentials and verifies each step. The Fly

@@ -86,6 +86,15 @@
   `harness-upgrade` brings the new doctor. A hook it now reports is one git doesn't run: make it
   executable, install it (`core.hooksPath`, or the package manager's install for husky), or map or
   except the rule with /keelokit:check-health.
+- Fixed (LOG-302): `pnpm verify` compared the root manifests with origin/main through `git diff`,
+  which sees tracked files only, so a `pnpm-lock.yaml` git didn't track (a first commit made before
+  `pnpm install`) read as unchanged and verify checked only the affected packages, while the
+  lockfile never reached origin. pnpm's `[origin/main]` filter has the same blind spot, so a new file
+  not yet added to git left its package out. Now an untracked root manifest runs everything and
+  names the file, and every other untracked file adds its package (and its dependents), in one
+  pass that starts no process per file, so a `.venv` or generated tree doesn't slow every push.
+  `project-new` commits everything after `pnpm install`. Already in 0.7.1; `harness-upgrade` brings
+  the new `scripts/verify.sh`.
 
 ## 0.7.1 — 2026-09-27
 

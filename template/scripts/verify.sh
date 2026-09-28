@@ -36,14 +36,41 @@ else
 fi
 
 # Root manifests and the base tsconfig reach every package: a change there means everything.
-scope=(-r)
-if ! $all && git rev-parse --verify --quiet origin/main >/dev/null &&
-  git diff --quiet origin/main -- package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json; then
-  # '!{.}': a root-only change (docs, backlog) matches the root package, whose scripts recurse.
-  scope=(--filter '...[origin/main]' --filter '!{.}')
-  echo 'Affected packages only (since origin/main); `pnpm verify --all` runs everything.'
+# `git diff` and pnpm's `[origin/main]` see tracked files only, so a file git doesn't track is a
+# change too: an untracked manifest means everything, any other untracked file its package.
+manifests='package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json'
+if ! $all && git rev-parse --verify --quiet origin/main >/dev/null; then
+  for f in $manifests; do
+    if [ -e "$f" ] && ! git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+      echo "$f is not tracked by git (git add it), so it can't be compared with origin/main: running everything."
+      all=true
+    fi
+  done
+  # shellcheck disable=SC2086 # $manifests is a fixed list of plain names
+  git diff --quiet origin/main -- $manifests || all=true
 else
   all=true
+fi
+scope=(-r)
+if ! $all; then
+  # '!{.}': a root-only change (docs, backlog) matches the root package, whose scripts recurse.
+  scope=(--filter '...[origin/main]' --filter '!{.}')
+  # This runs on every push and a repo can hold thousands of untracked files (a .venv, generated
+  # code): builtins and expansions only, no process per file, and each directory walked up once.
+  seen=$'\n' prev=
+  while IFS= read -r -d '' f; do
+    case $f in */*) d=${f%/*} ;; *) continue ;; esac # a root file: the root package, left out
+    [ "$d" = "$prev" ] && continue
+    prev=$d
+    while [ ! -f "$d/package.json" ]; do
+      case $d in */*) d=${d%/*} ;; *) d=. && break ;; esac
+    done
+    [ "$d" = . ] && continue
+    case $seen in *$'\n'"$d"$'\n'*) continue ;; esac
+    seen="$seen$d"$'\n'
+    scope+=(--filter "...{./$d}")
+  done < <(git ls-files -z --others --exclude-standard)
+  echo 'Affected packages only (since origin/main); `pnpm verify --all` runs everything.'
 fi
 affected() { $all || pnpm "${scope[@]}" ls --depth -1 --parseable | grep -q "/$1\$"; }
 

@@ -97,6 +97,8 @@ commit_all generated
 cd "$dir"
 step 'Install'
 pnpm install
+# pnpm-lock.yaml is part of the project: commit it, as project-new does, so verify compares it.
+git add -A && { git diff --cached --quiet || git -c user.name=t -c user.email=t@t commit -qm 'pnpm install'; }
 pnpm -r --workspace-concurrency=1 --if-present e2e:install
 pnpm verify --all
 
