@@ -47,14 +47,31 @@ TAMPER = [
     (r"@ts-(ignore|nocheck)", "a @ts-ignore / @ts-nocheck"),
     (r"continue-on-error:\s*true", "continue-on-error in CI"),
 ]
+# git's own options come before the subcommand, and -C, -c and these long ones take the next word
+# as their value (`git -C dir commit -n`). A value may be quoted ('' by now) or hold `\ `.
+GIT_VALUE = r"(?:\\.|[^\s\\])+"
+GIT = rf"\bgit(?:\s+(?:(?:-[Cc]|--(?:git-dir|work-tree|namespace|config-env|attr-source))\s+|-){GIT_VALUE})*?\s+"
+# The rest of that git command: up to a shell separator, or `--`, after which come paths.
+GIT_ARGS = r"(?:(?!\s--(?![^\s;&|]))[^|;&\n])*"
+# A short-option bundle ends at the token's end (-nm"msg" is emptied to -nm'').
+BUNDLE_END = r"(?![^\s;&|<>()])"
 GIT_NO_HOOKS = [
-    (r"\bgit\b.*\s--no-verify\b", "QA-2: never bypass git hooks"),
-    (r"\bgit\b(\s+-[^c]\S*)*\s+commit\b[^|;&]*\s-[a-zA-Z]*n[a-zA-Z]*\b", "QA-2: `commit -n` skips the git hooks"),
+    # git takes any unambiguous prefix of a long option: --no-veri(f) is --no-verify.
+    (r"\bgit\b.*\s--no-veri(fy?)?(?![\w-])", "QA-2: never bypass git hooks"),
+    # A short-option bundle skips hooks when -n is one of its letters: flags that take no value
+    # (as in `git commit -h`), then n, then maybe one option whose value is the rest (-nm"msg").
+    # In -uno or -mn the n is a value, not -n.
+    (rf"{GIT}commit\b{GIT_ARGS}\s-[aeiopqsvz]*n[aeinopqsvz]*([FmcCtSu]\S*)?{BUNDLE_END}",
+     "QA-2: `commit -n` skips the git hooks"),
     (r"keelokit\.allowTamper", "QA-4: only a human may allow a skipped test or silenced check"),
-    (r"\bgit\s+(-c\s+\S+\s+)*-c\s+core\.hooksPath", "QA-2: don't override the hooks path"),
-    (r"\bgit\s+config\b.*\bcore\.hooksPath\b", "QA-2: the hooks path is set by `pnpm install`"),
-    (r"\bgit\s+push\b.*\s(-f\b|--force\b(?!-with-lease)|--force-if-includes\b)", "QA-2: no force-push (use --force-with-lease on your own branch)"),
-    (r"\bgit\s+push\b.*\s\+[\w./:-]+", "QA-2: `+ref` is a force-push"),
+    # Config names are case-insensitive: core.hookspath is core.hooksPath.
+    (rf"(?i){GIT}(?:-c\s+|--config-env[=\s]\s*)core\.hookspath\b", "QA-2: don't override the hooks path"),
+    (rf"(?i){GIT}config\b{GIT_ARGS}\bcore\.hookspath\b", "QA-2: the hooks path is set by `pnpm install`"),
+    # -f bundled with push's no-value flags (-uf, -vf; -o takes the rest as its value), --force and
+    # every --force-… but -with-lease, and --mirror, which force-updates, in any prefix git accepts.
+    (rf"{GIT}push\b{GIT_ARGS}\s(-[46dnquv]*f[46dfnquv]*(o\S*)?{BUNDLE_END}|--force(?!-w)(-[\w-]*)?(?![\w-])"
+     r"|--m(i(r(r(or?)?)?)?)?(?![\w-]))", "QA-2: no force-push (use --force-with-lease on your own branch)"),
+    (rf"{GIT}push\b{GIT_ARGS}\s\+[\w./:-]+", "QA-2: `+ref` is a force-push"),
 ]
 WRITE_CMD = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\brm\b|\btouch\b|\bln\b|\bdd\b)")
 

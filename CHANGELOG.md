@@ -15,6 +15,14 @@
   saw nothing changed. Now nothing counts as done and the doctor reports it, `--scope` exits 2 and
   `--critical --changed` takes every critical file. The generated CI's `checks` job fetches full
   history (`fetch-depth: 0`) so the doctor sees `origin/main`; `harness-upgrade` brings it.
+- Fixed (LOG-4): the guard blocked `git commit -uno` (and any short flag with an n in it) as
+  `commit -n`, and let through hook bypasses and force-pushes git accepts in other spellings:
+  `--no-veri`/`--no-verif`, git's own options before the subcommand (`git -C dir commit -n`,
+  `git -C dir push -f`, `git --config-env=core.hooksPath=… commit`), `core.hookspath` in any case,
+  and `git push -uf`/`-vf`/`--mirror`. It now reads git's option grammar: n (or push's f) counts
+  only as an option letter of a bundle, not as another option's value, `-n` after `--` is a path,
+  and every prefix git accepts for `--no-verify` and `--mirror` is blocked (`--no-verify-signatures`
+  and `--force-with-lease` pass). Already in 0.7.1; `harness-upgrade` brings the new guard.
 
 ## 0.7.1 — 2026-09-27
 
