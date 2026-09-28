@@ -178,6 +178,10 @@
   wave's stories by id (`/keelokit:build-story AUTH-002 AUTH-003`), and `build-story` takes several
   ids of one wave and builds exactly those in parallel. Already in 0.7.0; `claude plugin update`
   brings the new dashboard and skill.
+- Fixed (UI-1): on a phone (320 px) a long story id, a blocked story's "Waits for …", the project
+  name or a long word in a title, command or value pushed the dashboard and the report sideways, and
+  the report's short facts squeezed their value to nothing. Every text now wraps inside its box, at
+  any width. Already in 0.6.0; `claude plugin update` brings the new dashboard.
 
 ## 0.7.1 — 2026-09-27
 

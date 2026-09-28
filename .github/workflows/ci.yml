@@ -18,7 +18,7 @@ jobs:
   unit:
     name: Unit tests (doctor, guard, verify)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,6 +35,8 @@ jobs:
           node-version: 22
       # tests/test_copier.py renders copier.yml's defaults with copier's own Jinja (uv run --with).
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # tests/test_dashboard.py lays both dashboard pages out in Chromium at 320/768/1280 px (UI-1).
+      - run: pip install playwright==1.63.0 && python3 -m playwright install --with-deps chromium
       - run: python3 -m unittest discover -s tests -v
 
   # SEC-1: no secret anywhere in the history (.gitleaks.toml leaves out the guard tests' fake keys).

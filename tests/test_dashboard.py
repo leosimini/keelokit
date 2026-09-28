@@ -1118,6 +1118,121 @@ class DashboardDocHeadingsTest(unittest.TestCase):
         self.assertGreater(patterns, 20)
 
 
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:  # CI installs it (.github/workflows/ci.yml), so there the layout test runs
+    sync_playwright = None
+
+LONG = "INFRAESTRUCTURA-DE-PAGOS-RECURRENTES"  # an id, epic, path or value with nowhere to break
+
+# The innermost elements, outside the tables that scroll on their own (.scroll), whose box runs
+# past the viewport, whose text spills out of their box or is crushed to a few letters a line, as
+# [tag.classes, right edge, text].
+OVERFLOW_JS = """() => {
+  const W = document.documentElement.clientWidth, bad = new Set();
+  for (const el of document.body.querySelectorAll('*'))
+    if (!el.closest('.scroll, svg') && el.getClientRects().length && el.getBoundingClientRect().right > W + 0.5) bad.add(el);
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node; (node = walk.nextNode());) {
+    let box = node.parentElement;
+    if (!node.textContent.trim() || box.closest('.scroll, svg, script, style, textarea')) continue;
+    while (getComputedStyle(box).display === 'inline') box = box.parentElement;
+    if (getComputedStyle(box).textOverflow === 'ellipsis') continue;  // cut on purpose, with its ellipsis
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const edge = box.getBoundingClientRect().right, lines = [...range.getClientRects()].filter(r => r.width);
+    const text = node.textContent.trim();
+    if (lines.some(r => r.right > edge + 1)) bad.add(box);
+    // Wrapping is the fix, not a column crushed to a letter or two a line by a wider neighbour.
+    else if (text.length >= 8 && new Set(lines.map(r => Math.round(r.top))).size > text.length / 3) bad.add(box);
+  }
+  const all = [...bad], name = el => el.tagName.toLowerCase()
+    + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).join('.') : '');
+  const out = all.filter(el => !all.some(o => o !== el && el.contains(o))).map(el =>
+    [name(el), Math.round(el.getBoundingClientRect().right), (el.textContent || '').trim().slice(0, 30)]);
+  return {scroll: document.documentElement.scrollWidth, width: W, out: out};
+}"""
+
+
+@unittest.skipUnless(sync_playwright or os.environ.get("CI"), "playwright not installed (CI installs it)")
+class DashboardLayoutTest(unittest.TestCase):
+    """UI-1, the class: project text the page can't choose (a story or epic id, a path, a command, a
+    finding id, a value in backticks, a URL) has no length limit, and one that couldn't break pushed
+    the page sideways at 320 px. Both pages (the dashboard and the report, in English and Spanish)
+    are rendered for a project whose every slot holds a long unbroken word, every section open, in a
+    real browser at 320 / 768 / 1280 px (dimensions.md, ui): nothing may run past the viewport or
+    spill out of its own box. A new slot that can't wrap fails here once the fixture fills it."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def project(self) -> None:
+        a, b, c = f"{LONG}-001", f"{LONG}-002", f"{LONG}-003"
+        low, epic = LONG.lower(), LONG.replace("-", "")
+        word = LONG.replace("-", "_") + "_CONFIGURATION_VALUE"
+        table = "| Id | Lens | Severity | Title | Status | Fix commit | Check added |\n|---|---|---|---|---|---|---|\n"
+        files = {
+            ".keelokit/state.toml": "[gates]\n" + "".join(f'{g} = "2026-09-20"\n' for g in
+                                                           ("intake", "product", "stack", "skeleton", "backlog")),
+            ".keelokit/answers.yml": f"mode: project\nproject_name: Plataformadepagosrecurrentesparacomercios\n"
+                                     f"apps: [{low}-api, {low}-web]\n",
+            ".keelokit/profile.toml": f'kind = "{low}"\ntraits = ["{low}-trait"]\n',
+            "docs/context/product.md": "# product\n", "docs/context/constraints.md": "# constraints\n",
+            "docs/context/domain.md": f"# domain\n\n- **INV-001** [MUST] `{word}` is paid once.\n",
+            "docs/context/environments.md": "| Environment | Purpose | URL |\n|---|---|---|\n"
+                                            f"| {low} | `{word}` | {low}.{low}.app |\n",
+            "docs/context/gaps.md": "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n"
+                                    f"| GAP-{LONG} | {LONG}.md | `{word}` | Owner | `{word}`? | yes |\n",
+            "docs/deploy.md": f"# Deploy\n\n## {low}\n- [x] Account\n- [ ] Set `{word}`\n",
+            "docs/prd.md": f"# Shop — PRD\n\n## Scope\n`{word}`\n",
+            "docs/stack.md": f"# Stack\n\nApps: {low}-api\n",
+            "docs/decisions/0001-x.md": f"# Use {word}\n\nStatus: Accepted\n",
+            "backlog/epics.md": f"| Epic | Goal |\n|---|---|\n| {epic} | `{word}` |\n",
+            "backlog/stories/A-001-x.md": STORY.format(id="A-001", epic="A", title="t", wave=1, deps="", body=""),
+        }
+        for kind, prefix in (("bugbash", "UX"), ("security", "SEC")):
+            files[f"docs/{kind}/2026-09-24/report.md"] = (
+                f"# Report\n\n## Scope\nsha 4be91c0\n\n## Findings\n\n{table}"
+                f"| {prefix}-{LONG} | ux | P1 | `{word}` | pending decision | — | `{word}` |\n\n"
+                f"## Pending decisions\n\n- **{prefix}-{LONG}** — `{word}`. Recommendation: (a).\n")
+        for sid, wave, deps, origin in ((a, 1, "", ""), (b, 2, f'"{a}"', f'\norigin = "bugbash:2026-09-24 UX-{LONG}"'),
+                                        (c, 2, f'"{a}", "{b}"', "")):
+            files[f"backlog/stories/{sid}-x.md"] = STORY.format(
+                id=sid, epic=epic, title=f"Set {word}", wave=wave, deps=deps,
+                body=f"Touches `apps/{low}/src/{word}.ts`.\n").replace('dimensions = ["api"]', 'dimensions = ["api"]' + origin)
+        for rel, text in files.items():
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_text(text)
+        for cmd in (("init", "-q", "-b", "main"), ("config", "user.email", "t@example.com"), ("config", "user.name", "T"),
+                    ("add", "-A"), ("commit", "-qm", f"chore: {word}"),
+                    ("commit", "-q", "--allow-empty", "-m", f"feat: {word}\n\nStory: A-001")):
+            sh(self.root, "git", *cmd)
+
+    def test_UI_1_no_project_text_pushes_the_page_sideways_at_any_width(self):
+        self.project()
+        pages = {}
+        for lang in ("en", "es"):
+            for name, args in (("dashboard", []), ("report", ["--report"])):
+                out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--standalone", "--lang", lang,
+                         "--out", str(self.root / f"{name}-{lang}.html"), *args).strip()
+                pages[f"{name} {lang}"] = Path(out).as_uri()
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            for name, uri in pages.items():
+                for width in (320, 768, 1280):
+                    with self.subTest(page=name, width=width):
+                        page = browser.new_page(viewport={"width": width, "height": 900})
+                        page.goto(uri)
+                        page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
+                        got = page.evaluate(OVERFLOW_JS)
+                        page.close()
+                        self.assertEqual(got["out"], [], f"{got['scroll']} px of page in a {width} px window:\n"
+                                         + "\n".join(map(str, got["out"])))
+                        self.assertLessEqual(got["scroll"], got["width"])
+            browser.close()
+
+
 class DashboardIOContractTest(unittest.TestCase):
     """DX-2 (and NFR-3): the dashboard's I/O contract. A --root that isn't a folder (missing, a file,
     a symlink loop, the current folder deleted) is exit 2 and a line naming it, never a greenfield

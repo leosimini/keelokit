@@ -19,7 +19,7 @@ docs/             design.md (how the pieces fit), releasing.md (how a version sh
 | What | Command |
 |---|---|
 | Everything CI checks, locally (the pre-push hook runs it) | `scripts/verify.sh` |
-| Guard, doctor, dashboard, workflow and verify tests | `python3 -m unittest discover -s tests` (test_verify.py needs pnpm) |
+| Guard, doctor, dashboard, workflow and verify tests | `python3 -m unittest discover -s tests` (test_verify.py needs pnpm, the dashboard layout test playwright's Chromium) |
 | Plugin manifests | `claude plugin validate . --strict` |
 | A generated project, end to end | `scripts/test-template.sh '["api","web"]'` (see its header) |
 

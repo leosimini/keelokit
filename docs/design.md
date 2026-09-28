@@ -134,7 +134,7 @@ is the `mobile` lens of the bug bash, on a real device.
 
 ## Testing Keelokit itself
 
-- `tests/` — unit tests for the guard, doctor, dashboard and the template's `verify.sh` scope (`python3 -m unittest discover -s tests`; `test_verify.py` needs pnpm).
+- `tests/` — unit tests for the guard, doctor, dashboard and the template's `verify.sh` scope (`python3 -m unittest discover -s tests`; `test_verify.py` needs pnpm, and the dashboard's layout test playwright's Chromium).
 - `scripts/test-template.sh` — generates projects (several app combinations, adopt mode, an
   upgrade from the previous tag), runs `pnpm verify --all` on each (integration tests and the
   real-stack E2E included), then `pnpm mutation --all`, and checks that a suite that can't fail
