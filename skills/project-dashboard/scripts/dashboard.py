@@ -87,6 +87,7 @@ T = {
         "first_commit": "Primer commit",
         "remote": "Repositorio en GitHub",
         "health": "Salud del harness",
+        "health_log": "Salida del doctor (doctor.py --brief), tal como la imprime, en inglés:",
         "backlog_total": ("{done} de {n} historia terminada", "{done} de {n} historias terminadas"),
         "by_wave": "Por ola",
         "by_epic": "Por épica",
@@ -137,7 +138,9 @@ T = {
                    "personal-data": "datos personales", "payments": "pagos", "developer-facing": "para desarrolladores"},
         "traits_none": "sin interfaz, sin base de datos, sin hosting",
         "wait_profile_unknown": "Diagnosticar qué es el proyecto (decide qué reglas aplican)",
-        "wait_profile_drift": "El perfil del proyecto quedó desactualizado: {what}",
+        "wait_profile_drift": "El perfil del proyecto quedó desactualizado",
+        "wait_profile_drift_seen": "El perfil del proyecto quedó desactualizado: el repo tiene `{trait}` ({seen}) y el perfil no lo lista",
+        "wait_profile_drift_missing": "El perfil del proyecto quedó desactualizado: el perfil lista `{trait}` y nada en el repo lo muestra todavía",
         "act_profile": "Actualizar el perfil",
         "credit_k": "Firma Keelokit",
         "credit_names": {"visible": "visible", "quiet": "discreta", "off": "sin firma"},
@@ -310,6 +313,7 @@ T = {
         "first_commit": "First commit",
         "remote": "GitHub repository",
         "health": "Harness health",
+        "health_log": "The doctor's output (doctor.py --brief), as it prints it:",
         "backlog_total": ("{done} of {n} story done", "{done} of {n} stories done"),
         "by_wave": "By wave",
         "by_epic": "By epic",
@@ -360,7 +364,9 @@ T = {
                    "personal-data": "personal data", "payments": "payments", "developer-facing": "for developers"},
         "traits_none": "no UI, no database, no hosting",
         "wait_profile_unknown": "Diagnose what the project is (it decides which rules apply)",
-        "wait_profile_drift": "The project's profile is out of date: {what}",
+        "wait_profile_drift": "The project's profile is out of date",
+        "wait_profile_drift_seen": "The project's profile is out of date: the repo shows `{trait}` ({seen}) but the profile doesn't list it",
+        "wait_profile_drift_missing": "The project's profile is out of date: the profile lists `{trait}` but nothing in the repo shows it yet",
         "act_profile": "Update the profile",
         "credit_k": "Keelokit credit",
         "credit_names": {"visible": "visible", "quiet": "quiet", "off": "off"},
@@ -743,7 +749,7 @@ def collect(root: Path) -> dict:
         except (OSError, subprocess.TimeoutExpired):
             doctor = []
     errors = next((int(m.group(1)) for line in doctor if (m := re.search(r"Harness errors:\s*(\d+)", line))), 0)
-    drift = [line.split(":", 1)[1].strip() for line in doctor if line.startswith("Profile drift:")]
+    drift = [read_drift(line) for line in doctor if line.startswith("Profile drift:")]
 
     outputs = {
         "intake": [f"docs/context/{f}" for f in context],
@@ -906,6 +912,25 @@ def collect(root: Path) -> dict:
     }
 
 
+# doctor.py --brief words drift in English (its DRIFT_SEEN and DRIFT_MISSING). The page reads each
+# line back into the trait and what shows it and words it in its own language (I18N-1); a line it
+# can't read (a doctor that words it otherwise) is still drift, said without the doctor's words.
+DRIFT_LINES = [re.compile(r"the repo shows `(?P<trait>[^`]+)` \((?P<seen>.+)\) but the profile doesn't list it"),
+               re.compile(r"the profile lists `(?P<trait>[^`]+)` but nothing in the repo shows it yet")]
+
+
+def read_drift(line: str) -> dict:
+    text = line.split(":", 1)[1].strip() if line.startswith("Profile drift:") else line.strip()
+    m = next((m for rx in DRIFT_LINES if (m := rx.fullmatch(text))), None)
+    return {"trait": m["trait"], "seen": m.groupdict().get("seen")} if m else {"trait": None, "seen": None}
+
+
+def drift_sentence(d: dict, t: dict) -> str:
+    if not d["trait"]:
+        return t["wait_profile_drift"]
+    return t["wait_profile_drift_seen" if d["seen"] else "wait_profile_drift_missing"].format(trait=d["trait"], seen=d["seen"])
+
+
 def next_step(s: dict, lang: str) -> dict:
     t, names = T[lang], {k: v[0] for k, v in STAGES[lang].items()}
     blocking = [g for g in s["gaps"] if g["blocking"]]
@@ -975,7 +1000,7 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
     if s["profile"] and s["profile"]["kind"] in ("", "unknown"):
         items.append({"text": t["wait_profile_unknown"], "anchor": "decisions", "ask": "/keelokit:check-health", "act": t["act_profile"]})
     elif s["drift"]:
-        items.append({"text": t["wait_profile_drift"].format(what=s["drift"][0]), "anchor": "decisions",
+        items.append({"text": drift_sentence(s["drift"][0], t), "anchor": "decisions",
                       "ask": "/keelokit:check-health", "act": t["act_profile"]})
     if behind(s):
         items.append({"text": t["wait_harness"].format(have=s["harness"], new=s["plugin_version"]), "anchor": "decisions",
@@ -1870,7 +1895,9 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
                  ask(t["act_setup"], "/keelokit:ship-setup"), ask(t["act_doctor"], "/keelokit:check-health"),
                  ask(t["act_refresh"], "/keelokit:project-dashboard")]
         actions = block(esc(t["actions"]), f'<div class="acts">{"".join(acts)}</div>')
-        health = block(esc(t["health"]), f'<pre class="out"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
+        # The doctor speaks English only: its output is a quoted log, marked as such (I18N-1).
+        health = block(esc(t["health"]), f'<p class="what">{esc(t["health_log"])}</p>'
+                                         f'<pre class="out" lang="en"><code>{esc(chr(10).join(s["doctor"]))}</code></pre>') if s["doctor"] else ""
         sections.append(
             f'<details class="stage {state}" id="stage-build"{" open" if building else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'

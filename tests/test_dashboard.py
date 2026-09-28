@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 DASHBOARD = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
+DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
 
 STORY = """\
 +++
@@ -289,6 +290,52 @@ class DashboardTest(unittest.TestCase):
                 for text in plural:
                     self.assertNotIn(text, html)
 
+    def doctor_speaks(self, lang: str) -> list[str]:
+        """A project whose own doctor prints every kind of --brief line: a pending gate, a ready
+        story, the profile, drift both ways (the repo shows `web`, the profile lists `mobile`) and
+        errors. Returns what it printed."""
+        (self.root / ".keelokit/bin").mkdir(parents=True, exist_ok=True)
+        shutil.copy(DOCTOR, self.root / ".keelokit/bin/doctor.py")
+        self.gates(lang=lang)
+        self.context()
+        self.write(".keelokit/profile.toml", 'kind = "web-product"\ntraits = ["mobile"]\n')
+        self.write("apps/web/package.json", "{}\n")
+        self.story("AUTH-001", 1)
+        self.commit("chore: start")
+        brief = [line for line in sh(self.root, "python3", ".keelokit/bin/doctor.py", "--brief").splitlines() if line.strip()]
+        for kind in ("Keelokit: gate pending", "Next ready stories:", "Profile:", "Harness errors:"):
+            self.assertTrue(any(line.startswith(kind) for line in brief), f"the fixture no longer prints {kind!r}: {brief}")
+        self.assertEqual(sum(line.startswith("Profile drift:") for line in brief), 2, brief)
+        return brief
+
+    def test_I18N_1_a_spanish_page_says_nothing_in_the_doctor_s_english_outside_its_quoted_log(self):
+        """The class: any of doctor.py's (English) output reaching the page's own prose. The only
+        place it may appear is the health block's log, marked lang="en" under a caption that says so."""
+        brief = self.doctor_speaks("es")
+        html = self.page("--lang", "es")
+        logs = re.findall(r'<(\w+)[^>]*\blang="en"[^>]*>(.*?)</\1>', html, re.S)
+        self.assertEqual(len(logs), 1, "the doctor's output is quoted once, as a log marked lang=\"en\"")
+        self.assertIn(html_lib.escape("\n".join(brief)), logs[0][1])
+        self.assertIn(esc("Salida del doctor (doctor.py --brief), tal como la imprime, en inglés:"), html)
+        prose = re.sub(r'<(\w+)[^>]*\blang="en"[^>]*>.*?</\1>', " ", html, flags=re.S)
+        prose = html_lib.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"<(script|style)\b.*?</\1>", " ", prose, flags=re.S)))
+        words = " " + " ".join(re.findall(r"[A-Za-z']+", prose)) + " "
+        for line in brief:  # names (`web`) and paths ((apps/web)) are the same in any language
+            for part in re.split(r"`[^`]*`|\([^)]*\)|:", line):
+                run = re.findall(r"[A-Za-z']+", part)
+                for i in range(len(run) - 2):
+                    with self.subTest(line=line, words=run[i:i + 3]):
+                        self.assertNotIn(" " + " ".join(run[i:i + 3]) + " ", words)
+        drift = [w["text"] for w in self.state()["waiting"] if "perfil" in w["text"]]
+        self.assertEqual(drift, ["El perfil del proyecto quedó desactualizado: el repo tiene `web` (apps/web) "
+                                 "y el perfil no lo lista"])
+
+    def test_I18N_1_an_english_page_words_the_drift_it_read(self):
+        self.doctor_speaks("en")
+        self.assertIn("The project's profile is out of date: the repo shows `web` (apps/web) but the profile "
+                      "doesn't list it", [w["text"] for w in self.state()["waiting"]])
+        self.assertEqual(self.state()["drift"], [{"trait": "web", "seen": "apps/web"}, {"trait": "mobile", "seen": None}])
+
     def test_credit_defaults_and_levels(self):
         self.gates("intake")
         self.context()
@@ -406,6 +453,42 @@ class DashboardCopyTest(unittest.TestCase):
         t = {"k": ("{n} rule of {x}", "{n} rules of {x}")}
         self.assertEqual([self.dashboard.plural(t, "k", n, x="A") for n in (0, 1, 2)],
                          ["0 rules of A", "1 rule of A", "2 rules of A"])
+
+
+def load_doctor(path: Path):
+    spec = importlib.util.spec_from_file_location(f"keelokit_doctor_{abs(hash(path))}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class DashboardReadsTheDoctorTest(unittest.TestCase):
+    """I18N-1: the dashboard spliced doctor.py's English drift clause into a Spanish sentence. It now
+    reads each drift line back into (trait, what shows it) and words it through T; this holds both
+    readers to one wording, for both copies of the doctor, and every line it can't read to a
+    sentence with nothing of the doctor's in it."""
+
+    PATHS = ["apps/web", "apps/my web (old)/x", "Dockerfile", "apps/a`b"]
+
+    def setUp(self):
+        self.dashboard = load_dashboard()
+
+    def test_I18N_1_every_drift_line_the_doctor_prints_reads_back_into_trait_and_path(self):
+        for copy in (DOCTOR, DOCTOR.parents[3] / ".keelokit/bin/doctor.py"):
+            doctor = load_doctor(copy)
+            for trait in sorted(doctor.TRAIT_EVIDENCE):
+                for seen in [*self.PATHS, None]:
+                    with self.subTest(copy=str(copy), trait=trait, seen=seen):
+                        line = f"Profile drift: {doctor.drift_text(trait, seen)}"
+                        self.assertEqual(self.dashboard.read_drift(line), {"trait": trait, "seen": seen})
+
+    def test_I18N_1_a_drift_line_it_cannot_read_is_still_said_in_the_page_s_language(self):
+        s = {"drift": [self.dashboard.read_drift("Profile drift: web is now spelled differently")]}
+        self.assertEqual(s["drift"], [{"trait": None, "seen": None}])
+        for lang in ("es", "en"):
+            with self.subTest(lang=lang):
+                self.assertEqual(self.dashboard.drift_sentence(s["drift"][0], self.dashboard.T[lang]),
+                                 self.dashboard.T[lang]["wait_profile_drift"])
 
 
 # Every filesystem primitive that writes. The source may write only through these (the structural

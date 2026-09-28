@@ -128,6 +128,13 @@
   "Of 1 rules", "1 open questions" or "1 historias" (and the same for errors, stories, waves,
   epics, steps and environments). Every count now agrees with its number, in English and Spanish.
   Already in 0.7.1.
+- Fixed (I18N-1): a Spanish dashboard spliced the doctor's English into its own sentences: profile
+  drift read "El perfil del proyecto quedó desactualizado: the repo shows `web` (apps/web) but the
+  profile doesn't list it", and the health block showed the doctor's output as if it were the
+  page's text. The page now reads the drift back into the trait and the path and says it in its
+  own language, and the health block quotes the doctor's output as a log, under a caption that says
+  it is in English (and marked `lang="en"` for screen readers). Already in 0.7.0;
+  `claude plugin update` brings the new dashboard.
 
 ## 0.7.1 — 2026-09-27
 

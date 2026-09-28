@@ -91,6 +91,10 @@ TRAIT_EVIDENCE = {
     "hosted": ["fly.toml", "apps/*/fly.*.toml", "Dockerfile", "vercel.json", "netlify.toml", "render.yaml", "Procfile"],
 }
 STRUCTURAL = {"api", "database", "web", "mobile", "site"}  # hosted: a static host may leave nothing in the repo
+# How --brief words each kind of drift. The dashboard reads these lines back into (trait, path) and
+# says them in the page's language (I18N-1), so a change here needs one in its DRIFT_LINES too.
+DRIFT_SEEN = "the repo shows `{trait}` ({seen}) but the profile doesn't list it"
+DRIFT_MISSING = "the profile lists `{trait}` but nothing in the repo shows it yet"
 
 # What each TOML file the doctor reads may hold (top-level keys, then each [[entry]]'s): key → the
 # kinds of value it accepts. People and agents edit these files by hand, so a value of another kind
@@ -127,7 +131,7 @@ GATES = {
 
 errors: list[str] = []
 warnings: list[str] = []
-profile_drift: list[str] = []
+profile_drift: list[tuple[str, str | None]] = []  # (trait, what shows it, or None)
 not_applicable: list[str] = []
 
 
@@ -457,6 +461,10 @@ def check_exceptions(rule_ids: set[str]) -> set[str]:
     return active
 
 
+def drift_text(trait: str, seen: str | None) -> str:
+    return DRIFT_SEEN.format(trait=trait, seen=seen) if seen else DRIFT_MISSING.format(trait=trait)
+
+
 def load_profile() -> dict | None:
     """.keelokit/profile.toml: the project's kind and traits, and whether the repo still matches them."""
     path = ROOT / ".keelokit/profile.toml"
@@ -473,11 +481,11 @@ def load_profile() -> dict | None:
         seen = next((m.relative_to(ROOT).as_posix() for pat in patterns for m in ROOT.glob(pat)
                      if "node_modules" not in m.parts), None)
         if seen and trait not in traits:
-            profile_drift.append(f"the repo shows `{trait}` ({seen}) but the profile doesn't list it")
+            profile_drift.append((trait, seen))
         elif trait in traits and trait in STRUCTURAL and not seen and profile.get("kind") != "unknown":
-            profile_drift.append(f"the profile lists `{trait}` but nothing in the repo shows it yet")
+            profile_drift.append((trait, None))
     for d in profile_drift:
-        warnings.append(f"profile: {d} — update .keelokit/profile.toml")
+        warnings.append(f"profile: {drift_text(*d)} — update .keelokit/profile.toml")
     return {**profile, "traits": traits}
 
 
@@ -868,7 +876,7 @@ def main() -> int:
         if profile is not None:
             print(f"Profile: {profile.get('kind', 'unknown')} · {len(not_applicable)} rules don't apply")
         for d in profile_drift:
-            print(f"Profile drift: {d}")
+            print(f"Profile drift: {drift_text(*d)}")
         if errors:
             print(f"Harness errors: {len(errors)} — run `{DOCTOR_CMD}`")
         return 0
