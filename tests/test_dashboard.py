@@ -51,6 +51,14 @@ def dead_links(html: str) -> list[str]:
     return sorted({h for h in re.findall(r'\bhref="#([^"]*)"', html) if html_lib.unescape(h) not in ids})
 
 
+def duplicate_ids(html: str) -> list[str]:
+    """UI-2, the class: an id is one element. The page draws the same card in more than one place
+    (a story in the backlog by wave, by epic and in a bug bash's history), and a repeated id sends
+    every link and #hash to the first copy, hidden or not."""
+    ids = re.findall(r'\bid="([^"]+)"', html)
+    return sorted({i for i in ids if ids.count(i) > 1})
+
+
 def build_buttons(html: str) -> list[tuple[str, list[str]]]:
     """Every button that starts /keelokit:build-story, as (its label, the arguments it sends)."""
     found = re.findall(r'data-ask="/keelokit:build-story([^"]*)">([^<]*)<', html)
@@ -111,11 +119,14 @@ class DashboardTest(unittest.TestCase):
     def ops(self, *args: str) -> str:
         """The operational dashboard, the page people work from."""
         out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), *args).strip()
-        return Path(out).read_text()
+        html = Path(out).read_text()
+        self.assertEqual(duplicate_ids(html), [], "ids on more than one element")
+        return html
 
     def assert_links_land(self, html: str) -> None:
-        """UX-1: every page a test renders goes through here (see dead_links)."""
+        """UX-1 and UI-2: every page a test renders goes through here (see dead_links, duplicate_ids)."""
         self.assertEqual(dead_links(html), [], "in-page links with nothing to land on")
+        self.assertEqual(duplicate_ids(html), [], "ids on more than one element")
 
     def test_new_project_starts_at_intake(self):
         self.gates()
@@ -833,6 +844,7 @@ class DashboardAnchorsLandTest(unittest.TestCase):
                                               reported=i, lang=lang):
                                 html = dashboard.render(s, lang, bool(n % 3), self.tmp, "0.7.1")
                                 self.assertEqual(dead_links(html), [], "in-page links with nothing to land on")
+                                self.assertEqual(duplicate_ids(html), [], "ids on more than one element")
                                 self.assertEqual(vague_build_buttons(html), [], "build buttons that don't name their stories")
                                 waves_seen += sum("W-001 W-002" in " ".join(args) for _, args in build_buttons(html))
         self.assertGreater(waves_seen, 0, "no state rendered a wave's build button: UX-2's check saw nothing")
@@ -1230,6 +1242,65 @@ class DashboardLayoutTest(unittest.TestCase):
                         self.assertEqual(got["out"], [], f"{got['scroll']} px of page in a {width} px window:\n"
                                          + "\n".join(map(str, got["out"])))
                         self.assertLessEqual(got["scroll"], got["width"])
+            browser.close()
+
+
+STORY_TARGET_JS = """sel => {
+  const el = document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return {open: el.open, hidden: !!el.closest('[hidden]'), top: Math.round(r.top), height: Math.round(r.height)};
+}"""
+
+
+@unittest.skipUnless(sync_playwright or os.environ.get("CI"), "playwright not installed (CI installs it)")
+class DashboardStoryLinkTest(unittest.TestCase):
+    """UI-2: design.md says a link to a section opens it. A story is drawn in both backlog views
+    (by wave, by epic) and the one not chosen is hidden, so a link or a #hash to a story must open
+    the copy in the view showing, and a link into the hidden view must switch to it."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        files = {".keelokit/state.toml": "[gates]\n" + "".join(
+            f'{g} = "2026-09-20"\n' for g in ("intake", "product", "stack", "skeleton", "backlog"))}
+        for n in range(1, 13):
+            sid = f"PAY-{n:03d}"
+            files[f"backlog/stories/{sid}-x.md"] = STORY.format(
+                id=sid, epic="PAY", title=f"t {sid}", wave=1 + n % 3, deps="", body="Body.\n" * 20)
+        for rel, text in files.items():
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_text(text)
+        for cmd in (("init", "-q", "-b", "main"), ("config", "user.email", "t@example.com"), ("config", "user.name", "T"),
+                    ("add", "-A"), ("commit", "-qm", "chore: skeleton")):
+            sh(self.root, "git", *cmd)
+
+    def test_UI_2_a_link_to_a_story_opens_it_in_the_backlog_view_showing(self):
+        out = sh(self.root, "python3", str(DASHBOARD), "--root", str(self.root), "--standalone", "--report",
+                 "--out", str(self.root / "report.html")).strip()
+        uri = Path(out).as_uri()
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1280, "height": 700})
+            page.goto(uri)
+            page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
+            page.click('button[data-show="epic"]')
+            page.evaluate("location.hash = '#story-PAY-009'")
+            got = page.evaluate(STORY_TARGET_JS, '[data-view="epic"] [id$="-PAY-009"]')
+            self.assertIsNotNone(got, "the epic view has no card for PAY-009")
+            self.assertEqual((got["open"], got["hidden"]), (True, False), f"#story-PAY-009 by epic: {got}")
+            self.assertTrue(got["height"] > 0 and 0 <= got["top"] < 700, f"not scrolled to: {got}")
+
+            page.evaluate("""() => {const a = document.createElement('a'); a.href = '#story-PAY-004';
+                a.textContent = 'x'; document.body.prepend(a); a.click()}""")
+            got = page.evaluate(STORY_TARGET_JS, '[data-view="epic"] [id$="-PAY-004"]')
+            self.assertEqual((got["open"], got["hidden"]), (True, False), f"a link to PAY-004 by epic: {got}")
+
+            wave_id = page.evaluate("document.querySelector('[data-view=\"wave\"] [id$=\"-PAY-007\"]').id")
+            page.evaluate(f"location.hash = '#{wave_id}'")
+            got = page.evaluate(STORY_TARGET_JS, f'#{wave_id}')
+            self.assertEqual((got["open"], got["hidden"]), (True, False), f"a link into the hidden view: {got}")
+            self.assertEqual(page.get_attribute('button[data-show="wave"]', "aria-pressed"), "true")
             browser.close()
 
 

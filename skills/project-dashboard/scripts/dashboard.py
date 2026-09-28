@@ -1476,12 +1476,19 @@ JS = """
     try{localStorage.setItem('keelokit-backlog-view',v)}catch(e){}}
   btns.forEach(function(b){b.addEventListener('click',function(){show(b.getAttribute('data-show'))})});
   if(btns.length){var v='wave';try{v=localStorage.getItem('keelokit-backlog-view')||'wave'}catch(e){}show(v==='epic'?'epic':'wave')}
-  function reveal(id){var el=document.getElementById(id);if(!el)return;
-    for(var n=el;n;n=n.parentElement){if(n.tagName==='DETAILS')n.open=true}
+  // A story is drawn once per backlog view (story-wave-X, story-epic-X): #story-X is the copy in the
+  // view showing, and a link into the hidden view switches to it (UI-2).
+  function target(id){var el=document.getElementById(id);if(el||id.indexOf('story-')!==0)return el;
+    var on=document.querySelector('[data-view]:not([hidden])');
+    return document.getElementById('story-'+(on?on.getAttribute('data-view'):'wave')+'-'+id.slice(6))}
+  function reveal(id){var el=target(id);if(!el)return;
+    for(var n=el;n;n=n.parentElement){if(n.tagName==='DETAILS')n.open=true;
+      if(n.hidden&&n.hasAttribute('data-view'))show(n.getAttribute('data-view'))}
     el.scrollIntoView({block:'start'})}
   document.addEventListener('click',function(e){var a=e.target.closest('a[href^="#"]');if(!a)return;
-    var id=a.getAttribute('href').slice(1);if(document.getElementById(id)){e.preventDefault();reveal(id)}});
+    var id=a.getAttribute('href').slice(1);if(target(id)){e.preventDefault();reveal(id)}});
   if(location.hash.length>1)reveal(location.hash.slice(1));
+  window.addEventListener('hashchange',function(){if(location.hash.length>1)reveal(location.hash.slice(1))});
 
   var box=document.getElementById('ask'), ta=document.getElementById('ask-text'), send=document.getElementById('ask-send'),
       copyBtn=document.getElementById('ask-copy'), status=document.getElementById('ask-status'), comments=null, canSend='off';
@@ -1643,7 +1650,10 @@ def stage_body(s: dict, stage: dict, links: Links, t: dict) -> str:
     return "".join(parts) or f'<p class="muted">{esc(t["not_yet"])}</p>'
 
 
-def story_row(st: dict, links: Links, t: dict) -> str:
+def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
+    """One story's card. The page draws a story once per place it shows it (the backlog by wave,
+    by epic, a bug bash's history), so only the backlog's copies get an id, one per view:
+    story-wave-X and story-epic-X. A link to #story-X lands on the copy in the view showing (UI-2)."""
     status = st["status"]
     label = {
         "done": t["story_done"], "ready": t["story_ready"],
@@ -1654,20 +1664,22 @@ def story_row(st: dict, links: Links, t: dict) -> str:
     build = f'<div class="acts">{ask(t["act_build_one"], "/keelokit:build-story " + st["id"], True)}</div>' if status == "ready" else ""
     deps = (f'<p class="muted">{esc(t["depends"])}: ' + ", ".join(f"<code>{esc(d)}</code>" for d in st["depends_on"]) + "</p>") \
         if st["depends_on"] else ""
-    return (f'<details class="doc story" id="story-{esc(st["id"])}"><summary><span class="sid">{esc(st["id"])}</span>'
+    anchor = f' id="story-{view}-{esc(st["id"])}"' if view else ""
+    return (f'<details class="doc story"{anchor}><summary><span class="sid">{esc(st["id"])}</span>'
             f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
             f'<span class="pill {status}">{esc(label)}</span>{CHEV}</summary>'
             f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{build}'
             f'{markdown(st["body"], links, st["path"])}</div></details>')
 
 
-def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, note: str = "", action: str = "") -> str:
+def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, note: str = "", action: str = "",
+          view: str = "") -> str:
     done = sum(1 for x in items if x["status"] == "done")
     pct = round(100 * done / len(items)) if items else 0
     return (f'<details class="group"{" open" if open_ else ""}><summary><span class="gname">{title}</span>'
             f'<span class="count">{done}/{len(items)}</span><span class="bar"><i style="width:{pct}%"></i></span>{CHEV}</summary>'
             f'<div class="group-body">{f"<p class=muted>{esc(note)}</p>" if note else ""}{action}'
-            + "".join(story_row(x, links, t) for x in items) + "</div></details>")
+            + "".join(story_row(x, links, t, view) for x in items) + "</div></details>")
 
 
 def backlog_block(s: dict, links: Links, t: dict) -> str:
@@ -1688,10 +1700,10 @@ def backlog_block(s: dict, links: Links, t: dict) -> str:
         return f'<div class="acts">{ask(t["act_build_wave"].format(w=w), "/keelokit:build-story " + story_ids(ready))}</div>' \
             if len(ready) > 1 else ""
     by_wave = "".join(group(esc(t["wave"].format(n=w)), in_wave[w], links, t,
-                            w == live, t["wave_note"], wave_action(w)) for w in waves)
+                            w == live, t["wave_note"], wave_action(w), "wave") for w in waves)
     first_epic = next((x["epic"] for x in stories if x["status"] != "done"), None)
     by_epic = "".join(
-        group(f'<code>{esc(e)}</code> {inline(goal) if goal else ""}', in_epic[e], links, t, e == first_epic)
+        group(f'<code>{esc(e)}</code> {inline(goal) if goal else ""}', in_epic[e], links, t, e == first_epic, view="epic")
         for e, goal in s["epics"].items() if e in in_epic)
     epics_doc = doc_block("backlog/epics.md", read(s["root"] / "backlog/epics.md"), links, t) \
         if (s["root"] / "backlog/epics.md").exists() else ""

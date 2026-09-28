@@ -182,6 +182,9 @@
   name or a long word in a title, command or value pushed the dashboard and the report sideways, and
   the report's short facts squeezed their value to nothing. Every text now wraps inside its box, at
   any width. Already in 0.6.0; `claude plugin update` brings the new dashboard.
+- Fixed (UI-2): in the report's backlog, with the view switched to "by epic", a link to a story
+  landed on its hidden "by wave" copy and nothing opened. A link to a story now opens it in the view
+  showing, and switches views when it points into the other. Already in 0.6.0.
 
 ## 0.7.1 — 2026-09-27
 
