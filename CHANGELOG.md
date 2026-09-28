@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — a stricter guard, safer links and workflows, and accessibility fixes
+## 0.8.1 — 2026-09-28 — a stricter guard, safer links and workflows, and accessibility fixes
 
 - **Security:** the guard knows more kinds of keys (npm, GitLab, JWT, Azure storage) and catches a
   key split across two edits. Before a commit, it now scans each staged file whole, so a key split
