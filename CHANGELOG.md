@@ -108,6 +108,12 @@
   cited only AGENT-1. That block now cites `AGENT-1/REL-1` and says production goes out from a
   `vX.Y.Z` tag through CI, and the docstring lists REL-1. Already in 0.7.1; `harness-upgrade`
   brings the new guard.
+- Fixed (PKG-101): the generated Release workflow's check that `CHANGELOG.md` has the tag's entry
+  matched the version as a prefix, so tagging `v0.7.1` passed with only a `## 0.7.10` (or
+  `## 0.7.1-rc.1`) entry and went on to the production deploy. It now needs the heading
+  `/keelokit:ship-release` writes, `## X.Y.Z — <date>`, as Keelokit's own release does; an entry
+  written by hand without ` — <date>` no longer counts. Already in 0.7.0; `harness-upgrade` brings
+  the new `.github/workflows/release.yml`.
 
 ## 0.7.1 — 2026-09-27
 

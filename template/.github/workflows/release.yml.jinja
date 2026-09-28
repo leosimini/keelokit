@@ -26,8 +26,8 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "::error::$GITHUB_REF_NAME is not a commit of main"; exit 1; }
-          grep -q "^## $version" CHANGELOG.md \
-            || { echo "::error::CHANGELOG.md has no '## $version' entry"; exit 1; }
+          grep -q "^## $version — " CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no '## $version — <date>' entry"; exit 1; }
 {% endraw %}{% if 'api' in apps %}{% raw %}
   deploy-production:
     name: Deploy API to production (Fly.io)
