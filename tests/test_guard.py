@@ -37,6 +37,7 @@ class GuardTest(unittest.TestCase):
         sh(self.repo, "git", "init", "-q", "-b", "main")
         sh(self.repo, "git", "config", "user.email", "t@example.com")
         sh(self.repo, "git", "config", "user.name", "T")
+
         mig = self.repo / "apps/api/prisma/migrations/0001_init/migration.sql"
         mig.parent.mkdir(parents=True)
         mig.write_text("select 1;\n")
@@ -287,10 +288,21 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.claude("Write", file_path=target, content=f"const k = '{key}'"), 2)
         self.assertEqual(self.claude("MultiEdit", file_path=target, edits=[{"old_string": "a", "new_string": key}]), 2)
         self.assertEqual(self.claude("NotebookEdit", notebook_path=str(self.repo / "n.ipynb"), new_source=key), 2)
-        for secret in ["github_pat_" + "A" * 50, "AIza" + "B" * 35, "postgres://u:p4ss@db.example.com:5432/x"]:
+        for secret in ["github_pat_" + "A" * 50, "AIza" + "B" * 35, "postgres://u:" + "p4ss@db.example.com:5432/x"]:
             with self.subTest(secret=secret[:12]):
                 self.assertEqual(self.claude("Write", file_path=target, content=secret), 2)
         self.assertEqual(self.claude("Write", file_path=target, content="postgresql://app:app@localhost:5432/app"), 0)
+
+    def test_sec_1_more_token_families_and_split_keys(self):
+        """SEC-1 (bug bash 2026-09-27): npm, GitLab, JWT and Azure keys, and a key split over a MultiEdit's edits."""
+        target = str(self.repo / "a.ts")
+        jwt = "eyJ" + "hbGciOiJIUzI1NiJ9" + ".eyJ" + "zdWIiOiIxMjM0In0" + "." + "dozjgNryP4J3jVmNHl0w5N"
+        for secret in ["npm_" + "a1B2" * 9, "glpat-" + "x" * 20, jwt, "AccountKey=" + "Ab1+" * 16 + "=="]:
+            with self.subTest(secret=secret[:8]):
+                self.assertEqual(self.claude("Write", file_path=target, content=f"k = '{secret}'"), 2)
+        halves = [{"old_string": "a", "new_string": 'const k="AKIA1234567'}, {"old_string": "b", "new_string": '890ABCDEF";'}]
+        self.assertEqual(self.claude("MultiEdit", file_path=target, edits=halves), 2)
+        self.assertEqual(self.claude("Write", file_path=target, content="const npm_version = 'npm_config'"), 0)
 
     def test_tampering(self):
         target = str(self.repo / "a.test.ts")
@@ -408,6 +420,16 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.pre_commit(), 0)
         sh(self.repo, "git", "config", "--unset", "keelokit.allowTamper")
         sh(self.repo, "git", "rm", "-q", "--cached", "a.test.ts")
+
+        # SEC-1: the whole staged file is scanned, so a key finished by a later commit is caught.
+        (self.repo / "k.js").write_text('const k = "AKIA1234567\n')
+        sh(self.repo, "git", "add", "k.js")
+        self.assertEqual(self.pre_commit(), 0)
+        sh(self.repo, "git", "commit", "-qm", "half", "--no-verify")
+        (self.repo / "k.js").write_text('const k = "AKIA' + '1234567890ABCDEF";\n')
+        sh(self.repo, "git", "add", "k.js")
+        self.assertEqual(self.pre_commit(), 1)
+        sh(self.repo, "git", "reset", "-q", "k.js")
 
         mig = self.repo / "apps/api/prisma/migrations/0001_init/migration.sql"
         mig.write_text("select 2;\n")

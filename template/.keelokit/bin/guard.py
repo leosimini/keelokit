@@ -37,6 +37,10 @@ SECRETS = [
     (r"\bsk-ant-[A-Za-z0-9_-]{20,}", "Anthropic API key"),
     (r"\bsk-(proj-)?[A-Za-z0-9_-]{32,}", "OpenAI-style API key"),
     (r"\bAIza[0-9A-Za-z_-]{35}", "Google API key"),
+    (r"\bnpm_[A-Za-z0-9]{36}\b", "package registry token"),
+    (r"\bglpat-[A-Za-z0-9_-]{20,}", "GitLab token"),
+    (r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}", "JWT"),
+    (r"\bAccountKey=[A-Za-z0-9+/]{40,}={0,2}", "Azure storage key"),
     (r"https?://[^/\s:@]+:[^/\s@]+@github\.com", "credentials in a git URL"),
     # A DB URL with a password, unless it points at this machine (local/dev/CI values).
     (r"\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis)://[^/\s:@]+:[^/\s@]+@(?!(localhost|127\.0\.0\.1|postgres|db)[:/])",
@@ -153,26 +157,29 @@ def bash_problem(cmd: str) -> str | None:
     return None
 
 
-def edit_payload(tool: str, args: dict) -> tuple[str, str]:
-    """(path, new text) for every file-editing tool."""
+def edit_payload(tool: str, args: dict) -> tuple[str, list[str]]:
+    """(path, each piece of new text) for every file-editing tool; a MultiEdit's edits one by one."""
     path = args.get("file_path") or args.get("notebook_path") or ""
     parts = [args.get("content"), args.get("new_string"), args.get("new_source")]
     parts += [e.get("new_string") for e in args.get("edits", []) if isinstance(e, dict)]
-    return path, "\n".join(p for p in parts if p)
+    return path, [p for p in parts if isinstance(p, str) and p]
 
 
 def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
         return bash_problem(args.get("command", ""))
-    path, text = edit_payload(tool, args)
+    path, parts = edit_payload(tool, args)
     if path and is_env_file(path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"
     if path and applied_migration(path):
         return "DB-1: this migration is already on origin/main; create a new one"
-    if secret_in(text):
-        return f"SEC-1: looks like a {secret_in(text)}; reference it from the secret store"
-    if label := tamper_in(text, path):
-        return f"QA-4: {label} needs the human's yes — ask in chat, don't silence the check"
+    # Each piece on its own, and the pieces run together: a key split over two edits is whole in the file.
+    for text in [*parts, "".join(parts)]:
+        if label := secret_in(text):
+            return f"SEC-1: looks like a {label}; reference it from the secret store"
+    for text in parts:
+        if label := tamper_in(text, path):
+            return f"QA-4: {label} needs the human's yes — ask in chat, don't silence the check"
     return None
 
 
@@ -219,9 +226,15 @@ def git_pre_commit() -> int:
             current = line[6:] if line.startswith("+++ b/") else ""
         elif line.startswith("+"):
             added.setdefault(current, []).append(line[1:])
-    all_added = "\n".join(l for lines in added.values() for l in lines)
-    if label := secret_in(all_added):
-        problems.append(f"SEC-1: staged change contains a {label}")
+    # Secrets: the whole staged file, not only its added lines, so one split over two edits or two
+    # commits is still whole here.
+    for line in staged:
+        status, _, path = line.partition("\t")
+        if status == "D":
+            continue
+        blob = subprocess.run(["git", "show", f":{path}"], cwd=ROOT, capture_output=True).stdout
+        if label := secret_in(blob.decode("utf-8", "replace")):
+            problems.append(f"SEC-1: {path} contains a {label}")
     tampered = [(f, lbl) for f, lines in added.items() if (lbl := tamper_in("\n".join(lines), f))]
     if tampered and not subprocess.run(
         ["git", "config", "--bool", "keelokit.allowTamper"], cwd=ROOT, capture_output=True, text=True
