@@ -624,6 +624,20 @@ class DashboardTest(unittest.TestCase):
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn('href="https://github.com/acme/shop/blob/main/docs/context/gaps.md"', html)
 
+    def test_SEC_4_a_doc_link_never_leaves_the_project(self):
+        """SEC-4 (bug bash 2026-09-27): /etc/passwd or a ../.. chain in a project doc is plain text."""
+        dash = load_dashboard()
+        out = self.root / "out"
+        for links in (dash.Links(None, True, out, self.root), dash.Links("https://github.com/a/b/blob/main/", False, out, self.root)):
+            for url in ("/etc/passwd", "../../../../etc/hosts", "../../../x.md"):
+                with self.subTest(url=url, github=bool(links.github)):
+                    self.assertIsNone(links.href(url))
+                    self.assertNotIn("<a ", dash.inline(f"[x]({url})", links, "docs/context/product.md"))
+            self.assertTrue(links.href("docs/context/gaps.md").endswith("docs/context/gaps.md"))
+            self.assertTrue(links.href("docs/decisions/").endswith("docs/decisions/"))
+        self.assertIn('href="https://github.com/a/b/blob/main/docs/context/gaps.md"',
+                      dash.inline("[g](gaps.md)", links, "docs/context/product.md"))
+
     def building(self, lang: str = "en") -> None:
         """A project in build: one story done, one ready, one waiting for it, a bug bash with a
         pending decision, and an environment half set up."""

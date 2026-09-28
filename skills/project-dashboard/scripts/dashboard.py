@@ -1080,10 +1080,17 @@ class Links:
         self.github, self.standalone, self.out_dir, self.root = github, standalone, out_dir, root
 
     def href(self, rel: str) -> str | None:
+        # SEC-4: a link in a project doc stays inside the project (no /etc/passwd, no ../..).
+        target = (self.root / rel).resolve()
+        root = self.root.resolve()
+        if target != root and root not in target.parents:
+            return None
+        slash = "/" if rel.endswith("/") and target != root else ""
+        rel = ("" if target == root else target.relative_to(root).as_posix()) + slash
         if self.github:
             return self.github + rel
         if self.standalone:
-            return Path(os.path.relpath(self.root / rel, self.out_dir)).as_posix()
+            return Path(os.path.relpath(self.root / rel, self.out_dir)).as_posix() + slash
         return None
 
 
@@ -1102,9 +1109,6 @@ def inline(text: str, links: Links | None = None, base: str = "") -> str:
                 return f'<a href="{esc(url)}" target="_blank" rel="noopener">{label}</a>'
             if links and not url.startswith("#"):
                 rel = (Path(base).parent / url).as_posix() if base else url
-                rel = re.sub(r"(^|/)\./", r"\1", rel)
-                while re.search(r"[^/]+/\.\./", rel):
-                    rel = re.sub(r"[^/]+/\.\./", "", rel, count=1)
                 if href := links.href(rel):
                     return f'<a href="{esc(href)}" target="_blank" rel="noopener">{label}</a>'
             return f"<span class=\"ref\">{label}</span>"
