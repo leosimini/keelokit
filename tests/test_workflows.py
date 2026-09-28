@@ -77,6 +77,17 @@ class WorkflowsTest(unittest.TestCase):
                 run = subprocess.run([node, "-e", check], input=body, capture_output=True, text=True)
                 self.assertEqual(run.returncode, 0, run.stderr)
 
+    def test_bugbash_resumes(self):
+        """CPY-3/NFR-104: a run cut short resumes with its runId and the same args; no survey prompt
+        depends on the order parallel agents finish in (else nothing replays from the cache), and a
+        fixer looks for its own commit before making it again."""
+        skill = (ROOT / "skills/check-bugbash/SKILL.md").read_text()
+        self.assertIn("resumeFromRunId", skill)
+        _, body = split(ROOT / "workflows/check-bugbash-flow.js")
+        survey = body[body.index("async function survey("):body.index("async function validate(")]
+        self.assertNotIn("seenTitles", survey, "a survey sees only earlier rounds' findings, as a sorted snapshot")
+        self.assertIn("--grep='(${g.id})'", body)
+
     def test_skills_name_existing_workflows(self):
         names = {p.stem for p in WORKFLOWS}
         for skill in ROOT.glob("skills/*/SKILL.md"):

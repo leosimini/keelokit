@@ -21,7 +21,13 @@ export const meta = {
 const A = args || {}
 const WORKER = A.model || 'sonnet'
 const FIX = A.fix !== false
-const MAX = A.maxParallel || 4
+const MAX = Number.isFinite(A.maxParallel) && A.maxParallel > 0 ? A.maxParallel : 4
+const LENSES = A.lenses == null ? null : [].concat(A.lenses).map(String) // 'logic' or ['logic', 'dx']
+const ROUNDS = Number.isFinite(A.rounds) ? Math.max(1, A.rounds) : null
+// Resuming a run replays every agent() whose prompt is unchanged, so no prompt may depend on the
+// order in which parallel agents happen to finish: what they see of each other is sorted, and a
+// survey sees only the findings of earlier rounds. Anything with a side effect (a commit) checks
+// for itself whether it already happened, because a call that died never returned.
 const SEV = ['P0', 'P1', 'P2', 'P3']
 
 // At most MAX agents that run the product at the same time (ports, databases, cost).
@@ -37,6 +43,7 @@ function limiter(n) {
   return fn => new Promise(resolve => { queue.push({ fn, resolve }); next() })
 }
 const slot = limiter(MAX)
+const byId = list => list.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
 const str = { type: 'string' }
 const strs = { type: 'array', items: str }
@@ -133,8 +140,8 @@ const plan = await agent(
   `You prepare a Keelokit bug bash of the repository in the current directory. Read, run, decide; change nothing except creating the output folder.
 
 1. Find the Keelokit plugin root: ${A.pluginRoot ? `"${A.pluginRoot}"` : 'the folder that holds references/dimensions.md and skills/check-bugbash/ — try $CLAUDE_PLUGIN_ROOT, then ~/.claude/plugins (any keelokit folder), then this repository itself'}. Read skills/check-bugbash/SKILL.md, skills/check-bugbash/references/finding-format.md and references/dimensions.md there.
-2. Date: ${A.date ? `"${A.date}"` : 'today, from `date +%F`'}. Sha: \`git rev-parse --short HEAD\`. Output folder: docs/bugbash/DATE (create it; if it already exists add -2, -3…).
-3. Scope: ${A.scope === 'full' ? 'full — every lens the profile calls for, on the whole product' : 'incremental unless there is no previous report — the diff since the sha in the latest docs/bugbash/*/report.md (none → since the first commit); only the lenses that diff can break, plus the ones the SKILL names for touched screens or critical areas'}. ${A.lenses ? `The user asked for exactly these lenses: ${A.lenses.join(', ')}.` : ''}
+2. Date: ${A.date ? `"${A.date}"` : 'today, from `date +%F`'}. Sha: \`git rev-parse --short HEAD\`. Output folder: reserve it with a plain \`mkdir docs/bugbash/DATE\` (no -p); if that fails because it exists, try DATE-2, DATE-3… until one succeeds, and return the one you created as outDir.
+3. Scope: ${A.scope === 'full' ? 'full — every lens the profile calls for, on the whole product' : 'incremental unless there is no previous report — the diff since the sha in the latest docs/bugbash/*/report.md (none → since the first commit); only the lenses that diff can break, plus the ones the SKILL names for touched screens or critical areas'}. ${LENSES ? `The user asked for exactly these lenses: ${LENSES.join(', ')}.` : ''}
 4. Lenses: from .keelokit/profile.toml (kind, traits) and "Which lenses a project gets" in dimensions.md. For each lens: its id, a 2–4 letter uppercase finding prefix (the ones finding-format.md lists; DX, DOC and PKG for dx, docs and packaging), its full row of dimensions.md, a concrete focus for THIS repository (which files, commands, journeys and invariants it should attack), and why it runs. Every lens that doesn't run goes in skipped with its reason. If the code shows a trait the profile lacks, say so in why of the affected lens and include that lens.
 5. From docs/context (product.md, domain.md, constraints.md), docs/prd.md, backlog/, README: the critical journeys per role (or, for a developer-facing project, per kind of user: newcomer following the README, someone upgrading from the last release, a contributor running the tests), the personas, every invariant (id, text, class), the critical areas from .keelokit/critical.toml, and the files that define "expected".
 6. How to run the product for a lens without disturbing the others (own ports, own database, own temp dirs; for a developer-facing project: install or load the package from a clean copy), the command that verifies the repository (pnpm verify, or for a repo without it the tests and checks its AGENTS.md or CI run), the doctor command if .keelokit/bin/doctor.py exists, and where escapes are logged (docs/escapes.md; say "missing" if it isn't there).
@@ -165,11 +172,11 @@ const decisions = []
 const covered = []
 const seenTitles = []
 let tasks = plan.lenses.map(l => ({ lens: l.id, focus: l.focus, why: l.why }))
-const rounds = A.rounds || (plan.scope === 'full' ? 3 : 2)
+const rounds = ROUNDS ?? (plan.scope === 'full' ? 3 : 2)
 const byLens = Object.fromEntries(plan.lenses.map(l => [l.id, l]))
 
-async function survey(task, round) {
-  const lens = byLens[task.lens] || { id: task.lens, prefix: task.lens.slice(0, 4).toUpperCase(), row: '' }
+async function survey(task, round, known, n) {
+  const lens = byLens[task.lens] // tasks only ever name planned lenses
   const start = (counters[lens.prefix] = counters[lens.prefix] || 0) + 1
   counters[lens.prefix] += 100 // room for this agent's findings; ids stay unique across rounds
   return slot(() => agent(
@@ -180,10 +187,10 @@ ${lens.row}
 Focus: ${task.focus}
 
 Survey only — do not fix, do not commit, do not edit tracked files. Run the product the way the plan says, as the personas, and test expected cases and edges: empty, error, huge, zero/one/many, other role, other locale, twice in a row, two at once, wrong input on every command, every promise the docs and screens make. Every finding needs evidence you produced yourself (command + output, request + response, file:line).
-Already reported by other lenses (don't repeat them): ${seenTitles.slice(-60).join(' | ') || 'nothing yet'}
+Already reported in earlier rounds (don't repeat them): ${known.slice(-60).join(' | ') || 'nothing yet'}
 Number your findings ${lens.prefix}-${start}, ${lens.prefix}-${start + 1}… Severity by the rubric in finding-format.md. Mark productRule when the fix would change what the product should do rather than how.
 Append each finding, in the format of finding-format.md, to ${plan.outDir}/${lens.id}.md (create it with a "# ${lens.id}" title). Return the findings, what you covered and what you couldn't.`,
-    { label: `${lens.id}${round > 1 ? ` r${round}` : ''}`, phase: 'Survey', schema: SURVEY, model: WORKER },
+    { label: `${lens.id}${round > 1 ? ` r${round}.${n}` : ''}`, phase: 'Survey', schema: SURVEY, model: WORKER },
   ))
 }
 
@@ -215,9 +222,10 @@ ${JSON.stringify(f, null, 1)}
 
 for (let round = 1; round <= rounds && tasks.length; round++) {
   if (round > 1) log(`Round ${round}: ${tasks.length} gaps — ${tasks.map(t => t.lens).join(', ')}`)
+  const known = seenTitles.slice().sort()
   await pipeline(
     tasks,
-    task => survey(task, round),
+    (task, _, i) => survey(task, round, known, i + 1),
     (res, task) => {
       if (!res) return null
       covered.push(...res.covered.map(c => `${task.lens}: ${c}`), ...res.notCovered.map(c => `${task.lens} (not covered): ${c}`))
@@ -232,13 +240,18 @@ for (let round = 1; round <= rounds && tasks.length; round++) {
 
 You are the completeness critic of this bug bash. Lenses that ran: ${plan.lenses.map(l => `${l.id} (${l.focus})`).join('; ')}.
 What they covered and what they said they couldn't:
-- ${covered.join('\n- ')}
-Findings so far: ${seenTitles.join(' | ') || 'none'}
+- ${covered.slice().sort().join('\n- ')}
+Findings so far: ${seenTitles.slice().sort().join(' | ') || 'none'}
 
 Read the repository and name what matters and nobody looked at yet: a journey, a command, a file, an invariant, an edge (twice, two at once, upgrade, clean install, wrong input), a promise in the docs. At most ${MAX * 2} tasks, each for one lens id from the list above with a concrete focus. Return no tasks when the rest would only repeat what was done.`,
     { label: `coverage r${round}`, phase: 'Coverage', schema: GAPS },
   )
-  tasks = (gaps && gaps.tasks || []).filter(t => byLens[t.lens]).slice(0, MAX * 2)
+  const proposed = gaps && gaps.tasks || []
+  const unknown = proposed.filter(t => !byLens[t.lens])
+  tasks = proposed.filter(t => byLens[t.lens])
+  if (unknown.length) log(`Coverage r${round}: dropped ${unknown.length} task(s) for lenses that aren't planned: ${unknown.map(t => t.lens).join(', ')}`)
+  if (tasks.length > MAX * 2) log(`Coverage r${round}: kept ${MAX * 2} of ${tasks.length} tasks; dropped: ${tasks.slice(MAX * 2).map(t => `${t.lens} (${t.focus})`).join('; ')}`)
+  tasks = tasks.slice(0, MAX * 2)
 }
 
 // ── Consolidate ─────────────────────────────────────────────────────────────────────────────────
@@ -251,9 +264,9 @@ if (confirmed.length || decisions.length) {
 
 Consolidate the validated findings of this bug bash. Read the code where needed.
 Bugs (reproduced by independent skeptics):
-${JSON.stringify(confirmed.map(({ votes, ...f }) => f), null, 1)}
+${JSON.stringify(byId(confirmed).map(({ votes, ...f }) => f), null, 1)}
 Pending decisions (they happen, but what should happen is a product rule):
-${JSON.stringify(decisions.map(({ votes, ...f }) => f), null, 1)}
+${JSON.stringify(byId(decisions).map(({ votes, ...f }) => f), null, 1)}
 
 1. Group the bugs by root cause: one group per cause, keeping the lowest id as the group's id, the highest severity (re-check it with the rubric in finding-format.md), a title, the area (conventional commit scope), the cause in one sentence and the smallest fix plan at the cause (grep every caller: siblings of the reported path are usually broken too).
 2. size "fix" when one focused change with its test fixes it; "story" when it needs design, many files, or a migration — say why.
@@ -289,7 +302,8 @@ ${JSON.stringify(findings, null, 1)}`
 ${problems.length ? `\nYour previous attempt was rejected by an independent check:\n- ${problems.join('\n- ')}\nFix what it says, on top of your commit (amend it).` : ''}
 
 Fix it, following section 4 of skills/check-bugbash/SKILL.md in ${plan.pluginRoot}:
-1. Note \`git rev-parse HEAD\` first (return it as base). A test that fails now, with ${g.id} in its title.
+${attempt === 1 ? `0. First, \`git log --format='%h %s' --grep='(${g.id})' ${plan.sha}..HEAD\`: a commit there means an earlier, interrupted run already fixed this root cause. Don't fix it again — return status "fixed" with that commit, its parent as base, and the test and check it added.
+` : ''}1. Note \`git rev-parse HEAD\` first (return it as base). A test that fails now, with ${g.id} in its title.
 2. The fix where the cause lives; grep every caller and fix the siblings too. Don't touch unrelated code.
 3. Escape analysis: which check should have caught it and why it didn't. Add or tighten the check for the class, not the case (a test, a lint rule, a type, a contract, a validation step in CI). A new product rule or invariant is not yours to add: write it in notes instead.
 4. A row in ${plan.escapes && plan.escapes !== 'missing' ? plan.escapes : 'docs/escapes.md (create it with the columns Id · Date · Found by · What escaped · Class · Check added)'}: found by check-bugbash ${plan.date}.
@@ -324,7 +338,14 @@ Check it independently; you did not write it and owe it no charity. Don't edit t
       fixed = { ...fixed, status: 'open', commit: '', notes: `${fixed.notes} — rejected and undone: ${problems.join('; ')}` }
     }
   }
-  results.push({ ...g, ...(fixed || { status: 'open', commit: '', check: '', notes: 'the fixer did not return' }) })
+  if (!fixed) {
+    // A fixer that died may have left edits or even a commit behind; the next root cause starts clean.
+    await agent(
+      `A bug bash fixer for ${g.id} stopped without reporting. Leave the repository as it was before it: restore every tracked file that isn't committed (\`git checkout -- .\`), delete the untracked files \`git status --porcelain\` lists outside docs/bugbash/, and revert any commit \`git log --format=%h --grep='(${g.id})' ${plan.sha}..HEAD\` shows (\`git revert --no-edit\`). Report what you did.`,
+      { label: `clean up ${g.id}`, phase: 'Fix', model: WORKER, effort: 'low' },
+    )
+  }
+  results.push({ ...g, ...(fixed || { status: 'open', commit: '', check: '', notes: 'the fixer stopped without reporting; its changes were undone' }) })
   log(`${g.id}: ${results[results.length - 1].status}`)
 }
 
@@ -346,9 +367,9 @@ ${JSON.stringify(results, null, 1)}
 Pending decisions:
 ${JSON.stringify(pending, null, 1)}
 Discarded:
-${JSON.stringify(discarded.map(({ votes, ...f }) => ({ id: f.id, lens: f.lens, title: f.title, why: f.why })), null, 1)}
+${JSON.stringify(byId(discarded).map(({ votes, ...f }) => ({ id: f.id, lens: f.lens, title: f.title, why: f.why })), null, 1)}
 Coverage:
-- ${covered.join('\n- ')}
+- ${covered.slice().sort().join('\n- ')}
 
 Write it in the language of docs/context (the project's working language). Commit the report folder as "docs: bug bash ${plan.date}". Don't push.`,
   { label: 'report', phase: 'Report', schema: REPORT },

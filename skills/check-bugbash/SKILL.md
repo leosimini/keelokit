@@ -1,6 +1,6 @@
 ---
 name: check-bugbash
-description: Full bug bash of a Keelokit project across every dimension (data, API, contracts, logic, integrity, auth, UX, UI, web, mobile, i18n, copy, a11y, security, NFRs, config, ops) — parallel lenses on the running app with seeded personas, adversarial validation of each finding, fixes at the root cause, and, for every class of bug, a new automatic check so it can't come back. Use when the user says "bug bash", "cazá bugs", "revisá todo", "buscá errores", "QA completo", before a release, or after each wave.
+description: Full bug bash of a Keelokit project across every dimension (data, API, contracts, logic, integrity, auth, UX, UI, web, mobile, i18n, copy, a11y, security, NFRs, config, ops, and dx, docs and packaging for what developers use) — parallel lenses on the running app with seeded personas, adversarial validation of each finding, fixes at the root cause, and, for every class of bug, a new automatic check so it can't come back. Use when the user says "bug bash", "cazá bugs", "revisá todo", "buscá errores", "QA completo", before a release, or after each wave.
 ---
 
 # Bug bash — find, prove, fix at the root, and never again
@@ -41,6 +41,14 @@ nothing is pushed) and that `/workflows` shows its progress. When it returns: sh
 ask the pending decisions one by one, turn `stories` (and decisions the user has now taken)
 into backlog stories through `/keelokit:plan-backlog`, push per the project's flow, and refresh
 the dashboard.
+
+**Cut short** (the session restarted, the container was recycled, the user stopped it): the
+Workflow tool's result gave a `runId` and the script's path — tell the user the runId when it
+starts, and keep it. To go on, start it again with `scriptPath`, `resumeFromRunId` and the **same**
+`args`: every agent that finished returns its saved result, and the rest runs again. Fixes are
+safe to repeat — a fixer first looks for a commit of its root cause and doesn't make it twice.
+Without the runId (a new session), start over: it's a new run, and the fixes already on the
+branch are skipped the same way.
 
 Without workflows, follow the steps below in this conversation.
 
