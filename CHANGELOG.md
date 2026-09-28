@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — a live dashboard, a report to share, the plugin ready to install
+## 0.8.0 — 2026-09-28 — a live dashboard, a report to share, the plugin ready to install
 
 - **A lighter, live dashboard, built to spend as few tokens as possible.** `/keelokit:project-dashboard`
   is now the page you work from: where the project is, the next step and its command to copy, what
