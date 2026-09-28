@@ -184,5 +184,19 @@ class DocumentedCopyTest(unittest.TestCase):
                     self.assertRegex(slug, r"^[a-z][a-z0-9-]*$")
 
 
+class OwnershipTest(unittest.TestCase):
+    def test_DOC_102_harness_upgrade_names_every_harness_file_the_project_keeps(self):
+        """DOC-102: copier.yml keeps profile.toml and critical.toml on an update, but harness-upgrade
+        said the template owns all of .keelokit/ but local rules and exceptions."""
+        text = (ROOT / "copier.yml").read_text()
+        skip = text[text.index("_skip_if_exists:"):]
+        kept = re.findall(r"^\s*- (\.keelokit/[^\s#]+)", skip, re.M)
+        self.assertIn(".keelokit/profile.toml", kept)
+        skill = (ROOT / "skills/harness-upgrade/SKILL.md").read_text()
+        for path in kept:
+            with self.subTest(path=path):
+                self.assertIn(f"`{Path(path).name}`", skill)
+
+
 if __name__ == "__main__":
     unittest.main()

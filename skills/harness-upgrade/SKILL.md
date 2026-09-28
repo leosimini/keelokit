@@ -11,9 +11,11 @@ skill does. Say it that way to the user: it brings Keelokit's new rules and chec
 project, on a branch, and never rewrites their product.
 
 The template owns infrastructure (CI, lint/format/ts base configs, `scripts/verify.sh`, git
-hooks, `.keelokit/` except the project's local rules and exceptions). The product owns its code
-(apps' `src/`, e2e, prisma schema and migrations, locale files, packages' `src/`) — Copier never
-overwrites those once they exist.
+hooks, `.keelokit/` except the project's own choices: `rules.local.toml`, `exceptions.toml`,
+`critical.toml` and `profile.toml`). The product owns its code (apps' `src/`, e2e, prisma schema
+and migrations, locale files, packages' `src/`) and its knowledge (`docs/context/`, `docs/prd.md`,
+`docs/escapes.md`, `backlog/`, `README.md`, `CHANGELOG.md`) — Copier never overwrites those once
+they exist.
 
 1. Working tree clean (`git status`), on a branch: `git switch -c chore/keelokit-upgrade`.
 2. See where you are: `grep _commit .keelokit/answers.yml`. Pick the target tag (latest by default).
