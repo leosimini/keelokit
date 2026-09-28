@@ -11,6 +11,8 @@ change (or in a new session) always shows the current state.
 The page follows `../references/design.md`. By default it is written for the Artifact tool (no
 <html>/<head>, the viewer adds them) to `.keelokit/out/dashboard.html`; `--standalone` writes a
 full document to open straight in a browser. `--json` prints the computed state instead.
+A --root that isn't a folder exits 2 and a write that fails (a read-only checkout) exits 1, each
+with one line naming the path.
 Stdlib only (Python 3.11+ for tomllib).
 """
 import sys
@@ -1934,7 +1936,14 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    root = (args.root or find_root(Path.cwd())).resolve()
+    try:
+        root = (args.root or find_root(Path.cwd())).resolve()
+        what = "" if root.is_dir() else "not a folder" if root.exists() else "does not exist"
+    except (OSError, RuntimeError) as e:  # the current folder is gone, or a symlink loop
+        what = getattr(e, "strerror", None) or str(e)
+    if what:  # never a greenfield page for a folder that isn't there
+        where = args.root or "the current folder"
+        return fail(2, f"no such project: {where} ({what}); pass --root <project folder>")
     s = collect(root)
     try:
         dash = tomllib.loads(read(root / ".keelokit/state.toml")).get("dashboard", {})
@@ -1954,16 +1963,26 @@ def main() -> int:
         return 0
 
     out = args.out or root / ".keelokit/out/dashboard.html"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    if out.parent == root / ".keelokit/out" and not (out.parent / ".gitignore").exists():
-        (out.parent / ".gitignore").write_text("*\n")
     try:
         version = json.loads(read(PLUGIN_ROOT / ".claude-plugin/plugin.json")).get("version", "")
     except json.JSONDecodeError:
         version = ""
-    out.write_text(render(s, lang, args.standalone, out.parent, version), encoding="utf-8")
+    page = render(s, lang, args.standalone, out.parent, version)
+    try:  # a read-only checkout, a folder where the page goes, a full disk: say so, no traceback
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.parent == root / ".keelokit/out" and not (out.parent / ".gitignore").exists():
+            (out.parent / ".gitignore").write_text("*\n")
+        out.write_text(page, encoding="utf-8")
+    except OSError as e:
+        return fail(1, f"can't write {e.filename or out} ({e.strerror or e}); "
+                       "pass --out <a file you can write>, or --json to print the state instead")
     print(out)
     return 0
+
+
+def fail(code: int, message: str) -> int:
+    print(f"dashboard: {message}", file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ regenerating it is always safe.
    ```
    It writes `.keelokit/out/dashboard.html` (git-ignored by the folder's own `.gitignore`) and
    prints the path. `--json` prints the computed state (stages, stories, next step) without HTML.
+   A `--root` that isn't a folder exits 2; a write that fails (a read-only checkout) exits 1 and
+   names the path: pass `--out` a file you can write, or use `--json`.
 
 ## 2. Show it
 

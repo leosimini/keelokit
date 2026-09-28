@@ -120,6 +120,10 @@
   slug now folds accents (`pena`, `strasse`, `lodz`) and puts `app-` in front of a digit or of a
   name with no Latin letters (`app-3d-store`), and `project-new` lets copier derive it. Already in
   0.7.1; affects new projects only (an existing project keeps its slug).
+- Fixed (DX-2, NFR-3): the dashboard drew a full "new product" page for a `--root` that doesn't
+  exist (or is a file), and crashed with a traceback when it couldn't write its page (a read-only
+  checkout, a folder where the page goes). Now the first exits 2 and the second 1, each with one
+  line naming the path and, for a write, pointing at `--out` or `--json`. Already in 0.7.1.
 
 ## 0.7.1 — 2026-09-27
 

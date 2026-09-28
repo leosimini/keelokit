@@ -1,11 +1,20 @@
 """Dashboard state and page on a tiny project. Run: python3 -m unittest discover -s tests"""
+import builtins
+import contextlib
+import errno
+import importlib.util
+import io
 import json
+import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 DASHBOARD = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
 
@@ -290,6 +299,161 @@ class DashboardTest(unittest.TestCase):
         html = self.page("--standalone")
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn('href="https://github.com/acme/shop/blob/main/docs/context/gaps.md"', html)
+
+
+def load_dashboard():
+    spec = importlib.util.spec_from_file_location("keelokit_dashboard_under_test", DASHBOARD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Every filesystem primitive that writes. The source may write only through these (the structural
+# case below), so failing each of them in turn covers every write the dashboard makes.
+WRITERS = ("write_text", "write_bytes", "mkdir", "touch", "open", "rename", "replace", "symlink_to",
+           "hardlink_to", "unlink", "rmdir", "chmod")
+
+
+class DashboardIOContractTest(unittest.TestCase):
+    """DX-2 (and NFR-3): the dashboard's I/O contract. A --root that isn't a folder (missing, a file,
+    a symlink loop, the current folder deleted) is exit 2 and a line naming it, never a greenfield
+    page; any write that fails (read-only checkout, a directory where the page goes, a file where
+    its folder goes, no space) is exit 1 and a line naming the path and --out/--json, never a
+    traceback. In both cases nothing is written."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.project = self.tmp / "shop"
+        (self.project / ".keelokit").mkdir(parents=True)
+        (self.project / ".keelokit/state.toml").write_text('[dashboard]\nlang = "en"\n')
+
+    def run_cli(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(["python3", str(DASHBOARD), *args], cwd=cwd or self.tmp,
+                              capture_output=True, text=True)
+
+    def assert_clean_failure(self, r: subprocess.CompletedProcess, code: int, *named: str) -> None:
+        self.assertEqual(r.returncode, code, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        for text in named:
+            self.assertIn(text, r.stderr)
+
+    def test_DX_2_a_root_that_is_not_a_folder_is_an_error_not_a_greenfield_page(self):
+        a_file = self.tmp / "notes.txt"
+        a_file.write_text("x")
+        loop = self.tmp / "loop"
+        loop.symlink_to(loop)
+        dangling = self.tmp / "dangling"
+        dangling.symlink_to(self.tmp / "gone")
+        for root in (self.tmp / "missing/xyz", a_file, loop, dangling):
+            for mode in ([], ["--json"], ["--standalone"]):
+                with self.subTest(root=root.name, mode=mode):
+                    out = self.tmp / "dash.html"
+                    r = self.run_cli("--root", str(root), "--out", str(out), *mode)
+                    self.assert_clean_failure(r, 2, "no such project", root.name)
+                    self.assertFalse(out.exists())
+        # A real folder, even an empty one or reached through a symlink, is still a project.
+        (self.tmp / "empty").mkdir()
+        (self.tmp / "link").symlink_to(self.project)
+        for root in (self.tmp / "empty", self.tmp / "link"):
+            with self.subTest(root=root.name):
+                r = self.run_cli("--root", str(root), "--out", str(self.tmp / f"{root.name}.html"))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue((self.tmp / f"{root.name}.html").exists())
+
+    def test_DX_2_a_deleted_current_folder_without_root_is_an_error(self):
+        gone = self.tmp / "gone"
+        gone.mkdir()
+        out = self.tmp / "dash.html"
+        r = subprocess.run(["sh", "-c", 'cd "$1" && rmdir "$1" && exec python3 "$2" --out "$3"', "_",
+                            str(gone), str(DASHBOARD), str(out)], capture_output=True, text=True)
+        self.assert_clean_failure(r, 2, "no such project", "the current folder", "--root")
+        self.assertFalse(out.exists())
+
+    def test_NFR_3_a_write_the_filesystem_refuses_is_a_clean_error(self):
+        # Real refusals the sandbox can make even as root.
+        (self.project / "page.html").mkdir()
+        blocked = self.tmp / "blocked"
+        (blocked / ".keelokit").mkdir(parents=True)
+        (blocked / ".keelokit/out").write_text("a file where the output folder goes")
+        cases = {
+            "a directory where the page goes": (["--root", str(self.project), "--out", str(self.project / "page.html")],
+                                                "page.html"),
+            "a file where the output folder goes": (["--root", str(blocked)], ".keelokit/out"),
+            "a file where --out's folder goes": (["--root", str(self.project), "--out",
+                                                  str(self.project / ".keelokit/state.toml/dash.html")], "state.toml"),
+        }
+        for name, (args, named) in cases.items():
+            with self.subTest(name):
+                self.assert_clean_failure(self.run_cli(*args), 1, named, "--out", "--json")
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes through permission bits; the fault-injection case covers it")
+    def test_NFR_3_a_read_only_checkout_is_a_clean_error(self):
+        self.project.chmod(0o555)
+        (self.project / ".keelokit").chmod(0o555)
+        self.addCleanup(self.project.chmod, 0o755)
+        self.addCleanup((self.project / ".keelokit").chmod, 0o755)
+        self.assert_clean_failure(self.run_cli("--root", str(self.project)), 1, ".keelokit/out", "--out")
+
+    def test_NFR_3_every_write_fails_cleanly_whichever_one_the_filesystem_refuses(self):
+        dashboard = load_dashboard()
+        real = {name: getattr(Path, name) for name in WRITERS}
+
+        def run(fail_at: int | None, err: int) -> tuple[int | str, str, list]:
+            calls = []
+
+            def wrap(name):
+                def writer(path, *args, **kwargs):
+                    mode = (args[0] if args else kwargs.get("mode", "r")) if name == "open" else "w"
+                    if name == "mkdir" and kwargs.get("exist_ok") and Path(path).is_dir():
+                        mode = "r"  # a folder already there: nothing is written
+                    if isinstance(mode, str) and not set(mode) & set("wax+"):
+                        return real[name](path, *args, **kwargs)
+                    calls.append((name, str(path)))
+                    if len(calls) - 1 == fail_at:
+                        raise OSError(err, os.strerror(err), str(path))
+                    return real[name](path, *args, **kwargs)
+                return writer
+
+            shutil.rmtree(self.project / ".keelokit/out", ignore_errors=True)
+            stdout, stderr = io.StringIO(), io.StringIO()
+            patches = [mock.patch.object(Path, name, wrap(name)) for name in WRITERS]
+            patches += [mock.patch.object(builtins, "open", wrap("open")),
+                        mock.patch.object(sys, "argv", ["dashboard.py", "--root", str(self.project)])]
+            with contextlib.ExitStack() as stack:
+                for p in patches:
+                    stack.enter_context(p)
+                stack.enter_context(contextlib.redirect_stdout(stdout))
+                stack.enter_context(contextlib.redirect_stderr(stderr))
+                try:
+                    code = dashboard.main()
+                except SystemExit as e:
+                    code = e.code
+                except BaseException as e:  # what a user would see as a traceback
+                    code = f"raised {type(e).__name__}: {e}"
+            return code, stderr.getvalue(), calls
+
+        code, _, writes = run(None, 0)
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(len(writes), 3, writes)  # the folder, its .gitignore, the page
+        for err in (errno.EROFS, errno.EACCES, errno.ENOSPC, errno.EISDIR):
+            for n, (name, path) in enumerate(writes):
+                with self.subTest(errno=errno.errorcode[err], write=f"{name} {path}"):
+                    code, stderr, _ = run(n, err)
+                    self.assertEqual(code, 1, stderr)
+                    self.assertIn(Path(path).name, stderr)
+                    self.assertIn(os.strerror(err), stderr)
+                    self.assertIn("--out", stderr)
+
+    def test_NFR_3_the_dashboard_writes_only_through_the_primitives_the_contract_fails(self):
+        source = DASHBOARD.read_text()
+        for pattern in (r"\bos\.(write|replace|rename|makedirs|mkdir|link|symlink|truncate)\b", r"\bshutil\.",
+                        r"\btempfile\.", r"\.write\(", r"\bio\.open\b"):
+            with self.subTest(pattern):
+                self.assertIsNone(re.search(pattern, source),
+                                  "a new way to write: add it to WRITERS in tests/test_dashboard.py")
 
 
 if __name__ == "__main__":
