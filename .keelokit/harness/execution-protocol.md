@@ -7,7 +7,7 @@ inherits it; change it in the Keelokit template, not here.
 
 1. Read `AGENTS.md`, then only the context the task needs: `docs/context/*` for product and
    domain, `docs/prd.md` for scope, the story file for the task.
-2. Run `pnpm doctor --brief` to see where the project stands.
+2. Run `python3 .keelokit/bin/doctor.py --brief` to see where the project stands.
 3. Work on one story (or one explicit request) at a time, in its own branch or worktree.
 
 ## While working

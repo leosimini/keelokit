@@ -53,7 +53,7 @@ Write the five files exactly as `references/context-format.md` shows:
   `class: <class>` and the source. Ask how it breaks to pick the class; two ways → two
   invariants. Ids never change or get reused. Money, one-time side effects, limits and other
   people's data are where the worst bugs live: don't close the domain block without asking.
-- No vague phrases ("robust", "user-friendly", "best practices"…) — `pnpm doctor` rejects them.
+- No vague phrases ("robust", "user-friendly", "best practices"…) — `python3 .keelokit/bin/doctor.py` rejects them.
 - No secrets, no personal data of real people; accounts are named by owner, never with values.
 
 ## 4. Keep the profile true

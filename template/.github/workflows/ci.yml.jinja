@@ -229,7 +229,7 @@ jobs:
 
   # Staging deploys on every green main. It is a hard failure (never continue-on-error): a red
   # staging must be seen. Until the FLY_API_TOKEN secret exists the job skips itself, and
-  # `pnpm doctor` keeps listing that as an open setup step.
+  # `pnpm run doctor` keeps listing that as an open setup step.
   deploy-staging:
     name: Deploy API to staging (Fly.io)
     needs: [integration, build, e2e, {% endraw %}{% if 'web' in apps or 'mobile' in apps %}e2e-stack, {% endif %}{% raw %}sast]

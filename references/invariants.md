@@ -19,7 +19,7 @@ Invariants are one catalogue with four uses, like `dimensions.md`:
   breaker attack it;
 - **check-bugbash** runs an `integrity` lens that attacks every invariant on the running app.
 
-`pnpm doctor` checks that every invariant has a known class, that stories only name invariants
+`python3 .keelokit/bin/doctor.py` checks that every invariant has a known class, that stories only name invariants
 that exist, and that every invariant of a done story is cited by an active test title (INV-1).
 It can't check that the test is the right kind; the verifier and the reviewer do.
 

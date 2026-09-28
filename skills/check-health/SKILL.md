@@ -1,6 +1,6 @@
 ---
 name: check-health
-description: Check and repair the health of a Keelokit project's harness — rules without enforcers, enforcers that point nowhere, expired or incomplete exceptions, gaps in docs/context, malformed stories — and add new rules with their checks. Use when the user says "doctor", "chequeá el harness", "¿está todo en orden?", "salud del proyecto", "agregá una regla", "esto no puede volver a pasar", "registrá una excepción", or when `pnpm doctor` / CI's doctor step fails.
+description: Check and repair the health of a Keelokit project's harness — rules without enforcers, enforcers that point nowhere, expired or incomplete exceptions, gaps in docs/context, malformed stories — and add new rules with their checks. Use when the user says "doctor", "chequeá el harness", "¿está todo en orden?", "salud del proyecto", "agregá una regla", "esto no puede volver a pasar", "registrá una excepción", or when the doctor (`python3 .keelokit/bin/doctor.py`, `pnpm run doctor`) or CI's doctor step fails.
 ---
 
 # Doctor — a rule without a check is a wish

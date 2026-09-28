@@ -1,7 +1,7 @@
 # docs/context format
 
 Five files. Short sentences, facts with sources, gaps inline as `[GAP-nnn]`.
-`pnpm doctor` checks: all five exist, no vague phrases, every inline gap is in `gaps.md`, every
+`python3 .keelokit/bin/doctor.py` checks: all five exist, no vague phrases, every inline gap is in `gaps.md`, every
 invariant has an `INV-nnn` id and a known class.
 
 ## product.md

@@ -45,6 +45,19 @@
   Now each is an ERROR naming the file, the key or the path, the value or entry is left out,
   `--brief` still prints its summary and `--ci` exits 1. Already in 0.7.1; `harness-upgrade` brings
   the new doctor.
+- Fixed (CPY-1): the doctor's fix-it lines named commands the repo might not have: `--brief` ended
+  with "run `pnpm doctor`" and a missing git hook said "run pnpm install", even in an adopted repo
+  with no package.json. Worse, pnpm has its own `doctor` command, so that line never ran Keelokit's
+  doctor in a generated project either: it printed nothing and exited 0. The doctor now says
+  `python3 .keelokit/bin/doctor.py`, and for a missing hook names the repo's own install step (its
+  package manager, when a package.json script sets the hooks up), the hooks path when the repo
+  ships the hook, or what to add; the guard's `core.hooksPath` block says to ask a human. The docs
+  and skills say `pnpm run doctor` (generated projects) or `python3 .keelokit/bin/doctor.py`.
+  Already in 0.7.1; `harness-upgrade` brings the new doctor, guard and harness docs. Files the
+  product owns keep the old wording: `README.md`, `docs/escapes.md`, `backlog/README.md`,
+  `.keelokit/exceptions.toml`, `.keelokit/critical.toml`, `.keelokit/rules.local.toml` and, if you
+  kept the example, `packages/shared/src/allocate.test.ts`. Find them with
+  `git grep -n 'pnpm doctor'` and say `pnpm run doctor` (or `python3 .keelokit/bin/doctor.py`).
 
 ## 0.7.1 — 2026-09-27
 

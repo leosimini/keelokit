@@ -6,7 +6,7 @@ description: Bring an existing repository (brownfield) under the Keelokit harnes
 # Adopt — the harness on an existing repo, green on day one, debt in plain sight
 
 The code is never modified by this skill without the user's yes. The goal is an honest
-`pnpm doctor` (or `python3 .keelokit/bin/doctor.py`): every house rule either enforced by a real
+`python3 .keelokit/bin/doctor.py`: every house rule either enforced by a real
 check, or excepted with a reason, an approver and a date.
 
 | Gate | Output | Human |

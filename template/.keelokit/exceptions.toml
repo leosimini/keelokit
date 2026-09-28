@@ -1,4 +1,4 @@
-# Registered deviations from a house or local rule. `pnpm doctor` fails on an expired or
+# Registered deviations from a house or local rule. `python3 .keelokit/bin/doctor.py` fails on an expired or
 # incomplete one. expires = "YYYY-MM-DD" or "permanent".
 #
 # [[exception]]

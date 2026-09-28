@@ -1,7 +1,7 @@
 # House rules — inherited by every Keelokit project. Updated only through `copier update`;
 # project-specific rules go in .keelokit/rules.local.toml, deviations in .keelokit/exceptions.toml.
 #
-# A rule is only as real as its enforcer, and `pnpm doctor` checks that each enforcer looks alive:
+# A rule is only as real as its enforcer, and `python3 .keelokit/bin/doctor.py` checks that each enforcer looks alive:
 #   ci:<job>             a job in .github/workflows/*.yml with real steps and no continue-on-error
 #   claude-hook:<file>   .keelokit/bin/<file>, run by the Keelokit plugin before every agent tool call
 #   git-hook:<name>      a git hook that is installed (core.hooksPath or .husky)

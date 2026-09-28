@@ -72,7 +72,7 @@ LOG_LEVEL=log
 |---|---|
 | `pnpm verify` | What CI runs, locally, for the packages changed since `origin/main` (lint, format, doctor and audit always cover the whole repo). Runs automatically before every push. |
 | `pnpm verify --all` | Everything CI runs, for every package |
-| `pnpm doctor` | Harness health: rules without enforcers, expired exceptions, blocking gaps, backlog. |
+| `pnpm run doctor` | Harness health: rules without enforcers, expired exceptions, blocking gaps, backlog. |
 | `pnpm lint` / `pnpm typecheck` / `pnpm test` / `pnpm build` | One gate at a time |
 | `pnpm e2e` | Builds the apps and walks the critical journeys (first time: `pnpm -r --workspace-concurrency=1 --if-present e2e:install`). Another checkout running at the same time: set `E2E_PORT` (web, default 4173) / `E2E_MOBILE_PORT` (mobile, default 8082) |
 {%- if 'api' in apps and ('web' in apps or 'mobile' in apps) %}

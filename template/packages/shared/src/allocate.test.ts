@@ -4,7 +4,7 @@ import { allocate } from './allocate.js';
 
 // A conservation invariant proven for thousands of generated inputs, not three hand-picked ones:
 // a property test. In a product, the title cites the invariant's id from docs/context/domain.md
-// (e.g. 'INV-001 a split conserves the total') — `pnpm doctor` checks it once the story is done.
+// (e.g. 'INV-001 a split conserves the total') — `pnpm run doctor` checks it once the story is done.
 const amount = fc.integer({ min: 0, max: 1_000_000_000_00 });
 const weights = fc
   .array(fc.integer({ min: 0, max: 1_000 }), { minLength: 1, maxLength: 12 })

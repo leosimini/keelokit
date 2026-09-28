@@ -1,7 +1,7 @@
 # Backlog
 
 - `epics.md` — epics in priority order, each with its goal and the stories it groups.
-- `stories/<ID>-<slug>.md` — one story per file. `pnpm doctor` validates them.
+- `stories/<ID>-<slug>.md` — one story per file. `pnpm run doctor` validates them.
 
 Story front matter is TOML between `+++` lines:
 
@@ -24,11 +24,11 @@ Then: Context (with a "does NOT do" list), User story, Acceptance criteria (Gher
 
 `dimensions` says what the story can break; `/keelokit:build-story` turns each into lines of its
 done-contract. Every scenario of a done story must have a test whose title cites
-`<ID>.S<n>` — `pnpm doctor` checks it (TRACE-1) — and every invariant it keeps must have a test
+`<ID>.S<n>` — `pnpm run doctor` checks it (TRACE-1) — and every invariant it keeps must have a test
 whose title cites `INV-nnn` (INV-1). Stories in the same wave must not share `touches` or a
 critical area (`.keelokit/critical.toml`), and a story that touches a critical area declares
 `integrity`; doctor checks all of that too.
 
 No status field: a story is done when a commit on `main` carries the trailer
-`Story: AUTH-001` (the last line of the commit message). `pnpm doctor --brief` lists what is
+`Story: AUTH-001` (the last line of the commit message). `pnpm run doctor --brief` lists what is
 ready next.

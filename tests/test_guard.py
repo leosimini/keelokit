@@ -57,6 +57,16 @@ class GuardTest(unittest.TestCase):
     def bash(self, command: str) -> int:
         return self.claude("Bash", command=command)
 
+    def test_CPY_1_block_reasons_name_no_package_manager(self):
+        """The guard runs in adopted repos that may have no package.json: its reason for a block
+        can't send anyone to `pnpm install` (it did for `git config core.hooksPath`)."""
+        event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git config core.hooksPath /tmp"}})
+        run = subprocess.run(["python3", str(self.repo / ".keelokit/bin/guard.py"), "--claude"],
+                             input=event, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("ask a human", run.stderr)
+        self.assertNotRegex(GUARD.read_text(), r"\b(pnpm|npm|yarn|bun)\b")
+
     def test_blocks_hook_bypasses(self):
         for cmd in [
             "git commit -m x --no-verify",

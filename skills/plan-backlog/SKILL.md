@@ -58,7 +58,7 @@ Anything in the PRD's "out" list never becomes a story.
 2. Waves: a story goes in the earliest wave where all `depends_on` are in earlier waves **and**
    its `touches` don't overlap any other story in the same wave (same file, or one path inside
    another) **and** it shares no critical area with another story of the wave. Overlap → next
-   wave; `pnpm doctor` fails on both. This is what lets several agents build in parallel
+   wave; `python3 .keelokit/bin/doctor.py` fails on both. This is what lets several agents build in parallel
    safely, and what keeps critical work (money, notices, limits, orchestrators) one story at a
    time.
 3. Critical areas: when the plan creates code where a bug moves money, repeats a side effect,

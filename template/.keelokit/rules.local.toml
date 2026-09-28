@@ -1,5 +1,5 @@
 # Project-specific rules, same format as .keelokit/harness/rules.toml. Add one when an incident
-# teaches something only this product needs; give it an enforcer or `pnpm doctor` fails.
+# teaches something only this product needs; give it an enforcer or `python3 .keelokit/bin/doctor.py` fails.
 #
 # [[rule]]
 # id = "PAY-1"

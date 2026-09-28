@@ -32,6 +32,7 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 import datetime as dt  # noqa: E402
+import json  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 import tomllib  # noqa: E402
@@ -254,6 +255,38 @@ def ci_job(job: str) -> str | None:
     return None
 
 
+# How to run the doctor in any repo that has it: pnpm has its own `doctor` command (so that never runs
+# the package script), and an adopted repo may have no package.json at all (CPY-1).
+DOCTOR_CMD = "python3 .keelokit/bin/doctor.py"
+LOCKFILES = {"pnpm-lock.yaml": "pnpm", "pnpm-workspace.yaml": "pnpm", "yarn.lock": "yarn", "bun.lock": "bun",
+             "bun.lockb": "bun", "package-lock.json": "npm"}
+
+
+def hook_remedy(hooks_dir: str, target: str) -> str:
+    """How a human installs a missing git hook in this repo, naming only commands it has (CPY-1): the
+    package manager's install when a package.json script sets the hooks up (`prepare` in a generated
+    project, husky), else the hooks path when the repo ships the hook, else what to add."""
+    text, _ = read_file(ROOT / "package.json")  # the product's file: unreadable just means no install step
+    try:
+        pkg = json.loads(text) if text else {}
+    except ValueError:
+        pkg = {}
+    scripts = pkg.get("scripts") if isinstance(pkg, dict) else None
+    scripts = scripts if isinstance(scripts, dict) else {}
+    installs = [v for k, v in scripts.items() if k in ("preinstall", "install", "postinstall", "prepare")]
+    if any(isinstance(v, str) and re.search(r"(?i)hookspath|husky|lefthook|simple-git-hooks", v) for v in installs):
+        declared = pkg.get("packageManager")  # "pnpm@10.33.0"
+        pm = declared.partition("@")[0] if isinstance(declared, str) else ""
+        if pm not in LOCKFILES.values():
+            pm = next((m for f, m in LOCKFILES.items() if (ROOT / f).is_file()), "npm")
+        return f"run `{pm} install`"
+    for d in (".githooks", ".husky"):
+        if d != hooks_dir and (ROOT / d / target).is_file():
+            return f"a human runs `git config core.hooksPath {d}`"
+    guard = " that runs `python3 .keelokit/bin/guard.py git-pre-commit`" if target == "pre-commit" else ""
+    return f"add a '{target}' hook{guard}, or map or except the rule with /keelokit:check-health"
+
+
 SETUP_STEPS = re.compile(r"(checkout|setup-node|action-setup|setup-uv|setup-python|upload-artifact|cache)@")
 
 
@@ -282,7 +315,7 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
         for d in (hooks_dir, ".husky"):
             if (ROOT / d / target).exists():
                 return None
-        return f"git hook '{target}' is not installed (hooksPath: {hooks_dir}; run pnpm install)"
+        return f"git hook '{target}' is not installed (hooksPath: {hooks_dir}; {hook_remedy(hooks_dir, target)})"
     if kind == "claude-hook":
         return None if (ROOT / ".keelokit/bin" / target).exists() else f"'.keelokit/bin/{target}' is missing"
     if kind == "test":
@@ -744,7 +777,7 @@ def main() -> int:
         for d in profile_drift:
             print(f"Profile drift: {d}")
         if errors:
-            print(f"Harness errors: {len(errors)} — run `pnpm doctor`")
+            print(f"Harness errors: {len(errors)} — run `{DOCTOR_CMD}`")
         return 0
 
     print("Keelokit doctor")

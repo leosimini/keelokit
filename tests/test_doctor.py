@@ -1,4 +1,5 @@
 """Doctor behaviour on a tiny project. Run: python3 -m unittest discover -s tests"""
+import ast
 import contextlib
 import io
 import json
@@ -415,6 +416,175 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("Escapes logged: 2", out)
         self.assertIn("ESC-002 needs", out)
         self.assertNotIn("ESC-001 needs", out)
+
+    def assert_remedies_run_here(self, out: str) -> list[str]:
+        """Every command the output tells you to run exists in this repo: the doctor by its own path,
+        git, or a package manager whose install step or script the repo's package.json has."""
+        pkg = json.loads((self.root / "package.json").read_text()) if (self.root / "package.json").exists() else None
+        remedies = re.findall(r"\bruns? `([^`]+)`", out)
+        for cmd in remedies:
+            words = cmd.split()
+            if words[0] == "python3":
+                self.assertTrue((self.root / words[1]).is_file(), cmd)
+            elif words[0] == "git":
+                continue
+            else:
+                self.assertIn(words[0], ("pnpm", "npm", "yarn", "bun"), f"unknown command: {cmd}")
+                self.assertIsNotNone(pkg, f"`{cmd}` in a repo without package.json")
+                if words[1] != "install":
+                    self.assertEqual(words[1], "run", f"`{cmd}`: say `run`, a built-in may shadow the script")
+                    self.assertIn(words[2], pkg.get("scripts", {}), cmd)
+        if pkg is None:
+            self.assertNotRegex(out, r"\b(pnpm|npm|yarn)\b", "a package manager named in a repo without package.json")
+        return remedies
+
+    def test_CPY_1_fix_it_text_names_only_commands_the_repo_has(self):
+        """The doctor told every repo to run pnpm's `doctor` (pnpm's own command, which never runs
+        the script) and `pnpm install`, even one with no package.json (an adopted repo, this one)."""
+        self.rules(self.rule("R-HOOK", "git-hook:pre-commit"), self.rule("R-PUSH", "git-hook:pre-push"))
+        self.write(".keelokit/bin/guard.py", "")
+        cases = {
+            "no package.json, no hooks": ({}, "add a 'pre-commit' hook that runs `python3 .keelokit/bin/guard.py git-pre-commit`"),
+            "the hooks ship in .githooks": ({".githooks/pre-commit": "#!/bin/sh\n", ".githooks/pre-push": "#!/bin/sh\n"},
+                                            "a human runs `git config core.hooksPath .githooks`"),
+            "generated project": ({"package.json": json.dumps({"packageManager": "pnpm@10.33.0", "scripts": {
+                "prepare": "git config core.hooksPath .githooks || true", "doctor": "python3 .keelokit/bin/doctor.py"}}),
+                ".githooks/pre-commit": "#!/bin/sh\n"}, "run `pnpm install`"),
+            "husky with npm": ({"package.json": json.dumps({"scripts": {"prepare": "husky"}}), "package-lock.json": "{}"},
+                               "run `npm install`"),
+            "yarn lockfile": ({"package.json": json.dumps({"scripts": {"postinstall": "husky install"}}), "yarn.lock": ""},
+                              "run `yarn install`"),
+            "package.json without an install step": ({"package.json": json.dumps({"scripts": {"doctor": "x"}})},
+                                                     "add a 'pre-push' hook, or map or except"),
+            "package.json that isn't JSON": ({"package.json": "{not json"}, "add a 'pre-commit' hook"),
+        }
+        for name, (files, hint) in cases.items():
+            with self.subTest(name):
+                for f in ("package.json", "package-lock.json", "yarn.lock"):
+                    (self.root / f).unlink(missing_ok=True)
+                shutil.rmtree(self.root / ".githooks", ignore_errors=True)
+                for f, text in files.items():
+                    self.write(f, text)
+                out, brief = self.doctor(), self.doctor("--brief")
+                self.assertIn(hint, out)
+                self.assertNotIn("Traceback", out + brief)
+                self.assertIn("Harness errors:", brief)
+                if name != "package.json that isn't JSON":
+                    self.assertTrue(self.assert_remedies_run_here(out), out)
+                    self.assertTrue(self.assert_remedies_run_here(brief), brief)
+
+    def test_CPY_1_no_doc_runs_a_script_that_a_pnpm_command_shadows(self):
+        """The class: a package script named like a pnpm command (`doctor`) only runs as `pnpm run
+        <name>`; `pnpm <name>` runs pnpm's own command and says nothing about the harness."""
+        repo = Path(__file__).resolve().parents[1]
+        scripts = set(re.findall(r'^\s*"([\w:-]+)":', (repo / "template/package.json.jinja").read_text().split('"scripts"', 1)[1]
+                                 .split("\n  }", 1)[0], re.M))
+        shadowed = scripts & PNPM_COMMANDS
+        self.assertIn("doctor", shadowed)
+        tracked = subprocess.run(["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True).stdout.split()
+        found = []
+        for rel in tracked:
+            if rel == "CHANGELOG.md" or rel.startswith("docs/bugbash/") or rel.endswith((".png", ".svg", ".ico", ".zip")):
+                continue
+            try:
+                text = (repo / rel).read_text(encoding="utf-8")
+            except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
+                continue
+            for m in re.finditer(rf"\bpnpm\s+({'|'.join(map(re.escape, shadowed))})\b", text):
+                found.append(f"{rel}:{text[:m.start()].count(chr(10)) + 1}: {m.group(0)}")
+        self.assertEqual(found, [], "say `pnpm run <script>` or `python3 .keelokit/bin/doctor.py`")
+
+    def test_CPY_1_every_failing_check_names_only_commands_the_repo_has(self):
+        """The class, dynamically: a failing enforcer of every kind the doctor knows (found in its
+        source, so a new kind needs a case here), and the other checks that report an ERROR, in a
+        repo without package.json, a generated project and a package.json without scripts: every
+        command any line tells you to run must exist in that repo."""
+        source = DOCTOR.read_text()
+        body = source.split("def enforcer_problem", 1)[1].split("\ndef ", 1)[0]
+        kinds = {k for m in re.finditer(r"kind (?:==|in) ([^:]+):", body) for k in re.findall(r'"([a-z-]+)"', m.group(1))}
+        failing = {  # kind → enforcers that fail it, one per way it can fail
+            "ci": ["ci:missing", "ci:soft", "ci:empty"],
+            "git-hook": ["git-hook:pre-commit", "git-hook:pre-push", "git-hook:../x"],
+            "claude-hook": ["claude-hook:nothere.py"],
+            "test": ["test:missing.test.ts", "test:somedir", "test:b.test.ts", "test:*/none.test.ts", "test:/abs.test.ts"],
+            "lint": ["lint:no-console", "lint:not-enabled"],
+            "script": ["script:scripts/verify.sh"],
+            "file": ["file:nope.json", 'file:tsconfig.json#"strict": true', "file:somedir#x"],
+            "review": ["review:"],
+            "unknown": ["bogus:x"],
+        }
+        self.assertEqual(kinds - failing.keys(), set(), "add a failing enforcer for each new kind")
+        refs = [r for rs in failing.values() for r in rs]
+        self.rules(*(self.rule(f"R-{i}", ref) for i, ref in enumerate(refs)),
+                   '[[rule]]\nid = "R-NONE"\nlevel = "MUST"\nrule = "r"\nwhy = "w"\nenforced_by = []\n')
+        self.write(".keelokit/bin/guard.py", "")
+        self.write("b.test.ts", "it('works', () => {})\n")
+        self.write("somedir/x.test.ts", "")
+        self.write("tsconfig.json", '{"strict": false}')
+        self.write(".keelokit/exceptions.toml", '[[exception]]\nrule = "R-0"\nreason = "r"\napprover = "a"\nexpires = 2000-01-01\n'
+                   '[[exception]]\nrule = "R-GONE"\n')
+        self.write(".keelokit/profile.toml", 'kind = "unknown"\ntraits = ["nope"]\n')
+        self.write(".keelokit/critical.toml", 'mutation_break = 700\n[[area]]\nname = "a"\nwhy = "w"\npaths = ["gone/"]\n')
+        self.write("docs/context/product.md", "# product\nIt should be robust. See [GAP-009].\n")
+        self.write("docs/context/domain.md", "- [INV-001] no class\n")
+        self.write("docs/escapes.md", "| ESC-001 | | | | | |\n")
+        self.write("backlog/stories/AUTH-001-x.md", "+++\nid = \"AUTH-001\"\nstatus = \"done\"\ndepends_on = [\"X-1\"]\n+++\n")
+        self.write("backlog/stories/bad.md", "no front matter\n")
+        shapes = {
+            "no package.json": {},
+            "generated project": {"package.json": json.dumps({"packageManager": "pnpm@10.33.0", "scripts": {
+                "prepare": "git config core.hooksPath .githooks || true", "doctor": "python3 .keelokit/bin/doctor.py"}})},
+            "package.json without scripts": {"package.json": "{}"},
+        }
+        for name, files in shapes.items():
+            with self.subTest(name):
+                (self.root / "package.json").unlink(missing_ok=True)
+                for f, text in files.items():
+                    self.write(f, text)
+                out = self.doctor()
+                for i, ref in enumerate(refs):
+                    self.assertIn(f"ERROR rule R-{i}:", out, f"{ref} should fail in this fixture")
+                self.assertGreaterEqual(out.count("ERROR"), len(refs) + 10, out)
+                for text in (out, self.doctor("--ci"), self.doctor("--brief"), self.doctor("--scope", "AUTH-001")):
+                    self.assertNotIn("Traceback", text)
+                    self.assert_remedies_run_here(text)
+
+    def test_CPY_1_no_doctor_message_names_a_package_manager(self):
+        """The class, statically: every string the doctor can print, in both copies. Only
+        hook_remedy may name a package manager (the one the repo's package.json installs with, which
+        the dynamic cases check); any other remedy is the doctor by its path, a script under
+        .keelokit/bin, git, or a /keelokit: skill, which every repo with the harness has."""
+        repo = Path(__file__).resolve().parents[1]
+        for copy in (DOCTOR, repo / ".keelokit/bin/doctor.py"):
+            tree = ast.parse(copy.read_text())
+            skip = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name == "hook_remedy":
+                    skip |= {id(n) for n in ast.walk(node)}
+                if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "LOCKFILES" for t in node.targets):
+                    skip |= {id(n) for n in ast.walk(node)}
+                if isinstance(node, (ast.Module, ast.FunctionDef)) and ast.get_docstring(node, clean=False) is not None:
+                    skip.add(id(node.body[0].value))
+            texts = [ast.unparse(n) if isinstance(n, ast.JoinedStr) else n.value for n in ast.walk(tree)
+                     if id(n) not in skip and (isinstance(n, ast.JoinedStr)
+                                               or isinstance(n, ast.Constant) and isinstance(n.value, str))]
+            self.assertGreater(len(texts), 100, copy)
+            for text in texts:
+                with self.subTest(copy=str(copy.relative_to(repo)), text=text[:80]):
+                    self.assertNotRegex(text, r"\b(pnpm|pnpx|npm|npx|yarn|bun|bunx)\b",
+                                        "a package manager in a doctor message: an adopted repo may have none")
+                    for cmd in re.findall(r"\bruns? `([^`]+)`", text):
+                        self.assertRegex(cmd, r"^(\{DOCTOR_CMD\}|python3 \.keelokit/bin/\w+\.py\b|git )", cmd)
+
+
+# pnpm 10's own commands (`pnpm help --all`), minus start and test, which run the package script.
+PNPM_COMMANDS = {
+    "add", "dedupe", "fetch", "import", "i", "install", "it", "install-test", "ln", "link", "prune", "rb", "rebuild",
+    "rm", "remove", "unlink", "up", "update", "patch", "patch-commit", "patch-remove", "audit", "licenses", "ls", "list",
+    "outdated", "why", "approve-builds", "create", "dlx", "exec", "ignored-builds", "run", "bin", "c", "config", "deploy",
+    "doctor", "init", "pack", "publish", "root", "self-update", "env", "cat-file", "cat-index", "find-hash", "store",
+    "cache", "setup", "server",
+}
 
 
 # Every kind of TOML value, and the kinds of doctor's SHAPES each one is (none: always wrong).
