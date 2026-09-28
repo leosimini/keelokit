@@ -31,12 +31,17 @@ reef `#8FE0C4`.
 | Role | Light | Dark (abyss ground) |
 |---|---|---|
 | Ground / paper / sunk | foam / `#FFFDF8` / `#EFE8DA` | abyss / `#081834` / `#0C2147` |
-| Text / secondary / tertiary | ink / ink-2 / `#747B76` | foam at 100 / 74 / 52 % |
+| Text / secondary / tertiary | ink / ink-2 / `#5F6661` | foam at 100 / 74 / 52 % |
 | Accent (links, ready) | sea `#114D96` | `#8FC0F2` |
 | Done | `#1C7559` on reef tint | reef |
-| Waits for you (review, a MUST) | `#AD540F` on foil tint | `#FFAE6B` |
+| Waits for you (review, a MUST) | `#9C4C0E` on foil tint | `#FFAE6B` |
 | In progress | `#7A5C00` on board tint | board |
 | Blocked | `#AE3F2D` | `#FF9A8A` |
+| Not started | `#5F6661` on `#ECE5D8` | foam at 58 % |
+
+Every colour text is written in reaches WCAG AA (4.5:1) on the ground, the paper, the sunk
+surface and its own tint, in both themes; `tests/test_dashboard.py` (`A11Y-2`) measures each
+pair, so a new token or a new stylesheet is checked the day it lands.
 
 Board yellow marks what you can act on: the copy button, the command prompt, the stepper dot of
 the stage in progress. Status colour appears only in pills and stepper dots.

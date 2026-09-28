@@ -185,6 +185,9 @@
 - Fixed (UI-2): in the report's backlog, with the view switched to "by epic", a link to a story
   landed on its hidden "by wave" copy and nothing opened. A link to a story now opens it in the view
   showing, and switches views when it points into the other. Already in 0.6.0.
+- Fixed (A11Y-2): in the light theme the dashboard's secondary text, its "Not started" and review
+  pills and its MUST tags were below WCAG AA contrast (3.5–4.3:1), and "Not started" in dark too.
+  They now reach 4.5:1 on every surface. Already in 0.6.0; `claude plugin update` brings the fix.
 
 ## 0.7.1 — 2026-09-27
 

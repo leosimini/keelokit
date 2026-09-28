@@ -1446,5 +1446,109 @@ class DashboardIOContractTest(unittest.TestCase):
                                   "a new way to write: add it to WRITERS in tests/test_dashboard.py")
 
 
+# A11Y-2, the class: a colour token the page writes text in that nobody measured against what it
+# sits on. dimensions.md's a11y row asks for a contrast test; this is it, in Python, over every
+# stylesheet dashboard.py ships (so a new one is checked the day it lands) and both themes.
+def _rgba(value: str) -> tuple[float, float, float, float]:
+    value = value.strip()
+    if m := re.fullmatch(r"#([0-9a-fA-F]{6})", value):
+        return (*(int(m.group(1)[i:i + 2], 16) for i in (0, 2, 4)), 1.0)
+    if m := re.fullmatch(r"rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)", value):
+        return tuple(float(x) for x in m.groups())
+    raise ValueError(f"a colour the contrast test can't read: {value!r}")
+
+
+def _over(top, below):
+    a = top[3]
+    return (*(top[i] * a + below[i] * (1 - a) for i in range(3)), 1.0)
+
+
+def _contrast(fg, bg) -> float:
+    def lum(c):
+        ch = [x / 255 for x in c[:3]]
+        r, g, b = (x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in ch)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    hi, lo = sorted((lum(fg), lum(bg)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _tokens(block: str) -> dict[str, str]:
+    return {k: v.strip() for k, v in re.findall(r"--([\w-]+):([^;}]+)", block)}
+
+
+class DashboardContrastTest(unittest.TestCase):
+    """A11Y-2: light-theme secondary text (--ink-3 at 4.27:1 on paper, 3.86:1 on the ground), the
+    review pill and MUST tag (--attn on --attn-soft, 4.31:1) and the 'Not started' pill (--idle on
+    --idle-soft, 3.47:1; 4.42:1 in dark) were below WCAG AA's 4.5:1. The class: every themed token
+    the page writes text in must reach 4.5:1 on every page surface (ground, paper, sunk) and on its
+    own -soft tint, and every rule that sets both a text and a background token must too, in light
+    and dark, in every stylesheet dashboard.py ships."""
+
+    AA = 4.5
+    SURFACES = ("ground", "paper", "paper-2", "sunk")
+
+    def stylesheets(self) -> dict[str, str]:
+        module = load_dashboard()
+        sheets = {name: value for name, value in vars(module).items()
+                  if name.endswith("CSS") and isinstance(value, str) and ":root{" in value}
+        self.assertTrue(sheets, "no stylesheet found in dashboard.py")
+        return sheets
+
+    def themes(self, css: str) -> dict[str, dict[str, str]]:
+        light = _tokens(re.search(r":root\{(.*?)\}", css, re.S).group(1))
+        dark_attr = re.search(r':root\[data-theme="dark"\]\{(.*?)\}', css, re.S)
+        dark_media = re.search(r'@media \(prefers-color-scheme:dark\)\{:root:not\(\[data-theme="light"\]\)\{(.*?)\}\}',
+                               css, re.S)
+        self.assertIsNotNone(dark_attr)
+        self.assertIsNotNone(dark_media)
+        # The system dark theme and the toggled one are two copies of one palette.
+        self.assertEqual(_tokens(dark_media.group(1)), _tokens(dark_attr.group(1)))
+        return {"light": light, "dark": {**light, **_tokens(dark_attr.group(1))}}
+
+    def test_A11Y_2_every_text_token_reaches_AA_on_every_surface_and_its_tint_in_both_themes(self):
+        failures = []
+        for name, css in self.stylesheets().items():
+            themes = self.themes(css)
+            themed = set(themes["dark"]) - {k for k, v in themes["light"].items() if themes["dark"][k] == v}
+            used = set(re.findall(r"(?<![-\w])color:var\(--([\w-]+)\)", css))
+            text = sorted((used & themed) - set(self.SURFACES))
+            self.assertIn("ink-3", text, name)
+            for theme, t in themes.items():
+                surfaces = {s: _rgba(t[s]) for s in self.SURFACES if s in t}
+                for token in text:
+                    fg = _rgba(t[token])
+                    grounds = dict(surfaces)
+                    if f"{token}-soft" in t:
+                        soft = _rgba(t[f"{token}-soft"])
+                        grounds.update({f"{token}-soft on {s}": _over(soft, bg) for s, bg in surfaces.items()})
+                    for where, bg in grounds.items():
+                        ratio = _contrast(_over(fg, bg), bg)
+                        if ratio < self.AA:
+                            failures.append(f"{name} {theme}: --{token} on {where} is {ratio:.2f}:1")
+        self.assertEqual(failures, [])
+
+    def test_A11Y_2_every_rule_that_sets_text_and_background_reaches_AA_in_both_themes(self):
+        failures = []
+        for name, css in self.stylesheets().items():
+            themes = self.themes(css)
+            pairs = set()
+            for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+                fg = re.search(r"(?<![-\w])color:var\(--([\w-]+)\)", body)
+                bg = re.search(r"background(?:-color)?:var\(--([\w-]+)\)", body)
+                if fg and bg:
+                    pairs.add((selector.strip(), fg.group(1), bg.group(1)))
+            self.assertTrue(any(sel.startswith(".pill") or sel.startswith(".stale") for sel, _, _ in pairs), name)
+            for theme, t in themes.items():
+                surfaces = [_rgba(t[s]) for s in self.SURFACES if s in t]
+                for selector, fg_token, bg_token in sorted(pairs):
+                    for surface in surfaces:
+                        bg = _over(_rgba(t[bg_token]), surface)
+                        ratio = _contrast(_over(_rgba(t[fg_token]), bg), bg)
+                        if ratio < self.AA:
+                            failures.append(f"{name} {theme}: {selector} (--{fg_token} on --{bg_token}) is {ratio:.2f}:1")
+                            break
+        self.assertEqual(failures, [])
+
+
 if __name__ == "__main__":
     unittest.main()
