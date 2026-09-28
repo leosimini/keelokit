@@ -64,6 +64,8 @@
   Now each is an ERROR naming the file, the key or the path, the value or entry is left out,
   `--brief` still prints its summary and `--ci` exits 1. Already in 0.7.1; `harness-upgrade` brings
   the new doctor.
+- Fixed (DX-8): `doctor.py --scope` with no story id printed `No story  in backlog/stories` and
+  exited 1; now it prints its usage and exits 2, as does an unknown mode or a stray argument.
 - Fixed (CPY-1): the doctor's fix-it lines named commands the repo might not have: `--brief` ended
   with "run `pnpm doctor`" and a missing git hook said "run pnpm install", even in an adopted repo
   with no package.json. Worse, pnpm has its own `doctor` command, so that line never ran Keelokit's

@@ -527,6 +527,68 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("no main or origin/main", self.doctor())
         self.assertEqual(self.doctor("--critical", "--changed").split(), ["apps/api/src/pay/charge.ts"])
 
+    def invoke(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["python3", ".keelokit/bin/doctor.py", *args], cwd=self.root, capture_output=True, text=True)
+
+    def test_DX_8_scope_without_an_id_asks_for_one(self):
+        """`--scope` with no story id printed 'No story  in backlog/stories' (the id left blank)
+        and exited 1, as if it had looked for a story."""
+        self.rules()
+        self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))
+        self.commit("init")
+        for args in (["--scope"], ["--scope", ""], ["--scope", "--brief"]):
+            with self.subTest(args):
+                run = self.invoke(*args)
+                self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+                self.assertEqual(run.stdout, "")
+                self.assertIn("usage: doctor.py --scope ID", run.stderr)
+                self.assertNotIn("No story", run.stderr)
+
+    def test_DX_8_only_the_command_lines_the_docstring_documents_run(self):
+        """The class behind DX-8: an argument line the doctor doesn't expect (a missing id, an
+        unknown mode, a stray extra argument) must not run something else. Every command line the
+        docstring documents runs; every other one exits 2 with the usage on stderr, no traceback."""
+        self.rules()
+        self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))
+        self.commit("init")
+        documented, usages = [], []
+        for line in re.findall(r"(?m)^    python3 \.keelokit/bin/doctor\.py(.*)$", DOCTOR.read_text()):
+            tokens = []
+            for token in line.split():
+                if not re.fullmatch(r"--[a-z]+|ID|\[--[a-z]+\]", token):
+                    break
+                tokens.append(token)
+            usages.append(" ".join(["doctor.py", *tokens]))
+            forms = [[]]
+            for token in tokens:
+                if token.startswith("["):
+                    forms += [f + [token.strip("[]")] for f in forms]
+                else:
+                    forms = [f + ["AUTH-001" if token == "ID" else token] for f in forms]
+            documented += forms
+        for form in ([], ["--brief"], ["--ci"], ["--scope", "AUTH-001"], ["--critical"], ["--critical", "--changed"]):
+            self.assertIn(form, documented)
+        for args in documented:
+            with self.subTest(args):
+                run = self.invoke(*args)
+                self.assertNotIn("usage:", run.stdout + run.stderr)
+                self.assertNotIn("Traceback", run.stdout + run.stderr)
+        undocumented = [["--bogus"], ["brief"], ["-b"], ["--scope"], ["--scope", ""], ["--scope", "-x"],
+                        ["--changed"], ["--changed", "--critical"]]
+        undocumented += [args + ["extra"] for args in documented]
+        for args in undocumented:
+            with self.subTest(args):
+                run = self.invoke(*args)
+                self.assertEqual(run.returncode, 2, (run.stdout, run.stderr))
+                self.assertEqual(run.stdout, "")
+                self.assertIn("usage:", run.stderr)
+                self.assertNotIn("Traceback", run.stderr)
+        for flag in ("-h", "--help"):  # asked for, the usage goes to stdout and exits 0
+            run = self.invoke(flag)
+            self.assertEqual((run.returncode, run.stderr), (0, ""))
+            for usage in usages:
+                self.assertIn(usage, run.stdout)
+
     def test_INT_1_ci_jobs_that_read_history_against_main_fetch_it(self):
         """The class behind INT-1: a CI job that compares against main (doctor, mutation, a
         gitleaks history scan, verify) on a shallow checkout sees no main at all."""

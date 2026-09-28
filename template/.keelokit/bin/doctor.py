@@ -9,6 +9,8 @@
     python3 .keelokit/bin/doctor.py --critical [--changed]
                                                critical source files (all, or changed since main)
 
+Any other command line (a missing ID, an unknown mode, an extra argument) prints the usage and exits 2.
+
 Without main or origin/main (a shallow CI checkout) nothing counts as done and the doctor says so,
 `--scope` exits 2, and `--critical --changed` lists every critical file: never HEAD for main.
 
@@ -834,20 +836,39 @@ def check_scope(sid: str) -> int:
     return status
 
 
+USAGE = """usage: doctor.py
+       doctor.py --brief
+       doctor.py --ci
+       doctor.py --scope ID
+       doctor.py --critical [--changed]"""
+
+
 def main() -> int:
-    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = sys.argv[1:]
+    if args in (["-h"], ["--help"]):
+        print(USAGE)
+        return 0
+    mode = args[0] if args else ""
+    # Only the command lines the docstring documents run: anything else (DX-8: `--scope` with no
+    # id, an unknown mode, a stray argument) says how to call it instead of running something else.
+    if mode == "--scope" and (len(args) != 2 or not args[1] or args[1].startswith("-")):
+        print("usage: doctor.py --scope ID  (a story id, e.g. AUTH-001)", file=sys.stderr)
+        return 2
+    if mode != "--scope" and args not in ([], ["--brief"], ["--ci"], ["--critical"], ["--critical", "--changed"]):
+        print(f"doctor.py: unexpected arguments: {' '.join(args)}\n{USAGE}", file=sys.stderr)
+        return 2
     if mode == "--scope":
-        return check_scope(sys.argv[2] if len(sys.argv) > 2 else "")
+        return check_scope(args[1])
     if mode == "--critical":
         areas, _ = load_critical()
         if errors:
             print("\n".join(errors), file=sys.stderr)
             return 1
         files = critical_files(areas)
-        if "--changed" in sys.argv and (base := main_base()) is None:
+        if "--changed" in args and (base := main_base()) is None:
             # Unknown base: every critical file counts as changed (fail safe, like `pnpm verify`).
             print(NO_MAIN.format(what="diff against") + "; taking every critical file", file=sys.stderr)
-        elif "--changed" in sys.argv:
+        elif "--changed" in args:
             changed = set(git("diff", "--name-only", base).split())
             changed |= set(git("ls-files", "--others", "--exclude-standard").split())
             files = [f for f in files if f in changed]
