@@ -114,6 +114,9 @@ have, run `/keelokit:project-adopt`. To generate from your own fork, set `KEELOK
   `build-story --light` exists for small changes.
 - The guard that stops agents from bypassing hooks or writing secrets is a speed bump, not a
   sandbox. The git hooks and CI are the real backstop.
+- The plugin's hooks run the project's own `.keelokit/bin/guard.py` and `doctor.py`, on every
+  session and every tool call. Opening a repo with Keelokit on means running its `.keelokit/`
+  code, so only do it with repos whose `.keelokit/` you trust, as you would with their tests.
 - `doctor` can tell a check is present and switched on, not that it's a good check. For the
   critical code, mutation testing measures that; elsewhere, reviews and bug hunts cover it.
 - Bugs come in classes, so the harness aims at classes: the rules that must always hold
@@ -136,7 +139,9 @@ code) stays in your repo. The network traffic is the one your usual tools alread
   create in your repo's settings. The plugin never reads it.
 - **claude.ai:** where Claude can publish pages, the dashboard is published as a private
   Artifact in your account, with your product documents in it; its fonts load from Google Fonts.
-  In a terminal it is a local HTML file.
+  In a terminal it is a local HTML file. The Artifact's link is committed in
+  `.keelokit/state.toml`, so the whole team opens the same dashboard. The link alone gives nobody
+  access to a private Artifact, but in a public repo anyone can see that it exists.
 
 The interview doesn't record personal data of real people: accounts are named by role, never
 with credentials.

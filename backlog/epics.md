@@ -17,4 +17,10 @@
 |---|---|---|---|
 | HARN-002 | The lint enforcer check reads what a config really enables | — | template/.keelokit/bin/doctor.py, .keelokit/bin/doctor.py, tests/test_doctor.py |
 
-Collisions resolved: HARN-002 moved to wave 2 because it touches the doctor and its tests, as HARN-003 does.
+## Wave 3
+
+| Story | Title | Depends on | Touches |
+|---|---|---|---|
+| HARN-004 | Opening a repo doesn't run its own copy of the guard and the doctor unchecked | — | hooks/hooks.json, template/.keelokit/bin/guard.py, .keelokit/bin/guard.py, template/.keelokit/bin/doctor.py, .keelokit/bin/doctor.py, tests/test_guard.py, tests/test_doctor.py |
+
+Collisions resolved: HARN-002 moved to wave 2 and HARN-004 to wave 3 because they touch the doctor and its tests, as HARN-003 does.

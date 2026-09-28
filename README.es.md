@@ -118,6 +118,10 @@ tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_
   Para cambios chicos existe `build-story --light`.
 - El guard que frena a los agentes para que no salteen hooks ni escriban secretos es un reductor
   de velocidad, no un sandbox. Los hooks de git y el CI son el respaldo real.
+- Los hooks del plugin corren el `.keelokit/bin/guard.py` y el `doctor.py` del propio proyecto,
+  en cada sesión y en cada llamada a una herramienta. Abrir un repo con Keelokit prendido es
+  correr su código de `.keelokit/`: hacelo solo con repos cuyo `.keelokit/` te dé confianza, como
+  harías con sus tests.
 - `doctor` puede ver que un check existe y está prendido, no que sea un buen check. En el código
   crítico eso lo mide el mutation testing; en el resto, las revisiones y las cacerías de bugs.
 - Los bugs vienen en clases, así que el harness apunta a clases: las reglas que siempre tienen
@@ -140,7 +144,9 @@ código) queda en tu repo. El tráfico de red es el que ya hacen tus herramienta
   que creás vos en la configuración del repo. El plugin nunca lo lee.
 - **claude.ai:** donde Claude puede publicar páginas, el tablero se publica como Artifact
   privado en tu cuenta, con los documentos de tu producto; sus tipografías se cargan de Google
-  Fonts. En una terminal es un archivo HTML local.
+  Fonts. En una terminal es un archivo HTML local. El link del Artifact queda commiteado en
+  `.keelokit/state.toml`, así todo el equipo abre el mismo tablero. El link solo no le da acceso a
+  nadie a un Artifact privado, pero en un repo público cualquiera puede ver que existe.
 
 La entrevista no registra datos personales de personas reales: las cuentas se nombran por rol,
 nunca con credenciales.
