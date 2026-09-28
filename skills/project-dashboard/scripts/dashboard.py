@@ -1046,12 +1046,12 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
     for b in s["bugbashes"]:
         pending = [f for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente"))]
         if pending:
-            items.append({"text": t["wait_bb"].format(n=len(pending), date=b["date"]), "anchor": f"bb-{b['date']}",
+            items.append({"text": t["wait_bb"].format(n=len(pending), date=long_date(b["date"], lang)), "anchor": f"bb-{b['date']}",
                           "ask": t["act_decide_t"].format(date=b["date"]), "act": t["act_decide"]})
     for b in s["security"]:
         pending = [f for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente"))]
         if pending:
-            items.append({"text": t["wait_sec"].format(n=len(pending), date=b["date"]),
+            items.append({"text": t["wait_sec"].format(n=len(pending), date=long_date(b["date"], lang)),
                           "anchor": f"sec-{b['date']}", "ask": t["act_decide_sec_t"].format(date=b["date"]), "act": t["act_decide"]})
     if s["profile"] and s["profile"]["kind"] in ("", "unknown"):
         items.append({"text": t["wait_profile_unknown"], "anchor": "decisions", "ask": "/keelokit:check-health", "act": t["act_profile"]})
@@ -1785,7 +1785,7 @@ def decisions_card(s: dict, links: Links, t: dict) -> str:
                        for a in s["adrs"])
         out.append(f'<div class="setting"><span class="k">{esc(t["adrs_k"])}</span>'
                    + (f"<ul>{adrs}</ul>" if adrs else f'<span class="d">{esc(t["no_adrs"])}</span>') + "</div>")
-    when = f'<p class="muted">{esc(t["decided_on"].format(date=run["decided"]))}</p>' if run.get("decided") else ""
+    when = f'<p class="muted">{esc(t["decided_on"].format(date=long_date(run["decided"], lang_of(t))))}</p>' if run.get("decided") else ""
     return (f'<section class="card" id="decisions"><p class="eyebrow">{esc(t["decisions_h"])}</p>'
             f'{"".join(out)}{when}<p class="muted">{esc(t["locked_note"])}</p></section>')
 
@@ -1827,7 +1827,7 @@ def findings_section(runs: list[dict], sid: str, prefix: str, title: str, what: 
         is_open = n_pending > 0 or (i == 0 and not open_any)
         open_any = open_any or is_open
         body.append(f'<details class="group" id="{prefix}-{esc(b["date"])}"{" open" if is_open else ""}><summary>'
-                    f'<span class="gname">{esc(run_title.format(date=b["date"]))}</span>'
+                    f'<span class="gname">{esc(run_title.format(date=long_date(b["date"], lang_of(t))))}</span>'
                     f'<span class="count">{len(fs)}</span>{CHEV}</summary><div class="group-body">{"".join(inner)}</div></details>')
     waiting = any(pending(f) for b in runs for f in b["findings"])
     pill = f'<span class="pill review">{esc(t["st_review"])}</span>' if waiting else ""
@@ -1911,7 +1911,7 @@ def history_section(s: dict, t: dict, stage_names: dict) -> str:
         else:
             what = f'<span class="k">{esc(t["h_gate_auto"] if e["title"] == "auto" else t["h_gate"])}</span> {esc(stage_names.get(e["id"], e["id"]))}'
         items.append(f'<li><time>{esc(e["date"])}</time><span>{what}</span></li>')
-    summary = t["history_sum"].format(n=len(s["history"]), date=events[0]["date"])
+    summary = t["history_sum"].format(n=len(s["history"]), date=long_date(events[0]["date"], lang_of(t)))
     return extra_section("history", "↺", t["history"], "", summary, f'<ul class="timeline">{"".join(items)}</ul>', False)
 
 
@@ -1961,7 +1961,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
             check = f'<div class="acts">{ask(t["next_continue"].format(stage=name), flow, True)}</div>'
         date = ""
         if st["date"]:
-            date = f' · {esc((t["auto_on"] if st["auto"] else t["approved_on"]).format(date=st["date"]))}'
+            date = f' · {esc((t["auto_on"] if st["auto"] else t["approved_on"]).format(date=long_date(st["date"], lang)))}'
         sections.append(
             f'<details class="stage {st["status"]}" id="stage-{st["id"]}"{" open" if st is current else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(name)}</span>'
@@ -2026,7 +2026,8 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
         chips += f'<span class="chip">{esc(t["run_auto"] if mode == "auto" else t["run_step"])}</span>'
     theme = (f'<button type="button" class="theme" id="theme" aria-pressed="false" data-dark="{esc(t["theme_dark"])}" '
              f'data-light="{esc(t["theme_light"])}" aria-label="{esc(t["theme_dark"])}" title="{esc(t["theme_dark"])}">{MOON}{SUN}</button>')
-    when = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+    now = dt.datetime.now().astimezone()
+    when = long_date(now.date().isoformat(), lang, now.strftime("%H:%M"))
     img = logo()
 
     o = OPS_T[lang]
@@ -2155,6 +2156,22 @@ def short_date(value: str, lang: str, time: str = "") -> str:
         return value
     m = MONTHS[lang][d.month - 1]
     day = f"{d.day} {m}" if lang == "es" else f"{m} {d.day}"
+    return f"{day}, {time}" if time else day
+
+
+def lang_of(t: dict) -> str:
+    """The language of a text table from T."""
+    return next(k for k, v in T.items() if v is t)
+
+
+def long_date(value: str, lang: str, time: str = "") -> str:
+    """2026-09-24 → "24 sep 2026" / "Sep 24, 2026" (and ", 11:20" with a time); anything else as written.
+    Requests prepared for Claude keep the ISO date."""
+    try:
+        d = dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return value
+    day = f"{short_date(value, lang)} {d.year}" if lang == "es" else f"{short_date(value, lang)}, {d.year}"
     return f"{day}, {time}" if time else day
 
 

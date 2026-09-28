@@ -259,7 +259,7 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual((s["stages"][0]["date"], s["stages"][0]["auto"]), ("2026-09-20", True))
         self.assertNotIn("decisions", [w["anchor"] for w in s["waiting"]])
         html = self.page()
-        self.assertIn("Approved automatically on 2026-09-20", html)
+        self.assertIn("Approved automatically on Sep 20, 2026", html)
         self.assertIn("In parallel · up to 3 at once", html)
         # Only the stage waiting for the user is open.
         self.assertIn('<details class="stage review" id="stage-product" open>', html)
@@ -623,6 +623,20 @@ class DashboardTest(unittest.TestCase):
         html = self.page("--standalone")
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn('href="https://github.com/acme/shop/blob/main/docs/context/gaps.md"', html)
+
+    def test_I18N_5_the_report_writes_dates_in_its_language(self):
+        """I18N-5: the report printed every date as ISO in both languages, though the skill says the
+        page's language governs dates. Visible dates follow the language; requests keep ISO."""
+        for lang, approved, generated in (("en", "Approved on Sep 20, 2026", r"Report generated [A-Z][a-z]{2} \d{1,2}, \d{4}, \d\d:\d\d"),
+                                          ("es", "Aprobada el 20 sep 2026", r"Reporte generado el \d{1,2} [a-z]{3} \d{4}, \d\d:\d\d")):
+            with self.subTest(lang=lang):
+                self.gates("intake", "product", lang=lang)
+                self.context()
+                self.write("docs/prd.md", "# PRD\n")
+                html = self.page("--standalone")
+                self.assertIn(approved, html)
+                self.assertRegex(html, generated)
+                self.assertNotRegex(re.sub(r"<[^>]*>", " ", html), r"(Approved on|Aprobada el) 2026-")
 
     def test_SEC_4_a_doc_link_never_leaves_the_project(self):
         """SEC-4 (bug bash 2026-09-27): /etc/passwd or a ../.. chain in a project doc is plain text."""
