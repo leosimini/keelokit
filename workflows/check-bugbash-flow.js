@@ -63,7 +63,7 @@ const PLAN = {
     },
     skipped: { type: 'array', items: { type: 'object', required: ['id', 'why'], properties: { id: str, why: str } } },
     journeys: strs, personas: strs, invariants: strs, critical: strs, sources: strs,
-    run: str, verify: str, doctor: str, baseline: str, escapes: str,
+    run: str, verify: str, doctor: str, baseline: str, escapes: str, identity: str,
   },
 }
 
@@ -146,6 +146,7 @@ const plan = await agent(
 5. From docs/context (product.md, domain.md, constraints.md), docs/prd.md, backlog/, README: the critical journeys per role (or, for a developer-facing project, per kind of user: newcomer following the README, someone upgrading from the last release, a contributor running the tests), the personas, every invariant (id, text, class), the critical areas from .keelokit/critical.toml, and the files that define "expected".
 6. How to run the product for a lens without disturbing the others (own ports, own database, own temp dirs; for a developer-facing project: install or load the package from a clean copy), the command that verifies the repository (pnpm verify, or for a repo without it the tests and checks its AGENTS.md or CI run), the doctor command if .keelokit/bin/doctor.py exists, and where escapes are logged (docs/escapes.md; say "missing" if it isn't there).
 7. Baseline: run the verify command now and summarise the result, so pre-existing failures aren't blamed on fixes.
+8. Identity: \`git config user.name\` and \`git config user.email\` as "Name <email>" — every commit of this bug bash must carry it.
 
 ${A.notes ? `Notes from the user: ${A.notes}` : ''}
 Return the plan.`,
@@ -162,7 +163,8 @@ Personas:\n- ${plan.personas.join('\n- ')}
 Invariants:\n- ${(plan.invariants || []).join('\n- ') || 'none recorded'}
 Critical areas: ${(plan.critical || []).join(', ') || 'none'}
 How to run it in isolation: ${plan.run}
-Verify: ${plan.verify}. Baseline before any fix: ${plan.baseline}`
+Verify: ${plan.verify}. Baseline before any fix: ${plan.baseline}
+Never change this repository's git config (user.name, user.email or anything else): a fixture or experiment that needs a git identity runs in its own folder under /tmp and uses \`git -c user.name=… -c user.email=…\`. Commits here carry ${plan.identity || 'the identity git is configured with'}.`
 
 // ── Survey and validate, in rounds until coverage runs dry ──────────────────────────────────────
 const counters = {}
@@ -325,7 +327,7 @@ Check it independently; you did not write it and owe it no charity. Don't edit t
 - The fix is at the cause, and the siblings a grep of the callers finds are fixed too.
 - The check added would catch another bug of the same class, not only this one.
 - The escapes row exists; ${plan.verify} is green except what the baseline already failed.
-- The commit touches nothing unrelated.`,
+- The commit touches nothing unrelated, and its author and committer are ${plan.identity || 'the identity the run started with'} (\`git log -1 --format='%an <%ae> / %cn <%ce>' ${fixed.commit}\`).`,
       { label: `check fix ${g.id}`, phase: 'Fix', schema: CHECKED },
     )
     if (check && check.ok) break
@@ -361,6 +363,7 @@ Write ${plan.outDir}/report.md, the bug bash report, following section 5 of skil
 - "## Discarded": findings the skeptics couldn't reproduce or found correct, one line each with why.
 - "## Escapes": by dimension and by class, the checks added, and the comparison with the previous report in docs/bugbash/ and with docs/escapes.md.
 - The mutation score of the critical areas if the project has them (pnpm mutation --all), and the final verify and doctor results — run them now.
+- The identity check: \`git config user.email\` is still what the run started with (${plan.identity || 'see the plan'}) and \`git log --format='%an <%ae>' ${plan.sha}..HEAD\` shows only it. If not, say so at the top of the report in one line — a commit under another identity must be fixed before anything is pushed.
 
 Root causes and what happened to each:
 ${JSON.stringify(results, null, 1)}
