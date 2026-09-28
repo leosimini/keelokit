@@ -129,6 +129,66 @@ class DoctorTest(unittest.TestCase):
             self.assertIn(f"rule {bad}: ", out)
             self.assertIn(why, out)
 
+    def test_LOG_207_a_git_hook_counts_only_where_git_runs_it(self):
+        """A `git-hook:` enforcer was alive when any file of that name existed in the hooks path or
+        in .husky/, whatever core.hooksPath said: an empty or non-executable file git never runs, a
+        stray .husky/ file under a hooks path set elsewhere, and husky v9 before its install."""
+        self.rules(self.rule("R-HOOK", "git-hook:pre-commit"))
+        self.write(".keelokit/bin/guard.py", "")
+        hook = "#!/bin/sh\nexec python3 .keelokit/bin/guard.py git-pre-commit\n"
+        wrapper = '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n'
+        cases = {  # name → (core.hooksPath, {file: (text, executable)}, None if alive else why)
+            "installed in .git/hooks": (None, {".git/hooks/pre-commit": (hook, True)}, None),
+            "empty file in .git/hooks": (None, {".git/hooks/pre-commit": ("", False)}, "is empty"),
+            "empty but executable": (None, {".git/hooks/pre-commit": ("", True)}, "is empty"),
+            "not executable": (None, {".git/hooks/pre-commit": (hook, False)}, "is not executable"),
+            "a directory of that name": (None, {".git/hooks/pre-commit/x": (hook, True)}, "not installed"),
+            "shipped in .githooks, hooksPath unset": (None, {".githooks/pre-commit": (hook, True)}, "not installed"),
+            "generated project": (".githooks", {".githooks/pre-commit": (hook, True)}, None),
+            "stray .husky file, hooksPath unset": (None, {".husky/pre-commit": (hook, True)}, "not installed"),
+            "stray .husky file, hooksPath elsewhere": ("/nonexistent/hooks", {".husky/pre-commit": (hook, True)},
+                                                      "not installed"),
+            "husky v5-v8": (".husky", {".husky/pre-commit": (hook, True)}, None),
+            "husky v9 before its install": (".husky/_", {".husky/pre-commit": (hook, True)}, "not installed"),
+            "husky v9 installed": (".husky/_", {".husky/_/pre-commit": (wrapper, True), ".husky/_/h": (wrapper, True),
+                                                ".husky/pre-commit": (hook, False)}, None),
+            "husky v9 without the hook": (".husky/_", {".husky/_/pre-commit": (wrapper, True)}, ".husky/pre-commit"),
+            "husky v9, empty hook": (".husky/_", {".husky/_/pre-commit": (wrapper, True), ".husky/pre-commit": ("", True)},
+                                     ".husky/pre-commit"),
+        }
+        for name, (hooks_path, files, why) in cases.items():
+            with self.subTest(name):
+                for d in (".git/hooks", ".githooks", ".husky"):
+                    shutil.rmtree(self.root / d, ignore_errors=True)
+                sh(self.root, "git", "config", "--unset", "core.hooksPath")
+                if hooks_path:
+                    sh(self.root, "git", "config", "core.hooksPath", hooks_path)
+                for f, (text, executable) in files.items():
+                    self.write(f, text)
+                    (self.root / f).chmod(0o755 if executable else 0o644)
+                out = self.doctor()
+                self.assertNotIn("Traceback", out)
+                if why is None:
+                    self.assertNotIn("rule R-HOOK:", out)
+                else:
+                    line = next((ln for ln in out.splitlines() if "rule R-HOOK:" in ln), "")
+                    self.assertIn(why, line, out)
+                    self.assertTrue(self.assert_remedies_run_here(line), line)
+
+    def test_LOG_207_a_hook_in_a_linked_worktree_is_the_repo_hook(self):
+        """Git runs a linked worktree's hooks from the main repo's .git/hooks (its own .git is a
+        file), so the same hook is installed there too."""
+        self.rules(self.rule("R-HOOK", "git-hook:pre-commit"))
+        self.write(".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n")
+        (self.root / ".git/hooks/pre-commit").chmod(0o755)
+        self.commit("init")
+        tree = Path(tempfile.mkdtemp()) / "wt"
+        self.addCleanup(shutil.rmtree, tree.parent)
+        sh(self.root, "git", "worktree", "add", "-q", str(tree))
+        out = sh(tree, "python3", ".keelokit/bin/doctor.py")
+        self.assertIn("rules", out.lower())
+        self.assertNotIn("rule R-HOOK:", out)
+
     def test_LOG_202_ci_enforcer_reads_every_spelling_of_a_job(self):
         # One spelling of each construct used to be recognised: a 2-space job indent, a literal
         # `true`, and no job-level `if:`. Any other spelling hid a dead job or lost a live one.
@@ -531,14 +591,14 @@ class DoctorTest(unittest.TestCase):
 
     def assert_remedies_run_here(self, out: str) -> list[str]:
         """Every command the output tells you to run exists in this repo: the doctor by its own path,
-        git, or a package manager whose install step or script the repo's package.json has."""
+        git, `chmod +x`, or a package manager whose install step or script the repo's package.json has."""
         pkg = json.loads((self.root / "package.json").read_text()) if (self.root / "package.json").exists() else None
         remedies = re.findall(r"\bruns? `([^`]+)`", out)
         for cmd in remedies:
             words = cmd.split()
             if words[0] == "python3":
                 self.assertTrue((self.root / words[1]).is_file(), cmd)
-            elif words[0] == "git":
+            elif words[0] == "git" or words[:2] == ["chmod", "+x"]:
                 continue
             else:
                 self.assertIn(words[0], ("pnpm", "npm", "yarn", "bun"), f"unknown command: {cmd}")
@@ -616,7 +676,8 @@ class DoctorTest(unittest.TestCase):
         kinds = {k for m in re.finditer(r"kind (?:==|in) ([^:]+):", body) for k in re.findall(r'"([a-z-]+)"', m.group(1))}
         failing = {  # kind → enforcers that fail it, one per way it can fail
             "ci": ["ci:missing", "ci:soft", "ci:empty", "ci:off"],
-            "git-hook": ["git-hook:pre-commit", "git-hook:pre-push", "git-hook:../x"],
+            "git-hook": ["git-hook:pre-commit", "git-hook:pre-push", "git-hook:../x", "git-hook:post-merge",
+                         "git-hook:post-checkout"],
             "claude-hook": ["claude-hook:nothere.py"],
             "test": ["test:missing.test.ts", "test:somedir", "test:b.test.ts", "test:*/none.test.ts", "test:/abs.test.ts"],
             "lint": ["lint:no-console", "lint:not-enabled"],
@@ -633,6 +694,8 @@ class DoctorTest(unittest.TestCase):
         self.write("b.test.ts", "it('works', () => {})\n")
         self.write("somedir/x.test.ts", "")
         self.write("tsconfig.json", '{"strict": false}')
+        self.write(".git/hooks/post-merge", "")  # empty
+        self.write(".git/hooks/post-checkout", "#!/bin/sh\nexit 0\n")  # not executable
         self.write(".keelokit/exceptions.toml", '[[exception]]\nrule = "R-0"\nreason = "r"\napprover = "a"\nexpires = 2000-01-01\n'
                    '[[exception]]\nrule = "R-GONE"\n')
         self.write(".keelokit/profile.toml", 'kind = "unknown"\ntraits = ["nope"]\n')
@@ -665,7 +728,8 @@ class DoctorTest(unittest.TestCase):
         """The class, statically: every string the doctor can print, in both copies. Only
         hook_remedy may name a package manager (the one the repo's package.json installs with, which
         the dynamic cases check); any other remedy is the doctor by its path, a script under
-        .keelokit/bin, git, or a /keelokit: skill, which every repo with the harness has."""
+        .keelokit/bin, git, `chmod +x` (a hook git won't run), or a /keelokit: skill, which every repo
+        with the harness has."""
         repo = Path(__file__).resolve().parents[1]
         for copy in (DOCTOR, repo / ".keelokit/bin/doctor.py"):
             tree = ast.parse(copy.read_text())
@@ -686,7 +750,7 @@ class DoctorTest(unittest.TestCase):
                     self.assertNotRegex(text, r"\b(pnpm|pnpx|npm|npx|yarn|bun|bunx)\b",
                                         "a package manager in a doctor message: an adopted repo may have none")
                     for cmd in re.findall(r"\bruns? `([^`]+)`", text):
-                        self.assertRegex(cmd, r"^(\{DOCTOR_CMD\}|python3 \.keelokit/bin/\w+\.py\b|git )", cmd)
+                        self.assertRegex(cmd, r"^(\{DOCTOR_CMD\}|python3 \.keelokit/bin/\w+\.py\b|git |chmod \+x )", cmd)
 
 
 # pnpm 10's own commands (`pnpm help --all`), minus start and test, which run the package script.

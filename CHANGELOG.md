@@ -76,6 +76,16 @@
   spellings. A computed expression (`${{ 0 }}`, `${{ !true }}`) is still read as not constant. Already in 0.7.1; `harness-upgrade` brings the new
   doctor and guard. A job with `if: false` that enforces a rule is now an ERROR: remove the `if:` or
   register an exception with /keelokit:check-health.
+- Fixed (LOG-207, LOG-208): the doctor took a `git-hook:<name>` enforcer as alive when any file of
+  that name existed in the hooks path or in `.husky/`, whatever `core.hooksPath` said. An empty or
+  non-executable hook, which git never runs or which checks nothing, a stray `.husky/<name>` while
+  the hooks path points elsewhere or isn't set, and husky v9 (`core.hooksPath .husky/_`) before its
+  install, or with `.husky/<name>` missing, all passed. It now looks only where git runs hooks
+  (`core.hooksPath`, else the `.git/hooks` that linked worktrees share, which it used to miss) and
+  asks for a non-empty, executable file, plus `.husky/<name>` under husky v9. Already in 0.7.1;
+  `harness-upgrade` brings the new doctor. A hook it now reports is one git doesn't run: make it
+  executable, install it (`core.hooksPath`, or the package manager's install for husky), or map or
+  except the rule with /keelokit:check-health.
 
 ## 0.7.1 — 2026-09-27
 

@@ -33,6 +33,7 @@ if sys.version_info < (3, 11):
 
 import datetime as dt  # noqa: E402
 import json  # noqa: E402
+import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 import tomllib  # noqa: E402
@@ -290,8 +291,43 @@ def hook_remedy(hooks_dir: str, target: str) -> str:
     for d in (".githooks", ".husky"):
         if d != hooks_dir and (ROOT / d / target).is_file():
             return f"a human runs `git config core.hooksPath {d}`"
+    return add_hook(f"add a '{target}' hook", target)
+
+
+def add_hook(what: str, target: str) -> str:
+    """The fix-it tail when the hook itself has to be written: what it runs, or the way out."""
     guard = " that runs `python3 .keelokit/bin/guard.py git-pre-commit`" if target == "pre-commit" else ""
-    return f"add a '{target}' hook{guard}, or map or except the rule with /keelokit:check-health"
+    return f"{what}{guard}, or map or except the rule with /keelokit:check-health"
+
+
+def hook_problem(target: str) -> str | None:
+    """Why git won't run the hook `target` in this repo, or None when it will (LOG-207). Git runs
+    only the file of that name in its hooks path (core.hooksPath, else the .git/hooks that linked
+    worktrees share), and only when it's executable; an empty one checks nothing. A stray file of
+    that name anywhere else, .husky/ included, is never run. husky v9 sets the hooks path to
+    .husky/_, whose wrappers run .husky/<name> (sourced, so it needn't be executable) and succeed
+    without a word when it's missing or empty."""
+    hooks_dir = git("rev-parse", "--git-path", "hooks").strip() or ".git/hooks"
+    hook = ROOT / hooks_dir / target
+    if not hook.is_file():
+        return f"git hook '{target}' is not installed (hooksPath: {hooks_dir}; {hook_remedy(hooks_dir, target)})"
+    shown = rel(hook)
+    text, why = read_file(hook, lenient=True)
+    if why:
+        return why
+    if not text.strip():
+        return f"git hook '{shown}' is empty, so it checks nothing ({add_hook('write the hook', target)})"
+    if not os.access(hook, os.X_OK):
+        return f"git hook '{shown}' is not executable, so git never runs it (a human runs `chmod +x {shown}`)"
+    if (ROOT / hooks_dir).resolve() == (ROOT / ".husky/_").resolve():
+        user = ROOT / ".husky" / target
+        text, why = read_file(user, lenient=True) if user.is_file() else ("", None)
+        if why:
+            return why
+        if not text.strip():
+            state = "empty" if user.is_file() else "missing"
+            return f"husky runs '.husky/{target}', which is {state} ({add_hook(f'add .husky/{target}', target)})"
+    return None
 
 
 SETUP_STEPS = re.compile(r"(checkout|setup-node|action-setup|setup-uv|setup-python|upload-artifact|cache)@")
@@ -325,11 +361,7 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
         real = [s for s in steps if not SETUP_STEPS.search(s) and s.strip().strip("'\"") not in ("true", "exit 0", ":", "")]
         return None if real else f"CI job '{target}' has no real step"
     if kind == "git-hook":
-        hooks_dir = git("config", "core.hooksPath").strip() or ".git/hooks"
-        for d in (hooks_dir, ".husky"):
-            if (ROOT / d / target).exists():
-                return None
-        return f"git hook '{target}' is not installed (hooksPath: {hooks_dir}; {hook_remedy(hooks_dir, target)})"
+        return hook_problem(target)
     if kind == "claude-hook":
         return None if (ROOT / ".keelokit/bin" / target).exists() else f"'.keelokit/bin/{target}' is missing"
     if kind == "test":

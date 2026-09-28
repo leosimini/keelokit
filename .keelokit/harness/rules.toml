@@ -4,7 +4,8 @@
 # A rule is only as real as its enforcer, and `python3 .keelokit/bin/doctor.py` checks that each enforcer looks alive:
 #   ci:<job>             a job in .github/workflows/*.yml with real steps, no continue-on-error and no `if: false`
 #   claude-hook:<file>   .keelokit/bin/<file>, run by the Keelokit plugin before every agent tool call
-#   git-hook:<name>      a git hook that is installed (core.hooksPath or .husky)
+#   git-hook:<name>      a non-empty, executable hook where git runs it (core.hooksPath, else .git/hooks;
+#                        under husky v9's .husky/_ also a non-empty .husky/<name>)
 #   test:<path|glob>     test files that name the rule id and have at least one active test
 #   lint:<rule>          an ESLint rule configured as error/warn and never turned off
 #   script:<path>        a script that exits non-zero when the rule breaks
