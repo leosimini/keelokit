@@ -1514,6 +1514,21 @@ def _tokens(block: str) -> dict[str, str]:
     return {k: v.strip() for k, v in re.findall(r"--([\w-]+):([^;}]+)", block)}
 
 
+class DashboardPaletteTest(unittest.TestCase):
+    def test_UI_3_every_text_colour_is_a_palette_token(self):
+        """UI-3: the sea band's review pill wrote its text in a bare #FFC08A that no token named, so
+        the palette in design.md and the contrast tests never saw it. Every literal text colour in a
+        stylesheet dashboard.py ships is one of that stylesheet's tokens."""
+        dash = load_dashboard()
+        sheets = {k: v for k, v in vars(dash).items() if k.endswith("CSS") and isinstance(v, str)}
+        self.assertIn("CSS", sheets)
+        for name, css in sheets.items():
+            tokens = {v.upper() for v in re.findall(r"--[\w-]+:\s*(#[0-9A-Fa-f]{6})\b", css)}
+            for literal in re.findall(r"(?<![\w-])color:\s*(#[0-9A-Fa-f]{3,6})\b", css):
+                with self.subTest(sheet=name, colour=literal):
+                    self.assertIn(literal.upper(), tokens, "name it as a token in :root and use var()")
+
+
 class DashboardContrastTest(unittest.TestCase):
     """A11Y-2: light-theme secondary text (--ink-3 at 4.27:1 on paper, 3.86:1 on the ground), the
     review pill and MUST tag (--attn on --attn-soft, 4.31:1) and the 'Not started' pill (--idle on

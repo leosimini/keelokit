@@ -26,7 +26,7 @@ together.
 
 The site's palette, unchanged: foam `#F6F1E8`, ink `#172126`, ink-2 `#4A5552`, line `#E3DCCF`,
 sea `#1A64B0 #114D96 #0B3574 #07214E`, abyss `#040F28`, board `#FBC82A`, foil `#EE7B24`,
-reef `#8FE0C4`.
+reef `#8FE0C4`, ember `#FFC08A` (text on the sea band that waits for you).
 
 | Role | Light | Dark (abyss ground) |
 |---|---|---|

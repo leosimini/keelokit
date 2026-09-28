@@ -1205,7 +1205,7 @@ CSS = """
   --foam:#F6F1E8;--foam-2:rgba(246,241,232,.92);--foam-3:rgba(246,241,232,.52);
   --glass:rgba(246,241,232,.06);--glass-line:rgba(246,241,232,.16);
   --sea-0:#1A64B0;--sea-1:#114D96;--sea-2:#0B3574;--sea-3:#07214E;--abyss:#040F28;
-  --board:#FBC82A;--reef:#8FE0C4;--foil:#EE7B24;
+  --board:#FBC82A;--reef:#8FE0C4;--foil:#EE7B24;--ember:#FFC08A;
   --ground:#F6F1E8;--paper:#FFFDF8;--paper-2:#EFE8DA;--ink:#172126;--ink-2:#4A5552;--ink-3:#5F6661;
   --line:#E3DCCF;--line-2:#D3C9B6;--accent:#114D96;--accent-soft:#E3EBF5;
   --ok:#1C7559;--ok-soft:#DDF2E9;--attn:#9C4C0E;--attn-soft:#FBE7D4;--live:#7A5C00;--live-soft:#FDF0C4;
@@ -1338,7 +1338,7 @@ details[open]>summary .chev{transform:rotate(225deg) translateY(-2px)}
 .pill.todo{color:var(--idle);background:var(--idle-soft)}
 .pill.ready{color:var(--accent);background:var(--accent-soft)}
 .pill.blocked,.pill.gap{color:var(--bad);background:var(--bad-soft)}
-.sea .pill.review{color:#FFC08A;background:#353346}
+.sea .pill.review{color:var(--ember);background:#353346}
 .sea .pill.current{color:var(--board);background:#2E3C48}
 .sea .pill.done{color:var(--reef);background:#1A3C5F}
 
