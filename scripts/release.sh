@@ -53,3 +53,10 @@ git commit -q -am "release: $version"
 git push origin main
 git push origin HEAD:release
 echo "release: pushed $version. The Release workflow tags v$version; the directory scans it from 'release'."
+# docs/releasing.md step 6. It can't be done here: CI would upgrade from a tag that doesn't exist yet.
+previous=$(git tag --merged HEAD --list 'v*' --sort=-v:refname | grep -vx "v$version" | head -1 || true)
+if [ -z "$previous" ] || ! git diff --quiet "$previous" HEAD -- template copier.yml; then
+  echo "release: $version changed the template since ${previous:-the first release}. Once v$version exists," \
+    "point the 'update from' row of .github/workflows/ci.yml at it on main (step 6);" \
+    "tests/test_release.py fails until then."
+fi

@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the release tags, for tests/test_release.py
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -64,8 +66,9 @@ jobs:
           - { name: site, apps: '["site"]' }
           - { name: all apps + PostGIS, apps: '["api","web","mobile","site"]', flags: --postgis }
           - { name: adopt, flags: --adopt }
-          # An upgrade from the previous public tag, with the CHANGELOG's manual steps.
-          - { name: update from v0.7.0, apps: '["api","web","mobile"]', flags: --update-from v0.7.0 }
+          # An upgrade from the last release that changed the template, with the CHANGELOG's manual
+          # steps (docs/releasing.md step 6; tests/test_release.py fails until it is moved).
+          - { name: update from v0.7.1, apps: '["api","web","mobile"]', flags: --update-from v0.7.1 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

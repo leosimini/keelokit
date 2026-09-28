@@ -53,6 +53,8 @@ Three facts shape the process:
    scan and select **Publish** if auto-publish is off.
 6. If the release changed the template, point the "update from" row of `.github/workflows/ci.yml`
    at the new tag on `main`, so the next release tests the upgrade from this one.
+   `scripts/release.sh` reminds you, and `tests/test_release.py` fails on `main` (and stops the
+   next release) until the row names a tag whose template matches the latest release's.
 7. Review the sites, and take the chance to improve their wording:
    - [keelokit.com](https://keelokit.com) (`leosimini/keelokit.com`, deploys from `main` on
      Vercel). Its "Latest release" line updates by itself, because it reads the `release`
