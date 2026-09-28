@@ -106,6 +106,29 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual({x["id"]: x["status"] for x in s["stories"]}["SHOP-001"], "gap")
         self.assertEqual(s["next"]["command"], "/keelokit:build-story AUTH-002")
 
+    def test_INT_1_without_main_nothing_counts_as_done(self):
+        """INV-005: with neither main nor origin/main (a PR's shallow CI checkout, a detached HEAD)
+        the dashboard must not take HEAD's own `Story:` trailers for done work."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog")
+        self.context()
+        self.story("AUTH-001", 1)
+        self.commit("chore: skeleton")
+        sh(self.root, "git", "checkout", "-q", "--detach")
+        sh(self.root, "git", "branch", "-q", "-D", "main")
+        self.commit("feat: sign up\n\nStory: AUTH-001")
+        s = self.state()
+        self.assertEqual(s["done"], [])
+        self.assertEqual({x["id"]: x["status"] for x in s["stories"]}, {"AUTH-001": "ready"})
+        self.assertEqual([e for e in s["history"] if e["kind"] == "story"], [])
+        self.assertIn("main", " ".join(w["text"] for w in s["waiting"]))
+        self.assertTrue(any("origin/main" in w["text"] for w in s["waiting"]))
+        self.gates("intake", "product", "stack", "skeleton", "backlog", lang="es")
+        self.assertTrue(any("origin/main" in w["text"] for w in self.state()["waiting"]))
+        sh(self.root, "git", "branch", "-q", "main", "HEAD")
+        s = self.state()
+        self.assertEqual(s["done"], ["AUTH-001"])
+        self.assertFalse(any("origin/main" in w["text"] for w in s["waiting"]))
+
     def test_adopted_repo_uses_the_adopt_gates(self):
         self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n")
         self.gates("intake")

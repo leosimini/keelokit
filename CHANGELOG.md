@@ -10,6 +10,11 @@
   report. Its work stays out of the conversation, `/workflows` shows it live, and a run cut short
   resumes. Without workflows the skill runs the same steps as before.
 - Finding prefixes for developer-facing lenses: `DX`, `DOC`, `PKG`.
+- Fixed (INT-1): without `main` or `origin/main` the doctor and the dashboard took HEAD for main, so a
+  pull request's own `Story:` trailers counted as done in CI and `doctor --scope` and `pnpm mutation`
+  saw nothing changed. Now nothing counts as done and the doctor reports it, `--scope` exits 2 and
+  `--critical --changed` takes every critical file. The generated CI's `checks` job fetches full
+  history (`fetch-depth: 0`) so the doctor sees `origin/main`; `harness-upgrade` brings it.
 
 ## 0.7.1 — 2026-09-27
 

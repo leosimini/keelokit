@@ -1,4 +1,5 @@
 """Doctor behaviour on a tiny project. Run: python3 -m unittest discover -s tests"""
+import re
 import shutil
 import subprocess
 import tempfile
@@ -256,6 +257,65 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("acceptance tests changed outside a 'test(AUTH-001): …' commit", out)
         self.assertIn("apps/api/src/auth.spec.ts", out)
         self.assertIn("changed critical area money but does not declare 'integrity'", out)
+
+    def test_INT_1_without_main_nothing_counts_as_done_and_diffs_fail_safe(self):
+        """INV-005: a PR checked out without main (actions/checkout's default depth, a detached
+        HEAD) must not count its own `Story:` trailers as done, nor diff HEAD against itself."""
+        self.rules()
+        self.write("apps/api/src/pay/charge.ts", "export const charge = 1;\n")
+        self.write("apps/api/src/pay/refund.ts", "export const refund = 1;\n")
+        self.write(".keelokit/critical.toml", '[[area]]\nname = "money"\nwhy = "w"\npaths = ["apps/api/src/pay/"]\n')
+        self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/src/auth/"'))
+        self.write("apps/api/a.test.ts", "it('AUTH-001.S1 ok', () => {})\nit('AUTH-001.S10 ok', () => {})\n")
+        self.commit("init")
+        sh(self.root, "git", "checkout", "-q", "--detach")
+        sh(self.root, "git", "branch", "-q", "-D", "main")
+        self.write("apps/api/src/pay/charge.ts", "export const charge = 2;\n")
+        self.commit("feat: sign up\n\nStory: AUTH-001")
+        for ref in ("main", "origin/main"):
+            self.assertEqual(sh(self.root, "git", "rev-parse", "--verify", "--quiet", ref), "")
+
+        out = self.doctor()
+        self.assertIn("Backlog: 0/1 done", out)
+        self.assertIn("ERROR no main or origin/main to count done stories from", out)
+        self.assertNotIn("harness healthy", out)
+        ci = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--ci"], cwd=self.root, capture_output=True, text=True)
+        self.assertNotEqual(ci.returncode, 0)  # INV-006
+
+        scope = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--scope", "AUTH-001"],
+                               cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(scope.returncode, 2)
+        self.assertIn("no main or origin/main", scope.stdout)
+        self.assertNotIn("within its touches", scope.stdout)
+
+        # Unknown base → every critical file counts as changed, like `pnpm verify` with no origin/main.
+        self.assertEqual(self.doctor("--critical", "--changed").split(),
+                         ["apps/api/src/pay/charge.ts", "apps/api/src/pay/refund.ts"])
+
+        # Fetching main (CI: fetch-depth: 0) brings the real answer back.
+        sh(self.root, "git", "branch", "-q", "main", "HEAD~1")
+        self.assertIn("Backlog: 0/1 done", self.doctor())
+        self.assertNotIn("no main or origin/main", self.doctor())
+        self.assertEqual(self.doctor("--critical", "--changed").split(), ["apps/api/src/pay/charge.ts"])
+
+    def test_INT_1_ci_jobs_that_read_history_against_main_fetch_it(self):
+        """The class behind INT-1: a CI job that compares against main (doctor, mutation, a
+        gitleaks history scan, verify) on a shallow checkout sees no main at all."""
+        repo = Path(__file__).resolve().parents[1]
+        reads_main = re.compile(r"doctor\.py|pnpm (mutation|verify)|scripts/(verify|mutation)\.sh|gitleaks[^\n]*\bgit\b")
+        paths = sorted([*(repo / "template/.github/workflows").glob("*.y*ml*"), *(repo / ".github/workflows").glob("*.y*ml")])
+        self.assertTrue(paths)
+        checked = 0
+        for path in paths:
+            for m in re.finditer(r"(?ms)^  ([\w-]+):\s*\n(.*?)(?=^  \S|\Z)", path.read_text().split("\njobs:", 1)[-1]):
+                job, body = m.groups()
+                if not reads_main.search(body):
+                    continue
+                checked += 1
+                self.assertRegex(body, r"uses: actions/checkout@[^\n]*\n\s+with:\n(\s+[\w-]+:[^\n]*\n)*?\s+fetch-depth: 0",
+                                 f"{path.relative_to(repo)}: job '{job}' reads history against main but its "
+                                 "checkout is shallow; add `fetch-depth: 0`")
+        self.assertGreaterEqual(checked, 3)  # secrets, checks, mutation in the template
 
     def test_profile_decides_which_rules_apply_and_warns_on_drift(self):
         self.rules(

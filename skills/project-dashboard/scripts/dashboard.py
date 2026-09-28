@@ -122,6 +122,7 @@ T = {
         "wait_gate": "Aprobar «{stage}»",
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} errores del harness para revisar",
+        "wait_no_main": "No hay main ni origin/main: ninguna historia cuenta como terminada hasta que lo traigas (git fetch origin main)",
         "build_stage": "Construcción",
         "profile_k": "Qué es el proyecto",
         "kinds": {"web-product": "Producto web", "mobile-app": "App móvil", "api-service": "Servicio (API)",
@@ -333,6 +334,7 @@ T = {
         "wait_gate": "Approve \"{stage}\"",
         "wait_gap": "{gap}: {question}",
         "wait_errors": "{n} harness errors to review",
+        "wait_no_main": "No main or origin/main here: no story counts as done until you fetch it (git fetch origin main)",
         "build_stage": "Build",
         "profile_k": "What the project is",
         "kinds": {"web-product": "Web product", "mobile-app": "Mobile app", "api-service": "Service (API)",
@@ -618,11 +620,13 @@ def github_base(root: Path) -> str | None:
     return f"https://github.com/{m.group(1)}/blob/main/" if m else None
 
 
-def main_ref(root: Path) -> str:
+def main_ref(root: Path) -> str | None:
+    """origin/main, else main; None when neither resolves. Never HEAD: a branch's own `Story:`
+    trailers would count as done (INV-005)."""
     for ref in ("origin/main", "main"):
         if git(root, "rev-parse", "--verify", "--quiet", ref).strip():
             return ref
-    return "HEAD"
+    return None
 
 
 def collect(root: Path) -> dict:
@@ -657,8 +661,9 @@ def collect(root: Path) -> dict:
     in_git = git(root, "rev-parse", "--is-inside-work-tree").strip() == "true"
     has_commits = bool(git(root, "rev-parse", "--verify", "--quiet", "HEAD").strip()) if in_git else False
     done = set()
-    if has_commits:
-        trailers = git(root, "log", main_ref(root), "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
+    ref = main_ref(root) if has_commits else None
+    if ref:
+        trailers = git(root, "log", ref, "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
         done = {s.strip() for line in trailers.splitlines() for s in line.split(",") if s.strip()}
     first_commit = (git(root, "log", "--reverse", "--format=%h %s").splitlines() or [""])[0] if has_commits else ""
 
@@ -767,8 +772,8 @@ def collect(root: Path) -> dict:
     bugbashes = reports("docs/bugbash", "bugbash")
 
     history = []
-    if has_commits:
-        for line in git(root, "log", main_ref(root), "-n", "400",
+    if ref:
+        for line in git(root, "log", ref, "-n", "400",
                         "--format=%as%x1f%h%x1f%s%x1f%(trailers:key=Story,valueonly,separator=%x2C)").splitlines():
             parts = line.split("\x1f")
             if len(parts) == 4 and parts[3].strip():
@@ -851,7 +856,7 @@ def collect(root: Path) -> dict:
         "adrs": adrs, "bugbashes": bugbashes, "history": history, "security": security,
         "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
         "harness": harness, "plugin_version": plugin_version, "credit": credit,
-        "profile": profile, "drift": drift,
+        "profile": profile, "drift": drift, "no_main": bool(has_commits and stories and not ref),
     }
 
 
@@ -909,6 +914,8 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
               for g in s["gaps"] if g["blocking"]]
     if s["errors"]:
         items.append({"text": t["wait_errors"].format(n=s["errors"]), "anchor": "stage-build"})
+    if s["no_main"]:
+        items.append({"text": t["wait_no_main"], "anchor": "stage-build"})
     for b in s["bugbashes"]:
         pending = [f for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente"))]
         if pending:

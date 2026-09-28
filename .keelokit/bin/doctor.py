@@ -9,6 +9,9 @@
     python3 .keelokit/bin/doctor.py --critical [--changed]
                                                critical source files (all, or changed since main)
 
+Without main or origin/main (a shallow CI checkout) nothing counts as done and the doctor says so,
+`--scope` exits 2, and `--critical --changed` lists every critical file: never HEAD for main.
+
 Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the
 rule and has active cases, a lint rule that is on, a CI job with real steps and no
 continue-on-error, a git hook that is installed) unless an approved exception is active;
@@ -111,11 +114,22 @@ def git(*args: str) -> str:
     return out.stdout if out.returncode == 0 else ""
 
 
-def main_ref() -> str:
+NO_MAIN = "no main or origin/main to {what}; fetch it (CI: fetch-depth: 0)"
+
+
+def main_ref() -> str | None:
+    """origin/main, else main; None when neither resolves (a shallow CI checkout, a detached HEAD).
+    Never HEAD: a branch's own `Story:` trailers would count as done and its diffs come out empty."""
     for ref in ("origin/main", "main"):
         if git("rev-parse", "--verify", "--quiet", ref).strip():
             return ref
-    return "HEAD"
+    return None
+
+
+def main_base() -> str | None:
+    """Where this branch left main (the merge base), or None when main or the shared history is missing."""
+    ref = main_ref()
+    return (git("merge-base", ref, "HEAD").strip() or None) if ref else None
 
 
 def ci_job(job: str) -> str | None:
@@ -382,7 +396,11 @@ def check_escapes() -> int:
 
 def done_story_ids() -> set[str]:
     """Stories closed by a `Story: <ID>` trailer on a commit reachable from main."""
-    trailers = git("log", main_ref(), "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
+    if (ref := main_ref()) is None:
+        if git("rev-parse", "--verify", "--quiet", "HEAD").strip():
+            errors.append(NO_MAIN.format(what="count done stories from"))
+        return set()
+    trailers = git("log", ref, "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
     return {sid.strip() for line in trailers.splitlines() for sid in line.split(",") if sid.strip()}
 
 
@@ -434,7 +452,7 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         if sid in stories:
             errors.append(f"{rel}: duplicate id {sid}")
         stories[sid] = meta
-    done = done_story_ids() & stories.keys()
+    done = done_story_ids() & stories.keys() if stories else set()
     for sid, meta in stories.items():
         for dep in meta.get("depends_on", []):
             if dep not in stories:
@@ -502,7 +520,10 @@ def check_scope(sid: str) -> int:
         return 1
     story = stories[sid]
     touches = story.get("touches", [])
-    changed = git("diff", "--name-only", f"{main_ref()}...HEAD").split()
+    if (base := main_base()) is None:
+        print(f"{sid}: " + NO_MAIN.format(what="compare this branch with"))
+        return 2
+    changed = git("diff", "--name-only", base, "HEAD").split()
     status = 0
     outside = [f for f in changed if not any(overlaps(f, t) or f.startswith(t.rstrip("/") + "/") for t in touches)
                and not f.startswith(("backlog/", "docs/"))]
@@ -518,7 +539,7 @@ def check_scope(sid: str) -> int:
         status = 1
     # The builder makes the verifier's acceptance tests pass; it never edits them. Only a later
     # `test(<ID>): …` commit (the verifier fixing a test openly) may change them.
-    log = git("log", "--reverse", "--format=%H%x09%s", f"{main_ref()}..HEAD").splitlines()
+    log = git("log", "--reverse", "--format=%H%x09%s", f"{base}..HEAD").splitlines()
     marker = f"test({sid.lower()})"
     first = next((i for i, line in enumerate(log) if line.partition("\t")[2].lower().startswith(marker)), None)
     if first is not None:
@@ -547,8 +568,10 @@ def main() -> int:
             print("\n".join(errors), file=sys.stderr)
             return 1
         files = critical_files(areas)
-        if "--changed" in sys.argv:
-            base = git("merge-base", main_ref(), "HEAD").strip() or "HEAD"
+        if "--changed" in sys.argv and (base := main_base()) is None:
+            # Unknown base: every critical file counts as changed (fail safe, like `pnpm verify`).
+            print(NO_MAIN.format(what="diff against") + "; taking every critical file", file=sys.stderr)
+        elif "--changed" in sys.argv:
             changed = set(git("diff", "--name-only", base).split())
             changed |= set(git("ls-files", "--others", "--exclude-standard").split())
             files = [f for f in files if f in changed]

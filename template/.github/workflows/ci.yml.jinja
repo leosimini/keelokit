@@ -37,6 +37,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # origin/main: the doctor counts a story done only from main (INV-005)
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

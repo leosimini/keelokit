@@ -26,6 +26,7 @@ python3 .keelokit/bin/doctor.py
 | Done story's invariant not cited by a test (INV-1) | Delegate to the verifier: the test its class calls for, titled with the id. |
 | Critical area points at a missing path | The code moved or went away: update `.keelokit/critical.toml`, don't delete the area unless the code is gone. |
 | Escape row incomplete (ESC-1) | Fill in the class and the check that now catches it, or `none — <why>`. |
+| No main or origin/main (0 stories done, `--scope` exits 2) | Fetch main: `git fetch origin main`; in CI, `fetch-depth: 0` on the job's checkout. Never point the doctor at HEAD: a branch's own `Story:` trailers aren't done work (INV-005). |
 | `doctor --scope` fails | Files outside `touches` → add them and re-check the wave, or split the change. Undeclared critical area → `integrity` + full mode. Acceptance tests edited outside `test(<ID>): …` → revert the edit; the verifier changes tests, openly. |
 
 House rules (`.keelokit/harness/`) are inherited: don't edit them in the project. If one is wrong
