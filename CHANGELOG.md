@@ -103,6 +103,11 @@
   front matter that closes at the end of the file now parses, as it does in the dashboard, and
   `doctor --scope <ID>` says why it found no story. Already in 0.7.1; `harness-upgrade` brings the
   new doctor.
+- Fixed (DOC-1): `rules.toml` lists the guard as an enforcer of REL-1 (production only from a
+  tag), but the guard never named REL-1: its docstring left it out and its production-deploy block
+  cited only AGENT-1. That block now cites `AGENT-1/REL-1` and says production goes out from a
+  `vX.Y.Z` tag through CI, and the docstring lists REL-1. Already in 0.7.1; `harness-upgrade`
+  brings the new guard.
 
 ## 0.7.1 — 2026-09-27
 

@@ -7,7 +7,7 @@
 Exit 2 blocks (Claude shows stderr to the agent); exit 1 blocks a git commit. Claude Code lets a
 call through on any exit but 2, so for Claude the guard ends in exactly 0 or 2: an unknown mode,
 hook input it can't read or a check that fails all block, with the reason on stderr.
-Rules enforced: SEC-1, SEC-2, QA-2, QA-4, DB-1, AGENT-1 (.keelokit/harness/rules.toml).
+Rules enforced: SEC-1, SEC-2, QA-2, QA-4, DB-1, AGENT-1, REL-1 (.keelokit/harness/rules.toml).
 
 It is a speed bump for agents, not a sandbox: a determined shell (variables, eval, scripts)
 can get around pattern checks. CI and the git hooks are the backstop.
@@ -133,7 +133,7 @@ def bash_problem(cmd: str) -> str | None:
             continue
         deploy = re.search(r"\b(fly|flyctl)\s+deploy\b", segment)
         if deploy and not re.search(r"(--config|-c)[=\s]+\S*staging\S*", segment):
-            return "AGENT-1: only staging deploys (--config …staging…); production is the human's call"
+            return "AGENT-1/REL-1: only staging deploys (--config …staging…); production goes out from a vX.Y.Z tag through CI, and is the human's call"
         if re.search(r"\b(eas|eas-cli)\s+submit\b", segment):
             return "AGENT-1: store submissions are the human's call — ask in chat"
         # Copying the example to create a local .env is setup, not a secret.

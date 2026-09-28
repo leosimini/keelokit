@@ -227,6 +227,34 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.bash("npx eas-cli submit -p ios"), 2)
         self.assertEqual(self.bash("flyctl deploy --config apps/api/fly.staging.toml --remote-only"), 0)
 
+    def test_DOC_1_guard_names_every_rule_rules_toml_says_it_enforces(self):
+        # rules.toml listed claude-hook:guard.py under REL-1, but the guard never cited REL-1 and
+        # its docstring left it out; doctor only checks that guard.py exists. Both copies (the
+        # template and this repo's own adopted harness) must agree with their rules.toml.
+        import tomllib
+        repo = Path(__file__).resolve().parents[1]
+        for base in (repo / "template/.keelokit", repo / ".keelokit"):
+            with self.subTest(base=base.relative_to(repo).as_posix()):
+                rules = tomllib.loads((base / "harness/rules.toml").read_text())["rule"]
+                claimed = {r["id"] for r in rules if "claude-hook:guard.py" in r.get("enforced_by", [])}
+                src = (base / "bin/guard.py").read_text()
+                listed = re.search(r"^Rules enforced: (.+?) \(", src, re.M)
+                self.assertIsNotNone(listed, "guard.py's docstring has no 'Rules enforced:' line")
+                self.assertEqual(set(listed.group(1).split(", ")), claimed)
+                body = src[src.index('"""', 3):]  # past the module docstring
+                for rid in sorted(claimed):
+                    self.assertRegex(body, rf'"[^"\n]*\b{re.escape(rid)}\b[^"\n]*:',
+                                     f"no block reason in guard.py cites {rid}")
+                # the git pre-commit hook runs this same guard
+                pre_commit = {r["id"] for r in rules if "git-hook:pre-commit" in r.get("enforced_by", [])}
+                self.assertLessEqual(pre_commit, claimed)
+        out = subprocess.run(["python3", str(self.repo / ".keelokit/bin/guard.py"), "--claude"],
+                             input=json.dumps({"tool_name": "Bash", "tool_input": {
+                                 "command": "fly deploy --config apps/api/fly.production.toml"}}),
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("REL-1", out.stderr)
+
     def test_env_files_from_shell(self):
         for cmd in [
             "echo X=1 > apps/api/.env",
