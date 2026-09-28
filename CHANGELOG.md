@@ -186,8 +186,9 @@
   landed on its hidden "by wave" copy and nothing opened. A link to a story now opens it in the view
   showing, and switches views when it points into the other. Already in 0.6.0.
 - Fixed (A11Y-2): in the light theme the dashboard's secondary text, its "Not started" and review
-  pills and its MUST tags were below WCAG AA contrast (3.5–4.3:1), and "Not started" in dark too.
-  They now reach 4.5:1 on every surface. Already in 0.6.0; `claude plugin update` brings the fix.
+  pills and its MUST tags were below WCAG AA contrast (3.5–4.3:1), "Not started" in dark too, and in
+  both themes the eyebrows, stage numbers and labels on the blue band and its in-progress pill
+  (2.6–4.0:1). All of it now reaches 4.5:1. Already in 0.6.0; `claude plugin update` brings the fix.
 
 ## 0.7.1 — 2026-09-27
 

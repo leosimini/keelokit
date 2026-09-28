@@ -39,9 +39,15 @@ reef `#8FE0C4`.
 | Blocked | `#AE3F2D` | `#FF9A8A` |
 | Not started | `#5F6661` on `#ECE5D8` | foam at 58 % |
 
-Every colour text is written in reaches WCAG AA (4.5:1) on the ground, the paper, the sunk
-surface and its own tint, in both themes; `tests/test_dashboard.py` (`A11Y-2`) measures each
-pair, so a new token or a new stylesheet is checked the day it lands.
+Every text the pages draw reaches WCAG AA (4.5:1; 3:1 from 24 px, or 18.66 px bold) on what it
+sits on, in both themes. On the sea band that leaves two tiers: foam, and foam at 92 % (88 % on
+the live page, which has no glass card); the gradient's light top has no room for a dimmer one, so
+foam at 52 % only draws the stepper's dots, and the status pills there sit on dark tints (review
+`#353346`, in progress `#2E3C48`, done `#1A3C5F`). `tests/test_dashboard.py` (`A11Y-2`) checks it
+twice: from the stylesheets, every themed text token on each surface and on its own tint; in
+Chromium, every visible text of both pages (both languages and themes, three widths, the sea band's
+states) against the tints and the stretch of gradient under it. Neither sees a state or width the
+fixtures don't render, hover and focus colours, or the contrast of dots and borders.
 
 Board yellow marks what you can act on: the copy button, the command prompt, the stepper dot of
 the stage in progress. Status colour appears only in pills and stepper dots.

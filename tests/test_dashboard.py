@@ -1482,7 +1482,10 @@ class DashboardContrastTest(unittest.TestCase):
     --idle-soft, 3.47:1; 4.42:1 in dark) were below WCAG AA's 4.5:1. The class: every themed token
     the page writes text in must reach 4.5:1 on every page surface (ground, paper, sunk) and on its
     own -soft tint, and every rule that sets both a text and a background token must too, in light
-    and dark, in every stylesheet dashboard.py ships."""
+    and dark, in every stylesheet dashboard.py ships. This reads the stylesheets alone, so it sees
+    neither the tokens that are the same in both themes (the foam text on the sea band), nor
+    gradients, literal colours, or text inheriting a colour inside a tinted parent:
+    DashboardRenderedContrastTest measures what the browser draws."""
 
     AA = 4.5
     SURFACES = ("ground", "paper", "paper-2", "sunk")
@@ -1548,6 +1551,136 @@ class DashboardContrastTest(unittest.TestCase):
                             failures.append(f"{name} {theme}: {selector} (--{fg_token} on --{bg_token}) is {ratio:.2f}:1")
                             break
         self.assertEqual(failures, [])
+
+
+# A11Y-2, the rest of the class: the stylesheet test above can't see where text lands. In the
+# browser, every visible text node's colour (times its opacity) is measured against everything
+# under it up to the first opaque background: tints, and a linear gradient over the stretch of it
+# the text covers (both ends and every stop between), composited as the browser does. 4.5:1, or
+# 3:1 for large text (24 px, or 18.66 px bold). Decorative glyphs (aria-hidden) and disabled
+# controls are exempt in WCAG and here. Returns the failures as [path [colour], ratio, need, text].
+CONTRAST_JS = r"""() => {
+  const rgba = s => { const m = s.match(/rgba?\(([^)]+)\)/); if (!m) return null;
+    const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
+  const over = (top, below) => { const a = top[3]; return [0, 1, 2].map(i => top[i] * a + below[i] * (1 - a)).concat(1); };
+  const lum = c => { const [r, g, b] = c.slice(0, 3).map(x => { x /= 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const split = s => { const out = []; let depth = 0, cur = '';
+    for (const ch of s) { if (ch === '(') depth++; if (ch === ')') depth--; if (ch === ',' && !depth) { out.push(cur.trim()); cur = ''; } else cur += ch; }
+    return out.concat(cur.trim()); };
+  const SIDES = {'to top': 0, 'to right': 90, 'to bottom': 180, 'to left': 270};
+  // A linear gradient's colours over the stretch of it a text box covers: both ends and every stop between.
+  const gradient = (image, box, text) => {
+    const m = image.match(/^linear-gradient\((.*)\)$/); if (!m) return null;
+    let parts = split(m[1]), angle = 180;
+    if (/deg$/.test(parts[0])) angle = parseFloat(parts.shift());
+    else if (parts[0] in SIDES) angle = SIDES[parts.shift()];
+    else if (/^to /.test(parts[0])) return null;
+    const stops = parts.map((p, i) => { const c = rgba(p), pos = p.match(/([\d.]+)%\s*$/);
+      return {c, t: pos ? parseFloat(pos[1]) / 100 : i / (parts.length - 1)}; });
+    if (stops.some(s => !s.c)) return null;
+    const rad = angle * Math.PI / 180, dx = Math.sin(rad), dy = -Math.cos(rad);
+    const L = Math.abs(box.width * dx) + Math.abs(box.height * dy), cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+    const at = (x, y) => Math.min(1, Math.max(0, ((x - cx) * dx + (y - cy) * dy) / L + 0.5));
+    const ts = [text.left, text.right].flatMap(x => [text.top, text.bottom].map(y => at(x, y)));
+    const lo = Math.min(...ts), hi = Math.max(...ts);
+    const colour = t => { let i = 0; while (i < stops.length - 1 && stops[i + 1].t < t) i++;
+      const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)], f = b.t > a.t ? Math.min(1, Math.max(0, (t - a.t) / (b.t - a.t))) : 0;
+      return [0, 1, 2, 3].map(k => a.c[k] + (b.c[k] - a.c[k]) * f); };
+    return [colour(lo), colour(hi), ...stops.filter(s => s.t > lo && s.t < hi).map(s => s.c)];
+  };
+  const name = el => el.tagName.toLowerCase()
+    + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/).join('.') : '');
+  const path = el => { const out = []; for (let e = el; e && e !== document.body && out.length < 3; e = e.parentElement) out.unshift(name(e)); return out.join(' > '); };
+  const bad = new Map(), unread = new Set();
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node; (node = walk.nextNode());) {
+    const el = node.parentElement;
+    if (!node.textContent.trim() || el.closest('script, style, svg, [hidden], [aria-hidden="true"], :disabled')) continue;
+    const range = document.createRange(); range.selectNodeContents(node);
+    const rects = [...range.getClientRects()].filter(r => r.width && r.height);
+    const cs = getComputedStyle(el);
+    if (!rects.length || cs.visibility !== 'visible') continue;
+    const text = {left: Math.min(...rects.map(r => r.left)), right: Math.max(...rects.map(r => r.right)),
+                  top: Math.min(...rects.map(r => r.top)), bottom: Math.max(...rects.map(r => r.bottom))};
+    let fg = rgba(cs.color), opacity = 1;
+    for (let e = el; e; e = e.parentElement) opacity *= parseFloat(getComputedStyle(e).opacity);
+    if (!opacity) continue;
+    fg = [fg[0], fg[1], fg[2], fg[3] * opacity];
+    // What the text sits on: every background from its element up to the first opaque one.
+    const layers = []; let opaque = false;
+    for (let e = el; e && !opaque; e = e.parentElement) {
+      const s = getComputedStyle(e);
+      const bg = rgba(s.backgroundColor);
+      if (s.backgroundImage !== 'none') {
+        const g = gradient(s.backgroundImage, e.getBoundingClientRect(), text);
+        if (!g) { unread.add(name(e) + ': ' + s.backgroundImage.slice(0, 60)); break; }
+        layers.push(g); opaque = g.every(c => c[3] === 1);
+      }
+      if (!opaque && bg && bg[3] > 0) { layers.push([bg]); opaque = bg[3] === 1; }
+    }
+    let grounds = [[255, 255, 255, 1]];
+    for (const layer of layers.reverse()) grounds = grounds.flatMap(g => layer.map(c => over(c, g)));
+    const worst = Math.min(...grounds.map(g => ratio(over(fg, g), g)));
+    const size = parseFloat(cs.fontSize), large = size >= 24 || (size >= 18.66 && parseInt(cs.fontWeight) >= 700);
+    const need = large ? 3 : 4.5;
+    if (worst < need) {
+      const key = path(el) + ' [' + cs.color + ']';
+      if (!bad.has(key) || bad.get(key)[0] > worst) bad.set(key, [Math.round(worst * 100) / 100, need, node.textContent.trim().slice(0, 30)]);
+    }
+  }
+  return {bad: [...bad].map(([k, v]) => [k, ...v]).sort(), unread: [...unread]};
+}"""
+
+
+@unittest.skipUnless(sync_playwright or os.environ.get("CI"), "playwright not installed (CI installs it)")
+class DashboardRenderedContrastTest(unittest.TestCase):
+    """A11Y-2, the class in the browser: text nobody measured against what it sits on. The sea band
+    is dark in both themes, so its foam text tokens are not themed and the stylesheet test skipped
+    them: the report's eyebrows (--foam-3, 2.6–3.1:1 on the gradient's light top), the live page's
+    eyebrow (2.9:1) and stepper labels (4.0:1). Both pages, English and Spanish, light and dark, at
+    320 / 768 / 1280 px, every section open, with the sea band in each of its states (the current
+    stage waiting for review, in progress, every gate approved): every text node reaches AA."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def test_A11Y_2_every_text_the_browser_draws_reaches_AA_on_what_it_sits_on(self):
+        DashboardLayoutTest.project(self)  # every slot filled, a backlog, reports, a pending decision
+        dashboard = load_dashboard()
+        order = dashboard.GATES["project"]
+        pages = {}
+        for state in ("review", "current", "building"):
+            gates = order if state == "building" else order[:-1]
+            (self.root / ".keelokit/state.toml").write_text(
+                "[gates]\n" + "".join(f'{g} = "2026-09-20"\n' for g in gates))
+            s = dashboard.collect(self.root)
+            if state == "current":
+                s["stages"][-1]["status"] = "current"
+            self.assertEqual(s["stages"][-1]["status"], "done" if state == "building" else state)
+            for lang in ("en", "es"):
+                for name, html in (("report", dashboard.render(s, lang, True, self.root, "0.7.1")),
+                                   ("dashboard", dashboard.ops_page(s["name"], lang, dashboard.render_ops(
+                                       s, lang, True, self.root, "0.7.1"), True)[0])):
+                    out = self.root / f"{name}-{state}-{lang}.html"
+                    out.write_text(html, encoding="utf-8")
+                    pages[f"{name} {state} {lang}"] = out.as_uri()
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            for name, uri in pages.items():
+                for scheme in ("light", "dark"):
+                    for width in (320, 768, 1280):
+                        with self.subTest(page=name, scheme=scheme, width=width):
+                            page = browser.new_page(viewport={"width": width, "height": 900}, color_scheme=scheme)
+                            page.goto(uri)
+                            page.evaluate("document.querySelectorAll('details').forEach(d => d.open = true)")
+                            got = page.evaluate(CONTRAST_JS)
+                            page.close()
+                            self.assertEqual(got["unread"], [], "a background the contrast check can't read")
+                            self.assertEqual(got["bad"], [], "text below WCAG AA on what it sits on")
+            browser.close()
 
 
 if __name__ == "__main__":
