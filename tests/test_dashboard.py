@@ -1514,6 +1514,19 @@ def _tokens(block: str) -> dict[str, str]:
     return {k: v.strip() for k, v in re.findall(r"--([\w-]+):([^;}]+)", block)}
 
 
+class DashboardCopyAnnouncedTest(unittest.TestCase):
+    def test_A11Y_6_copied_is_announced(self):
+        """A11Y-6: the report's Copy → Copied swap changed only the button's text, with no live
+        region, so a screen reader heard nothing. The page has a polite status region, and the copy
+        script writes the confirmation into it."""
+        dash = load_dashboard()
+        self.assertIn('<p class="sr" id="copy-status" role="status" aria-live="polite"></p>', DASHBOARD.read_text())
+        self.assertIn(".sr{position:absolute;width:1px;height:1px", dash.CSS)
+        ok = dash.JS[dash.JS.index("function ok()"):dash.JS.index("function fallback()")]
+        self.assertIn("getElementById('copy-status')", ok)
+        self.assertIn("textContent=btn.getAttribute('data-done')", ok.split("copy-status")[1])
+
+
 class DashboardPaletteTest(unittest.TestCase):
     def test_UI_3_every_text_colour_is_a_palette_token(self):
         """UI-3: the sea band's review pill wrote its text in a bare #FFC08A that no token named, so
@@ -1582,6 +1595,24 @@ class DashboardContrastTest(unittest.TestCase):
                         if ratio < self.AA:
                             failures.append(f"{name} {theme}: --{token} on {where} is {ratio:.2f}:1")
         self.assertEqual(failures, [])
+
+    def test_A11Y_102_the_focus_ring_reaches_3_to_1_on_every_surface_and_on_the_sea(self):
+        """A11Y-102: the report's focus ring was --foil, 2.5:1 on the light ground (WCAG's non-text
+        contrast asks 3:1). Every stylesheet's ring token reaches 3:1 on every surface in both
+        themes, and on the sea band the ring switches to one that reaches 3:1 on its lightest stop."""
+        sea = ["#1A64B0", "#040F28"]
+        for name, css in self.stylesheets().items():
+            ring = re.search(r"(?m)^:focus-visible\{outline:\d+px solid var\(--([\w-]+)\)", css)
+            sea_ring = re.search(r"\.sea :focus-visible\{outline-color:var\(--([\w-]+)\)\}", css)
+            self.assertTrue(ring and sea_ring, name)
+            for theme, t in self.themes(css).items():
+                for surface in (x for x in self.SURFACES if x in t):
+                    with self.subTest(sheet=name, theme=theme, surface=surface):
+                        bg = _rgba(t[surface])
+                        self.assertGreaterEqual(_contrast(_over(_rgba(t[ring.group(1)]), bg), bg), 3)
+                for stop in sea:
+                    with self.subTest(sheet=name, theme=theme, sea=stop):
+                        self.assertGreaterEqual(_contrast(_rgba(t[sea_ring.group(1)]), _rgba(stop)), 3)
 
     def test_A11Y_2_every_rule_that_sets_text_and_background_reaches_AA_in_both_themes(self):
         failures = []

@@ -1231,7 +1231,9 @@ CSS = """
 [hidden]{display:none!important}
 body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.6 var(--body);font-feature-settings:"kern" 1,"liga" 1;overflow-wrap:anywhere}
 a{color:var(--accent);text-underline-offset:3px}
-:focus-visible{outline:2px solid var(--foil);outline-offset:3px;border-radius:4px}
+:focus-visible{outline:2px solid var(--attn);outline-offset:3px;border-radius:4px}
+.sea :focus-visible{outline-color:var(--board)}
+.sr{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 code{font-family:var(--mono);font-size:.86em;background:var(--paper-2);padding:.08em .38em;border-radius:5px}
 .wrap{width:min(100% - 32px,1160px);margin-inline:auto}
 .eyebrow{font:600 12px/1.2 var(--body);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin:0}
@@ -1468,7 +1470,8 @@ JS = """
     btn.addEventListener('click',function(){
       var text=btn.getAttribute('data-copy'), label=btn.textContent;
       function ok(){btn.textContent=btn.getAttribute('data-done');btn.classList.add('is-done');
-        setTimeout(function(){btn.textContent=label;btn.classList.remove('is-done')},1600)}
+        var live=document.getElementById('copy-status');if(live)live.textContent=btn.getAttribute('data-done');
+        setTimeout(function(){btn.textContent=label;btn.classList.remove('is-done');if(live)live.textContent=''},1600)}
       function fallback(){var el=btn.parentNode.querySelector('.cmdtext');if(!el)return;var r=document.createRange();
         r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r)}
       try{navigator.clipboard.writeText(text).then(ok,fallback)}catch(e){fallback()}
@@ -2053,6 +2056,7 @@ button[data-ask]{{display:none}}.acts:not(:has(:not([data-ask]))){{display:none}
 </aside>
 </main>
 <footer class="wrap">{credit_block(s, t)}<span>{esc(o["report_footer"].format(when=when, version=version))}</span></footer>
+<p class="sr" id="copy-status" role="status" aria-live="polite"></p>
 <script>{JS}</script>
 """
     if standalone:
@@ -2409,6 +2413,7 @@ p{margin:0}
 .muted{color:var(--ink-3);font-size:13.5px}
 .muted code{font:12.5px var(--mono)}
 :focus-visible{outline:2px solid var(--attn);outline-offset:2px;border-radius:6px}
+.sea :focus-visible{outline-color:var(--board)}
 .top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .top img{width:22px;height:22px;border-radius:6px}
 .top b{font-weight:600}.top .crumb{color:var(--ink-3);min-width:0}
