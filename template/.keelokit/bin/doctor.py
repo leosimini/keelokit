@@ -126,6 +126,15 @@ SHAPES = {
                               "touches": "texts", "dimensions": "texts", "invariants": "texts", "origin": "text"}, {}),
 }
 
+# The [local] table of .keelokit/profile.toml, which bin/run-local.sh reads: key → the kinds it accepts.
+LOCAL_SHAPE = {
+    "mobile_dir": "text", "android_package": "text", "pm": "text", "api_dir": "text", "api_start": "text",
+    "api_ready_url": "text", "api_migrate": "text", "api_seed": "text", "db_service": "text", "services": "texts",
+    "api_port": "whole", "api_url_env": "text", "api_url_suffix": "text", "client": "text",
+    "android_target": "text", "avd": "text", "ios_bundle": "text", "scheme": "text",
+    "jdk": "text|whole", "node": "text|whole",
+}
+
 GATES = {
     "project": ["intake", "product", "stack", "skeleton", "backlog"],  # /keelokit:project-new
     "harness": ["intake", "adopt", "backlog"],  # /keelokit:project-adopt on an existing repo
@@ -491,6 +500,8 @@ def load_profile() -> dict | None:
     if "mobile" in traits and (ROOT / ".keelokit/bin/run-local.sh").exists() and "local" not in profile:
         warnings.append("RUN-1: .keelokit/profile.toml has no [local] block, so the app can't be launched with one command — "
                         "/keelokit:run-local writes it (or: bash .keelokit/bin/run-local.sh doctor)")
+    if isinstance(profile.get("local"), dict):
+        errors.extend(f".keelokit/profile.toml [local]: {why}" for why in misshapen(profile["local"], LOCAL_SHAPE).values())
     return {**profile, "traits": traits}
 
 

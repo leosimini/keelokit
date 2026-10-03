@@ -44,18 +44,24 @@ hosting = []
 # `run-local.sh detect` prints what it finds. Keys, with an example:
 #   mobile_dir      = "apps/mobile"            where app.json or app.config.* is
 #   android_package = "com.demo.app"           what `adb` installs and uninstalls
-#   pm              = "pnpm"                   pnpm | npm | yarn, from the lockfile
+#   ios_bundle      = "com.demo.app"           the iOS bundle id (is the app installed on the simulator?)
+#   scheme          = "demo"                   the app's URL scheme (opens the installed app on Metro)
+#   pm              = "pnpm"                   pnpm | npm | yarn (classic or berry) | bun, from the lockfile
 #   api_dir         = "apps/api"               "" means no backend
 #   api_start       = "pnpm run dev:api"
 #   api_ready_url   = "http://localhost:3000/health"   "" waits for the port instead
 #   api_migrate     = "pnpm --dir apps/api run prisma:migrate:deploy"
-#   api_seed        = ""                       a command, or nothing
+#   api_seed        = ""                       a command, or nothing; it is offered, never run silently
 #   db_service      = "postgres"               the docker compose service; "" means no database
+#   services        = ["redis", "mailpit"]     other compose services started with it (and stopped with it)
 #   api_port        = 3000
 #   api_url_env     = "EXPO_PUBLIC_API_URL"    the variable the app reads for the API address
 #   api_url_suffix  = ""                       a path the address carries, such as "/api/v1"
 #   client          = "auto"                   auto | expo-go | dev-client
-#   jdk             = 17                       the JDK Gradle needs
+#   android_target  = "auto"                   auto | phone | emulator (auto: a phone, else it offers the emulator)
+#   avd             = "Pixel_7_API_34"         the emulator to boot (otherwise the one you chose last time)
+#   jdk             = 17                       the JDK Gradle needs: 17 for React Native 0.73 and later (Expo SDK 50+), 11 before
+#   node            = 22                       the Node major the project needs (.nvmrc, .node-version or engines when not set)
 {%- if mode == 'project' and 'mobile' in apps %}
 
 [local]
@@ -69,6 +75,7 @@ api_ready_url = "http://localhost:3000/health"
 api_migrate = "pnpm --dir apps/api run prisma:migrate:deploy"
 api_seed = ""
 db_service = "postgres"
+services = []
 api_port = 3000
 api_url_env = "EXPO_PUBLIC_API_URL"
 api_url_suffix = ""
@@ -77,4 +84,6 @@ api_dir = ""
 db_service = ""
 {%- endif %}
 client = "auto"
+android_target = "auto"
+jdk = 17
 {%- endif %}
