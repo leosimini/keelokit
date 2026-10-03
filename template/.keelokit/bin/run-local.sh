@@ -562,7 +562,7 @@ else:
         print(f"{k}={','.join(v) if isinstance(v, list) else v}")
 PY
 
-detect_py() { python3 -c "$DETECT_PY" "$PWD" "$@"; } # <kv|json|client|fingerprint|json_doctor|json_status> [mobile_dir]
+detect_py() { python3 -c "$DETECT_PY" "$PWD" "$@"; } # <kv|json|client|fingerprint|stamp|json_doctor|json_status> [mobile_dir]
 
 load_detect() {
   [ "$DETECTED" = 1 ] && return
@@ -1016,6 +1016,9 @@ ensure() { # <check_x...>
     QUIET=$((pass - 1))
     setup_env
     [ "$pass" = 1 ] && say "$(L 'Diagnosis' 'Diagnóstico')"
+    for t in "$@"; do
+      declare -F "check_$t" >/dev/null || { bad "ensure: there is no function check_$t (a bug in run-local.sh)"; return 1; }
+    done
     for t in "$@"; do "check_$t"; done
     if [ ${#BLOCKERS[@]} -gt 0 ]; then bad "$(L 'I cannot install that; fix it and run again.' 'Eso no lo puedo instalar yo; resolvelo y volvé a correr.')"; return 1; fi
     [ ${#PLAN_C[@]} -eq 0 ] && return 0
@@ -1562,14 +1565,14 @@ select_android_target() {
         fi
         return 0 ;;
       emulator-running | emulator-start)
-        ensure check_emulator || return 1
+        ensure emulator || return 1
         use_emulator "$emus" || return 1
         A_KIND=emulator
         return 0 ;;
       offer-emulator)
         warn "$(L 'No phone in sight.' 'No veo ningún teléfono.')"
         if confirm "$(L 'Use an Android emulator instead?' '¿Uso un emulador de Android?')"; then
-          ensure check_emulator || return 1
+          ensure emulator || return 1
           use_emulator "" || return 1
           A_KIND=emulator
           return 0
@@ -1600,6 +1603,10 @@ with_timeout() { # <seconds> <command...>
 }
 
 fingerprint() {
+  fingerprint_compute
+}
+
+fingerprint_compute() {
   local d=${MOBILE_DIR:-.} out h=""
   # Any project that depends on expo: pnpm does not hoist @expo/fingerprint, but npx finds it. At
   # most FINGERPRINT_TIMEOUT seconds (60): a hung npx must not freeze a launch.

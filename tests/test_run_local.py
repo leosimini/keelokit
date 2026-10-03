@@ -1622,6 +1622,25 @@ class IosFastPathTest(Lib, unittest.TestCase):
         self.assertTrue(any("adb -s S1 shell am start -a android.intent.action.VIEW" in c for c in p.called()))
 
 
+class EnsureAndCacheTest(Lib, unittest.TestCase):
+    def test_every_name_passed_to_ensure_is_a_defined_check(self):
+        text = SCRIPT.read_text()
+        defined = set(re.findall(r"(?m)^check_(\w+)\(\)", text))
+        used = set()
+        for m in re.finditer(r"\bensure ((?:[a-z]+ ?)+)(?=[|&;)\n])", text):
+            used.update(m.group(1).split())
+        self.assertTrue({"base", "android", "ios", "emulator"} <= used, used)
+        self.assertEqual(used - defined, set(), "ensure prepends check_ itself")
+        self.assertNotIn("ensure check_", text)
+
+    def test_an_unknown_check_aborts_loudly(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        r = self.lib(p, "ensure nonsense; echo rc=$?")
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("no function check_nonsense", r.stdout)
+        self.assertNotIn("command not found", r.stderr)
+
+
 class StaticTest(unittest.TestCase):
     def test_bash_3_2_compatible(self):
         """macOS ships bash 3.2: no mapfile, associative arrays, case conversion or negative indexes."""
