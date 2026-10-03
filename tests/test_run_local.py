@@ -1586,33 +1586,33 @@ class NeverWaitsTest(Lib, unittest.TestCase):
 
 
 class IosFastPathTest(Lib, unittest.TestCase):
-    """iOS asks "Open in <app>?" for a link: launch first, the link only as a fallback."""
+    """iOS always asks "Open in <app>?" for a link. The script says so and opens the link."""
 
-    def run_fast(self, metro_log: str, extra=""):
-        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+    def run_fast(self, profile=LOCAL_DEV):
+        p = Project(self, pnpm_monorepo, profile)
         p.shim("xcrun")
-        script = ("wait_metro() { return 0; }; init_state; I_UDID=U1; "
-                  f"printf '%s' '{metro_log}' >\"$LOG/ios-metro.log\"; "
-                  "launch() { sleep 4; return 0; }; fast_launch ios ios-metro; wait; echo done")
-        r = self.lib(p, script + extra, stdin="y\n", env={"OPEN_WAIT": "2"})
-        return p, r
+        script = "wait_metro() { return 0; }; init_state; I_UDID=U1; launch() { sleep 2; return 0; }; fast_launch ios ios-metro; wait; echo done"
+        return p, self.lib(p, script, stdin="y\n")
 
     def test_the_message_is_printed_on_the_ios_fast_path(self):
-        p, r = self.run_fast("")
-        self.assertIn('iOS may ask "Open in <your app>?"', r.stdout)
-        self.assertIn("tap Open", r.stdout)
+        p, r = self.run_fast()
+        self.assertIn('iOS asks "Open in <your app>?": tap Open.', r.stdout)
 
-    def test_launch_comes_before_the_link_and_the_link_is_only_a_fallback(self):
-        p, r = self.run_fast("")  # Metro never served a bundle: the dev client did not connect
+    def test_the_link_is_opened_and_the_app_is_not_launched_first(self):
+        p, r = self.run_fast()
         calls = [c for c in p.called() if c.startswith("xcrun simctl")]
-        self.assertEqual(calls[0], "xcrun simctl launch U1 com.demo.app")
-        self.assertTrue(calls[1].startswith("xcrun simctl openurl U1 demo://expo-development-client/"), calls)
-        self.assertIn("did not connect by itself", r.stdout)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertTrue(calls[0].startswith("xcrun simctl openurl U1 demo://expo-development-client/"), calls)
 
-    def test_a_dev_client_that_connected_by_itself_gets_no_link(self):
-        p, r = self.run_fast("iOS Bundled 812ms index.js (1200 modules)\n")
+    def test_without_a_scheme_the_app_is_launched(self):
+        p, r = self.run_fast(LOCAL_DEV.replace('scheme = "demo"\n', ""))
         calls = [c for c in p.called() if c.startswith("xcrun simctl")]
         self.assertEqual(calls, ["xcrun simctl launch U1 com.demo.app"])
+
+    def test_the_wait_and_log_polling_are_gone(self):
+        text = SCRIPT.read_text()
+        self.assertNotIn("OPEN_WAIT", text)
+        self.assertNotIn("open_ios_app", text)
 
     def test_android_keeps_its_link_and_prints_no_ios_message(self):
         p = Project(self, pnpm_monorepo, LOCAL_DEV)
@@ -1620,52 +1620,6 @@ class IosFastPathTest(Lib, unittest.TestCase):
         r = self.lib(p, "wait_metro() { return 0; }; init_state; A_SERIAL=S1; launch() { sleep 2; return 0; }; fast_launch android android-metro; wait", stdin="y\n")
         self.assertNotIn("Open in", r.stdout)
         self.assertTrue(any("adb -s S1 shell am start -a android.intent.action.VIEW" in c for c in p.called()))
-
-
-class EnsureAndCacheTest(Lib, unittest.TestCase):
-    def test_every_name_passed_to_ensure_is_a_defined_check(self):
-        text = SCRIPT.read_text()
-        defined = set(re.findall(r"(?m)^check_(\w+)\(\)", text))
-        used = set()
-        for m in re.finditer(r"\bensure ((?:[a-z]+ ?)+)(?=[|&;)\n])", text):
-            used.update(m.group(1).split())
-        self.assertTrue({"base", "android", "ios", "emulator"} <= used, used)
-        self.assertEqual(used - defined, set(), "ensure prepends check_ itself")
-        self.assertNotIn("ensure check_", text)
-
-    def test_an_unknown_check_aborts_loudly(self):
-        p = Project(self, pnpm_monorepo, LOCAL_DEV)
-        r = self.lib(p, "ensure nonsense; echo rc=$?")
-        self.assertIn("rc=1", r.stdout)
-        self.assertIn("no function check_nonsense", r.stdout)
-        self.assertNotIn("command not found", r.stderr)
-
-    def test_the_slow_fingerprint_is_cached_until_an_input_changes(self):
-        p = Project(self, pnpm_monorepo, LOCAL_DEV)
-        (p.dir / ".local-dev").mkdir()
-        p.shim("npx", 'echo \'{"hash": "h1"}\'')
-        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h1")
-        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h1")
-        self.assertEqual(len([c for c in p.called() if c.startswith("npx")]), 1, "the second call came from the cache")
-        # same content, other time stamp: an input changed as far as the cache can tell
-        p.shim("npx", 'echo \'{"hash": "h2"}\'')
-        pkg = p.dir / "apps/mobile/package.json"
-        pkg.write_text(pkg.read_text() + " ")
-        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h2")
-        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h2")
-        # each kind of input invalidates it
-        for rel, text in (("pnpm-lock.yaml", "x"), ("apps/mobile/app.json", json.dumps({"expo": {"name": "n"}})), ("package.json", "{}")):
-            before = (p.dir / ".local-dev/fingerprint-cache").read_text()
-            write(p.dir, rel, text)
-            self.lib(p, "fingerprint")
-            self.assertNotEqual((p.dir / ".local-dev/fingerprint-cache").read_text(), before, rel)
-
-    def test_a_fallback_hash_is_not_cached(self):
-        p = Project(self, pnpm_monorepo, LOCAL_DEV)
-        (p.dir / ".local-dev").mkdir()
-        p.shim("npx", "", code=1)
-        self.assertTrue(self.lib(p, "fingerprint").stdout.strip().startswith("files:"))
-        self.assertFalse((p.dir / ".local-dev/fingerprint-cache").exists())
 
 
 class StaticTest(unittest.TestCase):

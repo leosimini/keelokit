@@ -33,8 +33,9 @@
   `-wipe-data` (named, with the warning that it erases the emulator's apps and data); with `--yes` it
   stops and lists them. Not tested: the emulator itself and wireless debugging.
 - **iOS asks before a link opens the app.** On the simulator's fast path the script says that iOS
-  may show "Open in <app>?" (tap Open), launches the app first so the dev client reconnects by itself,
-  and opens the link only if Metro served no bundle within 15 seconds. Android has no such prompt.
+  asks "Open in <app>?" (tap Open) and opens the link. Launching the app first was tried on
+  hardware: the dev launcher opens but does not reconnect to Metro by itself. Android has no such
+  prompt.
 - **`run-local` never waits on a menu nobody can answer.** With `--yes` it takes the remembered
   simulator, phone or emulator (else a booted simulator, else the first), says which and how to change
   it, and goes on (it never creates an emulator that way). Without `--yes` and without a terminal it

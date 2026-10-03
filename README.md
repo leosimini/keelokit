@@ -115,8 +115,8 @@ project the template generated, so treat those paths as untested. Besides `andro
 `doctor`, the script has `metro` (only Metro, you open the app), `status`, `logs`, `clean` (it lists
 what it would delete and asks group by group), `seed` and `pair`; `--help` says what each does.
 On the iOS simulator, opening the app by a link makes iOS ask "Open in <app>?" and someone has to tap
-Open; the script launches the app first and uses the link only as a fallback. Android has no such
-prompt.
+Open, every time. I tried launching the app first instead, and the dev launcher opens but does not
+reconnect by itself. Android has no such prompt.
 
 ## Good to know
 

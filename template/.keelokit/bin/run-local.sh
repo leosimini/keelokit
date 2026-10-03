@@ -1723,34 +1723,16 @@ open_app() { # <android|ios>: open the installed app on the target (the dev clie
   fi
 }
 
-# iOS: `simctl launch` first. If Metro saw no bundle request within OPEN_WAIT seconds (15) the dev
-# client did not connect by itself, and the link (with its tap-Open dialog) is the fallback.
-open_ios_app() { # <step of the Metro log>
-  local i
-  if [ -n "$IOS_BUNDLE" ]; then xcrun simctl launch "$I_UDID" "$IOS_BUNDLE" >/dev/null 2>&1; fi
-  for i in $(seq "${OPEN_WAIT:-15}"); do
-    grep -qE 'Bundled|Bundling|Running "main"' "$LOG/$1.log" 2>/dev/null && return 0
-    sleep 1
-  done
-  [ -n "$SCHEME" ] || return 0
-  say "$(L 'The app did not connect by itself: opening the link. Tap Open if iOS asks.' 'La app no se conectó sola: abro el link. Tocá Abrir si iOS pregunta.')"
-  xcrun simctl openurl "$I_UDID" "$(deep_link)"
-}
-
 wait_metro() { local _; for _ in $(seq 180); do curl -s http://localhost:8081/status 2>/dev/null | grep -q running && return 0; sleep 1; done; return 1; }
 
 # The fast path: Metro, and the installed dev client opened on it. No native build.
 fast_launch() { # <android|ios> <step>
   [ -n "$SCHEME" ] || warn "$(L 'no URL scheme in the app config: the app is launched, and you pick Metro in it' 'la config de la app no tiene scheme: se abre la app y elegís Metro en ella')"
-  if [ "$1" = ios ]; then
-    # iOS answers a custom-scheme link with a system dialog (Open in "<app>"?) that someone must tap;
-    # Android has no such prompt. So the app is launched first (the dev client reconnects to the
-    # Metro it saw) and the link is the fallback.
-    warn "$(L 'iOS may ask "Open in <your app>?" when a link opens the app: tap Open. Launching the app first, which avoids it when it reconnects by itself.' 'iOS puede preguntar «¿Abrir en <tu app>?» cuando un link abre la app: tocá Abrir. Primero lanzo la app, lo que lo evita cuando se reconecta sola.')"
-    ( wait_metro && open_ios_app "$2" ) &
-  else
-    ( wait_metro && open_app "$1" ) &
-  fi
+  # iOS always asks the simulator's user to confirm a custom-scheme link (Open in "<app>"?). Launching
+  # the app first was tried on hardware: the dev launcher opens but does not reconnect by itself, so
+  # the link is the way. Android has no such prompt.
+  [ "$1" = ios ] && warn "$(L 'iOS asks "Open in <your app>?": tap Open.' 'iOS pregunta «¿Abrir en <tu app>?»: tocá Abrir.')"
+  ( wait_metro && open_app "$1" ) &
   launch "$2" env "$API_URL_ENV=$(api_url)" bash "$SELF" __expo start --dev-client
 }
 

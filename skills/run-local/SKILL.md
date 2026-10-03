@@ -70,10 +70,9 @@ which path it took and why. `--rebuild` builds anyway (after a native dependency
 script does it by itself), `--no-build` refuses to build and fails if the app is not installed.
 
 **A known iOS behaviour.** Opening the app by its link makes iOS show a system dialog, Open in "<app>"?,
-that someone must tap in the simulator; Android has no such prompt. So on the iOS fast path the script
-launches the app first (the dev client reconnects to the Metro it saw), waits up to 15 seconds for
-Metro to serve a bundle, and uses the link only if it did not connect; tell the user to tap Open if
-the dialog appears. Whether the first launch reconnects by itself is not tested on hardware.
+that someone must tap in the simulator, every time; Android has no such prompt. The script says so and
+opens the link; tell the user to tap Open. Launching the app first was tried on hardware and does not
+help: the dev launcher opens but does not reconnect to Metro by itself.
 
 **Android targets.** One phone connected: it is used. Several: the user chooses, and it is remembered
 (`--device <serial|model>` overrides). Wireless: `pair` walks through it and asks for the pairing
