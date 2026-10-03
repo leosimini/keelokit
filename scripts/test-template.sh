@@ -101,7 +101,14 @@ step 'Install'
 pnpm install
 # pnpm-lock.yaml is part of the project: commit it, as project-new does, so verify compares it.
 git add -A && { git diff --cached --quiet || git -c user.name=t -c user.email=t@t commit -qm 'pnpm install'; }
-pnpm -r --workspace-concurrency=1 --if-present e2e:install
+# PKG-3: browser installs take apt's machine-wide lock and write the shared pnpm store, so two
+# runs on one machine take turns here (flock where it exists: Linux; elsewhere they don't wait).
+lock="${TMPDIR:-/tmp}/keelokit-e2e-install.lock"
+if command -v flock >/dev/null; then
+  flock "$lock" pnpm -r --workspace-concurrency=1 --if-present e2e:install
+else
+  pnpm -r --workspace-concurrency=1 --if-present e2e:install
+fi
 pnpm verify --all
 
 # MUT-1 must bite: the template's critical example passes, and the same code under a suite that

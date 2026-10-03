@@ -101,5 +101,20 @@ class ValueOptionTest(unittest.TestCase):
         self.assertIn("postgis=true", calls)
 
 
+class ConcurrentRunsTest(unittest.TestCase):
+    def test_PKG_3_browser_installs_take_turns_across_runs(self):
+        """PKG-3: two template runs on one machine installed browsers at the same time: apt's lock
+        failed one, and the shared pnpm store came out corrupted for the other. Every script step
+        that installs browsers runs under a machine-wide flock where flock exists."""
+        for path in sorted(ROOT.glob("scripts/*.sh")):
+            lines = path.read_text().splitlines()
+            for i, line in enumerate(lines):
+                if re.search(r"e2e:install|playwright install", line) and not line.lstrip().startswith("#"):
+                    with self.subTest(script=path.name, line=i + 1):
+                        locked = line.lstrip().startswith("flock ")
+                        fallback = i >= 2 and lines[i - 1].strip() == "else" and lines[i - 2].lstrip().startswith("flock ")
+                        self.assertTrue(locked or fallback, line)
+
+
 if __name__ == "__main__":
     unittest.main()
