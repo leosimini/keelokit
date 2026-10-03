@@ -27,7 +27,11 @@
   download and downloads only after a yes; it boots it in the background and waits for it.
   Several phones are listed with the choice remembered (`--device` overrides), `pair` walks through
   wireless debugging without keeping the address or code, and an emulator or a phone is never shut
-  down without asking. Not tested: the emulator itself and wireless debugging.
+  down without asking. When an install fails for lack of storage, it explains it and offers, each
+  with its own yes, to uninstall the app and retry, to create a new emulator with an 8 GB data
+  partition (`--new-avd`; an installed image is reused without a download), or to cold boot with
+  `-wipe-data` (named, with the warning that it erases the emulator's apps and data); with `--yes` it
+  stops and lists them. Not tested: the emulator itself and wireless debugging.
 - **The rest of the environment.** `[local] services` (redis, mailpit...) start and stop with the
   database. The seed is detected and offered once, never run silently (`seed` runs it by name).
   The JDK follows React Native (17 from 0.73, 11 before) and Node follows `.nvmrc`, `.node-version`

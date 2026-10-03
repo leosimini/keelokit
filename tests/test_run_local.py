@@ -833,7 +833,7 @@ class AndroidTargetTest(Lib, unittest.TestCase):
         p2 = self.project("List of devices attached\\n", "Pixel_7_API_34\\n")
         p2.shim("adb", 'case "$1" in devices) if grep -q "emulator -avd" "' + str(p2.calls) + '"; then printf "List of devices attached\\nemulator-5554\\tdevice product:sdk\\n"; else printf "List of devices attached\\n"; fi;; esac\n'
                        'case "$*" in *getprop*) echo 1;; *"emu avd name"*) echo Pixel_7_API_34;; esac')
-        r = self.select(p2, stdin="y\n", flags="EMULATOR_FLAG=1; load_config")
+        r = self.select(p2, stdin="\ny\n", flags="EMULATOR_FLAG=1; load_config")
         self.assertIn("rc=0 kind=emulator serial=emulator-5554 id=avd:Pixel_7_API_34", r.stdout)
         self.assertIn("emulator -avd Pixel_7_API_34 -no-snapshot-save", p2.called())
         self.assertEqual((p2.dir / ".local-dev/avd").read_text().strip(), "Pixel_7_API_34")
@@ -911,8 +911,149 @@ class AndroidTargetTest(Lib, unittest.TestCase):
         self.assertFalse([c for c in p2.called() if c.startswith("adb pair")])
 
 
+class StorageRepairTest(Lib, unittest.TestCase):
+    """INSTALL_FAILED_INSUFFICIENT_STORAGE: four ways out, each only with its own yes."""
+
+    LOG = ("Error: adb: failed to install /x/app-debug.apk: Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE: "
+           "Failed to override installation location]\n")
+
+    def project(self, avds="Pixel_7_API_34\n"):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        (p.dir / "x.log").write_text(self.LOG)
+        p.shim("adb", 'case "$1" in devices) if grep -q "wipe-data" "' + str(p.calls) + '"; then printf "List of devices attached\\nemulator-5554\\tdevice product:sdk\\n"; else printf "List of devices attached\\n"; fi;; esac\n'
+                      'case "$*" in *getprop*) echo 1;; esac')
+        p.shim("emulator", f'case "$1" in -list-avds) printf "{avds}";; *) exec sleep 5;; esac')
+        p.shim("sdkmanager", 'case "$*" in *list_installed*) echo "system-images;android-34;google_apis_playstore;x86_64";; esac')
+        p.shim("avdmanager", 'mkdir -p "$HOME/.android/avd/RunLocal_API_34.avd"; printf "hw.ramSize=2048\\ndisk.dataPartition.size=2G\\n" >"$HOME/.android/avd/RunLocal_API_34.avd/config.ini"')
+        p.shim("uname", 'case "$1" in -m) echo x86_64;; *) echo Darwin;; esac')
+        return p
+
+    def repair(self, p, stdin="", pre="A_KIND=emulator; A_SERIAL=emulator-5554; AVD_NAME=Pixel_7_API_34"):
+        return self.lib(p, f'{pre}; repair x.log; echo "rc=$? blocked=$BLOCKED"', stdin=stdin)
+
+    def test_the_table_has_the_entry(self):
+        self.assertIn("'INSTALL_FAILED_INSUFFICIENT_STORAGE => insufficient_storage'", SCRIPT.read_text())
+
+    def test_with_yes_it_stops_listing_the_options_and_picks_none(self):
+        p = self.project()
+        r = self.repair(p, pre="YES=1; A_KIND=emulator; A_SERIAL=emulator-5554; AVD_NAME=Pixel_7_API_34")
+        self.assertIn("rc=1 blocked=1", r.stdout)
+        self.assertIn("none is picked for you", r.stdout)
+        self.assertIn("--new-avd", r.stdout)
+        self.assertIn("-wipe-data", r.stdout)
+        self.assertEqual([c for c in p.called() if c.startswith(("adb -s", "avdmanager", "emulator -avd", "sdkmanager --sdk"))], [])
+
+    def test_a_yes_to_uninstall_removes_the_app_and_retries(self):
+        p = self.project()
+        r = self.repair(p, "y\n")
+        self.assertIn("rc=0 blocked=0", r.stdout)
+        self.assertIn("adb -s emulator-5554 uninstall com.demo.app", p.called())
+        self.assertFalse([c for c in p.called() if c.startswith("avdmanager")])
+
+    def test_one_plain_sentence_says_why(self):
+        p = self.project()
+        r = self.repair(p, "n\nn\nn\n")
+        self.assertIn("not enough free storage on emulator-5554", r.stdout)
+        self.assertIn("pm trim-caches", r.stdout)  # only mentioned
+        self.assertFalse([c for c in p.called() if "trim-caches" in c])
+        self.assertIn("rc=1", r.stdout)
+
+    def test_a_phone_is_only_offered_the_uninstall(self):
+        p = self.project()
+        r = self.repair(p, "n\ny\ny\n", pre="A_KIND=phone; A_SERIAL=S1")
+        self.assertIn("rc=1", r.stdout)
+        self.assertFalse([c for c in p.called() if c.startswith(("avdmanager", "emulator"))])
+        self.assertNotIn("-wipe-data?", r.stdout)
+
+    def test_a_new_avd_with_a_bigger_data_partition_reuses_the_installed_image(self):
+        p = self.project()
+        r = self.repair(p, "n\ny\ny\n")
+        self.assertFalse([c for c in p.called() if c.startswith("sdkmanager --sdk_root")], "no download")
+        self.assertIn("(the image is already installed: no download)", SCRIPT.read_text())
+        cfg = (p.home / ".android/avd/RunLocal_API_34.avd/config.ini").read_text()
+        self.assertEqual(cfg.count("disk.dataPartition.size"), 1)
+        self.assertIn("disk.dataPartition.size=8G", cfg)
+        self.assertEqual((p.dir / ".local-dev/avd").read_text().strip(), "RunLocal_API_34")
+        self.assertIn("created RunLocal_API_34", r.stdout)
+        self.assertIn("rc=1", r.stdout)
+        self.assertFalse([c for c in p.called() if "-wipe-data" in c])
+
+    def test_wipe_data_needs_its_own_yes_that_names_the_avd(self):
+        p = self.project()
+        r = self.repair(p, "n\nn\nn\n")
+        self.assertIn('Cold boot $AVD_NAME with -wipe-data? This ERASES ALL its apps and data.', SCRIPT.read_text())  # names the AVD, warns
+        self.assertFalse([c for c in p.called() if "-wipe-data" in c or "emu kill" in c])
+        p = self.project()
+        r = self.repair(p, "n\nn\ny\n")
+        self.assertIn("adb -s emulator-5554 emu kill", p.called())
+        self.assertIn("emulator -avd Pixel_7_API_34 -no-snapshot-save -wipe-data", p.called())
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.lib(p, 'echo "[$EMU_EXTRA]"').stdout.strip(), "[]", "the flag is not left on for the next boot")
+
+    def test_wipe_data_is_never_the_default_or_asked_with_yes(self):
+        p = self.project()
+        text = SCRIPT.read_text()
+        d = text[text.index("repair_insufficient_storage()"):]
+        d = d[:d.index("repair_no_acceleration()")]
+        self.assertLess(d.index('if [ "$YES" = 1 ]'), d.index("-wipe-data"), "--yes returns before any option is reached")
+
+
+class NewAvdTest(Lib, unittest.TestCase):
+    LOG = StorageRepairTest.LOG
+
+    def project(self, avds=""):
+        p = StorageRepairTest.project(self, avds)
+        p.shim("adb", 'case "$1" in devices) if grep -q "emulator -avd" "' + str(p.calls) + '"; then printf "List of devices attached\\nemulator-5554\\tdevice product:sdk\\n"; else printf "List of devices attached\\n"; fi;; esac\n'
+                      'case "$*" in *getprop*) echo 1;; *"avd name"*) echo X;; esac')
+        return p
+
+    def select(self, p, stdin, flags):
+        return self.lib(p, f'ensure() {{ return 0; }}; {flags}; select_android_target; echo "rc=$? kind=$A_KIND id=$A_ID"', stdin=stdin)
+
+    def test_the_flag_creates_a_new_avd_even_when_others_exist(self):
+        p = self.project("Pixel_7_API_34\n")
+        r = self.select(p, "y\n", "NEWAVD_FLAG=1; EMULATOR_FLAG=1; load_config")
+        self.assertIn("rc=0 kind=emulator id=avd:RunLocal_API_34", r.stdout)
+        self.assertIn("emulator -avd RunLocal_API_34 -no-snapshot-save", p.called())
+        self.assertIn("disk.dataPartition.size=8G", (p.home / ".android/avd/RunLocal_API_34.avd/config.ini").read_text())
+        self.assertFalse([c for c in p.called() if c.startswith("sdkmanager --sdk_root")], "the image was installed: no download")
+
+    def test_a_second_new_avd_gets_another_name(self):
+        p = self.project("RunLocal_API_34\n")
+        r = self.select(p, "y\n", "NEWAVD_FLAG=1; EMULATOR_FLAG=1; load_config")
+        self.assertTrue(any("RunLocal_API_34_2" in c for c in p.called()) or "RunLocal_API_34_2" in r.stdout, r.stdout)
+
+    def test_the_menu_offers_a_new_emulator_even_when_others_exist(self):
+        p = self.project("Pixel_7_API_34\n")
+        r = self.select(p, "n\ny\n", "EMULATOR_FLAG=1; load_config")
+        self.assertIn("n) a NEW emulator (8 GB of storage)", r.stdout)
+        self.assertIn("kind=emulator id=avd:RunLocal_API_34", r.stdout)
+        p = self.project("Pixel_7_API_34\n")
+        r = self.select(p, "1\ny\n", "EMULATOR_FLAG=1; load_config")
+        self.assertIn("id=avd:Pixel_7_API_34", r.stdout)
+
+    def test_with_yes_an_existing_emulator_is_used_and_none_is_created(self):
+        p = self.project("Pixel_7_API_34\n")
+        r = self.select(p, "", "YES=1; EMULATOR_FLAG=1; load_config")
+        self.assertIn("id=avd:Pixel_7_API_34", r.stdout)
+        self.assertFalse([c for c in p.called() if c.startswith("avdmanager")])
+
+    def test_a_running_emulator_is_shut_down_for_a_new_one_only_with_a_yes(self):
+        p = self.project("Pixel_7_API_34\n")
+        p.shim("adb", 'case "$1" in devices) printf "List of devices attached\\nemulator-5554\\tdevice product:sdk\\n";; esac\ncase "$*" in *"avd name"*) echo Pixel_7_API_34;; esac')
+        r = self.select(p, "n\n", "NEWAVD_FLAG=1; EMULATOR_FLAG=1; load_config")
+        self.assertIn("rc=1", r.stdout)
+        self.assertFalse([c for c in p.called() if "emu kill" in c])
+
+    def test_the_flag_parses(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        self.assertIn("--new-avd", p.run("android", "--help").stdout)
+
+
 class RepairTableTest(Lib, unittest.TestCase):
-    ACTIONS = "uninstall_app free_metro_port gradle_memory pod_reinstall google_file free_emulator_port avd_lock no_acceleration"
+    ACTIONS = "insufficient_storage uninstall_app free_metro_port gradle_memory pod_reinstall google_file free_emulator_port avd_lock no_acceleration"
 
     def which(self, log: str, setup: str = ""):
         p = Project(self, pnpm_monorepo, LOCAL_DEV)

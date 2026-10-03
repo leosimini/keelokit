@@ -72,7 +72,11 @@ script does it by itself), `--no-build` refuses to build and fails if the app is
 address, lets adb ask for the code, then the connect address: never type or keep the code yourself.
 No phone: the script offers an emulator. If there is no emulator it offers to create one, and says
 that the system image is a 1–2 GB download: relay that, and only run with `--yes` after the user
-accepted the download. An emulator needs hardware acceleration (HVF on macOS); if it complains, say
+accepted the download. `--new-avd` creates a new emulator with an 8 GB data partition (an installed
+image is reused, no download). On `INSTALL_FAILED_INSUFFICIENT_STORAGE` the script offers, each with its
+own yes: uninstall the app and retry, a new emulator, or a cold boot with `-wipe-data`, which erases
+that emulator's apps and data: name the emulator and get that yes yourself; with `--yes` it exits 3
+listing the options and picks none. An emulator needs hardware acceleration (HVF on macOS); if it complains, say
 so plainly and suggest a phone.
 
 **Other things it asks.** The seed (`api_seed`) writes to the database: it is offered once, never

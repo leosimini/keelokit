@@ -23,7 +23,7 @@
 #
 # Options: --yes (answer yes to every question), --check, --no-install, --json, --seed,
 #   --rebuild (always build the native app), --no-build (never build it: fail if it is not installed),
-#   --emulator (use an Android emulator), --device <serial|model|name|udid>, --help.
+#   --emulator (use an Android emulator), --new-avd (create a new emulator with an 8 GB data partition), --device <serial|model|name|udid>, --help.
 #
 # Exit codes: 0 done · 1 failed, or something is missing · 2 usage · 3 stopped on something only a
 #   person can do (Xcode, no phone, no emulator image) · 4 a question was declined, or there was
@@ -64,7 +64,7 @@ SELF=$PWD/.keelokit/bin/run-local.sh
 PROFILE=.keelokit/profile.toml
 STATE=.local-dev
 LOG=$STATE/logs
-YES=0 CHECK=0 NOINSTALL=0 JSONMODE=0 SEED_FLAG=0 REBUILD=0 NOBUILD=0 EMULATOR_FLAG=0 DEVICE= CMD= ARG2=
+YES=0 CHECK=0 NOINSTALL=0 JSONMODE=0 SEED_FLAG=0 REBUILD=0 NOBUILD=0 EMULATOR_FLAG=0 NEWAVD_FLAG=0 EMU_EXTRA= DEVICE= CMD= ARG2=
 PLAN_D=() PLAN_C=() BLOCKERS=() MSGS=() MISSING=() BLOCKED_MSGS=()
 QUIET=0 DETECTED=0 HAS_LOCAL=0 DECLINED=0 BLOCKED=0
 PLISTBUDDY=${PLISTBUDDY:-/usr/libexec/PlistBuddy} # the overridable tools are test hooks (tests/test_run_local.py)
@@ -74,6 +74,7 @@ PLISTBUDDY=${PLISTBUDDY:-/usr/libexec/PlistBuddy} # the overridable tools are te
 # `repair_<action>`; an action returns 0 when it changed something (the step runs again), 1 when
 # the failure stays, 2 when it does not apply here (the next line is tried).
 REPAIRS=(
+  'INSTALL_FAILED_INSUFFICIENT_STORAGE => insufficient_storage'
   'INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match => uninstall_app'
   'EADDRINUSE|[Pp]ort 8081 .*(in use|already) => free_metro_port'
   'OutOfMemoryError|Java heap space|Gradle daemon.*(disappeared|stopped)|Daemon will be stopped => gradle_memory'
@@ -121,6 +122,7 @@ android — the app on an Android phone, or an emulator
   --rebuild      build the native app even so
   --no-build     never build: fail if the app is not installed
   --emulator     use an emulator ([local] android_target = "emulator" does the same)
+  --new-avd      create a new emulator (8 GB of storage; no download if its image is installed) and use it
   --device X     the phone by serial or model, or the emulator by AVD name
   --yes          answer yes to every question
   One phone connected: it is used. Several: you choose, and the choice is remembered in
@@ -813,6 +815,39 @@ repair_avd_lock() { # stale lock files of the AVD: removed only with a yes
   confirm "$(L 'Delete them? (make sure no emulator is using this AVD)' '¿Los borro? (fijate que ningún emulador use este AVD)')" || return 1
   for f in $locks; do rm -rf -- "$f"; done
 }
+# The app does not fit: an install needs several times the size of the APK. Four ways out, each
+# only with its own yes; with --yes none is picked and the script stops (exit 3) listing them.
+repair_insufficient_storage() {
+  warn "$(L "there is not enough free storage on ${A_SERIAL:-the target} to install the app (an install needs several times the size of the APK)." "no hay espacio libre suficiente en ${A_SERIAL:-el target} para instalar la app (instalar necesita varias veces el tamaño del APK).")"
+  if [ "$YES" = 1 ]; then
+    BLOCKED=1
+    warn "$(L 'Options (none is picked for you): uninstall the app and retry · create a new emulator with a bigger data partition: run-local.sh android --new-avd · cold boot this emulator with -wipe-data (ERASES all its apps and data): run it without --yes.' 'Opciones (no elijo ninguna por vos): desinstalar la app y reintentar · crear un emulador nuevo con una partición de datos más grande: run-local.sh android --new-avd · arranque en frío de este emulador con -wipe-data (BORRA todas sus apps y datos): corrélo sin --yes.')"
+    return 1
+  fi
+  if [ -n "$ANDROID_PKG" ] && [ -n "$A_SERIAL" ] &&
+    confirm "$(L "Uninstall $ANDROID_PKG from ${A_SERIAL} and try again? (it frees some space; it may not be enough)" "¿Desinstalo $ANDROID_PKG de ${A_SERIAL} y reintento? (libera algo de espacio; puede no alcanzar)")"; then
+    adb -s "$A_SERIAL" uninstall "$ANDROID_PKG" >/dev/null
+    return 0
+  fi
+  warn "$(L '`pm trim-caches` usually frees nothing here, so it is not offered.' '`pm trim-caches` casi nunca libera nada acá, así que no lo ofrezco.')"
+  if [ "${A_KIND:-}" = emulator ]; then
+    if confirm "$(L 'Create a NEW emulator with an 8 GB data partition? (an image that is already installed is reused: no download)' '¿Creo un emulador NUEVO con una partición de datos de 8 GB? (una imagen ya instalada se reutiliza: sin descarga)')" && create_avd; then
+      remember avd "$AVD_NAME"
+      ok "$(L "created $AVD_NAME. Stop the running emulator (run-local.sh stop) and run android --emulator again." "creado $AVD_NAME. Detené el emulador que corre (run-local.sh stop) y corré android --emulator de nuevo.")"
+      return 1
+    fi
+    if [ -n "${AVD_NAME:-}" ] && confirm "$(L "Cold boot $AVD_NAME with -wipe-data? This ERASES ALL its apps and data." "¿Arranque en frío de $AVD_NAME con -wipe-data? Esto BORRA TODAS sus apps y datos.")"; then
+      adb -s "$A_SERIAL" emu kill >/dev/null 2>&1
+      sleep 5
+      EMU_EXTRA=-wipe-data
+      boot_emulator "$AVD_NAME"
+      local rc=$?
+      EMU_EXTRA=
+      return "$rc"
+    fi
+  fi
+  return 1
+}
 repair_no_acceleration() {
   warn "$(L 'the emulator has no hardware acceleration (HVF on macOS needs a supported CPU and no other hypervisor holding it). Close other virtual machines, or use a phone.' 'el emulador no tiene aceleración por hardware (HVF en macOS necesita una CPU compatible y ningún otro hipervisor que la use). Cerrá otras máquinas virtuales, o usá un teléfono.')"
   return 1
@@ -1379,19 +1414,28 @@ emulator_running_name() { # <serial>
   adb -s "$1" emu avd name 2>/dev/null | head -1 | tr -d '\r'
 }
 
+avd_set_data_size() { # <avd> <size>: disk.dataPartition.size in the AVD's config.ini (an install needs room)
+  local f="$HOME/.android/avd/$1.avd/config.ini"
+  [ -f "$f" ] || return 0
+  awk -v v="disk.dataPartition.size=$2" 'BEGIN{d=0} /^disk\.dataPartition\.size[ ]*=/ {print v; d=1; next} {print} END{if(!d) print v}' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+}
+
 create_avd() { # downloads a system image (1–2 GB) only after showing it and getting a yes; sets AVD_NAME
-  local pkg name
+  local pkg name base n=1
   pkg=$(avd_package)
-  name="RunLocal_API_$(avd_api)"
+  base="RunLocal_API_$(avd_api)"
+  name=$base
+  while avd_list | grep -qx "$name"; do n=$((n + 1)); name="${base}_$n"; done
   if ! sdkmanager --list_installed 2>/dev/null | grep -qF "$pkg"; then
-    warn "$(L "there is no emulator yet. I can create \"$name\" with the Google Play image $pkg." "todavía no hay un emulador. Puedo crear \"$name\" con la imagen de Google Play $pkg.")"
+    warn "$(L "I can create the emulator \"$name\" with the Google Play image $pkg." "Puedo crear el emulador \"$name\" con la imagen de Google Play $pkg.")"
     warn "$(L 'The system image is a download of about 1–2 GB.' 'La imagen del sistema es una descarga de 1–2 GB.')"
     confirm "$(L 'Download it and create the emulator?' '¿La descargo y creo el emulador?')" || return 1
     run avd-image sdkmanager --sdk_root="$ANDROID_HOME" --install "$pkg" || return 1
   else
-    confirm "$(L "Create the emulator \"$name\" (image already downloaded)?" "¿Creo el emulador \"$name\" (la imagen ya está descargada)?")" || return 1
+    confirm "$(L "Create the emulator \"$name\" (the image is already installed: no download)?" "¿Creo el emulador \"$name\" (la imagen ya está instalada: sin descarga)?")" || return 1
   fi
   run avd-create bash -c "$(avd_create_cmd "$name" "$pkg")" || return 1
+  avd_set_data_size "$name" 8G
   AVD_NAME=$name
 }
 
@@ -1401,7 +1445,7 @@ boot_emulator() { # <avd> → sets A_SERIAL; waits for sys.boot_completed
   init_state || return 1
   while :; do
     ok "$(L "booting $avd in the background (log: $LOG/emulator.log)" "arrancando $avd en segundo plano (log: $LOG/emulator.log)")"
-    nohup "$(emulator_bin)" -avd "$avd" -no-snapshot-save >"$LOG/emulator.log" 2>&1 &
+    nohup "$(emulator_bin)" -avd "$avd" -no-snapshot-save $EMU_EXTRA >"$LOG/emulator.log" 2>&1 &
     pid=$!
     for i in $(seq 90); do
       if ! kill -0 "$pid" 2>/dev/null; then break; fi
@@ -1424,6 +1468,12 @@ boot_emulator() { # <avd> → sets A_SERIAL; waits for sys.boot_completed
 use_emulator() { # <emulators: "serial|model|state|kind" lines>; sets A_SERIAL, A_ID, A_DEVNAME, AVD_NAME
   local emus=$1 s name avds n i choice l chosen=""
   s=$(awk -F'|' '$3=="device" {print $1; exit}' <<<"$emus")
+  if [ -n "$s" ] && [ "$NEWAVD_FLAG" = 1 ]; then # a new emulator: the one running (one target at a time) goes first, with a yes
+    confirm "$(L "An emulator is running ($s). Shut it down to create a new one?" "Hay un emulador corriendo ($s). ¿Lo apago para crear uno nuevo?")" || return 1
+    adb -s "$s" emu kill >/dev/null 2>&1
+    sleep 3
+    s=""
+  fi
   if [ -n "$s" ]; then
     name=$(emulator_running_name "$s")
     A_SERIAL=$s
@@ -1435,20 +1485,27 @@ use_emulator() { # <emulators: "serial|model|state|kind" lines>; sets A_SERIAL, 
     [ -z "$chosen" ] && chosen=$AVD_CFG
     [ -z "$chosen" ] && [ -f "$STATE/avd" ] && chosen=$(cat "$STATE/avd")
     avds=$(avd_list)
-    if [ -n "$chosen" ] && grep -qx "$chosen" <<<"$avds"; then :
+    if [ "$NEWAVD_FLAG" = 1 ]; then
+      create_avd || return 1
+      chosen=$AVD_NAME
+    elif [ -n "$chosen" ] && grep -qx "$chosen" <<<"$avds"; then :
     elif [ -z "$avds" ]; then
       create_avd || return 1
       chosen=$AVD_NAME
     else
       n=$(grep -c . <<<"$avds")
-      if [ "$n" -eq 1 ]; then chosen=$avds
+      if [ "$YES" = 1 ]; then chosen=$(sed -n 1p <<<"$avds") # --yes never creates one
       else
         i=0
         while read -r l; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$l"; done <<<"$avds"
+        printf '  n) %s\n' "$(L 'a NEW emulator (8 GB of storage)' 'un emulador NUEVO (8 GB de almacenamiento)')"
         read -r -p "  $(L 'Which emulator? [1] ' '¿Cuál emulador? [1] ')" choice || return 1
-        [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
-        chosen=$(sed -n "${choice:-1}p" <<<"$avds")
-        [ -n "$chosen" ] || chosen=$(sed -n 1p <<<"$avds")
+        if [[ $choice == [nN] ]]; then create_avd || return 1; chosen=$AVD_NAME
+        else
+          [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
+          chosen=$(sed -n "${choice:-1}p" <<<"$avds")
+          [ -n "$chosen" ] || chosen=$(sed -n 1p <<<"$avds")
+        fi
       fi
     fi
     remember avd "$chosen"
@@ -1814,6 +1871,7 @@ main() {
       --rebuild) REBUILD=1 ;;
       --no-build) NOBUILD=1 ;;
       --emulator) EMULATOR_FLAG=1 ;;
+      --new-avd) EMULATOR_FLAG=1; NEWAVD_FLAG=1 ;;
       --help | -h) HELP=1 ;;
       --device) [ -n "${2:-}" ] && [[ $2 != -* ]] || { echo "--device needs a value: a serial, a model, a simulator name or a UDID" >&2; exit 2; }; DEVICE=$2; shift ;;
       -*) usage; exit 2 ;;
