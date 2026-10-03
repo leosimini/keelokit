@@ -117,7 +117,7 @@ SHAPES = {
     ".keelokit/rules.local.toml": ({"rule": "tables"}, {"rule": RULE_SHAPE}),
     ".keelokit/exceptions.toml": ({"exception": "tables"},
                                   {"exception": {"rule": "text", "reason": "text", "approver": "text", "expires": "text|date"}}),
-    ".keelokit/profile.toml": ({"kind": "text", "traits": "texts"}, {}),
+    ".keelokit/profile.toml": ({"kind": "text", "traits": "texts", "local": "table"}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
     ".keelokit/state.toml": ({"gates": "table"}, {}),
