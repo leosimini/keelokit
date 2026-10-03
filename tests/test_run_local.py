@@ -772,7 +772,7 @@ class AndroidTargetTest(Lib, unittest.TestCase):
         p = self.project(self.DEVICES, "Pixel_7_API_34\\n")
         r = self.select(p)
         self.assertIn("rc=0 kind=phone serial=S1 id=S1 name=Galaxy_S20", r.stdout)
-        self.assertFalse([c for c in p.called() if c.startswith("emulator")])
+        self.assertFalse([c for c in p.called() if c.startswith("emulator -avd")])
 
     def test_several_phones_ask_and_the_choice_is_remembered(self):
         devices = self.DEVICES + "R2\\tdevice usb:2 model:Pixel_8\\n"
@@ -1151,38 +1151,6 @@ class ServicesAndSeedTest(Lib, unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("no docker compose file", r.stdout)
 
-    def seed(self, body: str, stdin: str = "", seed: str = "echo seeded >seed.out"):
-        p = self.project(f'api_seed = "{seed}"')
-        r = self.lib(p, body, stdin=stdin)
-        return p, r
-
-    def test_the_seed_is_asked_never_run_silently(self):
-        p, r = self.seed("run_seed 0; echo rc=$?", stdin="n\ny\n")
-        self.assertFalse((p.dir / "seed.out").exists())
-        self.assertEqual((p.dir / ".local-dev/seed-asked").read_text().strip(), "declined")
-
-    def test_a_yes_runs_it_and_remembers(self):
-        p, r = self.seed("run_seed 0; echo rc=$?", stdin="y\ny\n")
-        self.assertTrue((p.dir / "seed.out").exists())
-        self.assertIn("echo seeded", (p.dir / ".local-dev/seed-asked").read_text())
-
-    def test_with_yes_it_is_skipped_unless_asked_for_by_name(self):
-        p, r = self.seed("YES=1; run_seed 0; echo rc=$?")
-        self.assertFalse((p.dir / "seed.out").exists())
-        self.assertIn("seed skipped", r.stdout)
-        p, r = self.seed("YES=1; run_seed 1; echo rc=$?")
-        self.assertTrue((p.dir / "seed.out").exists(), "the seed command, or --seed, is the ask")
-
-    def test_backend_offers_the_seed_once(self):
-        p = self.project('api_seed = "echo seeded >seed.out"')
-        p.shim("docker")
-        script = "setup_env; api_up() { return 0; }; API_MIGRATE=; start_backend; start_backend"
-        self.lib(p, script, stdin="y\nn\n")
-        # the first start asks (n would decline the gitignore...): answers are consumed in order
-        asked = (p.dir / ".local-dev/seed-asked").exists()
-        self.assertTrue(asked)
-        self.assertEqual(self.lib(p, "echo $API_SEED").stdout.strip(), "echo seeded >seed.out")
-
 
 class VersionsTest(Lib, unittest.TestCase):
     def nvm_home(self, p: Project, works: bool):
@@ -1323,7 +1291,7 @@ class CommandsTest(Lib, unittest.TestCase):
         (p.dir / ".local-dev").mkdir()
         (p.dir / ".local-dev/android-device").write_text("S1\n")
         data = json.loads(p.run("status", "--json").stdout)
-        self.assertEqual(set(data), {"api", "database", "metro", "android", "ios", "ports"})
+        self.assertEqual(set(data), {"api", "database", "metro", "android", "ios", "ports", "users"})
         self.assertEqual(data["api"], {"configured": True, "up": True, "port": 3000, "pid": 4242, "process": "node"})
         self.assertEqual(data["database"]["services"], {"postgres": "running"})
         self.assertEqual((data["metro"]["up"], data["metro"]["pid"]), (True, 4242))
@@ -1446,7 +1414,7 @@ class LocalShapeTest(unittest.TestCase):
         self.assertEqual(documented, set(self.declared()))
         script = SCRIPT.read_text()
         for key in documented:
-            self.assertRegex(script, rf"cfg(_list)? {key}\b", f"the script never reads [local] {key}")
+            self.assertRegex(script, rf"(cfg(_list)?|toml_get \"\$PROFILE\" local) {key}\b", f"the script never reads [local] {key}")
 
     def test_the_doctor_refuses_the_wrong_kind_of_value(self):
         d = Path(tempfile.mkdtemp())
@@ -1683,6 +1651,278 @@ class ExpoGoPromptTest(Lib, unittest.TestCase):
         self.lib(p, 'YES=1; expo_go_yes; launch ios true; echo "[$FEED_Y]"')
         r = self.lib(p, 'YES=1; expo_go_yes; launch ios true; echo "[$FEED_Y]"')
         self.assertIn("[0]", r.stdout)
+
+
+class SeedQuestionTest(Lib, unittest.TestCase):
+    """Before launching: "Load the seed data?" with a recommendation; always its own yes."""
+
+    def project(self, state_out=None, extra_local=""):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV.replace('db_service = "postgres"', 'db_service = "postgres"\napi_seed = "echo seeded >seed.out"' + extra_local))
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        body = "" if state_out is None else f'echo "{state_out}"'
+        p.shim("docker", body)
+        return p
+
+    def step(self, p, stdin="", pre="", tty=True):
+        env = {"RUN_LOCAL_TTY": "1"} if tty else {}
+        return self.lib(p, f'{pre or ":"}; seed_step; echo "rc=$?"', stdin=stdin, env=env)
+
+    def test_an_empty_database_is_recommended_and_a_yes_runs_the_seed(self):
+        p = self.project("0")
+        r = self.step(p, "\n")  # Enter takes the default: yes when it looks empty
+        self.assertIn("The database looks empty: loading the seed data is recommended.", r.stdout)
+        self.assertTrue((p.dir / "seed.out").exists())
+        self.assertEqual((p.dir / ".local-dev/seed_default").read_text().strip(), "yes")
+        self.assertTrue(any("psql" in c or "exec -T postgres" in c for c in p.called()), p.called())
+
+    def test_a_database_with_data_is_not_recommended_and_enter_means_no(self):
+        p = self.project("42")
+        r = self.step(p, "\n")
+        self.assertIn("already has data", r.stdout)
+        self.assertFalse((p.dir / "seed.out").exists())
+        self.assertEqual((p.dir / ".local-dev/seed_default").read_text().strip(), "no")
+
+    def test_when_it_cannot_tell_it_says_so(self):
+        p = self.project("not a number")
+        r = self.step(p, "n\n")
+        self.assertIn("can't tell if the database already has data", r.stdout)
+        self.assertFalse((p.dir / "seed.out").exists())
+
+    def test_the_remembered_answer_is_the_next_default(self):
+        p = self.project("42")
+        (p.dir / ".local-dev/seed_default").write_text("yes\n")
+        self.step(p, "\n")
+        self.assertTrue((p.dir / "seed.out").exists(), "a database with data, but last time said yes: Enter is yes")
+        p = self.project("0")
+        (p.dir / ".local-dev/seed_default").write_text("no\n")
+        self.step(p, "\n")
+        self.assertFalse((p.dir / "seed.out").exists())
+
+    def test_never_silent_yes_alone_and_no_terminal_do_not_seed(self):
+        p = self.project("0")
+        r = self.step(p, pre="YES=1")
+        self.assertFalse((p.dir / "seed.out").exists())
+        self.assertIn("seed not run", r.stdout)
+        p = self.project("0")
+        r = self.step(p, tty=False)
+        self.assertFalse((p.dir / "seed.out").exists())
+        self.assertIn("needs a yes at a terminal", r.stdout)
+
+    def test_the_flags(self):
+        p = self.project("42")
+        self.step(p, pre="SEED_FLAG=1; YES=1")
+        self.assertTrue((p.dir / "seed.out").exists(), "--seed is the yes, even with --yes")
+        p = self.project("0")
+        r = self.step(p, pre="NOSEED_FLAG=1")
+        self.assertFalse((p.dir / "seed.out").exists())
+        self.assertIn("seed skipped (--no-seed)", r.stdout)
+        self.assertEqual(p.run("android", "--seed", "--no-seed").returncode, 2)
+
+    def test_the_seed_command_asks_unless_yes_and_then_shows_the_users(self):
+        p = self.project()
+        write(p.dir, "docs/test-users.md", "| Role | Email | Password |\n|---|---|---|\n| admin | admin@demo.test | demo1234 |\n")
+        r = self.lib(p, "run_seed 1", stdin="n\n", env={"RUN_LOCAL_TTY": "1"})
+        self.assertFalse((p.dir / "seed.out").exists())
+        r = self.lib(p, "run_seed 1", stdin="y\n")
+        self.assertTrue((p.dir / "seed.out").exists())
+        self.assertIn("admin@demo.test", r.stdout)
+        self.assertIn("Test users", r.stdout)
+
+
+class TargetQuestionTest(Lib, unittest.TestCase):
+    DEVICES = "List of devices attached\\nS1\\tdevice usb:1 model:Galaxy_S20\\n"
+
+    def project(self, avds="Pixel_7_API_34\\n", extra_local=""):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV + extra_local)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        p.shim("adb", 'case "$1" in devices) if grep -q "emulator -avd" "' + str(p.calls) + '"; then printf "' + self.DEVICES + 'emulator-5554\\tdevice product:sdk\\n"; else printf "' + self.DEVICES + '"; fi;; esac\n'
+                      'case "$*" in *getprop*) echo 1;; esac')
+        p.shim("emulator", f'case "$1" in -list-avds) printf "{avds}";; *) exec sleep 5;; esac')
+        p.shim("uname", 'case "$1" in -m) echo x86_64;; *) echo Darwin;; esac')
+        return p
+
+    def select(self, p, stdin="", flags=":", tty=True):
+        env = {"RUN_LOCAL_TTY": "1"} if tty else {}
+        return self.lib(p, f'ensure() {{ return 0; }}; {flags}; select_android_target; echo "rc=$? kind=$A_KIND"', stdin=stdin, env=env)
+
+    def test_with_a_phone_and_an_emulator_it_asks_and_the_default_is_the_last_choice(self):
+        p = self.project()
+        r = self.select(p, "2\ny\n")
+        self.assertIn("kind=emulator", r.stdout)
+        self.assertEqual((p.dir / ".local-dev/android_target_last").read_text().strip(), "emulator")
+        p = self.project()
+        r = self.select(p, "\n")
+        self.assertIn("kind=phone", r.stdout)
+        self.assertEqual((p.dir / ".local-dev/android_target_last").read_text().strip(), "phone")
+        (p.dir / ".local-dev/android_target_last").write_text("emulator\n")
+        r = self.select(p, "\ny\n")  # Enter: last time's choice
+        self.assertIn("kind=emulator", r.stdout)
+
+    def test_with_yes_or_no_terminal_it_never_blocks_and_says_how_to_change_it(self):
+        p = self.project()
+        r = self.select(p, flags="YES=1")
+        self.assertIn("kind=phone", r.stdout)
+        self.assertIn("--phone | --emulator, or android_target in [local]", r.stdout)
+        (p.dir / ".local-dev/android_target_last").write_text("emulator\n")
+        r = self.select(p, flags="YES=1")
+        self.assertIn("kind=emulator", r.stdout)
+        p = self.project()
+        r = self.select(p, tty=False)
+        self.assertIn("kind=phone", r.stdout)
+
+    def test_no_question_when_there_is_no_real_choice(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        p.shim("adb", 'case "$1" in devices) printf "' + self.DEVICES + '";; esac')  # no emulator tool at all
+        p.shim("uname", "echo Darwin")
+        r = self.select(p, "")
+        self.assertIn("kind=phone", r.stdout)
+        self.assertNotIn("a phone and an emulator are both possible", r.stdout)
+
+    def test_the_flags_and_the_setting_override(self):
+        p = self.project()
+        self.assertIn("kind=phone", self.select(p, "", "PHONE_FLAG=1; load_config").stdout)
+        self.assertIn("kind=emulator", self.select(self.project(), "y\n", "EMULATOR_FLAG=1; load_config").stdout)
+        self.assertIn("kind=emulator", self.select(self.project(extra_local='android_target = "emulator"\n'), "y\n").stdout)
+        self.assertIn("kind=phone", self.select(self.project(extra_local='android_target = "phone"\n')).stdout)
+
+    def test_auto_keeps_the_phone_when_one_is_connected(self):
+        p = self.project(extra_local='android_target = "auto"\n')
+        r = self.select(p, "2\n")  # an answer nobody asked for stays unread
+        self.assertIn("kind=phone", r.stdout)
+        self.assertNotIn("both possible", r.stdout)
+
+    def test_ask_is_the_default_and_the_flags_exclude_each_other(self):
+        p = self.project()
+        self.assertEqual(self.lib(p, "echo $ANDROID_TARGET").stdout.strip(), "ask")
+        self.assertEqual(p.run("android", "--phone", "--emulator").returncode, 2)
+        self.assertEqual(self.lib(self.project(extra_local='android_target = "sometimes"\n'), "check_config; echo rc=$?").stdout.count("rc=1"), 1)
+
+    def test_a_device_naming_an_avd_means_the_emulator_without_asking(self):
+        p = self.project()
+        r = self.select(p, "y\n", "DEVICE=Pixel_7_API_34")
+        self.assertIn("kind=emulator", r.stdout)
+        self.assertNotIn("both possible", r.stdout)
+
+
+class UsersTest(Lib, unittest.TestCase):
+    ACCOUNTS = "| Role | Email | Password |\n|---|---|---|\n| admin | admin@demo.test | demo1234 |\n| athlete | ana@demo.test | demo1234 |\n"
+
+    def users(self, p, *args):
+        r = p.run("users", "--json", *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def project(self, files=None, local_extra=""):
+        def build(d):
+            pnpm_monorepo(d)
+            for rel, text in (files or {}).items():
+                write(d, rel, text)
+        p = Project(self, build, LOCAL_DEV + local_extra)
+        p.shim("uname", "echo Linux")  # `users` reads project files only: any OS
+        return p
+
+    def test_users_file_wins_and_lines_are_raw(self):
+        p = self.project({"notes/accounts.txt": "ana@demo.test / secret\n", "docs/test-users.md": self.ACCOUNTS}, 'users_file = "notes/accounts.txt"\n')
+        d = self.users(p)
+        self.assertEqual(d, {"source": "notes/accounts.txt", "accounts": [{"line": "ana@demo.test / secret"}]})
+
+    def test_the_fallbacks_in_order(self):
+        p = self.project({"docs/test-users.md": self.ACCOUNTS, "docs/local-testing.md": "x@y.test pw\n"})
+        d = self.users(p)
+        self.assertEqual(d["source"], "docs/test-users.md")
+        self.assertEqual(len(d["accounts"]), 4)
+        p = self.project({"docs/local-testing.md": "Intro line\nlogin as boss@demo.test\nnothing here\npassword: abc\n"})
+        d = self.users(p)
+        self.assertEqual((d["source"], [a["line"] for a in d["accounts"]]), ("docs/local-testing.md", ["login as boss@demo.test", "password: abc"]))
+        p = self.project({"docs/local-android-testing.md": "owner@demo.test\n"})
+        self.assertEqual(self.users(p)["source"], "docs/local-android-testing.md")
+
+    def test_a_readme_section(self):
+        readme = "# App\n\nIntro\n\n## Usuarios de prueba\n\n| Rol | Email |\n|---|---|\n| admin | a@demo.test |\n\n## Next\n\nnot a user line\n"
+        d = self.users(self.project({"README.md": readme}))
+        self.assertEqual(d["source"], "README.md (Usuarios de prueba)")
+        self.assertEqual(len(d["accounts"]), 3)
+        self.assertFalse(any("Next" in a["line"] or "not a user" in a["line"] for a in d["accounts"]))
+        for title in ("Test users", "Demo accounts", "Cuentas de prueba", "Demo users"):
+            with self.subTest(title=title):
+                self.assertEqual(self.users(self.project({"README.md": f"# A\n\n### {title}\n- ana@demo.test\n"}))["source"], f"README.md ({title})")
+
+    def test_the_seed_log_is_the_last_resort_and_only_credential_lines(self):
+        p = self.project({".local-dev/logs/seed.log": "\x1b[32mseeding\x1b[0m\nCreated ana@demo.test\nPassword for all: demo1234\nunrelated noise\n"})
+        d = self.users(p)
+        self.assertEqual(d["source"], ".local-dev/logs/seed.log")
+        self.assertEqual([a["line"] for a in d["accounts"]], ["Created ana@demo.test", "Password for all: demo1234"])
+
+    def test_nothing_found_says_how_to_add_users_file(self):
+        p = self.project()
+        self.assertEqual(self.users(p), {"source": None, "accounts": []})
+        r = p.run("users")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn('users_file = "docs/test-users.md"', r.stdout)
+
+    def test_it_never_reads_env_files_or_anything_outside_the_project(self):
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside)
+        (outside / "secret.md").write_text("root@evil.test password\n")
+        p = self.project({".env": "ADMIN=a@demo.test password\n", "apps/api/.env.local": "x@y.test password\n"})
+        (p.dir / "link.md").symlink_to(outside / "secret.md")
+        for bad in (".env", "apps/api/.env.local", "../secret.md", str(outside / "secret.md"), "link.md", "docs/../../x"):
+            with self.subTest(users_file=bad):
+                q = self.project({".env": "ADMIN=a@demo.test password\n"}, f'users_file = "{bad}"\n')
+                if bad == "link.md":
+                    (q.dir / "link.md").symlink_to(outside / "secret.md")
+                self.assertEqual(self.users(q)["accounts"], [])
+
+    def test_nothing_is_written(self):
+        p = self.project({"docs/test-users.md": self.ACCOUNTS})
+        before = sorted(str(f.relative_to(p.dir)) for f in p.dir.rglob("*") if f.is_file() and ".git" not in f.parts)
+        p.run("users")
+        p.run("users", "--json")
+        after = sorted(str(f.relative_to(p.dir)) for f in p.dir.rglob("*") if f.is_file() and ".git" not in f.parts)
+        self.assertEqual(before, after)
+
+    def test_the_human_output_names_the_source(self):
+        p = self.project({"docs/test-users.md": self.ACCOUNTS})
+        out = p.run("users").stdout
+        self.assertIn("Test users (from docs/test-users.md)", out)
+        self.assertIn("admin@demo.test", out)
+
+    def test_status_json_carries_the_users(self):
+        p = self.project({"docs/test-users.md": self.ACCOUNTS})
+        p.shim("uname", "echo Darwin")
+        data = json.loads(p.run("status", "--json").stdout)
+        self.assertEqual(data["users"]["source"], "docs/test-users.md")
+        self.assertEqual(data["users"]["accounts"][0], {"line": "| Role | Email | Password |"})
+
+    def test_detect_suggests_the_users_file(self):
+        p = self.project({"docs/test-users.md": self.ACCOUNTS})
+        self.assertEqual(json.loads(p.run("detect").stdout)["users_file"], "docs/test-users.md")
+
+    def test_the_block_is_short_and_shown_once_when_a_launch_starts(self):
+        many = "\n".join(f"user{i}@demo.test pw" for i in range(30)) + "\n"
+        p = self.project({"docs/test-users.md": many})
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        p.shim("script", 'echo "Logs for your project" >"$2"')
+        r = self.lib(p, "launch metro true; launch metro true")
+        self.assertEqual(r.stdout.count("Test users"), 1)
+        self.assertEqual(len([l for l in r.stdout.splitlines() if "@demo.test" in l]), 15)
+        self.assertIn("15 more: bash .keelokit/bin/run-local.sh users", r.stdout)
+
+    def test_no_users_is_one_line_with_the_hint(self):
+        p = self.project()
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        p.shim("script", 'echo "Logs for your project" >"$2"')
+        r = self.lib(p, "launch metro true")
+        self.assertIn("Test users: none found", r.stdout)
+        self.assertIn("run-local.sh users", r.stdout)
+
+    def test_users_has_help_and_the_shape(self):
+        p = self.project()
+        self.assertIn("users_file", p.run("users", "--help").stdout)
 
 
 class StaticTest(unittest.TestCase):

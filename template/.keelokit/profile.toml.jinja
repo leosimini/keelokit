@@ -58,7 +58,13 @@ hosting = []
 #   api_url_env     = "EXPO_PUBLIC_API_URL"    the variable the app reads for the API address
 #   api_url_suffix  = ""                       a path the address carries, such as "/api/v1"
 #   client          = "auto"                   auto | expo-go | dev-client
-#   android_target  = "auto"                   auto | phone | emulator (auto: a phone, else it offers the emulator)
+#   android_target  = "ask"                    ask | auto | phone | emulator. ask: with a phone connected and an emulator
+#                                              available it asks which, at a terminal (default: last time's); auto: the phone
+#                                              when one is connected, else it offers the emulator; with --yes or no terminal
+#                                              ask takes the last choice, else the phone
+#   users_file      = "docs/test-users.md"     a file of the project that lists the test accounts (printed by `users`, shown
+#                                              when a launch starts); otherwise docs/test-users.md, docs/local-testing.md,
+#                                              a README "Test users" section or the seed's log are searched
 #   avd             = "Pixel_7_API_34"         the emulator to boot (otherwise the one you chose last time)
 #   jdk             = 17                       the JDK Gradle needs: 17 for React Native 0.73 and later (Expo SDK 50+), 11 before
 #   node            = 22                       the Node major the project needs (.nvmrc, .node-version or engines when not set)
@@ -84,6 +90,6 @@ api_dir = ""
 db_service = ""
 {%- endif %}
 client = "auto"
-android_target = "auto"
+android_target = "ask"
 jdk = 17
 {%- endif %}

@@ -12,7 +12,8 @@
 #   ios       the app on an iOS simulator
 #   metro     only Metro (and adb reverse): you open the app by hand
 #   backend   only the database, its services and the API
-#   seed      run the project's seed script (asks first: it writes to the database)
+#   seed      run the project's seed script (asks first: it writes to the database), then show the test users
+#   users     the test accounts the project's own docs or seed list (--json)
 #   pair      pair and connect a phone over Wi-Fi (wireless debugging)
 #   doctor    what this Mac is missing (--json, --check, --no-install)
 #   status    what is running: API, database, Metro, devices, who holds each port (--json)
@@ -21,9 +22,9 @@
 #   stop      stop the API, the containers and an emulator, each after asking
 #   detect    what the repo shows, as JSON (what [local] would hold)
 #
-# Options: --yes (answer yes to every question), --check, --no-install, --json, --seed,
+# Options: --yes (answer yes to every question), --check, --no-install, --json, --seed, --no-seed,
 #   --rebuild (always build the native app), --no-build (never build it: fail if it is not installed),
-#   --emulator (use an Android emulator), --new-avd (create a new emulator with an 8 GB data partition), --device <serial|model|name|udid>, --help.
+#   --phone / --emulator (Android target), --new-avd (create a new emulator with an 8 GB data partition), --device <serial|model|name|udid>, --help.
 #
 # Questions: with --yes nothing is asked, and a menu takes the remembered choice, else the first one
 #   (and says so). Without --yes and without a terminal an unanswered question gives up after 20 s
@@ -67,7 +68,7 @@ SELF=$PWD/.keelokit/bin/run-local.sh
 PROFILE=.keelokit/profile.toml
 STATE=.local-dev
 LOG=$STATE/logs
-YES=0 CHECK=0 NOINSTALL=0 JSONMODE=0 SEED_FLAG=0 REBUILD=0 NOBUILD=0 EMULATOR_FLAG=0 NEWAVD_FLAG=0 EMU_EXTRA= DEVICE= CMD= ARG2=
+YES=0 CHECK=0 NOINSTALL=0 JSONMODE=0 SEED_FLAG=0 NOSEED_FLAG=0 REBUILD=0 NOBUILD=0 EMULATOR_FLAG=0 PHONE_FLAG=0 NEWAVD_FLAG=0 USERS_SHOWN=0 EMU_EXTRA= DEVICE= CMD= ARG2=
 PLAN_D=() PLAN_C=() BLOCKERS=() MSGS=() MISSING=() BLOCKED_MSGS=()
 QUIET=0 DETECTED=0 HAS_LOCAL=0 DECLINED=0 BLOCKED=0
 PLISTBUDDY=${PLISTBUDDY:-/usr/libexec/PlistBuddy} # the overridable tools are test hooks (tests/test_run_local.py)
@@ -102,6 +103,8 @@ bad() { emit bad "$*"; [ "$JSONMODE" = 1 ] || printf '  \033[31m✗\033[0m %s\n'
 # Reads an answer into <var>. At a terminal it waits as long as it takes. Without one (a pipe, a
 # script, stdin held open by a tool) it waits RUN_LOCAL_ASK_TIMEOUT seconds (20) and then gives up:
 # the question counts as declined (exit 4) and the script says so, instead of blocking forever.
+interactive() { [ -t 0 ] || [ "${RUN_LOCAL_TTY:-}" = 1 ]; } # a person can answer (RUN_LOCAL_TTY=1 is a test hook)
+
 ask() { # <var> <prompt>
   local to=()
   [ -t 0 ] || to=(-t "${RUN_LOCAL_ASK_TIMEOUT:-20}")
@@ -125,7 +128,7 @@ need() { # <what> <command>: "?what" = optional
 }
 block() { BLOCKERS+=("$1"); BLOCKED=1; bad "$1"; } # only a person can fix it
 
-usage() { echo "usage: bash .keelokit/bin/run-local.sh [android|ios|metro|backend|seed|pair|doctor|status|logs|clean|stop|detect] [options]  (--help)" >&2; }
+usage() { echo "usage: bash .keelokit/bin/run-local.sh [android|ios|metro|backend|seed|users|pair|doctor|status|logs|clean|stop|detect] [options]  (--help)" >&2; }
 
 help_text() { # <command>
   case "$1" in
@@ -136,7 +139,10 @@ android — the app on an Android phone, or an emulator
   install, it only starts Metro and opens the app (no build); it says which path it took and why.
   --rebuild      build the native app even so
   --no-build     never build: fail if the app is not installed
-  --emulator     use an emulator ([local] android_target = "emulator" does the same)
+  --phone        use the phone; --emulator the emulator ([local] android_target: phone | emulator | auto | ask)
+                 With a phone connected and an emulator available it asks "phone or emulator?" at a terminal
+                 (default: last time's choice, kept in .local-dev/android_target_last). With --yes or no
+                 terminal it takes that choice, says so and goes on. "auto": the phone when one is connected.
   --new-avd      create a new emulator (8 GB of storage; no download if its image is installed) and use it
   --device X     the phone by serial or model, or the emulator by AVD name
   --yes          answer yes to every question
@@ -156,7 +162,15 @@ EOF
       ;;
     metro) echo "metro — only Metro, plus adb reverse (API and Metro ports) to every connected Android device; no device actions. For people who open the app by hand." ;;
     backend) echo "backend — the database and its [local] services (docker compose), the migration, and the API. The seed is offered, never run silently (see: seed)." ;;
-    seed) echo "seed — runs [local] api_seed (detected: db:seed, seed, seed:demo, prisma db seed). It writes to your local database, so it asks first (--yes answers it). android/ios/backend only offer it once; --seed asks again." ;;
+    seed) cat <<'EOF'
+seed — runs [local] api_seed (detected: db:seed, seed, seed:demo, prisma db seed) and then shows the test users.
+  It writes to your local database, so it asks first (--yes answers it). android/ios/backend ask "Load the
+  seed data?" at a terminal, recommending it when the database looks empty (docker compose exec <db> psql,
+  best effort); the answer becomes the next default (.local-dev/seed_default). They never seed with
+  --yes alone: --seed does it, --no-seed skips the question.
+EOF
+      ;;
+    users) echo "users — the test accounts the project lists: [local] users_file, else docs/test-users.md, docs/local-testing.md, docs/local-android-testing.md, a README section (Test users, Demo accounts, Usuarios de prueba...), else lines of the last seed's log. Prints the raw lines and where they come from; --json for {\"source\",\"accounts\":[{\"line\"}]}. It reads only files of this project (never .env) and writes nothing. It is shown too when a launch starts and after the seed." ;;
     pair) echo "pair — wireless debugging. On the phone: Developer options → Wireless debugging → Pair device with pairing code. It asks for the pairing address, lets adb ask you for the code, then asks for the connect address. Nothing is stored. UNTESTED." ;;
     doctor) cat <<'EOF'
 doctor — what this Mac is missing, all at once
@@ -251,6 +265,58 @@ def pm_root_run(pm, script):
 def pm_exec(pm):
     return {"pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}.get(pm, "npx")
 
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+PASSWORDISH = re.compile(r"password|contrase|passwd", re.I)
+USER_TITLES = re.compile(r"^(#{1,6})\s*(test users|demo accounts|usuarios de prueba|cuentas de prueba|demo users)\b", re.I)
+USER_FILES = ("docs/test-users.md", "docs/local-testing.md", "docs/local-android-testing.md")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\r")
+
+def inside(rel):
+    """A file of this project: relative, no .., not an .env, symlinks resolved (nothing outside the project)."""
+    if not rel or os.path.isabs(rel) or ".." in rel.replace("\\", "/").split("/") or os.path.basename(rel).startswith(".env"):
+        return None
+    p = os.path.realpath(os.path.join(root, rel))
+    return p if p.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(p) else None
+
+def lines_of(text, only_credentials=False):
+    out = []
+    for l in ANSI.sub("", text).splitlines():
+        l = l.rstrip()
+        if not l.strip():
+            continue
+        if only_credentials and not (EMAIL.search(l) or PASSWORDISH.search(l)):
+            continue
+        out.append(l)
+    return out[:40]
+
+def find_users(users_file=""):
+    """The test accounts the project lists, as raw lines: [local] users_file, then docs the project
+    commonly writes them in, a README section, the last seed's log. Never an .env, nothing outside."""
+    p = inside(users_file) if users_file else None
+    if p and (ls := lines_of(reads(p))):
+        return {"source": users_file, "accounts": [{"line": l} for l in ls]}
+    for rel in USER_FILES:
+        p = inside(rel)
+        if p and (ls := lines_of(reads(p), only_credentials=rel != USER_FILES[0])):
+            return {"source": rel, "accounts": [{"line": l} for l in ls]}
+    p = inside("README.md")
+    if p:
+        text, level, body, title = reads(p).splitlines(), 0, [], ""
+        for l in text:
+            m = re.match(r"^(#{1,6})\s", l)
+            if level and m and len(m.group(1)) <= level:
+                break
+            if level:
+                body.append(l)
+            elif (t := USER_TITLES.match(l)):
+                level, title = len(t.group(1)), l.lstrip("# ").strip()
+        if (ls := lines_of("\n".join(body))):
+            return {"source": f"README.md ({title})", "accounts": [{"line": l} for l in ls]}
+    p = inside(".local-dev/logs/seed.log")
+    if p and (ls := lines_of(reads(p), only_credentials=True)):
+        return {"source": ".local-dev/logs/seed.log", "accounts": [{"line": l} for l in ls]}
+    return {"source": None, "accounts": []}
+
 def tsv_lines():
     return [l.rstrip("\n").split("\t") for l in sys.stdin if l.strip()]
 
@@ -264,10 +330,15 @@ if mode == "json_doctor":
         "blockers": [r[1] for r in rows if r[0] == "blocker"]}, indent=2))
     sys.exit()
 
+if mode == "users":
+    print(json.dumps(find_users(sys.argv[3] if len(sys.argv) > 3 else ""), indent=2))
+    sys.exit()
+
 if mode == "json_status":
     out = {"api": {"configured": False, "up": False, "port": None, "pid": None, "process": None},
            "database": {"services": {}}, "metro": {"up": False, "port": 8081, "pid": None, "process": None},
-           "android": {"devices": [], "chosen": None}, "ios": {"booted": [], "chosen": None}, "ports": {}}
+           "android": {"devices": [], "chosen": None}, "ios": {"booted": [], "chosen": None}, "ports": {},
+           "users": find_users(sys.argv[3] if len(sys.argv) > 3 else "")}
     for r in tsv_lines():
         k = r[0]
         if k == "api":
@@ -578,7 +649,8 @@ if api and out["api_port"]:
         if suffix:
             unc.append("api_ready_url")
 out["client"] = "auto"
-out["android_target"] = "auto"
+out["android_target"] = "ask"
+out["users_file"] = next((r for r in USER_FILES if inside(r)), "")
 
 if mode == "json":
     print(json.dumps(out, indent=2))
@@ -587,7 +659,7 @@ else:
         print(f"{k}={','.join(v) if isinstance(v, list) else v}")
 PY
 
-detect_py() { python3 -c "$DETECT_PY" "$PWD" "$@"; } # <kv|json|client|fingerprint|stamp|json_doctor|json_status> [mobile_dir]
+detect_py() { python3 -c "$DETECT_PY" "$PWD" "$@"; } # <kv|json|client|fingerprint|stamp|users|json_doctor|json_status> [mobile_dir]
 
 load_detect() {
   [ "$DETECTED" = 1 ] && return
@@ -632,8 +704,11 @@ load_config() {
   [ -n "$API_PORT" ] || API_PORT=3000
   [ -n "$CLIENT" ] || CLIENT=auto
   [ -n "$JDK" ] || JDK=17
-  [ -n "$ANDROID_TARGET" ] || ANDROID_TARGET=auto
+  [ -n "$ANDROID_TARGET" ] || ANDROID_TARGET=ask
+  USERS_FILE=$(toml_get "$PROFILE" local users_file) # only what the project wrote: the detected suggestion is searched in order, filtered
+  USERS_FILE=${USERS_FILE#=}
   [ "$EMULATOR_FLAG" = 1 ] && ANDROID_TARGET=emulator
+  [ "$PHONE_FLAG" = 1 ] && ANDROID_TARGET=phone
   return 0
 }
 
@@ -657,7 +732,7 @@ check_config() {
   fi
   has_expo_app || { bad "$(L "mobile_dir \"$MOBILE_DIR\" has no Expo app (app.json, app.config.* or expo in package.json)" "mobile_dir \"$MOBILE_DIR\" no tiene una app Expo (app.json, app.config.* o expo en package.json)")"; n=1; }
   case "$PM" in pnpm | npm | yarn | bun) ;; *) bad "$(L "pm \"$PM\" is not pnpm, npm, yarn or bun" "pm \"$PM\" no es pnpm, npm, yarn ni bun")"; n=1 ;; esac
-  case "$ANDROID_TARGET" in auto | phone | emulator) ;; *) bad "$(L "android_target \"$ANDROID_TARGET\" is not auto, phone or emulator" "android_target \"$ANDROID_TARGET\" no es auto, phone ni emulator")"; n=1 ;; esac
+  case "$ANDROID_TARGET" in auto | phone | emulator | ask) ;; *) bad "$(L "android_target \"$ANDROID_TARGET\" is not auto, phone, emulator or ask" "android_target \"$ANDROID_TARGET\" no es auto, phone, emulator ni ask")"; n=1 ;; esac
   case "$CLIENT" in auto | expo-go | dev-client) ;; *) bad "$(L "client \"$CLIENT\" is not auto, expo-go or dev-client" "client \"$CLIENT\" no es auto, expo-go ni dev-client")"; n=1 ;; esac
   if [ -n "$API_DIR" ] && [ ! -d "$API_DIR" ]; then bad "$(L "api_dir \"$API_DIR\" does not exist" "api_dir \"$API_DIR\" no existe")"; n=1; fi
   if [ -n "$DB_SERVICE$SERVICES" ] && [ -z "$(compose_file)" ]; then
@@ -708,13 +783,13 @@ setup_local() {
     [ -n "$(tail -c1 "$PROFILE")" ] && echo
     echo
     echo '[local]'
-    for k in mobile_dir android_package ios_bundle scheme pm api_dir api_start api_ready_url api_migrate api_seed db_service services api_port api_url_env api_url_suffix client android_target jdk node; do
+    for k in mobile_dir android_package ios_bundle scheme pm api_dir api_start api_ready_url api_migrate api_seed db_service services api_port api_url_env api_url_suffix client android_target users_file jdk node; do
       eval "cur=\${DET_$k:-}"
       case $k in
         api_port) [ -n "$cur" ] || cur=3000 ;;
         client) cur=auto ;;
-        android_target) cur=auto ;;
-        ios_bundle | scheme | node) [ -n "$cur" ] || continue ;;
+        android_target) cur=ask ;;
+        ios_bundle | scheme | node | users_file) [ -n "$cur" ] || continue ;;
       esac
       if [ "$k" = api_port ] || [ "$k" = jdk ]; then printf '%s = %s\n' "$k" "$cur"
       elif [ "$k" = services ]; then
@@ -946,6 +1021,7 @@ launch() { # <step> <command...>
   FEED_Y=0
   shift
   init_state || return 1
+  show_users
   while :; do
     : >"$LOG/$step.log"
     if [ "$feed" = 1 ]; then script_feeding_y "$LOG/$step.log" "$@"; else script -q "$LOG/$step.log" "$@"; fi
@@ -1150,20 +1226,59 @@ db_port() { # <env-file args...>
   ok "$(L "database on port $new" "base en el puerto $new")"
 }
 
-# The seed writes to the database, so it is a question of its own: never silent. With --yes it is
-# skipped unless --seed (or the `seed` command) says so.
+# Is the database empty? Best effort, through the compose service's own psql (estimated live rows in
+# the app's tables, the migrations table left out). Prints empty, data or unknown.
+db_state() {
+  local n sql="select coalesce(sum(n_live_tup),0)::bigint from pg_stat_user_tables where relname <> '_prisma_migrations'"
+  [ -n "$DB_SERVICE" ] && command -v docker >/dev/null || { echo unknown; return; }
+  compose_args
+  n=$(docker compose "${COMPOSE_ENV[@]}" exec -T "$DB_SERVICE" sh -c 'psql -U "$POSTGRES_USER" -d "${POSTGRES_DB:-$POSTGRES_USER}" -tAc "$1"' _ "$sql" 2>/dev/null | tr -d ' \r\n')
+  case "$n" in '' | *[!0-9]*) echo unknown ;; 0) echo empty ;; *) echo data ;; esac
+}
+
+# The seed writes to the database: it needs its own yes, every time, and never happens silently.
+# `--seed` (or the `seed` command, which asks unless --yes) is the yes; --yes alone never seeds.
 run_seed() { # <forced: 1 when asked for by name>
   [ -n "$API_SEED" ] || { warn "$(L 'no seed in [local] (api_seed is empty)' 'no hay seed en [local] (api_seed está vacío)')"; return 0; }
-  if [ "$YES" = 1 ] && [ "$1" != 1 ]; then
-    warn "$(L "seed skipped (it writes to the database): run it with --seed, or: run-local.sh seed" "seed omitido (escribe en la base): corrélo con --seed, o: run-local.sh seed")"
-    return 0
-  fi
-  if ! confirm "$(L "Run the seed ($API_SEED)? It writes to your local database." "¿Corro el seed ($API_SEED)? Escribe en tu base local.")"; then
-    init_state && echo declined >"$STATE/seed-asked" # asked once; --seed or the seed command ask again
-    return 0
+  if [ "$SEED_FLAG" != 1 ]; then
+    confirm "$(L "Run the seed ($API_SEED)? It writes to your local database." "¿Corro el seed ($API_SEED)? Escribe en tu base local.")" || return 0
   fi
   run seed bash -c "$API_SEED" || return 1
-  init_state && echo "$API_SEED" >"$STATE/seed-asked"
+  USERS_SHOWN=0
+  show_users
+}
+
+# Before launching: "Load the seed data?" at a terminal, recommending it when the database looks empty.
+# The answer is the next default (.local-dev/seed_default: yes or no). Without a terminal, or with
+# --yes alone, it is not run: the script says how.
+seed_step() {
+  [ -n "$API_SEED" ] || return 0
+  if [ "$NOSEED_FLAG" = 1 ]; then ok "$(L 'seed skipped (--no-seed)' 'seed omitido (--no-seed)')"; return 0; fi
+  if [ "$SEED_FLAG" = 1 ]; then run_seed 1; return; fi
+  if [ "$YES" = 1 ] || ! interactive; then
+    warn "$(L "seed not run: it writes to the database, so it needs a yes at a terminal. To load it: --seed, or: run-local.sh seed" "seed no corrido: escribe en la base, así que necesita un sí en una terminal. Para cargarlo: --seed, o: run-local.sh seed")"
+    return 0
+  fi
+  local state def last ans
+  state=$(db_state)
+  case "$state" in
+    empty) say "$(L 'The database looks empty: loading the seed data is recommended.' 'La base parece vacía: se recomienda cargar el seed.')"; def=y ;;
+    data) warn "$(L 'The database already has data: you probably do not need the seed.' 'La base ya tiene datos: probablemente no necesitás el seed.')"; def=n ;;
+    *) warn "$(L "I can't tell if the database already has data." 'No puedo saber si la base ya tiene datos.')"; def=n ;;
+  esac
+  last=$(cat "$STATE/seed_default" 2>/dev/null)
+  case "$last" in yes) def=y ;; no) def=n ;; esac
+  if [ "$def" = y ]; then ask ans "  $(L 'Load the seed data? [Y/n] ' '¿Cargo el seed? [S/n] ')" || return 1
+  else ask ans "  $(L 'Load the seed data? [y/N] ' '¿Cargo el seed? [s/N] ')" || return 1; fi
+  if [ -z "$ans" ]; then ans=$def; fi
+  if [[ $ans =~ ^[sSyY] ]]; then
+    remember seed_default yes
+    SEED_FLAG=1
+    run_seed 1
+    return
+  fi
+  remember seed_default no
+  return 0
 }
 
 start_backend() {
@@ -1180,7 +1295,7 @@ start_backend() {
     run db docker compose "${COMPOSE_ENV[@]}" up -d --wait $DB_SERVICE $SERVICES || return 1
   fi
   [ -n "$API_MIGRATE" ] && { run migrate bash -c "$API_MIGRATE" || return 1; }
-  if [ -n "$API_SEED" ] && { [ ! -f "$STATE/seed-asked" ] || [ "$SEED_FLAG" = 1 ]; }; then run_seed "$SEED_FLAG" || return 1; fi
+  seed_step || return 1
   if api_up; then ok "$(L "API already running on port $API_PORT" "API ya corriendo en el puerto $API_PORT")"; return 0; fi
   init_state || return 1
   nohup bash -c "$API_START" >"$LOG/api.log" 2>&1 &
@@ -1265,7 +1380,7 @@ cmd_status() {
   setup_env
   local facts
   facts=$(status_facts)
-  if [ "$JSONMODE" = 1 ]; then printf '%s\n' "$facts" | detect_py json_status; return 0; fi
+  if [ "$JSONMODE" = 1 ]; then printf '%s\n' "$facts" | detect_py json_status "$USERS_FILE"; return 0; fi
   say "$(L 'What is running' 'Qué está corriendo')"
   local k a b c d e
   while IFS=$'\037' read -r k a b c d e; do
@@ -1278,6 +1393,41 @@ cmd_status() {
       port) ok "$(L 'port' 'puerto') $a: $c (pid $b)" ;;
     esac
   done < <(tr '\t' '\037' <<<"$facts")
+  return 0
+}
+
+# The test accounts the project's own docs or seed list. Printed, never stored.
+cmd_users() {
+  command -v python3 >/dev/null || { echo "python3 is needed" >&2; return 1; }
+  if [ "$JSONMODE" = 1 ]; then detect_py users "$USERS_FILE"; return 0; fi
+  local out src
+  out=$(detect_py users "$USERS_FILE")
+  src=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["source"] or "")')
+  if [ -z "$src" ]; then
+    say "$(L 'Test users' 'Usuarios de prueba')"
+    warn "$(L 'No test users found. Put them in a file of the project (a markdown or text list) and name it: users_file = "docs/test-users.md" in [local]. I also look in docs/test-users.md, docs/local-testing.md, a README section called Test users, and the last seed log.' 'No encontré usuarios de prueba. Ponelos en un archivo del proyecto (una lista en markdown o texto) y nombralo: users_file = "docs/test-users.md" en [local]. También miro docs/test-users.md, docs/local-testing.md, una sección del README llamada Usuarios de prueba y el log del último seed.')"
+    return 0
+  fi
+  say "$(L "Test users (from $src)" "Usuarios de prueba (de $src)")"
+  printf '%s' "$out" | python3 -c 'import json,sys; [print("  " + a["line"]) for a in json.load(sys.stdin)["accounts"]]'
+}
+
+# A short block when a launch starts and after the seed: up to 15 lines, or one line pointing at `users`.
+show_users() {
+  [ "$USERS_SHOWN" = 1 ] && return 0
+  USERS_SHOWN=1
+  [ "$JSONMODE" = 1 ] && return 0
+  command -v python3 >/dev/null || return 0
+  local out n
+  out=$(detect_py users "$USERS_FILE" 2>/dev/null)
+  n=$(printf '%s' "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["accounts"]))' 2>/dev/null)
+  if [ "${n:-0}" = 0 ]; then
+    ok "$(L 'Test users: none found. See them, or how to add them: bash .keelokit/bin/run-local.sh users' 'Usuarios de prueba: no encontré. Verlos, o cómo agregarlos: bash .keelokit/bin/run-local.sh users')"
+    return 0
+  fi
+  say "$(L 'Test users' 'Usuarios de prueba') ($(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["source"])'))"
+  printf '%s' "$out" | python3 -c 'import json,sys; [print("  " + a["line"]) for a in json.load(sys.stdin)["accounts"][:15]]'
+  [ "$n" -gt 15 ] && echo "  … $(L "$((n - 15)) more: bash .keelokit/bin/run-local.sh users" "$((n - 15)) más: bash .keelokit/bin/run-local.sh users")"
   return 0
 }
 
@@ -1594,6 +1744,35 @@ use_emulator() { # <emulators: "serial|model|state|kind" lines>; sets A_SERIAL, 
 
 # Chooses the Android target: a phone when one is connected, else an emulator (offered, never
 # forced). Sets A_SERIAL, A_ID, A_DEVNAME and A_KIND. The "no phone" wait loop keeps the old behavior.
+# Is an emulator an option? One is running, or the SDK has the emulator and an AVD (or can make one).
+emulator_possible() { # <emulators running>
+  [ "$1" -gt 0 ] && return 0
+  [ -n "$(emulator_bin)" ] || return 1
+  [ -n "$(avd_list)" ] || command -v sdkmanager >/dev/null
+}
+
+# android_target "ask" (the default): with a phone connected AND an emulator possible, asks which one
+# at a terminal (default: last time's, kept in .local-dev/android_target_last). With --yes or no
+# terminal it never blocks: it takes the last choice, else the phone, and says how to change it.
+# Sets TGT: phone, emulator or auto (no real choice: the usual rules).
+resolve_target_question() { # <phones> <emulators> <phone lines>
+  TGT=$ANDROID_TARGET
+  [ "$TGT" = ask ] || return 0
+  if [ "$1" -lt 1 ] || ! emulator_possible "$2"; then TGT=auto; return 0; fi
+  local last choice def=1
+  last=$(cat "$STATE/android_target_last" 2>/dev/null)
+  [ "$last" = emulator ] && def=2
+  if [ "$YES" = 1 ] || ! interactive; then
+    TGT=${last:-phone}
+    warn "$(L "a phone and an emulator are both possible: --yes/no terminal took the $TGT (last time's choice, else the phone). To choose: --phone | --emulator, or android_target in [local]" "hay un teléfono y un emulador posibles: --yes/sin terminal tomó $TGT (la elección de la vez pasada, si no el teléfono). Para elegir: --phone | --emulator, o android_target en [local]")"
+    return 0
+  fi
+  printf '  1) %s\n  2) %s\n' "$(L "phone: $(awk -F'|' 'NR==1{print $2}' <<<"$3")" "teléfono: $(awk -F'|' 'NR==1{print $2}' <<<"$3")")" "$(L 'emulator' 'emulador')"
+  ask choice "  $(L "Phone or emulator? [$def] " "¿Teléfono o emulador? [$def] ")" || return 1
+  case "${choice:-$def}" in 2 | e* | E*) TGT=emulator ;; *) TGT=phone ;; esac
+  remember android_target_last "$TGT"
+}
+
 select_android_target() {
   local devs phones emus np ne plan choice running tgt
   while :; do
@@ -1602,10 +1781,14 @@ select_android_target() {
     emus=$(awk -F'|' '$4=="emulator" && $3=="device"' <<<"$devs")
     np=$(grep -c . <<<"$phones")
     ne=$(grep -c . <<<"$emus")
-    tgt=$ANDROID_TARGET
-    # --device names an AVD, not one of the phones: it means the emulator
-    if [ "$tgt" = auto ] && [ -n "$DEVICE" ] && ! awk -F'|' -v d="$DEVICE" '$1==d || $2==d {f=1} END{exit !f}' <<<"$phones" &&
-      avd_list | grep -qx "$DEVICE"; then tgt=emulator; fi
+    # --device names an AVD, not one of the phones: it means the emulator, and there is nothing to ask
+    if { [ "$ANDROID_TARGET" = auto ] || [ "$ANDROID_TARGET" = ask ]; } && [ -n "$DEVICE" ] &&
+      ! awk -F'|' -v d="$DEVICE" '$1==d || $2==d {f=1} END{exit !f}' <<<"$phones" && avd_list | grep -qx "$DEVICE"; then
+      tgt=emulator
+    else
+      resolve_target_question "$np" "$ne" "$phones" || return 1
+      tgt=$TGT
+    fi
     plan=$(android_plan "$tgt" "$np" "$ne")
     case "$plan" in
       phone)
@@ -1959,7 +2142,7 @@ dispatch() {
     ios) run_ios ;;
     metro) run_metro ;;
     backend) ensure base && start_backend ;;
-    seed) ensure base && start_backend && run_seed 1 ;;
+    seed) ensure base && NOSEED_FLAG=1 && start_backend && run_seed 1 ;;
     pair) pair_android ;;
     doctor) ensure base android ios ;;
     status) cmd_status ;;
@@ -1978,6 +2161,8 @@ main() {
       --no-install) NOINSTALL=1 ;;
       --json) JSONMODE=1 ;;
       --seed) SEED_FLAG=1 ;;
+      --no-seed) NOSEED_FLAG=1 ;;
+      --phone) PHONE_FLAG=1 ;;
       --rebuild) REBUILD=1 ;;
       --no-build) NOBUILD=1 ;;
       --emulator) EMULATOR_FLAG=1 ;;
@@ -1989,7 +2174,9 @@ main() {
     esac
     shift
   done
-  case "$CMD" in "" | android | ios | metro | backend | seed | pair | doctor | status | logs | clean | stop | detect | help) ;; *) usage; exit 2 ;; esac
+  [ "$SEED_FLAG" = 1 ] && [ "$NOSEED_FLAG" = 1 ] && { echo "--seed and --no-seed exclude each other" >&2; exit 2; }
+  [ "$PHONE_FLAG" = 1 ] && [ "$EMULATOR_FLAG" = 1 ] && { echo "--phone and --emulator exclude each other" >&2; exit 2; }
+  case "$CMD" in "" | android | ios | metro | backend | seed | users | pair | doctor | status | logs | clean | stop | detect | help) ;; *) usage; exit 2 ;; esac
   if [ "$CMD" = help ]; then CMD=$ARG2; HELP=1; fi
   if [ "${HELP:-0}" = 1 ]; then
     if [ -z "$CMD" ]; then sed -n '2,/^set -o pipefail/p' "$SELF" | grep '^#' | sed 's/^# \{0,1\}//'; else help_text "$CMD"; fi
@@ -2003,6 +2190,7 @@ main() {
   fi
   [ "$CMD" = doctor ] && [ "$JSONMODE" = 1 ] && NOINSTALL=1
   load_config
+  if [ "$CMD" = users ]; then cmd_users; exit; fi # reads project files only: any OS
   if [ "$CMD" = logs ]; then cmd_logs; exit; fi # reads files only: works on any OS, whatever [local] says
   if [ "$CMD" = doctor ] && [ "$CHECK" = 1 ]; then
     check_config

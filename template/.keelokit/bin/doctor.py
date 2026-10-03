@@ -132,7 +132,7 @@ LOCAL_SHAPE = {
     "api_ready_url": "text", "api_migrate": "text", "api_seed": "text", "db_service": "text", "services": "texts",
     "api_port": "whole", "api_url_env": "text", "api_url_suffix": "text", "client": "text",
     "android_target": "text", "avd": "text", "ios_bundle": "text", "scheme": "text",
-    "jdk": "text|whole", "node": "text|whole",
+    "jdk": "text|whole", "node": "text|whole", "users_file": "text",
 }
 
 GATES = {
