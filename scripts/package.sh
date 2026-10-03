@@ -25,7 +25,7 @@ rm -f "$out"
 git archive --format=zip -o "$out" "$ref" -- . \
   ':(exclude).github' ':(exclude).claude' ':(exclude).keelokit' ':(exclude)tests' ':(exclude)scripts' \
   ':(exclude)docs/context' ':(exclude)docs/bugbash' ':(exclude)docs/security' ':(exclude)docs/escapes.md' ':(exclude)docs/diagnosis.md' ':(exclude)backlog' ':(exclude)AGENTS.md' \
-  ':(exclude).gitignore' ':(exclude).githooks' ':(exclude).gitleaks.toml' ':(exclude).semgrepignore'
+  ':(exclude).gitignore' ':(exclude).githooks' ':(exclude)CITATION.cff' ':(exclude).gitleaks.toml' ':(exclude).semgrepignore'
 
 python3 - "$out" <<'EOF'
 import json, re, sys, zipfile
