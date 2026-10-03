@@ -16,6 +16,29 @@
   block after a yes. A new house rule, RUN-1 (SHOULD, mobile projects), asks for the script and the
   block; the doctor warns when the block is missing, and the dashboard shows the local
   environment. Launched on the iOS simulator and on a Galaxy S20 over USB (Intel Mac). Not tested: Expo Go on a phone, wireless debugging, Apple Silicon.
+- **`run-local` does not rebuild what is already installed.** A second `android` or `ios` finds the
+  app on the target and the native inputs unchanged since the last successful install (a
+  fingerprint: `@expo/fingerprint` when the project has it, else a hash of dependencies, lockfiles,
+  app config and tracked native folders), and only starts Metro and opens the app by its link. It
+  says which path it took and why; `--rebuild` and `--no-build` force either way, a failed build
+  never leaves a stale fingerprint, and `metro` starts only Metro (plus `adb reverse`).
+- **Android, for people without a phone and with several.** With no phone connected it offers an
+  emulator; with none created it offers to create one, shows that the system image is a 1–2 GB
+  download and downloads only after a yes; it boots it in the background and waits for it.
+  Several phones are listed with the choice remembered (`--device` overrides), `pair` walks through
+  wireless debugging without keeping the address or code, and an emulator or a phone is never shut
+  down without asking. Not tested: the emulator itself and wireless debugging.
+- **The rest of the environment.** `[local] services` (redis, mailpit...) start and stop with the
+  database. The seed is detected and offered once, never run silently (`seed` runs it by name).
+  The JDK follows React Native (17 from 0.73, 11 before) and Node follows `.nvmrc`, `.node-version`
+  or `engines`; a Node from nvm is used for the run only and installing one needs a yes. yarn
+  (classic and berry), bun, turborepo, nx and lerna are detected, and a root `dev:api`-style script
+  is preferred.
+- **Readable by Claude and by people.** `doctor --json`, `status [--json]` (what runs, and who holds
+  each port), `logs [step]`, `clean` (lists what it would delete with sizes and asks per group;
+  never touches what git tracks or anything outside the project), `--help` for every command,
+  documented exit codes (3: only a person can fix it; 4: a question was declined), and the repair
+  table is one block of data at the top of the script.
 - Upgrading from 0.8.x: `/keelokit:harness-upgrade` brings the script. `profile.toml` is the
   project's, so a mobile project gets no `[local]` block from it: run `/keelokit:run-local` to
   detect and write one, or the doctor keeps warning (RUN-1).

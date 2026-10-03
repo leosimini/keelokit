@@ -46,7 +46,7 @@ código no es el que dice que está terminado.
 | **Construir** | |
 | `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
 | **Ejecutar** | |
-| `/keelokit:run-local` | Tu app Expo y su API en un teléfono Android o un simulador de iOS, en un comando: mira qué le falta a tu Mac, te lo muestra, instala con un sí, y si algo falla guarda el error para que Claude lo arregle y vuelva a probar |
+| `/keelokit:run-local` | Tu app Expo y su API en un teléfono Android, un emulador de Android o un simulador de iOS, en un comando: mira qué le falta a tu Mac, te lo muestra, instala con un sí, no recompila lo que ya está instalado, y si algo falla guarda el error para que Claude lo arregle y vuelva a probar |
 | **Revisar** | |
 | `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva. Corre como workflow (`/workflows` lo muestra en vivo) donde Claude Code los tiene |
 | `/keelokit:check-security` | Seguridad y privacidad a fondo: un mapa de los datos personales, la ley de privacidad de cada mercado, un modelo de amenazas de los recorridos críticos, escaneos de dependencias y de staging; corrige con un test y un control por clase |
@@ -113,8 +113,10 @@ Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:project-n
 tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
 
 `/keelokit:run-local` funciona solo en macOS por ahora. Lancé una app con él en el simulador de iOS, en
-una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit, y en un Samsung Galaxy S20 por USB; Expo Go, la depuración inalámbrica, Apple Silicon y un proyecto generado por la plantilla no los probé, así que tomá esos
-caminos como sin probar.
+una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit, y en un Samsung Galaxy S20 por USB; el emulador de Android, Expo Go, la depuración inalámbrica, Apple Silicon y un proyecto generado por la
+plantilla no los probé, así que tomá esos caminos como sin probar. Además de `android`, `ios` y `doctor`,
+el script tiene `metro` (solo Metro, vos abrís la app), `status`, `logs`, `clean` (lista lo que borraría y
+pregunta grupo por grupo), `seed` y `pair`; `--help` dice qué hace cada uno.
 
 ## Bueno saber
 
