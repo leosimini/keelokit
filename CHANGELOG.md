@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **`/keelokit:run-local` and `.keelokit/bin/run-local.sh`:** the project's Expo app and its API on
+  an Android phone or an iOS simulator, with one command (macOS only). The script looks at what
+  the Mac is missing, shows it all at once, installs it after one yes, starts the database and the
+  API, and launches the app, one target at a time; each step logs to `.local-dev/logs/` and a
+  failure leaves `.local-dev/last-error.txt` for Claude to read, repair and run again (two repairs,
+  then it stops). It never kills a process, stops a container or edits a tracked `ios/` without
+  asking; for the simulator it can drop capabilities a simulator can't run (Sign in with Apple,
+  push) from the generated `ios/`, showing the list first. Settings live in a `[local]` block in
+  `profile.toml`, detected from the repo where missing (pnpm, npm or yarn; a backend in any
+  folder; the API address variable). Messages follow the project's language, English or Spanish.
+  New projects with a mobile app get the block and `pnpm run:local`; `project-adopt` writes the
+  block after a yes. A new house rule, RUN-1 (SHOULD, mobile projects), asks for the script and the
+  block; the doctor warns when the block is missing, and the dashboard shows the local
+  environment. Not tested: a real Android phone, Expo Go on a phone, Apple Silicon.
+- Upgrading from 0.8.x: `/keelokit:harness-upgrade` brings the script. `profile.toml` is the
+  project's, so a mobile project gets no `[local]` block from it: run `/keelokit:run-local` to
+  detect and write one, or the doctor keeps warning (RUN-1).
+
 ## 0.8.3 — 2026-10-03 — a description that says what sets Keelokit apart
 
 - The plugin's description says what sets it apart: no agent calls its own code done, and every

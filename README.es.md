@@ -45,6 +45,8 @@ código no es el que dice que está terminado.
 | `/keelokit:plan-backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
 | **Construir** | |
 | `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
+| **Ejecutar** | |
+| `/keelokit:run-local` | Tu app Expo y su API en un teléfono Android o un simulador de iOS, en un comando: mira qué le falta a tu Mac, te lo muestra, instala con un sí, y si algo falla guarda el error para que Claude lo arregle y vuelva a probar |
 | **Revisar** | |
 | `/keelokit:check-bugbash` | Una cacería de bugs en datos, API, integridad, UX, i18n, accesibilidad, seguridad y más; cada bug que se escapó suma un check para toda su clase, para que no vuelva. Corre como workflow (`/workflows` lo muestra en vivo) donde Claude Code los tiene |
 | `/keelokit:check-security` | Seguridad y privacidad a fondo: un mapa de los datos personales, la ley de privacidad de cada mercado, un modelo de amenazas de los recorridos críticos, escaneos de dependencias y de staging; corrige con un test y un control por clase |
@@ -109,6 +111,10 @@ O [descargá `keelokit-plugin.zip`](https://github.com/leosimini/keelokit/releas
 
 Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:project-new`. En un repo que ya
 tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
+
+`/keelokit:run-local` funciona solo en macOS por ahora. Corrí el simulador de iOS en una Mac Intel
+con Xcode 26; un teléfono Android real, Expo Go y Apple Silicon no los probé, así que tomá esos
+caminos como sin probar.
 
 ## Bueno saber
 

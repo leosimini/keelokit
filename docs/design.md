@@ -24,6 +24,9 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `bin/guard.py` — one guard, two callers: Claude Code's PreToolUse hook and git's pre-commit.
   Without python3 every Claude hook turns off and says so, and pre-commit stops the commit
   with the reason (`tests/test_hooks.py` runs each hook without it).
+- `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
+  runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
+  the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
 
 ## The project's profile
