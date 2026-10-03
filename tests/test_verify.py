@@ -52,7 +52,7 @@ class GitStates:
               "deleted", "ignored"]
 
     def fixture(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()  # macOS: /var is /private/var, as git reports it
         self.addCleanup(shutil.rmtree, tmp)
         root = tmp / "repo"
         files = {
@@ -205,7 +205,20 @@ class VerifyUntrackedCostTest(GitStates, unittest.TestCase):
     not grow with the number of files, and the traced lines per file stay a small constant (a walk
     up the tree for every file, even without forks, fails it)."""
 
+    @staticmethod
+    def bash_with_bashpid():
+        """The tracer prints $BASHPID, which bash 3.2 (macOS's /bin/bash) does not have."""
+        for cand in (shutil.which("bash"), "/opt/homebrew/bin/bash", "/usr/local/bin/bash"):
+            if cand and os.access(cand, os.X_OK):
+                out = subprocess.run([cand, "-c", "echo ${BASHPID:-}"], capture_output=True, text=True).stdout
+                if out.strip().isdigit():
+                    return cand
+        return None
+
     def run_counted(self, tmp, root):
+        bash = self.bash_with_bashpid()
+        if bash is None:
+            self.skipTest("needs a bash with $BASHPID (4+): brew install bash")
         shims = tmp / "shims"
         shutil.rmtree(shims, ignore_errors=True)
         shims.mkdir()
@@ -235,7 +248,7 @@ class VerifyUntrackedCostTest(GitStates, unittest.TestCase):
             (shims / name).chmod(0o755)
         env = {**os.environ, "PATH": str(shims)}
         script = 'exec 9>"$0"; BASH_XTRACEFD=9; PS4=\'+${BASHPID}| \'; set -x; . scripts/verify.sh'
-        r = subprocess.run([shutil.which("bash"), "-c", script, str(trace)], cwd=root, env=env,
+        r = subprocess.run([bash, "-c", script, str(trace)], cwd=root, env=env,
                            capture_output=True, text=True, timeout=300)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         lines = [line for line in trace.read_text(errors="replace").splitlines() if line.startswith("+")]

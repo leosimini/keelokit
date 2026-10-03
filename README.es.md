@@ -112,8 +112,8 @@ O [descargá `keelokit-plugin.zip`](https://github.com/leosimini/keelokit/releas
 Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:project-new`. En un repo que ya
 tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
 
-`/keelokit:run-local` funciona solo en macOS por ahora. Corrí el simulador de iOS en una Mac Intel
-con Xcode 26; un teléfono Android real, Expo Go y Apple Silicon no los probé, así que tomá esos
+`/keelokit:run-local` funciona solo en macOS por ahora. Lancé una app con él en el simulador de iOS, en
+una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit; un teléfono Android real, Expo Go y Apple Silicon no los probé, así que tomá esos
 caminos como sin probar.
 
 ## Bueno saber

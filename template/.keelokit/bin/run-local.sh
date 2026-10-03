@@ -17,8 +17,8 @@
 # Every step logs to .local-dev/logs/. When one fails, the tail of its log goes to
 # .local-dev/last-error.txt (hand that file to Claude), a few known causes are repaired and the
 # step runs again once. Nothing is killed, stopped or deleted without asking.
-# macOS only, and tested on Intel with Xcode 26; Apple Silicon, a real Android phone and Expo Go
-# are written from the same lessons but UNTESTED. macOS ships bash 3.2: no mapfile, no
+# macOS only. Launched an app on the iOS simulator on Intel with Xcode 26; Apple Silicon, a real
+# Android phone and Expo Go are written from the same lessons but UNTESTED. macOS ships bash 3.2: no mapfile, no
 # associative arrays.
 set -o pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1

@@ -358,9 +358,14 @@ class GuardTest(unittest.TestCase):
                       "[" * 100000, '{"tool_name": "Bash", "tool_input": {"command": "ls", "x": ' + "[" * 100000 + "]" * 100000 + "}}"]:
             with self.subTest(stdin=stdin[:60]):
                 run = self.run_guard("--claude", stdin=stdin)
+                self.assertNotIn("Traceback", run.stderr)
+                if '"command": "ls"' in stdin and stdin.endswith("}" * 1):
+                    # Deeply nested but valid JSON: Python 3.14 parses it (older ones raise
+                    # RecursionError), and the command is `ls`. Either answer is fine; a crash is not.
+                    self.assertIn(run.returncode, (0, 2))
+                    continue
                 self.assertEqual(run.returncode, 2)
                 self.assertIn("Keelokit guard: couldn't read the hook input", run.stderr)
-                self.assertNotIn("Traceback", run.stderr)
 
     def test_DX_6_every_raw_stdin_gets_block_or_pass(self):
         """The parse step itself, fed stdin of every kind: whatever the reader or the JSON decoder
