@@ -1103,16 +1103,24 @@ expo_go_prompt_cancelled() { # <log>
 # not a terminal (Claude, CI, a background run) Expo reads EOF and shuts Metro down, so the command
 # gets a stdin that never ends: a fifo held open by a sleeping writer, with the one `y` for Expo Go's
 # prompt first when feed is 1. The writer is stopped when the command ends, and on TERM or HUP.
-FEEDER_PID= FEEDER_FIFO=
+FEEDER_PIDFILE=
 stop_feeder() {
-  [ -n "$FEEDER_PID" ] && kill "$FEEDER_PID" 2>/dev/null
-  [ -n "$FEEDER_FIFO" ] && rm -f "$FEEDER_FIFO"
-  FEEDER_PID= FEEDER_FIFO=
+  local pid
+  if [ -n "$FEEDER_PIDFILE" ]; then
+    pid=$(cat "$FEEDER_PIDFILE" 2>/dev/null)
+    # killed from another shell so this one prints no "Terminated" job report
+    [ -n "$pid" ] && sh -c 'kill "$1"' _ "$pid" 2>/dev/null
+    rm -f "$FEEDER_PIDFILE"
+  fi
+  FEEDER_PIDFILE=
   return 0
 }
 trap 'stop_feeder' EXIT
 trap 'stop_feeder; exit 143' TERM HUP
 
+# A pipe, not a FIFO: BSD `script` on macOS fails with "tcgetattr/ioctl: Operation not supported" when
+# its stdin is a FIFO. The writer keeps the pipe open and records its pid so it can be stopped. It is
+# a process substitution, not a `|`: a pipeline would make this shell wait for the writer too.
 script_run() { # <log> <feed y: 1|0> <command...>
   local log=$1 feed=$2 rc
   shift 2
@@ -1120,11 +1128,8 @@ script_run() { # <log> <feed y: 1|0> <command...>
     script -q "$log" "$@"
     return $?
   fi
-  FEEDER_FIFO=$(mktemp -u "${TMPDIR:-/tmp}/run-local.XXXXXX") && mkfifo "$FEEDER_FIFO" || return 1
-  if [ "$feed" = 1 ]; then ( printf 'y\n'; exec sleep 2147483647 ) >"$FEEDER_FIFO" &
-  else ( exec sleep 2147483647 ) >"$FEEDER_FIFO" & fi
-  FEEDER_PID=$!
-  script -q "$log" "$@" <"$FEEDER_FIFO"
+  FEEDER_PIDFILE=$(mktemp "${TMPDIR:-/tmp}/run-local.XXXXXX") || return 1
+  script -q "$log" "$@" < <(sh -c 'echo $$ >"$1"; [ "$2" = 1 ] && printf "y\n"; exec sleep 2147483647' _ "$FEEDER_PIDFILE" "$feed")
   rc=$?
   stop_feeder
   return "$rc"

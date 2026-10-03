@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "template/.keelokit/bin/run-local.sh"
 CORE = ["bash", "awk", "sed", "grep", "sort", "tr", "cat", "ls", "head", "tail", "cut", "basename", "dirname",
-        "date", "git", "env", "perl", "seq", "mkdir", "tee", "sleep", "touch", "cp", "rm", "wc", "id", "python3", "du", "mv", "ln", "nohup", "mktemp", "mkfifo"]
+        "date", "git", "env", "perl", "seq", "mkdir", "tee", "sleep", "touch", "cp", "rm", "wc", "id", "python3", "du", "mv", "ln", "nohup", "mktemp", "sh", "kill"]
 PROFILE = 'kind = "mobile-app"\ntraits = ["mobile"]\n'
 LOCAL_OK = """
 [local]
@@ -2131,6 +2131,9 @@ class LiveStdinTest(Lib, unittest.TestCase):
         self.assertIn("rc=0", r.stdout)
         self.assertNotIn("exited on its own", r.stdout)
 
+    def test_no_fifo_the_real_script_cannot_read_one(self):
+        self.assertNotIn("mkfifo", SCRIPT.read_text())
+
     def test_a_terminal_keeps_the_plain_path(self):
         text = SCRIPT.read_text()
         body = text[text.index("script_run() {"):]
@@ -2198,6 +2201,45 @@ class LongGuideTest(Lib, unittest.TestCase):
         p.shim("uname", "echo Darwin")
         p.run("doctor", "--no-install", "--yes")
         self.assertNotIn("users_file", (p.dir / ".keelokit/profile.toml").read_text())
+
+
+@unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/script").exists(), "needs macOS and its real /usr/bin/script")
+class RealScriptTest(Lib, unittest.TestCase):
+    """BSD `script` fails on a FIFO stdin (tcgetattr/ioctl: Operation not supported), which no shim can
+    show: this runs the real one, with a stdin that is not a terminal."""
+
+    def run_real(self, feed):
+        import time
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        (p.bin / "script").symlink_to("/usr/bin/script")
+        before = stray_sleepers()
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1"}
+        cmd = "bash -c 'echo start; read -t 4 x; echo got:${x:-nothing}; echo end'"
+        t = time.time()
+        r = subprocess.run(["bash", "-c", f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; script_run .local-dev/logs/real.log {feed} {cmd}; echo "rc=$?"'],
+                           env=e, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        took = time.time() - t
+        log = (p.dir / ".local-dev/logs/real.log").read_text()
+        time.sleep(0.5)
+        self.assertEqual(stray_sleepers(), before, "no feeder left behind")
+        return r, log, took
+
+    def test_the_real_script_runs_the_command_with_a_stdin_that_stays_open(self):
+        r, log, took = self.run_real(0)
+        self.assertIn("rc=0", r.stdout, r.stderr)
+        self.assertNotIn("Terminated", r.stderr)
+        self.assertIn("start", log)
+        self.assertIn("end", log)
+        self.assertIn("got:nothing", log, "stdin stayed open: read timed out instead of seeing EOF")
+        self.assertGreaterEqual(took, 3, "a live stdin made `read -t 4` wait; EOF would have returned at once")
+
+    def test_with_feed_the_command_receives_a_y(self):
+        r, log, took = self.run_real(1)
+        self.assertIn("rc=0", r.stdout, r.stderr)
+        self.assertIn("got:y", log)
+        self.assertIn("end", log)
 
 
 class StaticTest(unittest.TestCase):
