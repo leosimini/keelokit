@@ -39,8 +39,7 @@ The SEC ones were decided on 2026-09-28 and are done.
 
 ## Smaller things
 
-- [ ] README screenshots (`docs/assets/dashboard-{en,es}.webp`) still show the old sample
-  project; regenerate them with Fleetly (`tools/dashboard-shots/` in keelokit.com).
+- [x] README screenshots (`docs/assets/dashboard-{en,es}.webp`) show Fleetly (2026-10-03).
 - [ ] SEC-6: to keep the dashboard link out of a public repo, the link would move to a git-ignored
   local file (option B). `state.toml` can't be ignored, since it also holds the gates.
 - [ ] Next release: a bug bash first (`/keelokit:check-bugbash`), then `scripts/release.sh`.
