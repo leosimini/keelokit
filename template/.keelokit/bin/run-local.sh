@@ -278,27 +278,118 @@ def inside(rel):
     p = os.path.realpath(os.path.join(root, rel))
     return p if p.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(p) else None
 
-def lines_of(text, only_credentials=False):
-    out = []
-    for l in ANSI.sub("", text).splitlines():
-        l = l.rstrip()
-        if not l.strip():
+PASSWORD_WORDS = re.compile(r"password|passwd|contrase|clave|login|credential", re.I)
+ENV_LINE = re.compile(r"^\s*(export\s+)?[A-Z][A-Z0-9_]*=")
+SHELL_LINE = re.compile(r"^\s*(\$\s*)?(docker|pnpm|npm|yarn|adb|curl|git|cd|brew|npx|sudo)\b")
+LINK_ONLY = re.compile(r"^\s*(\[[^\]]*\]\([^)]*\)|<https?://\S+>|https?://\S+)\s*$")
+INSTALL_ROW = re.compile(r"^\s*\|.*`\s*(pnpm|npm|yarn|brew|docker|adb|npx|sdkmanager)\b")
+NOTE_START = re.compile(r"^\s*(>|\*|note\b|nota\b|\*\*note|\*\*nota)", re.I)
+IDENT = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+|\b(user|username|usuario|login|admin|email)\b", re.I)
+HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+MAX_LINES = 15
+
+def noise(l):
+    """A line that is not an account: an env assignment, a shell command, a link, an install table row."""
+    return bool(ENV_LINE.match(l) or SHELL_LINE.match(l) or LINK_ONLY.match(l) or INSTALL_ROW.match(l))
+
+def clean(text):
+    return [ANSI.sub("", l).rstrip() for l in text.splitlines()]
+
+def heading_above(lines, i, fallback=""):
+    for j in range(i, -1, -1):
+        m = HEADING.match(lines[j])
+        if m:
+            return m.group(2)
+    return fallback
+
+def extract(text, fallback_heading="", section=False):
+    """The accounts in a text, raw lines, cluster first: the largest run of consecutive lines that carry
+    an email (at most one blank line between rows), with its table header, the one or two lines above
+    that speak of passwords and a password note right after; otherwise a guess from lines that pair an
+    identifier with a password. Returns (lines, how) where how is "" or "guess"; the last line says
+    where the rest is when it was cut."""
+    lines = clean(text)
+    emails = [i for i, l in enumerate(lines) if EMAIL.search(l) and not noise(l)]
+    clusters, cur = [], []
+    for i in emails:
+        if cur and (i == cur[-1] + 1 or (i == cur[-1] + 2 and not lines[cur[-1] + 1].strip())):
+            cur.append(i)
+        else:
+            if cur:
+                clusters.append(cur)
+            cur = [i]
+    if cur:
+        clusters.append(cur)
+    best = max(clusters, key=len, default=[])  # max keeps the first of equals
+    if len(best) >= 2:
+        lo, hi = best[0], best[-1]
+        while lo > 0 and lines[lo - 1].lstrip().startswith("|") and not noise(lines[lo - 1]):  # the table's header and rule
+            lo -= 1
+        top, j, above = lo, lo - 1, []
+        while j >= 0 and len(above) < 2:
+            if not lines[j].strip():
+                j -= 1
+                continue
+            if PASSWORD_WORDS.search(lines[j]) and not noise(lines[j]) and not HEADING.match(lines[j]):
+                above.insert(0, j)
+                j -= 1
+            else:
+                break
+        chosen = [i for i in range(above[0] if above else lo, hi + 1) if lines[i].strip() and not noise(lines[i])]
+        k = hi + 1
+        while k < len(lines) and not lines[k].strip() and k <= hi + 1:
+            k += 1
+        if k < len(lines) and NOTE_START.match(lines[k]) and PASSWORD_WORDS.search(lines[k]) and not noise(lines[k]):
+            chosen.append(k)
+        out = [lines[i] for i in chosen]
+        if len(out) > MAX_LINES:
+            out = out[:MAX_LINES] + [f"(more in {{file}} §{heading_above(lines, best[0], fallback_heading)})"]
+        return out, ""
+    # no cluster of two accounts: lines that pair an identifier with a password, close together
+    picks = []
+    for i, l in enumerate(lines):
+        if noise(l) or not l.strip() or not PASSWORD_WORDS.search(l) or not re.search(r"password|passwd|contrase", l, re.I):
             continue
-        if only_credentials and not (EMAIL.search(l) or PASSWORDISH.search(l)):
-            continue
-        out.append(l)
-    return out[:40]
+        for j in range(max(0, i - 3), min(len(lines), i + 4)):
+            if IDENT.search(lines[j]) and not noise(lines[j]) and lines[j].strip():
+                for x in sorted({i, j}):
+                    if x not in picks:
+                        picks.append(x)
+    picks = sorted(picks)[:5]
+    if picks:
+        return [lines[i] for i in picks], "guess"
+    if section:  # a section titled like test users: a lone account is still the answer
+        one = [l for l in lines if EMAIL.search(l) and not noise(l)][:5]
+        if one:
+            return one, ""
+    return [], ""
+
+def raw_lines(text):
+    return [l for l in clean(text) if l.strip()][:40]
+
+def users_result(source, lines, how):
+    if not lines:
+        return None
+    src = source + (" (a guess)" if how else "")
+    return {"source": src, "accounts": [{"line": l.replace("{file}", source)} for l in lines]}
 
 def find_users(users_file=""):
     """The test accounts the project lists, as raw lines: [local] users_file, then docs the project
     commonly writes them in, a README section, the last seed's log. Never an .env, nothing outside."""
     p = inside(users_file) if users_file else None
-    if p and (ls := lines_of(reads(p))):
-        return {"source": users_file, "accounts": [{"line": l} for l in ls]}
+    if p and (r := users_result(users_file, raw_lines(reads(p)), "")):
+        return r
     for rel in USER_FILES:
         p = inside(rel)
-        if p and (ls := lines_of(reads(p), only_credentials=rel != USER_FILES[0])):
-            return {"source": rel, "accounts": [{"line": l} for l in ls]}
+        if not p:
+            continue
+        if rel == USER_FILES[0]:  # a file made for this: its lines as they are
+            r = users_result(rel, raw_lines(reads(p)), "")
+        else:
+            ls, how = extract(reads(p), rel)
+            r = users_result(rel, ls, how)
+        if r:
+            return r
     p = inside("README.md")
     if p:
         text, level, body, title = reads(p).splitlines(), 0, [], ""
@@ -310,11 +401,15 @@ def find_users(users_file=""):
                 body.append(l)
             elif (t := USER_TITLES.match(l)):
                 level, title = len(t.group(1)), l.lstrip("# ").strip()
-        if (ls := lines_of("\n".join(body))):
-            return {"source": f"README.md ({title})", "accounts": [{"line": l} for l in ls]}
+        if body:
+            ls, how = extract("\n".join(body), title, section=True)
+            if (r := users_result(f"README.md ({title})", ls, how)):
+                return r
     p = inside(".local-dev/logs/seed.log")
-    if p and (ls := lines_of(reads(p), only_credentials=True)):
-        return {"source": ".local-dev/logs/seed.log", "accounts": [{"line": l} for l in ls]}
+    if p:
+        ls, how = extract(reads(p), "seed.log")
+        if (r := users_result(".local-dev/logs/seed.log", ls, how)):
+            return r
     return {"source": None, "accounts": []}
 
 def tsv_lines():

@@ -1835,15 +1835,15 @@ class UsersTest(Lib, unittest.TestCase):
         self.assertEqual(len(d["accounts"]), 4)
         p = self.project({"docs/local-testing.md": "Intro line\nlogin as boss@demo.test\nnothing here\npassword: abc\n"})
         d = self.users(p)
-        self.assertEqual((d["source"], [a["line"] for a in d["accounts"]]), ("docs/local-testing.md", ["login as boss@demo.test", "password: abc"]))
-        p = self.project({"docs/local-android-testing.md": "owner@demo.test\n"})
+        self.assertEqual((d["source"], [a["line"] for a in d["accounts"]]), ("docs/local-testing.md (a guess)", ["login as boss@demo.test", "password: abc"]))
+        p = self.project({"docs/local-android-testing.md": "owner@demo.test\nadmin@demo.test\n"})
         self.assertEqual(self.users(p)["source"], "docs/local-android-testing.md")
 
     def test_a_readme_section(self):
-        readme = "# App\n\nIntro\n\n## Usuarios de prueba\n\n| Rol | Email |\n|---|---|\n| admin | a@demo.test |\n\n## Next\n\nnot a user line\n"
+        readme = "# App\n\nIntro\n\n## Usuarios de prueba\n\n| Rol | Email |\n|---|---|\n| admin | a@demo.test |\n| ana | ana@demo.test |\n\n## Next\n\nnot a user line\n"
         d = self.users(self.project({"README.md": readme}))
         self.assertEqual(d["source"], "README.md (Usuarios de prueba)")
-        self.assertEqual(len(d["accounts"]), 3)
+        self.assertEqual(len(d["accounts"]), 4)
         self.assertFalse(any("Next" in a["line"] or "not a user" in a["line"] for a in d["accounts"]))
         for title in ("Test users", "Demo accounts", "Cuentas de prueba", "Demo users"):
             with self.subTest(title=title):
@@ -1852,7 +1852,7 @@ class UsersTest(Lib, unittest.TestCase):
     def test_the_seed_log_is_the_last_resort_and_only_credential_lines(self):
         p = self.project({".local-dev/logs/seed.log": "\x1b[32mseeding\x1b[0m\nCreated ana@demo.test\nPassword for all: demo1234\nunrelated noise\n"})
         d = self.users(p)
-        self.assertEqual(d["source"], ".local-dev/logs/seed.log")
+        self.assertEqual(d["source"], ".local-dev/logs/seed.log (a guess)")
         self.assertEqual([a["line"] for a in d["accounts"]], ["Created ana@demo.test", "Password for all: demo1234"])
 
     def test_nothing_found_says_how_to_add_users_file(self):
@@ -1923,6 +1923,134 @@ class UsersTest(Lib, unittest.TestCase):
     def test_users_has_help_and_the_shape(self):
         p = self.project()
         self.assertIn("users_file", p.run("users", "--help").stdout)
+
+
+NOISY_GUIDE = """# Local Android testing
+
+Install the tools first:
+
+| Tool | Command |
+|---|---|
+| Node | `pnpm install` |
+| Mail | `docker compose up -d mailpit` |
+
+Mailpit catches every email at http://localhost:8025 (sender noreply@jouna.app).
+
+## 4. The API
+
+Create `apps/api/.env` with:
+
+```
+SMTP_PASSWORD=local
+ADMIN_EMAIL=root@jouna.app
+DATABASE_URL=postgresql://app:app@localhost:5432/app
+```
+
+docker compose up -d --wait postgres
+Never reuse these passwords outside your machine: contact security@jouna.app if you do.
+[Read the full security guide](https://example.com/security)
+
+## 7. Demo accounts
+
+Every account's password is `demo1234`:
+
+| Role | Email |
+|---|---|
+| owner | owner@demo.jouna.app |
+| admin | admin@demo.jouna.app |
+| staff | staff@demo.jouna.app |
+| coach | coach@demo.jouna.app |
+| athlete | ana@demo.jouna.app |
+| athlete | ben@demo.jouna.app |
+| athlete | cris@demo.jouna.app |
+| athlete | dana@demo.jouna.app |
+
+> Note: change the password before sharing a build.
+Something unrelated after, with a mail to help@jouna.app.
+
+## 8. Troubleshooting
+
+Run `pnpm dev` again.
+"""
+
+
+class NoisyGuideTest(Lib, unittest.TestCase):
+    users = UsersTest.users
+    project = UsersTest.project
+
+    def test_only_the_accounts_table_and_the_password_sentence_come_out(self):
+        d = self.users(self.project({"docs/local-android-testing.md": NOISY_GUIDE}))
+        lines = [a["line"] for a in d["accounts"]]
+        self.assertEqual(d["source"], "docs/local-android-testing.md")
+        self.assertEqual(lines[0], "Every account's password is `demo1234`:")
+        self.assertEqual(lines[1:4], ["| Role | Email |", "|---|---|", "| owner | owner@demo.jouna.app |"])
+        self.assertEqual(sum("@demo.jouna.app" in l for l in lines), 8)
+        self.assertEqual(lines[-1], "> Note: change the password before sharing a build.")
+        self.assertEqual(len(lines), 12)
+        for noise in ("SMTP_PASSWORD", "ADMIN_EMAIL", "pnpm install", "docker compose", "Never reuse", "Mailpit", "noreply@", "help@", "Read the full"):
+            self.assertFalse(any(noise in l for l in lines), noise)
+
+    def test_a_long_table_is_cut_at_15_and_names_its_heading(self):
+        rows = "".join(f"| user{i} | user{i}@demo.test |\n" for i in range(20))
+        guide = f"# G\n\n## 7. Demo accounts\n\nThe password is demo1234:\n\n| Role | Email |\n|---|---|\n{rows}"
+        d = self.users(self.project({"docs/local-testing.md": guide}))
+        lines = [a["line"] for a in d["accounts"]]
+        self.assertEqual(len(lines), 16)
+        self.assertEqual(lines[-1], "(more in docs/local-testing.md §7. Demo accounts)")
+        self.assertEqual(sum("@demo.test" in l for l in lines), 12, "15 lines: the sentence, the header, the rule and 12 rows")
+
+    def test_the_largest_cluster_wins_and_a_blank_line_between_rows_is_allowed(self):
+        guide = ("x one@a.test\ny two@a.test\n\nPassword: p\n| A | B |\n|---|---|\n| 1 | a1@d.test |\n\n| 2 | a2@d.test |\n| 3 | a3@d.test |\n")
+        d = self.users(self.project({"docs/local-testing.md": guide}))
+        lines = [a["line"] for a in d["accounts"]]
+        self.assertEqual([l for l in lines if "@d.test" in l], ["| 1 | a1@d.test |", "| 2 | a2@d.test |", "| 3 | a3@d.test |"])
+        self.assertIn("Password: p", lines)
+        self.assertFalse(any("a.test" in l for l in lines))
+
+    def test_a_tie_goes_to_the_first_cluster(self):
+        guide = "first1@a.test\nfirst2@a.test\n\n\n\nsecond1@b.test\nsecond2@b.test\nPassword: x\n"
+        lines = [a["line"] for a in self.users(self.project({"docs/local-testing.md": guide}))["accounts"]]
+        self.assertEqual(lines, ["first1@a.test", "first2@a.test"])
+
+    def test_lines_above_only_count_when_they_speak_of_passwords(self):
+        guide = "Some prose about the team.\nThe login is in the table:\n\n| a@x.test |\n| b@x.test |\n"
+        lines = [a["line"] for a in self.users(self.project({"docs/local-testing.md": guide}))["accounts"]]
+        self.assertEqual(lines, ["The login is in the table:", "| a@x.test |", "| b@x.test |"])
+
+    def test_no_emails_falls_back_to_a_guess_and_says_so(self):
+        guide = ("# Guide\n\nRun things.\nLog in with the username admin.\nThe password is hunter2.\nnoise\nmore noise\n"
+                 "Another username: boss\n\n\n\n\nunrelated\n")
+        d = self.users(self.project({"docs/local-testing.md": guide}))
+        self.assertEqual(d["source"], "docs/local-testing.md (a guess)")
+        lines = [a["line"] for a in d["accounts"]]
+        self.assertIn("Log in with the username admin.", lines)
+        self.assertIn("The password is hunter2.", lines)
+        self.assertLessEqual(len(lines), 5)
+        self.assertFalse(any("noise" in l or "unrelated" in l for l in lines))
+
+    def test_a_guide_with_neither_emails_nor_passwords_finds_nothing(self):
+        guide = "# Guide\n\nRun `pnpm dev`.\nOpen the app.\nDATABASE_URL=postgresql://x\n"
+        d = self.users(self.project({"docs/local-testing.md": guide}))
+        self.assertEqual(d, {"source": None, "accounts": []})
+
+    def test_one_stray_email_is_not_an_accounts_table(self):
+        guide = "# G\n\nSend feedback to me@x.test whenever.\nNothing else.\n"
+        self.assertEqual(self.users(self.project({"docs/local-testing.md": guide}))["accounts"], [])
+
+    def test_the_same_logic_applies_to_readme_sections_and_the_seed_log(self):
+        readme = "# App\n\n## Test users\n\nPassword for all: demo1234\n\n| Email |\n|---|\n| a@d.test |\n| b@d.test |\n\nSee SMTP_PASSWORD=local\nrun `docker compose up`\n\n## Next\n"
+        d = self.users(self.project({"README.md": readme}))
+        self.assertEqual(d["source"], "README.md (Test users)")
+        self.assertEqual([a["line"] for a in d["accounts"]], ["Password for all: demo1234", "| Email |", "|---|", "| a@d.test |", "| b@d.test |"])
+        log = "\x1b[32mseeded\x1b[0m\nDATABASE_URL=postgres://x\nana@d.test  demo1234\nben@d.test  demo1234\ndone\n"
+        d = self.users(self.project({".local-dev/logs/seed.log": log}))
+        self.assertEqual(d["source"], ".local-dev/logs/seed.log")
+        self.assertEqual([a["line"] for a in d["accounts"]], ["ana@d.test  demo1234", "ben@d.test  demo1234"])
+
+    def test_the_shape_is_unchanged(self):
+        d = self.users(self.project({"docs/local-android-testing.md": NOISY_GUIDE}))
+        self.assertEqual(set(d), {"source", "accounts"})
+        self.assertTrue(all(set(a) == {"line"} for a in d["accounts"]))
 
 
 class StaticTest(unittest.TestCase):
