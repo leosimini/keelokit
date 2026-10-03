@@ -38,3 +38,43 @@ tests = []
 ci = []
 hosting = []
 {%- endif %}
+
+# How `bash .keelokit/bin/run-local.sh` launches the Expo app and its API on this Mac
+# (/keelokit:run-local). Every key is optional: what is missing is detected from the repo, and
+# `run-local.sh detect` prints what it finds. Keys, with an example:
+#   mobile_dir      = "apps/mobile"            where app.json or app.config.* is
+#   android_package = "com.demo.app"           what `adb` installs and uninstalls
+#   pm              = "pnpm"                   pnpm | npm | yarn, from the lockfile
+#   api_dir         = "apps/api"               "" means no backend
+#   api_start       = "pnpm run dev:api"
+#   api_ready_url   = "http://localhost:3000/health"   "" waits for the port instead
+#   api_migrate     = "pnpm --dir apps/api run prisma:migrate:deploy"
+#   api_seed        = ""                       a command, or nothing
+#   db_service      = "postgres"               the docker compose service; "" means no database
+#   api_port        = 3000
+#   api_url_env     = "EXPO_PUBLIC_API_URL"    the variable the app reads for the API address
+#   api_url_suffix  = ""                       a path the address carries, such as "/api/v1"
+#   client          = "auto"                   auto | expo-go | dev-client
+#   jdk             = 17                       the JDK Gradle needs
+{%- if mode == 'project' and 'mobile' in apps %}
+
+[local]
+mobile_dir = "apps/mobile"
+android_package = "com.{{ project_slug | replace('-', '') }}.app"
+pm = "pnpm"
+{%- if 'api' in apps %}
+api_dir = "apps/api"
+api_start = "pnpm run dev:api"
+api_ready_url = "http://localhost:3000/health"
+api_migrate = "pnpm --dir apps/api run prisma:migrate:deploy"
+api_seed = ""
+db_service = "postgres"
+api_port = 3000
+api_url_env = "EXPO_PUBLIC_API_URL"
+api_url_suffix = ""
+{%- else %}
+api_dir = ""
+db_service = ""
+{%- endif %}
+client = "auto"
+{%- endif %}

@@ -289,3 +289,11 @@ level = "SHOULD"
 rule = "Back every promise the product's text makes (a time, an amount, a notice, 'you can undo') with a test of that behaviour."
 why = "Screens promised reminders and refunds that the code never sent or paid."
 enforced_by = ["review:reviewer", "review:breaker"]
+
+[[rule]]
+id = "RUN-1"
+level = "SHOULD"
+rule = "Launch the app locally with one command: the run-local script exists and the profile's [local] block says where the Expo app and its backend are."
+why = "Getting a phone or a simulator to show the app took a dozen manual steps that nobody wrote down twice."
+enforced_by = ["script:.keelokit/bin/run-local.sh"]
+needs = ["mobile"]

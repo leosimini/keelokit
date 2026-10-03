@@ -57,6 +57,11 @@ if $adopt; then
     printf 'adopt touched files outside .keelokit/:\n%s\n' "$outside" >&2
     exit 1
   fi
+  step 'Adopt: run-local.sh arrives with the harness and is clean in a repo without Expo'
+  [ -f "$dir/.keelokit/bin/run-local.sh" ]
+  out=$(cd "$dir" && bash .keelokit/bin/run-local.sh doctor --check)
+  echo "$out"
+  grep -q 'no Expo app' <<<"$out"
   (cd "$dir" && python3 .keelokit/bin/doctor.py --brief && { python3 .keelokit/bin/doctor.py || true; })
   printf '\n\033[32m✔ adopt ok\033[0m\n'
   exit 0
@@ -95,6 +100,24 @@ else
   "${copier[@]}" copy --vcs-ref HEAD --defaults "${data[@]}" "$keelokit" "$dir"
 fi
 commit_all generated
+
+# run-local.sh (RUN-1) needs no install, no Docker and no emulator: the [local] block the template
+# wrote must be coherent and agree with what the script detects in the generated repo.
+if [[ $apps == *mobile* ]]; then
+  step 'run-local: [local] is coherent and matches the detection'
+  [ -f "$dir/.keelokit/bin/run-local.sh" ]
+  if [ -z "$from" ]; then
+    (cd "$dir" && bash .keelokit/bin/run-local.sh doctor --check)
+    (cd "$dir" && bash .keelokit/bin/run-local.sh detect | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+want = {"mobile_dir": "apps/mobile", "pm": "pnpm"}
+if "api" in sys.argv[1]:
+    want.update(api_dir="apps/api", db_service="postgres")
+bad = {k: (d[k], v) for k, v in want.items() if d[k] != v}
+sys.exit(f"detection disagrees with [local]: {bad}" if bad else 0)' "$apps")
+  fi
+fi
 
 cd "$dir"
 step 'Install'

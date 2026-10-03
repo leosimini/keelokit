@@ -488,6 +488,9 @@ def load_profile() -> dict | None:
             profile_drift.append((trait, None))
     for d in profile_drift:
         warnings.append(f"profile: {drift_text(*d)} — update .keelokit/profile.toml")
+    if "mobile" in traits and (ROOT / ".keelokit/bin/run-local.sh").exists() and "local" not in profile:
+        warnings.append("RUN-1: .keelokit/profile.toml has no [local] block, so the app can't be launched with one command — "
+                        "/keelokit:run-local writes it (or: bash .keelokit/bin/run-local.sh doctor)")
     return {**profile, "traits": traits}
 
 

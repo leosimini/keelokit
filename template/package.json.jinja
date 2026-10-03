@@ -21,6 +21,9 @@
 {%- for app in apps %}
     "dev:{{ app }}": "pnpm --filter ./apps/{{ app }} dev",
 {%- endfor %}
+{%- if 'mobile' in apps %}
+    "run:local": "bash .keelokit/bin/run-local.sh",
+{%- endif %}
     "verify": "bash scripts/verify.sh",
     "mutation": "bash scripts/mutation.sh",
     "doctor": "python3 .keelokit/bin/doctor.py"

@@ -713,6 +713,20 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("Profile drift: the profile lists `mobile` but nothing in the repo shows it yet", out)
         self.assertNotIn("`database` but nothing", out)
 
+    def test_mobile_project_without_a_local_block_is_told_how_to_launch_the_app(self):
+        """RUN-1: the run-local script is there but profile.toml doesn't say where the app is."""
+        self.rules()
+        self.write("apps/mobile/app.json", "{}")
+        self.write(".keelokit/bin/run-local.sh", "#!/bin/bash\n")
+        self.write(".keelokit/profile.toml", 'kind = "mobile-app"\ntraits = ["mobile"]\n')
+        self.assertIn("RUN-1: .keelokit/profile.toml has no [local] block", self.doctor())
+        self.write(".keelokit/profile.toml", 'kind = "mobile-app"\ntraits = ["mobile"]\n\n[local]\nmobile_dir = "apps/mobile"\n')
+        self.assertNotIn("RUN-1:", self.doctor())
+        # a project that doesn't carry the script yet (before this version) isn't nagged
+        self.write(".keelokit/profile.toml", 'kind = "mobile-app"\ntraits = ["mobile"]\n')
+        (self.root / ".keelokit/bin/run-local.sh").unlink()
+        self.assertNotIn("RUN-1:", self.doctor())
+
     def test_profile_must_be_diagnosed(self):
         self.write(".keelokit/profile.toml", 'kind = "unknown"\ntraits = ["ui", "blockchain"]\n')
         out = self.doctor()
