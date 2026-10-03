@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — new projects pass their audit, and a dashboard that puts first what comes first
+## 0.8.2 — 2026-10-03 — new projects pass their audit, and a dashboard that puts first what comes first
 
 - **New projects pass `verify` again.** Three high advisories with no fixed version upstream
   (in Expo, Jest and Astro dependencies) were failing every new project's dependency audit. The
