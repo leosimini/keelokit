@@ -2134,6 +2134,14 @@ class LiveStdinTest(Lib, unittest.TestCase):
     def test_no_fifo_the_real_script_cannot_read_one(self):
         self.assertNotIn("mkfifo", SCRIPT.read_text())
 
+    def test_a_command_that_ends_at_once_leaves_no_feeder_holding_the_output_open(self):
+        # the writer may not have recorded its pid yet when the command is already done
+        before = stray_sleepers()
+        p = self.project('true')
+        for _ in range(3):
+            r = self.lib(p, "launch android true; echo rc=$?")
+        self.assertEqual(stray_sleepers(), before)
+
     def test_a_terminal_keeps_the_plain_path(self):
         text = SCRIPT.read_text()
         body = text[text.index("script_run() {"):]

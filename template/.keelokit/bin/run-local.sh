@@ -1105,8 +1105,13 @@ expo_go_prompt_cancelled() { # <log>
 # prompt first when feed is 1. The writer is stopped when the command ends, and on TERM or HUP.
 FEEDER_PIDFILE=
 stop_feeder() {
-  local pid
+  local pid i
   if [ -n "$FEEDER_PIDFILE" ]; then
+    # the writer records its pid as it starts: a command that ends at once can beat it to the file
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+      [ -s "$FEEDER_PIDFILE" ] && break
+      sleep 0.1
+    done
     pid=$(cat "$FEEDER_PIDFILE" 2>/dev/null)
     # killed from another shell so this one prints no "Terminated" job report
     [ -n "$pid" ] && sh -c 'kill "$1"' _ "$pid" 2>/dev/null
@@ -1129,7 +1134,7 @@ script_run() { # <log> <feed y: 1|0> <command...>
     return $?
   fi
   FEEDER_PIDFILE=$(mktemp "${TMPDIR:-/tmp}/run-local.XXXXXX") || return 1
-  script -q "$log" "$@" < <(sh -c 'echo $$ >"$1"; [ "$2" = 1 ] && printf "y\n"; exec sleep 2147483647' _ "$FEEDER_PIDFILE" "$feed")
+  script -q "$log" "$@" < <(sh -c 'echo $$ >"$1"; [ "$2" = 1 ] && printf "y\n"; exec sleep 2147483647' _ "$FEEDER_PIDFILE" "$feed" 2>/dev/null)
   rc=$?
   stop_feeder
   return "$rc"
