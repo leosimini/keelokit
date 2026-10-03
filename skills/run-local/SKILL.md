@@ -69,6 +69,12 @@ unchanged since the last successful install, and only starts Metro and opens the
 which path it took and why. `--rebuild` builds anyway (after a native dependency or config change the
 script does it by itself), `--no-build` refuses to build and fails if the app is not installed.
 
+**A known iOS behaviour.** Opening the app by its link makes iOS show a system dialog, Open in "<app>"?,
+that someone must tap in the simulator; Android has no such prompt. So on the iOS fast path the script
+launches the app first (the dev client reconnects to the Metro it saw), waits up to 15 seconds for
+Metro to serve a bundle, and uses the link only if it did not connect; tell the user to tap Open if
+the dialog appears. Whether the first launch reconnects by itself is not tested on hardware.
+
 **Android targets.** One phone connected: it is used. Several: the user chooses, and it is remembered
 (`--device <serial|model>` overrides). Wireless: `pair` walks through it and asks for the pairing
 address, lets adb ask for the code, then the connect address: never type or keep the code yourself.

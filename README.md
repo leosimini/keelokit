@@ -114,6 +114,9 @@ Keelokit. I haven't tried Expo Go, wireless debugging, the Android emulator, App
 project the template generated, so treat those paths as untested. Besides `android`, `ios` and
 `doctor`, the script has `metro` (only Metro, you open the app), `status`, `logs`, `clean` (it lists
 what it would delete and asks group by group), `seed` and `pair`; `--help` says what each does.
+On the iOS simulator, opening the app by a link makes iOS ask "Open in <app>?" and someone has to tap
+Open; the script launches the app first and uses the link only as a fallback. Android has no such
+prompt.
 
 ## Good to know
 

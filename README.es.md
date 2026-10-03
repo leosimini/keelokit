@@ -117,6 +117,9 @@ una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit, y en un Sams
 plantilla no los probé, así que tomá esos caminos como sin probar. Además de `android`, `ios` y `doctor`,
 el script tiene `metro` (solo Metro, vos abrís la app), `status`, `logs`, `clean` (lista lo que borraría y
 pregunta grupo por grupo), `seed` y `pair`; `--help` dice qué hace cada uno.
+En el simulador de iOS, abrir la app con un link hace que iOS pregunte «¿Abrir en <app>?» y alguien tiene
+que tocar Abrir; el script lanza primero la app y usa el link solo como respaldo. Android no tiene ese
+aviso.
 
 ## Bueno saber
 

@@ -1585,6 +1585,43 @@ class NeverWaitsTest(Lib, unittest.TestCase):
         self.assertEqual(proc.returncode, 4)
 
 
+class IosFastPathTest(Lib, unittest.TestCase):
+    """iOS asks "Open in <app>?" for a link: launch first, the link only as a fallback."""
+
+    def run_fast(self, metro_log: str, extra=""):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        p.shim("xcrun")
+        script = ("wait_metro() { return 0; }; init_state; I_UDID=U1; "
+                  f"printf '%s' '{metro_log}' >\"$LOG/ios-metro.log\"; "
+                  "launch() { sleep 4; return 0; }; fast_launch ios ios-metro; wait; echo done")
+        r = self.lib(p, script + extra, stdin="y\n", env={"OPEN_WAIT": "2"})
+        return p, r
+
+    def test_the_message_is_printed_on_the_ios_fast_path(self):
+        p, r = self.run_fast("")
+        self.assertIn('iOS may ask "Open in <your app>?"', r.stdout)
+        self.assertIn("tap Open", r.stdout)
+
+    def test_launch_comes_before_the_link_and_the_link_is_only_a_fallback(self):
+        p, r = self.run_fast("")  # Metro never served a bundle: the dev client did not connect
+        calls = [c for c in p.called() if c.startswith("xcrun simctl")]
+        self.assertEqual(calls[0], "xcrun simctl launch U1 com.demo.app")
+        self.assertTrue(calls[1].startswith("xcrun simctl openurl U1 demo://expo-development-client/"), calls)
+        self.assertIn("did not connect by itself", r.stdout)
+
+    def test_a_dev_client_that_connected_by_itself_gets_no_link(self):
+        p, r = self.run_fast("iOS Bundled 812ms index.js (1200 modules)\n")
+        calls = [c for c in p.called() if c.startswith("xcrun simctl")]
+        self.assertEqual(calls, ["xcrun simctl launch U1 com.demo.app"])
+
+    def test_android_keeps_its_link_and_prints_no_ios_message(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        p.shim("adb")
+        r = self.lib(p, "wait_metro() { return 0; }; init_state; A_SERIAL=S1; launch() { sleep 2; return 0; }; fast_launch android android-metro; wait", stdin="y\n")
+        self.assertNotIn("Open in", r.stdout)
+        self.assertTrue(any("adb -s S1 shell am start -a android.intent.action.VIEW" in c for c in p.called()))
+
+
 class StaticTest(unittest.TestCase):
     def test_bash_3_2_compatible(self):
         """macOS ships bash 3.2: no mapfile, associative arrays, case conversion or negative indexes."""
