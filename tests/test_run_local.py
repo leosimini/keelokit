@@ -2141,7 +2141,9 @@ class LiveStdinTest(Lib, unittest.TestCase):
 class StaticTest(unittest.TestCase):
     def test_bash_3_2_compatible(self):
         """macOS ships bash 3.2: no mapfile, associative arrays, case conversion or negative indexes."""
-        text = "\n".join(l for l in SCRIPT.read_text().splitlines() if not l.lstrip().startswith("#"))
+        whole = SCRIPT.read_text()
+        shell = whole[:whole.index("IFS= read -r -d '' DETECT_PY")] + whole[whole.index("\nPY\n"):]  # the Python program has its own rules
+        text = "\n".join(l for l in shell.splitlines() if not l.lstrip().startswith("#"))
         for pat in (r"\bmapfile\b", r"\breadarray\b", r"declare -A", r"\$\{[A-Za-z_]+(,,|\^\^)", r"\[-\d+\]", r"&>>", r"\|&"):
             self.assertIsNone(re.search(pat, text), pat)
         r = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
