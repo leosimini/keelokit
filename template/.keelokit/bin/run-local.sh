@@ -373,22 +373,25 @@ def users_result(source, lines, how):
     src = source + (" (a guess)" if how else "")
     return {"source": src, "accounts": [{"line": l.replace("{file}", source)} for l in lines]}
 
+def from_file(rel, text, raw_ok=True):
+    """A whole file: the same extraction as anywhere (a saved users_file may point at a long guide).
+    Its own lines are the answer only for a file made for this (raw_ok) and short; a long one, or a
+    general guide, with no accounts gives nothing."""
+    ls, how = extract(text, rel)
+    if ls:
+        return users_result(rel, ls, how)
+    raw = raw_lines(text)
+    return users_result(rel, raw, "") if raw_ok and len([l for l in clean(text) if l.strip()]) <= 40 else None
+
 def find_users(users_file=""):
     """The test accounts the project lists, as raw lines: [local] users_file, then docs the project
     commonly writes them in, a README section, the last seed's log. Never an .env, nothing outside."""
     p = inside(users_file) if users_file else None
-    if p and (r := users_result(users_file, raw_lines(reads(p)), "")):
+    if p and (r := from_file(users_file, reads(p))):
         return r
     for rel in USER_FILES:
         p = inside(rel)
-        if not p:
-            continue
-        if rel == USER_FILES[0]:  # a file made for this: its lines as they are
-            r = users_result(rel, raw_lines(reads(p)), "")
-        else:
-            ls, how = extract(reads(p), rel)
-            r = users_result(rel, ls, how)
-        if r:
+        if p and (r := from_file(rel, reads(p), raw_ok=rel == USER_FILES[0])):
             return r
     p = inside("README.md")
     if p:
@@ -745,7 +748,7 @@ if api and out["api_port"]:
             unc.append("api_ready_url")
 out["client"] = "auto"
 out["android_target"] = "ask"
-out["users_file"] = next((r for r in USER_FILES if inside(r)), "")
+out["users_file"] = USER_FILES[0] if inside(USER_FILES[0]) else ""  # only a file made for it: guides stay search fallbacks, never saved
 
 if mode == "json":
     print(json.dumps(out, indent=2))
@@ -1530,6 +1533,7 @@ cmd_users() {
   src=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["source"] or "")')
   if [ -z "$src" ]; then
     say "$(L 'Test users' 'Usuarios de prueba')"
+    [ -n "$USERS_FILE" ] && warn "$(L "no accounts found in $USERS_FILE" "no encontré cuentas en $USERS_FILE")"
     warn "$(L 'No test users found. Put them in a file of the project (a markdown or text list) and name it: users_file = "docs/test-users.md" in [local]. I also look in docs/test-users.md, docs/local-testing.md, a README section called Test users, and the last seed log.' 'No encontré usuarios de prueba. Ponelos en un archivo del proyecto (una lista en markdown o texto) y nombralo: users_file = "docs/test-users.md" en [local]. También miro docs/test-users.md, docs/local-testing.md, una sección del README llamada Usuarios de prueba y el log del último seed.')"
     return 0
   fi
@@ -1551,8 +1555,8 @@ show_users() {
     return 0
   fi
   say "$(L 'Test users' 'Usuarios de prueba') ($(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["source"])'))"
-  printf '%s' "$out" | python3 -c 'import json,sys; [print("  " + a["line"]) for a in json.load(sys.stdin)["accounts"][:15]]'
-  [ "$n" -gt 15 ] && echo "  … $(L "$((n - 15)) more: bash .keelokit/bin/run-local.sh users" "$((n - 15)) más: bash .keelokit/bin/run-local.sh users")"
+  printf '%s' "$out" | python3 -c 'import json,sys; [print("  " + a["line"]) for a in json.load(sys.stdin)["accounts"][:16]]'
+  [ "$n" -gt 16 ] && echo "  … $(L "$((n - 16)) more: bash .keelokit/bin/run-local.sh users" "$((n - 16)) más: bash .keelokit/bin/run-local.sh users")"
   return 0
 }
 

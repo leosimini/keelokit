@@ -1909,7 +1909,7 @@ class UsersTest(Lib, unittest.TestCase):
         r = self.lib(p, "launch metro true; launch metro true")
         self.assertEqual(r.stdout.count("Test users"), 1)
         self.assertEqual(len([l for l in r.stdout.splitlines() if "@demo.test" in l]), 15)
-        self.assertIn("15 more: bash .keelokit/bin/run-local.sh users", r.stdout)
+        self.assertIn("(more in docs/test-users.md", r.stdout)
 
     def test_no_users_is_one_line_with_the_hint(self):
         p = self.project()
@@ -2136,6 +2136,68 @@ class LiveStdinTest(Lib, unittest.TestCase):
         body = text[text.index("script_run() {"):]
         body = body[:body.index("\n}\n")]
         self.assertIn('if [ -t 0 ] && [ "$feed" != 1 ]; then', body)
+
+
+def long_guide(accounts_in_it=True) -> str:
+    filler = "".join(f"Step {i}: configure thing {i} and read the notes about it.\n" for i in range(280))
+    table = ("Every account's password is `demo1234`:\n\n| Role | Email |\n|---|---|\n"
+             + "".join(f"| {r} | {r}@demo.test |\n" for r in ("owner", "admin", "staff", "coach", "ana", "ben", "cris", "dana")) + "\n")
+    return ("# Local testing\n\nThis guide has everything.\n\n| Tool | Command |\n|---|---|\n| Node | `pnpm install` |\n\n"
+            "```\nSMTP_PASSWORD=local\nDATABASE_URL=postgresql://x\n```\n\n" + filler + "## 7. Demo accounts\n\n"
+            + (table if accounts_in_it else "Ask the team for accounts.\n\n") + filler)
+
+
+class LongGuideTest(Lib, unittest.TestCase):
+    users = UsersTest.users
+    project = UsersTest.project
+
+    def check_table(self, d, source):
+        lines = [a["line"] for a in d["accounts"]]
+        self.assertEqual(d["source"], source)
+        self.assertEqual(lines[0], "Every account's password is `demo1234`:")
+        self.assertEqual(sum("@demo.test" in l for l in lines), 8)
+        self.assertEqual(len(lines), 11)
+        self.assertFalse(any(w in l for l in lines for w in ("# Local testing", "pnpm install", "SMTP_PASSWORD", "Step ")))
+
+    def test_a_saved_users_file_that_points_at_a_long_guide_gives_the_table(self):
+        guide = long_guide()
+        self.assertGreater(len(guide.splitlines()), 550)
+        p = self.project({"docs/local-android-testing.md": guide}, 'users_file = "docs/local-android-testing.md"\n')
+        self.check_table(self.users(p), "docs/local-android-testing.md")
+
+    def test_the_same_guide_found_as_a_fallback(self):
+        p = self.project({"docs/local-android-testing.md": long_guide()})
+        self.check_table(self.users(p), "docs/local-android-testing.md")
+
+    def test_a_dedicated_file_goes_through_the_same_extraction(self):
+        p = self.project({"docs/test-users.md": long_guide()})
+        self.check_table(self.users(p), "docs/test-users.md")
+
+    def test_a_long_file_with_no_accounts_is_not_dumped(self):
+        p = self.project({"docs/local-android-testing.md": long_guide(False)}, 'users_file = "docs/local-android-testing.md"\n')
+        self.assertEqual(self.users(p), {"source": None, "accounts": []})
+        out = p.run("users").stdout
+        self.assertIn("no accounts found in docs/local-android-testing.md", out)
+        self.assertNotIn("# Local testing", out)
+
+    def test_a_short_file_with_nothing_to_extract_is_shown_as_it_is(self):
+        p = self.project({"notes.txt": "ana: use the team's shared login\nben: ask Ana\n"}, 'users_file = "notes.txt"\n')
+        self.assertEqual([a["line"] for a in self.users(p)["accounts"]], ["ana: use the team's shared login", "ben: ask Ana"])
+
+    def test_detect_only_suggests_a_dedicated_file(self):
+        for guide in ("docs/local-testing.md", "docs/local-android-testing.md", "README.md"):
+            with self.subTest(guide=guide):
+                p = self.project({guide: long_guide()})
+                self.assertEqual(json.loads(p.run("detect").stdout)["users_file"], "")
+        p = self.project({"docs/test-users.md": "a@x.test pw\n", "docs/local-testing.md": long_guide()})
+        self.assertEqual(json.loads(p.run("detect").stdout)["users_file"], "docs/test-users.md")
+
+    def test_saving_local_never_writes_a_general_guide(self):
+        p = Project(self, pnpm_monorepo, PROFILE)
+        write(p.dir, "docs/local-android-testing.md", long_guide())
+        p.shim("uname", "echo Darwin")
+        p.run("doctor", "--no-install", "--yes")
+        self.assertNotIn("users_file", (p.dir / ".keelokit/profile.toml").read_text())
 
 
 class StaticTest(unittest.TestCase):
