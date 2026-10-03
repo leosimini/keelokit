@@ -13,7 +13,7 @@ The first pass surveyed, validated and consolidated everything and fixed 21 root
 |---|---|---|---|---|---|---|
 | INT-1 | integrity | P1 | main_ref() silently falls back to HEAD, so a PR's own Story: trailers count as done and --scope / --critical --changed see an empty diff | fixed | f072efc | test + class check, docs/escapes.md |
 | LOG-1 | logic | P2 | Guard's Bash path skips the content checks Edit/Write get: TAMPER patterns and .env writes by interpreters pass | fixed | 084b7c1 | test + class check, docs/escapes.md |
-| LOG-3 | logic | P3 | rm/touch of an .env file is blocked with a 'don't write .env' message | open — 0.8.1 | — | — |
+| LOG-3 | logic | P3 | rm/touch of an .env file is blocked with a 'don't write .env' message | fixed | 5c02333 | test + class check, docs/escapes.md |
 | LOG-4 | logic | P2 | `commit -n` detector blocks any short flag containing the letter n (-uno) | fixed | 4595ebb | test + class check, docs/escapes.md |
 | DX-6 | dx | P2 | guard.py has no defined outcome for unexpected input: an unknown mode exits 0 silently, and malformed or wrong-shaped hook JSON crashes with exit 1 | fixed | 2322d5d | test + class check, docs/escapes.md |
 | DX-7 | dx | P2 | Missing python3 is handled only in the SessionStart hook; PreToolUse and the git pre-commit hook fail with a bare 'python3: not found' | fixed | 16c5851 | test + class check, docs/escapes.md |
@@ -41,7 +41,7 @@ The first pass surveyed, validated and consolidated everything and fixed 21 root
 | UI-2 | ui | P3 | Duplicate story-{id} ids across the wave and epic views break hash navigation in the hidden view | fixed | 27c8e34 | test + class check, docs/escapes.md |
 | UI-3 | ui | P3 | The sea band's review pill uses a bare #FFC08A with no token | fixed | c828149 | test + class check, docs/escapes.md |
 | A11Y-2 | a11y | P2 | Light-theme secondary text and the todo/review pills fail WCAG AA contrast | fixed | eb2fb7a | test + class check, docs/escapes.md |
-| A11Y-4 | a11y | P2 | Every document's 'Open file' link has the same accessible name and sits inside <summary> | open — 0.8.1 | — | — |
+| A11Y-4 | a11y | P2 | Every document's 'Open file' link has the same accessible name and sits inside <summary> | fixed | 58b1ff2 | test + class check, docs/escapes.md |
 | A11Y-6 | a11y | P3 | The Copy → Copied swap isn't announced | fixed | 5053f55 | test + class check, docs/escapes.md |
 | CPY-2 | copy | P3 | check-bugbash's description lists 17 dimensions and omits dx, docs and packaging | fixed | 512379a | test + class check, docs/escapes.md |
 | CPY-4 | copy | P3 | The plugin's descriptions differ between plugin.json and marketplace.json, and the no-tags test doesn't cover them | fixed | 066b9b0 | test + class check, docs/escapes.md |
@@ -54,15 +54,15 @@ The first pass surveyed, validated and consolidated everything and fixed 21 root
 | DOC-102 | docs | P3 | harness-upgrade's ownership summary leaves out profile.toml and critical.toml | fixed | 063a7b6 | test + class check, docs/escapes.md |
 | DOC-203 | docs | P3 | check-security's report format doesn't require the literal '## Scope' heading the dashboard parses | fixed | fc133f8 | test + class check, docs/escapes.md |
 | NFR-104 | nfr | P2 | check-bugbash-flow.js's Fix phase is not resume-safe: an interrupted fixer re-runs live and commits the same fix twice | fixed | 512379a | resumable workflow, tests/test_workflows.py |
-| A11Y-101 | a11y | P2 | Default Artifact-mode dashboard drops every 'Open file' link when there's no GitHub remote | open — 0.8.1 | — | — |
+| A11Y-101 | a11y | P2 | Default Artifact-mode dashboard drops every 'Open file' link when there's no GitHub remote | not a bug: an Artifact without GitHub has no URL a browser can open; each document is inline with its path shown | — | — |
 | A11Y-102 | a11y | P2 | Global keyboard focus ring fails 3:1 non-text contrast in light mode | fixed | 5053f55 | test + class check, docs/escapes.md |
-| UX-5 | ux | P2 | The dashboard shows nothing about a bug bash — not even 'none yet' — for the whole run, including after real fixes from it have already landed | open — 0.8.1 | — | — |
+| UX-5 | ux | P2 | The dashboard shows nothing about a bug bash — not even 'none yet' — for the whole run, including after real fixes from it have already landed | fixed | a14f76f | test + class check, docs/escapes.md |
 | I18N-5 | i18n | P3 | Dates/timestamps are never locale-formatted despite the dashboard's own documented promise | fixed | 1afb810 | test + class check, docs/escapes.md |
-| LOG-303 | logic | P1 | next_step() lets any pending stage pre-empt doctor errors, blocking gaps and a stale harness | open — 0.8.1, not reproduced yet | — | — |
-| LOG-304 | logic | P1 | check_backlog's critical-area-without-integrity check stops firing forever once the story merges | open — 0.8.1, not reproduced yet | — | — |
-| PKG-3 | packaging | P2 | scripts/test-template.sh corrupts itself when run twice on one machine, exactly the concurrency the bug-bash procedure itself recommends | open — 0.8.1 | — | — |
+| LOG-303 | logic | P1 | next_step() lets any pending stage pre-empt doctor errors, blocking gaps and a stale harness | fixed | d1e6ad5 | test + class check, docs/escapes.md |
+| LOG-304 | logic | P1 | check_backlog's critical-area-without-integrity check stops firing forever once the story merges | fixed | 9a263a7 | test + class check, docs/escapes.md |
+| PKG-3 | packaging | P2 | scripts/test-template.sh corrupts itself when run twice on one machine, exactly the concurrency the bug-bash procedure itself recommends | fixed | 466bc80 | test + class check, docs/escapes.md |
 
-42 fixed, 7 open, 1 story (HARN-002). Fixed in 0.8.1: UI-3, A11Y-6, CPY-4, DOC-102, DOC-203, A11Y-102, I18N-5.
+48 fixed, 1 not a bug (A11Y-101), 1 story (HARN-002); none open. Fixed after 0.8.1: LOG-303, LOG-304, A11Y-4, UX-5, PKG-3, LOG-3. Fixed in 0.8.1: UI-3, A11Y-6, CPY-4, DOC-102, DOC-203, A11Y-102, I18N-5.
 
 ## Pending decisions
 

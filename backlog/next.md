@@ -19,20 +19,8 @@ story file: the doctor and the dashboard read only `stories/`.
 
 ## Bug bash 2026-09-27: open findings
 
-Full records in `docs/bugbash/2026-09-27/` (each lens file) and its `report.md`.
-
-- [ ] **LOG-303** (P1, not reproduced yet): `next_step()` lets any pending stage pre-empt doctor
-  errors, blocking gaps and a stale harness. Reproduce first.
-- [ ] **LOG-304** (P1, not reproduced yet): check_backlog's critical-area-without-integrity check
-  stops firing once the story merges. Reproduce first.
-- [ ] **A11Y-4** (P2): every document's "Open file" link has the same accessible name and sits
-  inside `<summary>`.
-- [ ] **A11Y-101** (P2): with no GitHub remote, the Artifact dashboard drops every "Open file" link.
-- [ ] **UX-5** (P2): the dashboard shows nothing about a bug bash while it runs, not even "none yet".
-- [ ] **PKG-3** (P2): `scripts/test-template.sh` corrupts itself when run twice at once on one machine.
-- [ ] **LOG-3** (P3): `rm`/`touch` of an `.env` file is blocked with a "don't write .env" message.
-
-The fix pass runs through subagents; their weekly limit resets **Oct 2, 21:00 UTC**.
+None. Fixed on `main` after 0.8.1 (in `## Unreleased`): LOG-303, LOG-304, A11Y-4, UX-5, PKG-3,
+LOG-3. A11Y-101 is not a bug (an Artifact without GitHub has no URL a browser can open).
 
 ## Bug bash 2026-09-27: decisions still open
 

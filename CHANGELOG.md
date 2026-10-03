@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- The dashboard's next step puts first what comes first: a blocking question before approving the
+  context, and harness errors before any stage once the harness is in place (LOG-303).
+- A bug bash under way shows on the dashboard and the report as running, with its findings so far,
+  before its report exists (UX-5).
+- Doctor keeps warning about a done story that touches a critical area without `integrity`; it used
+  to go silent once the story merged (LOG-304).
+- Document links in the report no longer sit inside the row that opens them, and each says which
+  file it opens to a screen reader (A11Y-4).
+- The guard's message for deleting or touching an `.env` file says that, not "don't write" (LOG-3).
+- Two runs of `scripts/test-template.sh` on one machine take turns installing browsers (PKG-3).
+
 ## 0.8.1 — 2026-09-28 — a stricter guard, safer links and workflows, and accessibility fixes
 
 - **Security:** the guard knows more kinds of keys (npm, GitLab, JWT, Azure storage) and catches a
