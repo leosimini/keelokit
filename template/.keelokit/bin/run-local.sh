@@ -418,7 +418,7 @@ setup_env() {
 
 # The first write into .local-dev/: asks once when git would otherwise see it.
 init_state() {
-  [ -d "$STATE" ] && return 0
+  [ -d "$LOG" ] && return 0
   if git rev-parse --git-dir >/dev/null 2>&1 && ! git check-ignore -q "$STATE/x"; then
     confirm "$(L "Create $STATE/ (logs, last-error.txt) and add it to .gitignore?" "¿Creo $STATE/ (logs, last-error.txt) y lo agrego a .gitignore?")" || return 1
     { [ -f .gitignore ] && [ -n "$(tail -c1 .gitignore)" ] && echo; echo "$STATE/"; } >>.gitignore
@@ -691,6 +691,7 @@ start_backend() {
   [ -n "$API_MIGRATE" ] && { run migrate bash -c "$API_MIGRATE" || return 1; }
   [ -n "$API_SEED" ] && { run seed bash -c "$API_SEED" || return 1; }
   if api_up; then ok "$(L "API already running on port $API_PORT" "API ya corriendo en el puerto $API_PORT")"; return 0; fi
+  init_state || return 1
   nohup bash -c "$API_START" >"$LOG/api.log" 2>&1 &
   for _ in $(seq 90); do # the first build takes a while
     api_up && { ok "$(L "API on port $API_PORT (log: $LOG/api.log)" "API en el puerto $API_PORT (log: $LOG/api.log)")"; return 0; }

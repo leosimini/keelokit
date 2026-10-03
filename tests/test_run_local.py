@@ -279,6 +279,15 @@ class SourcedTest(unittest.TestCase):
         self.assertIn(".local-dev/", (p.dir / ".gitignore").read_text())
         self.assertTrue((p.dir / ".local-dev/logs").is_dir())
 
+    def test_a_state_folder_without_logs_still_gets_them(self):
+        # .local-dev/ can exist (a worktree, an earlier tool) without logs/: every step writes there.
+        p = Project(self, pnpm_monorepo, PROFILE + LOCAL_OK)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev").mkdir()
+        r = self.lib(p, "init_state; echo rc=$?")
+        self.assertIn("rc=0", r.stdout)
+        self.assertTrue((p.dir / ".local-dev/logs").is_dir())
+
     def sleeper(self, p: Project):
         """A real process that a `lsof` shim reports as the port's owner, so a kill can be seen."""
         proc = subprocess.Popen(["sleep", "60"])
