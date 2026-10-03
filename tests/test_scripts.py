@@ -24,6 +24,8 @@ READS_NEXT = re.compile(r"\$\{?2\b")
 # Positional arguments each script needs before its options, so the options are what gets parsed.
 LEADING = {"scripts/test-template.sh": ['["api"]']}
 # Commands a script could reach once parsing is done; each shim logs its call and fails.
+# Scripts outside scripts/ that find their own folder and can be run from anywhere.
+SELF_CONTAINED = {"template/.keelokit/bin/run-local.sh"}
 SHIMS = ["uvx", "copier", "pnpm", "npm", "npx", "claude", "gh"]
 
 
@@ -81,7 +83,7 @@ class ValueOptionTest(unittest.TestCase):
         # Not vacuous: the option the bug was found in is still seen by the scan.
         self.assertIn("--update-from", scripts.get("scripts/test-template.sh", {}))
         for path, opts in scripts.items():
-            self.assertTrue(path.startswith("scripts/"),
+            self.assertTrue(path.startswith("scripts/") or path in SELF_CONTAINED,
                             f"{path} reads an option's value; add a way to run it to {Path(__file__).name}")
             for opt, others in opts.items():
                 cases = [[opt], [opt, "-x"], [opt, "--"]] + [[opt, other] for other in others]
