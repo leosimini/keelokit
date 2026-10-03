@@ -67,6 +67,13 @@ uvx copier==9.18.2 copy --defaults --vcs-ref v<version> --data mode=harness \
 `.keelokit/`. Confirm with `git status` that nothing outside `.keelokit/` changed. From now on the
 plugin's guard hook is active in this repo.
 
+If the profile has the `mobile` trait, detect how the app launches locally: run
+`/keelokit:run-local`, which shows what `.keelokit/bin/run-local.sh detect` found (where the Expo
+app, the package manager, the API and the database are), asks only about what it isn't sure of,
+and with the user's yes writes the `[local]` block in `.keelokit/profile.toml`. It also asks
+before creating `.local-dev/` and adding it to `.gitignore`: that is the one thing outside
+`.keelokit/` it touches, and only with a yes. No `mobile` trait: skip this.
+
 ## 3. Intake from what exists
 
 Run `/keelokit:plan-intake`. Harvest first: existing briefs, requirement docs, context packs, ADRs and

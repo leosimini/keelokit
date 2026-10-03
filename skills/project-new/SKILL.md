@@ -142,6 +142,9 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
    template itself is wrong, say so: it must be fixed in Keelokit.
 4. First commit, of everything (`git add -A`: `pnpm-lock.yaml` included, or `pnpm verify` can't
    compare it with origin/main): `chore: skeleton from Keelokit v<version>`.
+   With a `mobile` app, the template writes `[local]` in `.keelokit/profile.toml` and a
+   `run:local` script: mention that `/keelokit:run-local` (or `pnpm run:local`) launches the app and
+   its API on a phone or a simulator, and offer it once the skeleton is green.
 5. Ask whether to create a private GitHub repo (`gh repo create <slug> --private --source . --push`).
 6. Staging: the API deploys to Fly.io from CI. Offer `/keelokit:ship-setup` now: it writes the
    deploy guide, does what needs none of the user's credentials and verifies each step. The Fly

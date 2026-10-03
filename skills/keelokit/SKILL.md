@@ -26,6 +26,7 @@ Answer three things, in this order, in at most ten lines:
    | Harness errors reported | `/keelokit:check-health` |
    | The profile is `unknown`, or the doctor reports profile drift | `/keelokit:check-health` to bring `.keelokit/profile.toml` up to date |
    | The project's harness (`_commit` in `.keelokit/answers.yml`) is older than the plugin | Offer `/keelokit:harness-upgrade` |
+   | The profile has `mobile` and no `[local]` block (the doctor warns RUN-1), or the user wants to see the app | Offer `/keelokit:run-local` (macOS) |
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
    | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave) |
    | A wave just finished, or a release is near | Propose `/keelokit:check-bugbash` |

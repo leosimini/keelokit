@@ -161,6 +161,9 @@ T = {
         "env_steps": ("{done} de {n} paso listo", "{done} de {n} pasos listos"),
         "env_nosteps": "Sin pasos todavía",
         "env_sum": ("{ready} de {n} entorno listo", "{ready} de {n} entornos listos"),
+        "env_local_ready": "Entorno local: listo. La app y su API se levantan en tu teléfono o en un simulador con un comando.",
+        "env_local_off": "Entorno local: no configurado. /keelokit:run-local busca la app y su API en el repo y lo deja listo.",
+        "env_local_error": "El último intento falló: el error quedó en .local-dev/last-error.txt, y Claude lo lee con /keelokit:run-local.",
         "act_setup": "Preparar los entornos",
         "act_release": "Sacar una versión",
         "act_security": "Revisar seguridad y privacidad",
@@ -390,6 +393,9 @@ T = {
         "env_steps": ("{done} of {n} step ready", "{done} of {n} steps ready"),
         "env_nosteps": "No steps yet",
         "env_sum": ("{ready} of {n} environment ready", "{ready} of {n} environments ready"),
+        "env_local_ready": "Local environment: ready. The app and its API start on your phone or a simulator with one command.",
+        "env_local_off": "Local environment: not set up. /keelokit:run-local finds the app and its API in the repo and sets it up.",
+        "env_local_error": "The last attempt failed: the error is in .local-dev/last-error.txt, and Claude reads it with /keelokit:run-local.",
         "act_setup": "Set up the environments",
         "act_release": "Release a version",
         "act_security": "Review security and privacy",
@@ -940,6 +946,10 @@ def collect(root: Path) -> dict:
             return tomllib.loads(read(root / path)).get(key, []) if (root / path).exists() else []
         except tomllib.TOMLDecodeError:
             return []
+    # Local environment: only for a project with a mobile app; [local] says where it is, and a failed
+    # run leaves .local-dev/last-error.txt (what /keelokit:run-local reads).
+    local_env = ({"ready": "local" in survey, "failed": (root / ".local-dev/last-error.txt").exists()}
+                 if "mobile" in survey.get("traits", []) else None)
     house_rules = len(re.findall(r"(?m)^id = \"", read(root / ".keelokit/harness/rules.toml")))
     mapping = {"house": house_rules, "mapped": len(toml_list(".keelokit/rules.local.toml", "rule")),
                "exceptions": toml_list(".keelokit/exceptions.toml", "exception")}
@@ -977,7 +987,7 @@ def collect(root: Path) -> dict:
         "adrs": adrs, "bugbashes": bugbashes, "history": history, "security": security,
         "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
         "harness": harness, "plugin_version": plugin_version, "credit": credit,
-        "profile": profile, "drift": drift, "no_main": bool(has_commits and stories and not ref),
+        "profile": profile, "local_env": local_env, "drift": drift, "no_main": bool(has_commits and stories and not ref),
     }
 
 
@@ -1886,11 +1896,18 @@ def environments_section(s: dict, t: dict) -> str:
             + (f'<p><a href="{esc(href)}" target="_blank" rel="noopener">{esc(url)}</a></p>' if href else "")
             + (f'<span class="bar"><i style="width:{pct}%"></i></span>' if total else "")
             + (f'<ul class="todo">{items}</ul>' if items else "") + "</div>")
-    body = f'<p class="what">{esc(t["env_what"])}</p>'
-    body += f'<div class="envs">{"".join(cards)}</div>' if cards else ""
-    if not s["has_deploy"]:
+    hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]  # a mobile-only app has no deploy guide to show
+    body = f'<p class="what">{esc(t["env_what"])}</p>' if hosted else ""
+    body += f'<div class="envs">{"".join(cards)}</div>' if cards and hosted else ""
+    if hosted and not s["has_deploy"]:
         body += f'<p class="muted">{inline(t["env_none"])}</p>'
-    body += f'<div class="acts">{ask(t["act_setup"], "/keelokit:ship-setup", True)}{ask(t["act_release"], "/keelokit:ship-release")}</div>'
+    if s["local_env"]:
+        le = s["local_env"]
+        body += (f'<p class="muted">{inline(t["env_local_ready" if le["ready"] else "env_local_off"])}</p>'
+                 + (f'<p class="muted">{inline(t["env_local_error"])}</p>' if le["failed"] else "")
+                 + term("bash .keelokit/bin/run-local.sh" if le["ready"] else "/keelokit:run-local", t, True))
+    if hosted:
+        body += f'<div class="acts">{ask(t["act_setup"], "/keelokit:ship-setup", True)}{ask(t["act_release"], "/keelokit:ship-release")}</div>'
     n_ready = sum(ready(e) for e in envs)
     summary = plural(t, "env_sum", len(envs), ready=n_ready) if envs else t["sum_none"]
     return extra_section("environments", "ENV", t["env_h"], "", summary, body, False)
@@ -2023,7 +2040,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
         sections.append(extra_section("health", "DOC", t["health"], pill, summary, acts + log, bool(s["errors"])))
     later = s["stories"] or any(x["id"] in ("skeleton", "adopt") and x["status"] == "done" for x in s["stages"])
     hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]
-    if hosted and (later or s["environments"] or s["has_deploy"]):
+    if (hosted and (later or s["environments"] or s["has_deploy"])) or s["local_env"]:
         sections.append(environments_section(s, t))
     if s["stories"] or s["bugbashes"]:
         sections.append(bugbash_section(s, links, t))
@@ -2117,6 +2134,7 @@ OPS_T = {
         "doctor_err": ("{n} error del harness", "{n} errores del harness"),
         "bb_line": "{fixed} de {total} corregidos", "bb_running": ("en curso, {n} hallazgo hasta ahora", "en curso, {n} hallazgos hasta ahora"), "to_backlog": ("{n} pasó al backlog", "{n} pasaron al backlog"),
         "decisions_n": ("{n} decisión", "{n} decisiones"), "env_ready": "{env} listo", "env_prep": "{env} en preparación",
+        "local_ready": "Entorno local listo", "local_off": "Entorno local sin configurar", "local_failed": "el último intento falló",
         "steps": "{done}/{total} pasos", "docs": "Documentos del proyecto",
         "d_context": "Contexto", "d_prd": "PRD", "d_stack": "Stack", "d_backlog": "Backlog", "d_decisions": "Decisiones ({n})",
         "report": "Generar el reporte completo", "report_ask": "/keelokit:project-report",
@@ -2151,6 +2169,7 @@ OPS_T = {
         "doctor_err": ("{n} harness error", "{n} harness errors"),
         "bb_line": "{fixed} of {total} fixed", "bb_running": ("in progress, {n} finding so far", "in progress, {n} findings so far"), "to_backlog": ("{n} went to the backlog", "{n} went to the backlog"),
         "decisions_n": ("{n} decision", "{n} decisions"), "env_ready": "{env} ready", "env_prep": "{env} being set up",
+        "local_ready": "Local environment ready", "local_off": "Local environment not set up", "local_failed": "the last attempt failed",
         "steps": "{done}/{total} steps", "docs": "Project documents",
         "d_context": "Context", "d_prd": "PRD", "d_stack": "Stack", "d_backlog": "Backlog", "d_decisions": "Decisions ({n})",
         "report": "Generate the full report", "report_ask": "/keelokit:project-report",
@@ -2399,6 +2418,11 @@ def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str
             if b["stories"]:
                 line += ", " + esc(n_of(o, "to_backlog", len(b["stories"])))
             hl.append(("warn" if pend else "ok", "●" if pend else "✓", line, n_of(o, "decisions_n", pend) if pend else ""))
+    if s["local_env"]:  # RUN-1: can the app be launched with one command?
+        le = s["local_env"]
+        note = "bash .keelokit/bin/run-local.sh" if le["ready"] else "/keelokit:run-local"
+        hl.append(("ok" if le["ready"] and not le["failed"] else "warn", "✓" if le["ready"] and not le["failed"] else "●",
+                   esc(o["local_ready" if le["ready"] else "local_off"] + (f" · {o['local_failed']}" if le["failed"] else "")), note))
     if hosted:
         for e in s["environments"]:
             if not e["steps"]:

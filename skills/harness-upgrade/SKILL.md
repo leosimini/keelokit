@@ -31,5 +31,9 @@ they exist.
    why.
 5. `pnpm install`, then `pnpm verify --all` and `python3 .keelokit/bin/doctor.py`. New house rules
    may fail on purpose: meet them, or register an exception with the user's approval.
+   Coming from a version before `run-local` (the harness has no `.keelokit/bin/run-local.sh`
+   yet) with a `mobile` trait: the script arrives with the upgrade, but `profile.toml` is the
+   project's, so no `[local]` block comes with it and the doctor warns (RUN-1). Offer
+   `/keelokit:run-local`, which detects it and writes the block after a yes.
 6. Commit `chore: upgrade Keelokit <from> → <to>` and report: rules added/changed, conflicts
    resolved, and anything the user must decide.

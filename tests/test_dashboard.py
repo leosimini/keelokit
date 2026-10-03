@@ -357,6 +357,29 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("1 of 2 steps ready", html)
         self.assertIn('id="security" open', html)
 
+    def test_local_environment_line_only_for_a_mobile_project(self):
+        """RUN-1: the environments panel says whether the app can be launched with one command."""
+        self.gates("intake", "product", "stack", "skeleton")
+        self.context()
+        self.write(".keelokit/profile.toml", 'kind = "web-product"\ntraits = ["web"]\n')
+        self.assertIsNone(self.state()["local_env"])
+        self.assertNotIn("Local environment", self.page())
+        self.write(".keelokit/profile.toml", 'kind = "mobile-app"\ntraits = ["mobile"]\n')
+        self.assertEqual(self.state()["local_env"], {"ready": False, "failed": False})
+        html = self.page()
+        self.assertIn("Local environment: not set up", html)
+        self.assertIn('data-copy="/keelokit:run-local"', html)
+        self.write(".keelokit/profile.toml", 'kind = "mobile-app"\ntraits = ["mobile"]\n\n[local]\nmobile_dir = "apps/mobile"\n')
+        self.write(".local-dev/last-error.txt", "step: android\n")
+        self.assertEqual(self.state()["local_env"], {"ready": True, "failed": True})
+        html = self.page()
+        self.assertIn("Local environment: ready", html)
+        self.assertIn("last attempt failed", html)
+        self.assertIn('data-copy="bash .keelokit/bin/run-local.sh"', html)
+        ops = self.ops()
+        self.assertIn("Local environment ready · the last attempt failed", ops)
+        self.assertIn("bash .keelokit/bin/run-local.sh", ops)
+
     def test_brownfield_shows_what_was_found(self):
         self.write(".keelokit/answers.yml", "mode: harness\nproject_name: Legacy\n_commit: v0.7.0\n")
         self.write(".keelokit/profile.toml", 'kind = "web-product"\ntraits = ["ui", "web", "database", "hosted"]\n\n[detected]\nstack = ["Next.js 14", "Prisma"]\nci = ["GitHub Actions: test"]\n')
