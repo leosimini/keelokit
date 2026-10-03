@@ -1515,10 +1515,18 @@ select_android_target() {
 # A fingerprint of what a native build depends on. @expo/fingerprint when the project has it
 # (UNTESTED against the real CLI), else a hash of dependencies, lockfiles, app config and tracked
 # native folders. The prefix keeps the two apart: a switch of method is a rebuild, never a false match.
+# Runs a command for at most <seconds>; its whole process group is stopped after that (macOS has no `timeout`).
+with_timeout() { # <seconds> <command...>
+  perl -e '$s = shift; $pid = fork; if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+           $SIG{ALRM} = sub { kill "TERM", -$pid; exit 124 }; alarm $s; waitpid $pid, 0; exit($? >> 8)' "$@"
+}
+
 fingerprint() {
   local d=${MOBILE_DIR:-.} out h=""
-  if [ -d "$d/node_modules/@expo/fingerprint" ] || [ -d node_modules/@expo/fingerprint ]; then
-    out=$(in_dir "$d" npx --no-install @expo/fingerprint . 2>/dev/null)
+  # Any project that depends on expo: pnpm does not hoist @expo/fingerprint, but npx finds it. At
+  # most FINGERPRINT_TIMEOUT seconds (60): a hung npx must not freeze a launch.
+  if [ -d "$d/node_modules/expo" ] || [ -d node_modules/expo ] || grep -q '"expo"' "$d/package.json" 2>/dev/null; then
+    out=$(with_timeout "${FINGERPRINT_TIMEOUT:-60}" bash -c 'cd "$1" && exec npx --no-install @expo/fingerprint .' _ "$d" 2>/dev/null)
     h=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("hash",""))' 2>/dev/null)
     [ -n "$h" ] && { echo "expo:$h"; return; }
   fi

@@ -586,6 +586,35 @@ class DecisionTableTest(Lib, unittest.TestCase):
         p.shim("npx", "echo not json")  # a CLI that answers badly: back to the file hash
         self.assertTrue(self.lib(p, "fingerprint").stdout.strip().startswith("files:"))
 
+    def test_the_fingerprint_is_tried_through_npx_even_when_the_package_is_not_hoisted(self):
+        # pnpm keeps @expo/fingerprint out of the app's node_modules; npx still finds it
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        self.assertFalse((p.dir / "apps/mobile/node_modules").exists())
+        p.shim("npx", 'echo \'{"sources": [], "hash": "abc123"}\'')
+        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:abc123")
+        self.assertIn("npx --no-install @expo/fingerprint .", p.called())
+        p.shim("npx", "", code=1)  # the command fails: the file hash
+        self.assertTrue(self.lib(p, "fingerprint").stdout.strip().startswith("files:"))
+        p.shim("npx", 'echo \'{"sources": []}\'')  # JSON with no hash: the file hash
+        self.assertTrue(self.lib(p, "fingerprint").stdout.strip().startswith("files:"))
+
+    def test_a_project_without_expo_does_not_call_npx(self):
+        def build(d):
+            no_expo(d)
+        p = Project(self, build, PROFILE)
+        p.shim("npx", 'echo \'{"hash": "x"}\'')
+        self.lib(p, "MOBILE_DIR=; fingerprint")
+        self.assertEqual([c for c in p.called() if c.startswith("npx")], [])
+
+    def test_a_hung_npx_cannot_freeze_a_launch(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        p.shim("npx", "sleep 30")
+        import time
+        t = time.time()
+        r = self.lib(p, "fingerprint", env={"FINGERPRINT_TIMEOUT": "1"})
+        self.assertLess(time.time() - t, 15)
+        self.assertTrue(r.stdout.strip().startswith("files:"))
+
     def test_installed_checks_use_pm_path_and_get_app_container(self):
         p = Project(self, pnpm_monorepo, LOCAL_DEV)
         p.shim("adb", 'case "$*" in *"pm path"*) echo package:/data/app/base.apk;; esac')
