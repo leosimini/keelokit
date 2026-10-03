@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fixed (template): a generated mobile app no longer crashes at startup on a phone.** The shared
+  translator used `Intl.PluralRules`, which Hermes (React Native's engine) does not have, so the app
+  died with "undefined cannot be used as a constructor" on a simulator or phone while the tests and the
+  web export passed. It now uses `Intl.PluralRules` when it exists and, otherwise, `one` for exactly 1
+  and `other` for the rest (English and Spanish), with a test that removes `Intl.PluralRules`.
+  `packages/shared/src` belongs to the product, so `harness-upgrade` does not bring it: an existing
+  project applies the same change by hand (the new `pluralSelector` in `i18n.ts`). A locale with more
+  plural categories still needs a polyfill or a library on native.
+
 - **`/keelokit:run-local` and `.keelokit/bin/run-local.sh`:** the project's Expo app and its API on
   an Android phone or an iOS simulator, with one command (macOS only). The script looks at what
   the Mac is missing, shows it all at once, installs it after one yes, starts the database and the
