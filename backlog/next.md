@@ -1,6 +1,6 @@
 # Next sessions
 
-Where things stand after 0.8.1 (2026-09-28), and what's left, in the order to take it. Not a
+Where things stand after 0.8.3 (2026-10-03), and what's left, in the order to take it. Not a
 story file: the doctor and the dashboard read only `stories/`.
 
 ## Where things stand
@@ -15,7 +15,14 @@ story file: the doctor and the dashboard read only `stories/`.
 
 ## For Leo, by hand
 
-- [ ] Press **Publish** for 0.8.1 at claude.ai/directory/manage (auto-publish is off).
+- [ ] Press **Publish** for 0.8.3 at claude.ai/directory/manage (auto-publish is off).
+- [ ] GitHub repo description (Settings → About): `Stop agents from calling buggy code "done": a
+  Claude Code plugin where separate agents test, review and try to break every story, and each bug
+  leaves a check. By Leopoldo Simini.`
+- [ ] GitHub profile: name "Leopoldo Simini", bio mentioning Keelokit, pin the repo, profile README
+  (`leosimini/leosimini`).
+- [ ] Launch, in order (drafts in `backlog/launch.md`): blog post under your name → Show HN →
+  r/ClaudeCode and r/ClaudeAI → LinkedIn. awesome-claude-code form from 2026-10-10.
 
 ## Bug bash 2026-09-27: open findings
 
