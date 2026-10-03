@@ -117,6 +117,9 @@ una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit, y en un Sams
 plantilla no los probé, así que tomá esos caminos como sin probar. Además de `android`, `ios` y `doctor`,
 el script tiene `metro` (solo Metro, vos abrís la app), `status`, `logs`, `clean` (lista lo que borraría y
 pregunta grupo por grupo), `seed` y `pair`; `--help` dice qué hace cada uno.
+Con un teléfono y un emulador disponibles, `android` pregunta cuál; antes de lanzar pregunta si cargar el
+seed (y lo recomienda cuando la base parece vacía); `users` muestra las cuentas de prueba que listan los
+docs o el seed del proyecto, y un bloque corto las muestra cuando arranca un lanzamiento.
 En el simulador de iOS, abrir la app con un link hace que iOS pregunte «¿Abrir en <app>?» y alguien tiene
 que tocar Abrir, siempre. Probé lanzar primero la app y el launcher de desarrollo abre pero no se
 reconecta solo. Android no tiene ese aviso.

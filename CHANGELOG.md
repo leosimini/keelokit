@@ -41,6 +41,20 @@
   partition (`--new-avd`; an installed image is reused without a download), or to cold boot with
   `-wipe-data` (named, with the warning that it erases the emulator's apps and data); with `--yes` it
   stops and lists them. Not tested: the emulator itself and wireless debugging.
+- **`run-local` asks what has a real choice, and keeps the test users at hand.**
+  - With a phone connected and an emulator available, `android` asks "phone or emulator?" at a terminal
+    (default: last time's, kept in `.local-dev/android_target_last`); `--phone` and `--emulator`, or
+    `[local] android_target` (`ask`, the default; `auto`; `phone`; `emulator`) answer it, and with
+    `--yes` or no terminal it takes the last choice and says how to change it.
+  - Before launching it asks "Load the seed data?", recommending it when the database looks empty
+    (best effort, through the compose service's `psql`) and saying so when it can't tell; the answer is
+    the next default, `--seed` and `--no-seed` answer it, and `--yes` alone never seeds.
+  - `users` prints the test accounts the project lists: `[local] users_file`, else `docs/test-users.md`,
+    `docs/local-testing.md`, `docs/local-android-testing.md`, a README section (Test users, Demo
+    accounts, Usuarios de prueba...), else the credential-looking lines of the last seed's log, as raw
+    lines with their source (`--json` too, and in `status --json`). A short block is printed when a
+    launch starts and after the seed. It reads only files of the project, never `.env`, and writes
+    nothing. The skill asks the same questions with the question tool and maps them to the flags.
 - **Expo Go with `--yes`.** When Expo asks to install or update Expo Go on the simulator or phone
   (it downloads the app from Expo), `--yes` answers it and says so; without `--yes` at a terminal Expo
   asks as before. If that prompt is cancelled for lack of a terminal, the run fails with exit 3 and

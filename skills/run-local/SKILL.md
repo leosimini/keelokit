@@ -54,14 +54,27 @@ command and flag does.
 2. `bash .keelokit/bin/run-local.sh status --json` says what already runs, so nothing is started
    twice or killed by surprise: `api`, `database.services`, `metro`, `android.devices` (phones and
    emulators, with `kind`), `ios.booted`, and `ports` with the pid and the process that holds each.
-3. Ask which target: **Android** (a phone, or an emulator: `--emulator`), **iOS simulator**, only
-   **Metro** (the user opens the app by hand), or only the **API and database** (`android`, `ios`,
-   `metro`, `backend`). One at a time; the script shuts other simulators down.
-4. After the user accepts the list, run the target with `--yes` (it never waits on a menu: it takes
-   the remembered or first simulator, phone or emulator and says which; without `--yes` and without a
-   terminal it exits 4 after 20 seconds, so a menu is never a hang):
-   `bash .keelokit/bin/run-local.sh <target> --yes`. Metro keeps running in it: run it where the
-   user can see it, or in the background and read `logs`.
+3. Ask before launching, with the multiple-choice question tool: at most three short questions, only
+   the ones that apply, the last answers as defaults. Run in a terminal by the user, the script asks
+   the same questions itself; run by you, it must never have to, so map every answer to a flag:
+   - **Target**: a connected phone, which emulator (or a new one), the iOS simulator, only Metro, or
+     only the API and database. `android --phone` or `android --emulator` (`--device <AVD|serial|model>`
+     picks a specific one; `--new-avd` makes an emulator); `ios`; `metro`; `backend`. Ask it only when
+     there is a real choice (`status --json`: a phone in `android.devices` and an emulator possible).
+     One at a time; the script shuts other simulators down.
+   - **Seed**, only when the project has a seed (`api_seed` in `detect`): "Load the seed data?" with
+     the recommendation: the script says "the database looks empty" when it can tell (through
+     `docker compose exec <db> psql`) and otherwise "can't tell if it already has data". Always the
+     user's own yes: `--seed` or `--no-seed`. `--yes` alone never seeds.
+   - **Rebuild or fast relaunch**, only when the app is already installed on the target and its
+     native inputs are unchanged since the last install (the script prints "no native build: …" when
+     that is so): default fast, `--no-build`; the other answer is `--rebuild`. Without that
+     situation do not ask: it builds.
+4. After the user accepts the list and the answers, run the target with `--yes` and the flags (`--yes`
+   never waits on a menu: it takes the remembered or first simulator, phone or emulator and says
+   which; without `--yes` and without a terminal it exits 4 after 20 seconds, so a menu is never a
+   hang): `bash .keelokit/bin/run-local.sh <target> --yes --phone --no-seed`. Metro keeps running in
+   it: run it where the user can see it, or in the background and read `logs`.
 
 **It does not rebuild what is already there.** The first run builds the native app (10–20 minutes:
 say so). A later `android` or `ios` finds the app installed on the target and the native inputs
@@ -125,6 +138,12 @@ project. Offer it when a build fails in a way a fresh native folder would fix, a
 next build takes 10–20 minutes again. Never delete those folders any other way.
 
 ## 4. After it
+
+Show the test accounts in the summary, from `bash .keelokit/bin/run-local.sh users --json`
+(`{"source","accounts":[{"line"}]}`: raw lines from the project's own docs, README section or seed log,
+never parsed or invented; `source: null` means none were found, so say how to add `users_file` in
+`[local]`). They are local development credentials: show them, never write them anywhere, never read
+`.env` files. The script also prints a short "Test users" block when a launch starts and after the seed.
 
 If the app opened and reached the API, say so and how to stop it
 (`bash .keelokit/bin/run-local.sh stop` asks before stopping the API, the containers and an emulator;

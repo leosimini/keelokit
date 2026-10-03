@@ -114,6 +114,9 @@ Keelokit. I haven't tried Expo Go, wireless debugging, the Android emulator, App
 project the template generated, so treat those paths as untested. Besides `android`, `ios` and
 `doctor`, the script has `metro` (only Metro, you open the app), `status`, `logs`, `clean` (it lists
 what it would delete and asks group by group), `seed` and `pair`; `--help` says what each does.
+With a phone and an emulator both available, `android` asks which; before launching it asks whether to
+load the seed data (recommending it when the database looks empty); `users` prints the test accounts
+the project's docs or seed list, and a short block shows them when a launch starts.
 On the iOS simulator, opening the app by a link makes iOS ask "Open in <app>?" and someone has to tap
 Open, every time. I tried launching the app first instead, and the dev launcher opens but does not
 reconnect by itself. Android has no such prompt.
