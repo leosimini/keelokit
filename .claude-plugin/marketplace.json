@@ -9,7 +9,7 @@
     {
       "name": "keelokit",
       "source": "./",
-      "description": "A Claude Code harness for building apps in TypeScript monorepos: intake, PRD, a generated skeleton with CI, backlog, independent verification and rules backed by checks."
+      "description": "Stop agents from calling buggy code \"done\". Separate agents test, review and try to break every story, and each bug leaves a check so it can't return. From idea to a TypeScript app with CI and a live dashboard."
     }
   ]
 }

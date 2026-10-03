@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The plugin's description says what sets it apart: no agent calls its own code done, and every
+  bug leaves a check.
+
 ## 0.8.2 — 2026-10-03 — new projects pass their audit, and a dashboard that puts first what comes first
 
 - **New projects pass `verify` again.** Three high advisories with no fixed version upstream
