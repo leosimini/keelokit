@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Unreleased — a description that says what sets Keelokit apart
 
 - The plugin's description says what sets it apart: no agent calls its own code done, and every
   bug leaves a check.
