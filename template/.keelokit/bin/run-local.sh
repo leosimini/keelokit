@@ -834,6 +834,17 @@ repair() { # <log>
 
 # An interactive step (Metro keeps running in it): `script` keeps the terminal live and logs it.
 # Ctrl+C is a normal stop, not a failure.
+# Did a launch fail? Ctrl+C (130) is a normal stop. A failure marker in the log counts when the exit
+# code is not 0, and also with 0 when Metro never said it was ready (`script` can hide the code of
+# what ran inside it: an install that failed after the build looked like a stop).
+LAUNCH_MARKERS='BUILD FAILED|FAILURE:|error:|CommandError|INSTALL_FAILED_[A-Z_]+|exited with non-zero code'
+launch_failed() { # <rc> <log>
+  [ "$1" = 130 ] && return 1
+  grep -qiE "$LAUNCH_MARKERS" "$2" || return 1
+  [ "$1" != 0 ] && return 0
+  ! grep -qE 'Logs for your project|Metro waiting on|Waiting on http' "$2"
+}
+
 launch() { # <step> <command...>
   local step=$1 attempt=1 rc
   shift
@@ -842,8 +853,7 @@ launch() { # <step> <command...>
     : >"$LOG/$step.log"
     script -q "$LOG/$step.log" "$@"
     rc=$?
-    if [ "$rc" = 0 ] || [ "$rc" = 130 ] ||
-      ! grep -qE 'BUILD FAILED|FAILURE:|error: |CommandError|\*\* BUILD FAILED' "$LOG/$step.log"; then
+    if ! launch_failed "$rc" "$LOG/$step.log"; then
       ok "$(L 'stopped' 'detenido')"
       return 0
     fi

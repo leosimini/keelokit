@@ -673,6 +673,47 @@ class DecisionTableTest(Lib, unittest.TestCase):
         self.assertNotIn("run:android", r.stdout)
 
 
+class LaunchFailureTest(Lib, unittest.TestCase):
+    """A launch that failed must not look like a Ctrl+C stop."""
+
+    INSTALL_FAILED = (
+        "Error: adb: failed to install /x/app-debug.apk: Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE: Failed to override installation location]\n"
+        "Error: /Users/me/Android/sdk/platform-tools/adb -s emulator-5554 install -r -d --user 0 /x/app-debug.apk exited with non-zero code: 1\n")
+
+    def failed(self, rc, log):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        (p.dir / "x.log").write_text(log)
+        return self.lib(p, f'launch_failed {rc} x.log && echo failed || echo stopped').stdout.strip()
+
+    def test_the_install_failure_from_the_emulator_is_a_failure_even_with_rc_0(self):
+        self.assertEqual(self.failed(0, "BUILD SUCCESSFUL in 4m\n" + self.INSTALL_FAILED), "failed")
+        self.assertEqual(self.failed(1, self.INSTALL_FAILED), "failed")
+
+    def test_each_marker_counts_in_any_case(self):
+        for text in ("INSTALL_FAILED_UPDATE_INCOMPATIBLE", "Error: boom", "ERROR: boom", "exited with non-zero code: 1",
+                     "BUILD FAILED in 2s", "CommandError: x"):
+            with self.subTest(text=text):
+                self.assertEqual(self.failed(0, text + "\n"), "failed")
+
+    def test_ctrl_c_and_a_clean_run_are_normal_stops(self):
+        self.assertEqual(self.failed(130, self.INSTALL_FAILED), "stopped")
+        self.assertEqual(self.failed(0, "Starting Metro\nLogs for your project will appear below.\n"), "stopped")
+        self.assertEqual(self.failed(1, "nothing wrong in here\n"), "stopped")
+
+    def test_a_marker_after_metro_was_ready_with_rc_0_is_still_a_stop(self):
+        # the user used the app, a request failed ("Error: ..." in Metro's output), then Ctrl+C ended it with 0
+        self.assertEqual(self.failed(0, "Logs for your project will appear below.\nError: Network request failed\n"), "stopped")
+
+    def test_launch_reports_the_failure_and_records_it(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        script = ('script() { shift; shift; printf "%s" "$FIXTURE" >"$LOG/android.log"; return 0; }; repair() { return 1; }; '
+                  'launch android true; echo rc=$?')
+        r = self.lib(p, "init_state; " + script, stdin="y\n", env={"FIXTURE": self.INSTALL_FAILED})
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("INSTALL_FAILED_INSUFFICIENT_STORAGE", (p.dir / ".local-dev/last-error.txt").read_text())
+        self.assertNotIn("stopped", r.stdout)
+
+
 class AndroidTargetTest(Lib, unittest.TestCase):
     """B: phones, wireless, several devices, the emulator."""
 
