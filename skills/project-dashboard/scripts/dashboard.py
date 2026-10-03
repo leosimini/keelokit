@@ -1551,17 +1551,19 @@ def logo() -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode() if svg else ""
 
 
-def ext_link(href: str | None, links: Links, t: dict) -> str:
+def ext_link(href: str | None, links: Links, t: dict, name: str = "") -> str:
     if not href:
         return ""
     label = t["open_github"] if links.github else t["open_file"]
-    return f'<a href="{esc(href)}" target="_blank" rel="noopener">{esc(label)}</a>'
+    aria = f' aria-label="{esc(label)}: {esc(name)}"' if name else ""  # A11Y-4: one name per document
+    return f'<a href="{esc(href)}" target="_blank" rel="noopener"{aria}>{esc(label)}</a>'
 
 
 def doc_block(rel: str, text: str, links: Links, t: dict) -> str:
-    return (f'<details class="doc"><summary><span class="path">{esc(rel)}</span>'
-            f'{ext_link(links.href(rel), links, t)}{CHEV}</summary>'
-            f'<div class="md">{markdown(text, links, rel)}</div></details>')
+    # A11Y-4: the link lives in the body, not inside <summary> (no control nested in another).
+    link = ext_link(links.href(rel), links, t, rel)
+    return (f'<details class="doc"><summary><span class="path">{esc(rel)}</span>{CHEV}</summary>'
+            f'<div class="md">{f"<p>{link}</p>" if link else ""}{markdown(text, links, rel)}</div></details>')
 
 
 def term(cmd: str, t: dict, light: bool = False) -> str:
@@ -1672,7 +1674,7 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
         "blocked": t["story_blocked"].format(deps=", ".join(st.get("waits", []))),
         "gap": t["story_gap"].format(gaps=", ".join(st["gaps"])),
     }[status]
-    link = ext_link(links.href(st["path"]), links, t)
+    link = ext_link(links.href(st["path"]), links, t, st["path"])
     build = f'<div class="acts">{ask(t["act_build_one"], "/keelokit:build-story " + st["id"], True)}</div>' if status == "ready" else ""
     deps = (f'<p class="muted">{esc(t["depends"])}: ' + ", ".join(f"<code>{esc(d)}</code>" for d in st["depends_on"]) + "</p>") \
         if st["depends_on"] else ""

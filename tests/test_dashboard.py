@@ -643,6 +643,20 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(dash.next_step({**s, "errors": 3}, "en")["title"], dash.T["en"]["next_doctor"])
         self.assertEqual(dash.next_step({**s, "errors": 0}, "en")["anchor"], "stage-backlog")
 
+    def test_A11Y_4_no_control_inside_a_summary_and_one_name_per_document_link(self):
+        """A11Y-4: every document's "Open file" link sat inside its <summary> (a control nested in a
+        control) and all of them had the same accessible name."""
+        self.building()
+        for args in (("--standalone",), ()):
+            with self.subTest(args=args):
+                html = self.page(*args) if args else self.page()
+                self.assertTrue(re.search(r"<a [^>]*aria-label=", html) or not args)
+                for summary in re.findall(r"<summary\b.*?</summary>", html, re.S):
+                    self.assertNotRegex(summary, r"<(a|button)\b", summary[:120])
+                pairs = set(re.findall(r'<a href="([^"]+)" target="_blank"[^>]*aria-label="([^"]+)"', html))
+                names = [name for _, name in pairs]
+                self.assertEqual(len(names), len(set(names)), "two document links share a name but not a file")
+
     def test_I18N_5_the_report_writes_dates_in_its_language(self):
         """I18N-5: the report printed every date as ISO in both languages, though the skill says the
         page's language governs dates. Visible dates follow the language; requests keep ISO."""
