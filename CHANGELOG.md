@@ -41,6 +41,10 @@
   partition (`--new-avd`; an installed image is reused without a download), or to cold boot with
   `-wipe-data` (named, with the warning that it erases the emulator's apps and data); with `--yes` it
   stops and lists them. Not tested: the emulator itself and wireless debugging.
+- **Expo Go with `--yes`.** When Expo asks to install or update Expo Go on the simulator or phone
+  (it downloads the app from Expo), `--yes` answers it and says so; without `--yes` at a terminal Expo
+  asks as before. If that prompt is cancelled for lack of a terminal, the run fails with exit 3 and
+  explains it, instead of looking like a stop.
 - **iOS asks before a link opens the app.** On the simulator's fast path the script says that iOS
   asks "Open in <app>?" (tap Open) and opens the link. Launching the app first was tried on
   hardware: the dev launcher opens but does not reconnect to Metro by itself. Android has no such

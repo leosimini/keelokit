@@ -920,14 +920,42 @@ launch_failed() { # <rc> <log>
   ! grep -qE 'Logs for your project|Metro waiting on|Waiting on http' "$2"
 }
 
+# Expo asks "Install the recommended Expo Go?" when the one on the simulator or phone is not the SDK's.
+# With no terminal that prompt is cancelled and Expo exits: a failure that only a person can resolve.
+expo_go_prompt_cancelled() { # <log>
+  grep -q 'Install the recommended Expo Go' "$1" && ! grep -q 'Logs for your project' "$1"
+}
+
+# `script` with one `y` fed to the command's stdin (FEED_Y=1), stdin kept open afterwards so Metro
+# stays alive; the feeder is stopped when the command ends.
+script_feeding_y() { # <log> <command...>
+  local log=$1 fifo feeder rc
+  shift
+  fifo=$(mktemp -u "${TMPDIR:-/tmp}/run-local.XXXXXX") && mkfifo "$fifo" || return 1
+  ( printf 'y\n'; exec cat ) >"$fifo" &
+  feeder=$!
+  script -q "$log" "$@" <"$fifo"
+  rc=$?
+  kill "$feeder" 2>/dev/null
+  rm -f "$fifo"
+  return "$rc"
+}
+
 launch() { # <step> <command...>
-  local step=$1 attempt=1 rc
+  local step=$1 attempt=1 rc feed=${FEED_Y:-0}
+  FEED_Y=0
   shift
   init_state || return 1
   while :; do
     : >"$LOG/$step.log"
-    script -q "$LOG/$step.log" "$@"
+    if [ "$feed" = 1 ]; then script_feeding_y "$LOG/$step.log" "$@"; else script -q "$LOG/$step.log" "$@"; fi
     rc=$?
+    if [ "$rc" != 130 ] && expo_go_prompt_cancelled "$LOG/$step.log"; then
+      record_error "$step" "$rc" "$LOG/$step.log"
+      bad "$(L 'Expo asked to install or update Expo Go and nobody could answer. Run it in a terminal and answer Y, or add --yes (it downloads Expo Go from Expo and installs it on the target).' 'Expo preguntó si instalar o actualizar Expo Go y nadie pudo responder. Corrélo en una terminal y respondé Y, o agregá --yes (descarga Expo Go de Expo y lo instala en el target).')"
+      BLOCKED=1
+      return 1
+    fi
     if ! launch_failed "$rc" "$LOG/$step.log"; then
       ok "$(L 'stopped' 'detenido')"
       return 0
@@ -1736,6 +1764,15 @@ fast_launch() { # <android|ios> <step>
   launch "$2" env "$API_URL_ENV=$(api_url)" bash "$SELF" __expo start --dev-client
 }
 
+# With --yes, the Expo Go install/update prompt is answered (Y) for the Expo Go launches only; without
+# --yes at a terminal nothing changes and Expo asks by itself.
+expo_go_yes() {
+  FEED_Y=0
+  [ "$YES" = 1 ] || return 0
+  FEED_Y=1
+  warn "$(L 'Expo Go: --yes accepts installing or updating it on the target if Expo asks (it downloads the app from Expo).' 'Expo Go: --yes acepta instalarlo o actualizarlo en el target si Expo pregunta (descarga la app de Expo).')"
+}
+
 # Prints which path was taken and why. Returns 1 when --no-build forbids the only way forward.
 choose_build_path() { # <target> <id> <installed function>
   local last fp
@@ -1775,6 +1812,7 @@ run_android() {
       return 1
     fi
     say "$(L 'Opening in Expo Go. Ctrl+C stops Metro.' 'Abriendo en Expo Go. Ctrl+C detiene Metro.')"
+    expo_go_yes
     launch android env "$API_URL_ENV=$(api_url)" bash "$SELF" __expo start --android
   fi
 }
@@ -1867,6 +1905,7 @@ run_ios() {
     fi
   else
     say "$(L 'Opening in Expo Go (it installs itself in the simulator). Ctrl+C stops Metro.' 'Abriendo en Expo Go (se instala solo en el simulador). Ctrl+C detiene Metro.')"
+    expo_go_yes
     launch ios env "$API_URL_ENV=$(api_url)" bash "$SELF" __expo start --ios
   fi
 }

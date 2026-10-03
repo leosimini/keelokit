@@ -91,6 +91,10 @@ silent, and `seed` runs it by name. `[local] services` (redis, mailpit...) start
 database. Node and the JDK come from the project; a Node from nvm is used for the run only, and
 installing one is in `missing`, so it is the user's yes.
 
+With Expo Go and `--yes`, the script answers Expo's "Install the recommended Expo Go?" with yes: it
+downloads Expo Go from Expo and installs or updates it on the target, so only pass `--yes` once the user
+has accepted that. If the prompt could not be answered it exits 3 and says so.
+
 The script chooses between Expo Go and a development build (`client` in `[local]`: `auto`,
 `expo-go`, `dev-client`) and says which and why. In a simulator build it can remove capabilities a
 simulator can't run (Sign in with Apple, associated domains, push) from the generated `ios/`: it

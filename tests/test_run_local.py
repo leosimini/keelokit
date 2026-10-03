@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "template/.keelokit/bin/run-local.sh"
 CORE = ["bash", "awk", "sed", "grep", "sort", "tr", "cat", "ls", "head", "tail", "cut", "basename", "dirname",
-        "date", "git", "env", "perl", "seq", "mkdir", "tee", "sleep", "touch", "cp", "rm", "wc", "id", "python3", "du", "mv", "ln", "nohup"]
+        "date", "git", "env", "perl", "seq", "mkdir", "tee", "sleep", "touch", "cp", "rm", "wc", "id", "python3", "du", "mv", "ln", "nohup", "mktemp", "mkfifo"]
 PROFILE = 'kind = "mobile-app"\ntraits = ["mobile"]\n'
 LOCAL_OK = """
 [local]
@@ -1620,6 +1620,69 @@ class IosFastPathTest(Lib, unittest.TestCase):
         r = self.lib(p, "wait_metro() { return 0; }; init_state; A_SERIAL=S1; launch() { sleep 2; return 0; }; fast_launch android android-metro; wait", stdin="y\n")
         self.assertNotIn("Open in", r.stdout)
         self.assertTrue(any("adb -s S1 shell am start -a android.intent.action.VIEW" in c for c in p.called()))
+
+
+class ExpoGoPromptTest(Lib, unittest.TestCase):
+    PROMPT = ("Expo Go 57.0.9 is recommended for SDK 57.0.0 (iPhone 17 Pro is using 2.32.18).\n"
+              "? Install the recommended Expo Go version? \u203a (Y/n)\nPrompt cancelled.\n")
+
+    def project(self, script_body: str):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV.replace('client = "dev-client"', 'client = "expo-go"'))
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        p.shim("script", script_body)
+        return p
+
+    def test_a_cancelled_prompt_is_a_failure_that_only_a_person_can_resolve(self):
+        p = self.project(f'printf %s "{self.PROMPT}" >"$2"')
+        r = self.lib(p, 'launch ios true; rc=$?; echo "rc=$rc"; finish $rc; echo "exit=$?"')
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("exit=3", r.stdout)
+        self.assertIn("Expo asked to install or update Expo Go and nobody could answer", r.stdout)
+        self.assertNotIn("stopped", r.stdout)
+        self.assertIn("Install the recommended Expo Go", (p.dir / ".local-dev/last-error.txt").read_text())
+
+    def test_the_prompt_followed_by_a_running_metro_is_a_normal_stop(self):
+        p = self.project(f'printf "%s" "{self.PROMPT}Logs for your project will appear below.\\n" >"$2"')
+        r = self.lib(p, 'launch ios true; echo "rc=$?"')
+        self.assertIn("rc=0", r.stdout)
+
+    def test_with_yes_one_y_reaches_the_command_and_stdin_stays_open(self):
+        p = self.project("true")
+        p.shim("script", 'read -r a; echo "got:$a" >>"' + str(p.calls) + '"; if read -r -t 1 b; then echo "second:$b" >>"' + str(p.calls) + '"; else echo "still-open" >>"' + str(p.calls) + '"; fi; echo "Logs for your project" >"$2"')
+        import time
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1"}
+        proc = subprocess.Popen(["bash", "-c", f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; YES=1; expo_go_yes; launch ios true; echo "rc=$?"'],
+                                env=e, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        t = time.time()
+        try:
+            out, _ = proc.communicate(timeout=30)
+        finally:
+            proc.kill()
+        self.assertLess(time.time() - t, 20, "the feeder is stopped with the command")
+        self.assertIn("rc=0", out)
+        self.assertIn("--yes accepts installing or updating it", out)
+        self.assertIn("downloads the app from Expo", out)
+        calls = p.called()
+        self.assertIn("got:y", calls)
+        self.assertIn("still-open", calls, "stdin was not closed after the y")
+
+    def test_without_yes_nothing_is_fed(self):
+        p = self.project("true")
+        p.shim("script", 'if read -r -t 1 a; then echo "got:$a" >>"' + str(p.calls) + '"; else echo none >>"' + str(p.calls) + '"; fi; echo "Logs for your project" >"$2"')
+        r = self.lib(p, "launch ios true; echo rc=$?", stdin="")
+        self.assertNotIn("got:y", p.called())
+        self.assertNotIn("--yes accepts", r.stdout)
+
+    def test_only_the_expo_go_launches_ask_for_it(self):
+        text = SCRIPT.read_text()
+        self.assertEqual(len(re.findall(r"expo_go_yes\n\s+launch (ios|android)", text)), 2)
+
+    def test_the_flag_is_used_up_by_one_launch(self):
+        p = self.project('echo "Logs for your project" >"$2"')
+        self.lib(p, 'YES=1; expo_go_yes; launch ios true; echo "[$FEED_Y]"')
+        r = self.lib(p, 'YES=1; expo_go_yes; launch ios true; echo "[$FEED_Y]"')
+        self.assertIn("[0]", r.stdout)
 
 
 class StaticTest(unittest.TestCase):
