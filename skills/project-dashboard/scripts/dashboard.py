@@ -234,6 +234,8 @@ T = {
         "bb_what": "Un bug bash es una cacería de errores en todo el producto: varios agentes lo recorren por dimensiones (datos, seguridad, textos, accesibilidad…), otro confirma cada hallazgo, se corrige la causa y se agrega un control para que ese tipo de error no vuelva. Lo que no se corrige en el momento pasa al backlog como historia.",
         "bb_sum": "Ejecutados: {n} · hallazgos: {found} · corregidos: {fixed} · historias nuevas: {stories}",
         "bb_none": "Todavía no se hizo ninguno. Conviene uno al terminar cada ola.",
+        "bb_running": ("En curso: {n} hallazgo hasta ahora, sin validar todavía. El reporte llega al final.",
+                       "En curso: {n} hallazgos hasta ahora, sin validar todavía. El reporte llega al final."),
         "bb_run": "Bug bash del {date}",
         "bb_counts": "Hallazgos: {found} · corregidos: {fixed} · por decidir: {pending} · abiertos: {open}",
         "bb_cols": ["Id", "Severidad", "Hallazgo", "Estado", "Control agregado"],
@@ -461,6 +463,8 @@ T = {
         "bb_what": "A bug bash hunts for errors across the whole product: several agents walk it by dimension (data, security, copy, accessibility…), another confirms each finding, the cause gets fixed and a check is added so that kind of error can't come back. Whatever isn't fixed on the spot goes to the backlog as a story.",
         "bb_sum": "Runs: {n} · findings: {found} · fixed: {fixed} · new stories: {stories}",
         "bb_none": "None yet. One after each wave is a good habit.",
+        "bb_running": ("In progress: {n} finding so far, not validated yet. The report comes at the end.",
+                       "In progress: {n} findings so far, not validated yet. The report comes at the end."),
         "bb_run": "Bug bash of {date}",
         "bb_counts": "Findings: {found} · fixed: {fixed} · to decide: {pending} · open: {open}",
         "bb_cols": ["Id", "Severity", "Finding", "Status", "Check added"],
@@ -872,6 +876,15 @@ def collect(root: Path) -> dict:
                 "pending": md_section(text, "pending"),
                 "stories": made_by(f"{origin}:{date}"),
             })
+        # UX-5: a bug bash under way has its lenses' files and no report yet; it shows as running.
+        if origin == "bugbash" and (root / folder).is_dir():
+            for run in sorted((root / folder).iterdir(), reverse=True):
+                lenses = sorted(run.glob("*.md")) if run.is_dir() and not (run / "report.md").exists() else []
+                if lenses:
+                    found = sum(len(re.findall(r"(?m)^### ", read(f))) for f in lenses)
+                    runs.append({"date": run.name, "path": run.relative_to(root).as_posix() + "/", "text": "",
+                                 "findings": [], "sha": "", "pending": "", "stories": [], "running": found})
+            runs.sort(key=lambda b: b["date"], reverse=True)
         return runs
 
     security = reports("docs/security", "security")
@@ -1821,6 +1834,8 @@ def findings_section(runs: list[dict], sid: str, prefix: str, title: str, what: 
             f'<tr><td><span class="tag">{esc(f["id"])}</span></td><td><span class="sev {esc(f["severity"])}">{esc(f["severity"])}</span></td>'
             f'<td>{inline(f["title"])}</td><td>{inline(f["status"])}</td><td>{inline(f["check"])}</td></tr>' for f in fs)
         head = "".join(f"<th>{esc(c)}</th>" for c in t["bb_cols"])
+        if "running" in b:
+            counts = plural(t, "bb_running", b["running"])
         inner = [f'<p class="muted">{esc(counts)}{" · " + esc(b["sha"][:9]) if b["sha"] else ""}</p>']
         if rows:
             inner.append(f'<div class="scroll"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>')
@@ -1830,7 +1845,8 @@ def findings_section(runs: list[dict], sid: str, prefix: str, title: str, what: 
         if b["stories"]:
             made = "".join(story_row(s["by_id"][x], links, t) for x in b["stories"] if x in s["by_id"])
             inner.append(block(esc(t["bb_stories"]), made))
-        inner.append(doc_block(b["path"], b["text"], links, t))
+        if "running" not in b:
+            inner.append(doc_block(b["path"], b["text"], links, t))
         is_open = n_pending > 0 or (i == 0 and not open_any)
         open_any = open_any or is_open
         body.append(f'<details class="group" id="{prefix}-{esc(b["date"])}"{" open" if is_open else ""}><summary>'
@@ -2099,7 +2115,7 @@ OPS_T = {
         "review": "Para revisar", "review_docs": "Documentos", "approve": "Aprobar", "change": "Pedir cambios",
         "health": "Salud y entornos", "doctor_ok": "Harness sin errores",
         "doctor_err": ("{n} error del harness", "{n} errores del harness"),
-        "bb_line": "{fixed} de {total} corregidos", "to_backlog": ("{n} pasó al backlog", "{n} pasaron al backlog"),
+        "bb_line": "{fixed} de {total} corregidos", "bb_running": ("en curso, {n} hallazgo hasta ahora", "en curso, {n} hallazgos hasta ahora"), "to_backlog": ("{n} pasó al backlog", "{n} pasaron al backlog"),
         "decisions_n": ("{n} decisión", "{n} decisiones"), "env_ready": "{env} listo", "env_prep": "{env} en preparación",
         "steps": "{done}/{total} pasos", "docs": "Documentos del proyecto",
         "d_context": "Contexto", "d_prd": "PRD", "d_stack": "Stack", "d_backlog": "Backlog", "d_decisions": "Decisiones ({n})",
@@ -2133,7 +2149,7 @@ OPS_T = {
         "review": "Ready for review", "review_docs": "Documents", "approve": "Approve", "change": "Ask for changes",
         "health": "Health and environments", "doctor_ok": "Harness without errors",
         "doctor_err": ("{n} harness error", "{n} harness errors"),
-        "bb_line": "{fixed} of {total} fixed", "to_backlog": ("{n} went to the backlog", "{n} went to the backlog"),
+        "bb_line": "{fixed} of {total} fixed", "bb_running": ("in progress, {n} finding so far", "in progress, {n} findings so far"), "to_backlog": ("{n} went to the backlog", "{n} went to the backlog"),
         "decisions_n": ("{n} decision", "{n} decisions"), "env_ready": "{env} ready", "env_prep": "{env} being set up",
         "steps": "{done}/{total} steps", "docs": "Project documents",
         "d_context": "Context", "d_prd": "PRD", "d_stack": "Stack", "d_backlog": "Backlog", "d_decisions": "Decisions ({n})",
@@ -2379,7 +2395,7 @@ def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str
             fixed = sum(1 for f in b["findings"] if f["status"].lower().startswith(("fixed", "corregid")))
             pend = sum(1 for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente")))
             line = ops_link(links.href(b["path"]), o[of].format(date=short_date(b["date"], lang)).capitalize()) + ": " + esc(
-                o["bb_line"].format(fixed=fixed, total=len(b["findings"])))
+                n_of(o, "bb_running", b["running"]) if "running" in b else o["bb_line"].format(fixed=fixed, total=len(b["findings"])))
             if b["stories"]:
                 line += ", " + esc(n_of(o, "to_backlog", len(b["stories"])))
             hl.append(("warn" if pend else "ok", "●" if pend else "✓", line, n_of(o, "decisions_n", pend) if pend else ""))

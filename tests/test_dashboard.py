@@ -657,6 +657,17 @@ class DashboardTest(unittest.TestCase):
                 names = [name for _, name in pairs]
                 self.assertEqual(len(names), len(set(names)), "two document links share a name but not a file")
 
+    def test_UX_5_a_bug_bash_under_way_shows_as_running(self):
+        """UX-5: until a bug bash wrote report.md, the dashboard showed nothing about it, though its
+        lenses had filed findings (and fixes may have landed)."""
+        self.building()
+        self.write("docs/bugbash/2026-09-30/ux.md", "# ux\n\n### UX-1 · a\n\n### UX-2 · b\n")
+        self.write("docs/bugbash/2026-09-30/copy.md", "# copy\n\n### CPY-1 · c\n")
+        self.assertIn("In progress: 3 findings so far", self.page("--standalone"))
+        ops = self.ops("--standalone")
+        self.assertIn("in progress, 3 findings so far", ops)
+        self.assertIn("2026-09-24", ops, "the finished run is still there")
+
     def test_I18N_5_the_report_writes_dates_in_its_language(self):
         """I18N-5: the report printed every date as ISO in both languages, though the skill says the
         page's language governs dates. Visible dates follow the language; requests keep ISO."""
