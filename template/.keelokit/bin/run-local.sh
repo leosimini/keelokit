@@ -290,6 +290,31 @@ if mode == "json_status":
     print(json.dumps(out, indent=2))
     sys.exit()
 
+if mode == "stamp":
+    # cheap: path, mtime and size of every input the fingerprint reads (no contents)
+    d = sys.argv[3] if len(sys.argv) > 3 else "."
+    app = os.path.join(root, d)
+    files = []
+    for base in (root, app):
+        for f in ("package.json", "pnpm-lock.yaml", "yarn.lock", "package-lock.json", "bun.lockb", "bun.lock"):
+            files.append(os.path.join(base, f))
+    if os.path.isdir(app):
+        files += [os.path.join(app, f) for f in sorted(os.listdir(app)) if f == "app.json" or f.startswith("app.config.")]
+    try:
+        files += [os.path.join(root, t.decode()) for t in subprocess.run(
+            ["git", "ls-files", "-z", "--", os.path.join(d, "ios"), os.path.join(d, "android")], cwd=root, capture_output=True).stdout.split(b"\0") if t]
+    except Exception:
+        pass
+    h = hashlib.sha256()
+    for f in files:
+        try:
+            st = os.stat(f)
+            h.update(f"{f}|{st.st_mtime_ns}|{st.st_size}\n".encode())
+        except OSError:
+            h.update(f"{f}|-\n".encode())
+    print(h.hexdigest()[:24])
+    sys.exit()
+
 if mode == "fingerprint":
     # what a native build depends on: dependencies, lockfiles, app config, tracked native folders
     d = sys.argv[3] if len(sys.argv) > 3 else "."
@@ -1603,7 +1628,15 @@ with_timeout() { # <seconds> <command...>
 }
 
 fingerprint() {
-  fingerprint_compute
+  local d=${MOBILE_DIR:-.} stamp cached
+  stamp=$(detect_py stamp "$d" 2>/dev/null)
+  # npx takes 15–25 s: an unchanged project (same paths, mtimes and sizes) does not pay twice.
+  cached=$(awk -F'|' -v s="$stamp" '$1==s {print $2; exit}' "$STATE/fingerprint-cache" 2>/dev/null)
+  if [ -n "$stamp" ] && [ -n "$cached" ]; then echo "$cached"; return; fi
+  cached=$(fingerprint_compute)
+  # only the slow answer is kept: a fallback hash is cheap, and a failed npx must not stick
+  [ -n "$stamp" ] && [[ $cached == expo:* ]] && [ -d "$STATE" ] && echo "$stamp|$cached" >"$STATE/fingerprint-cache"
+  echo "$cached"
 }
 
 fingerprint_compute() {

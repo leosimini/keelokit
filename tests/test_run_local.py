@@ -1640,6 +1640,33 @@ class EnsureAndCacheTest(Lib, unittest.TestCase):
         self.assertIn("no function check_nonsense", r.stdout)
         self.assertNotIn("command not found", r.stderr)
 
+    def test_the_slow_fingerprint_is_cached_until_an_input_changes(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        (p.dir / ".local-dev").mkdir()
+        p.shim("npx", 'echo \'{"hash": "h1"}\'')
+        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h1")
+        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h1")
+        self.assertEqual(len([c for c in p.called() if c.startswith("npx")]), 1, "the second call came from the cache")
+        # same content, other time stamp: an input changed as far as the cache can tell
+        p.shim("npx", 'echo \'{"hash": "h2"}\'')
+        pkg = p.dir / "apps/mobile/package.json"
+        pkg.write_text(pkg.read_text() + " ")
+        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h2")
+        self.assertEqual(self.lib(p, "fingerprint").stdout.strip(), "expo:h2")
+        # each kind of input invalidates it
+        for rel, text in (("pnpm-lock.yaml", "x"), ("apps/mobile/app.json", json.dumps({"expo": {"name": "n"}})), ("package.json", "{}")):
+            before = (p.dir / ".local-dev/fingerprint-cache").read_text()
+            write(p.dir, rel, text)
+            self.lib(p, "fingerprint")
+            self.assertNotEqual((p.dir / ".local-dev/fingerprint-cache").read_text(), before, rel)
+
+    def test_a_fallback_hash_is_not_cached(self):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        (p.dir / ".local-dev").mkdir()
+        p.shim("npx", "", code=1)
+        self.assertTrue(self.lib(p, "fingerprint").stdout.strip().startswith("files:"))
+        self.assertFalse((p.dir / ".local-dev/fingerprint-cache").exists())
+
 
 class StaticTest(unittest.TestCase):
     def test_bash_3_2_compatible(self):
