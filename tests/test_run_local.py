@@ -43,7 +43,7 @@ def pnpm_monorepo(d: Path) -> None:
     write(d, "apps/mobile/app.json", json.dumps({"expo": {"android": {"package": "com.demo.app"}}}))
     write(d, "apps/mobile/.env.example", "EXPO_PUBLIC_API_URL=http://localhost:3000\n")
     write(d, "apps/api/package.json", json.dumps({"dependencies": {"@nestjs/core": "^12", "prisma": "^7"},
-          "scripts": {"dev": "nest start --watch", "prisma:migrate:deploy": "prisma migrate deploy"}}))
+          "scripts": {"dev": "nest start --watch", "prisma:generate": "prisma generate", "prisma:migrate:deploy": "prisma migrate deploy"}}))
     write(d, "apps/api/prisma/schema.prisma")
     write(d, "apps/api/.env.example", "PORT=3000\n")
     write(d, "apps/api/src/health.controller.ts", "@Controller('health') class H {}")
@@ -125,7 +125,7 @@ class DetectTest(unittest.TestCase):
             {"mobile_dir": "apps/mobile", "pm": "pnpm", "android_package": "com.demo.app", "api_dir": "apps/api",
              "db_service": "postgres", "api_url_env": "EXPO_PUBLIC_API_URL", "api_url_suffix": "", "api_port": "3000"})
         self.assertEqual(d["api_start"], "pnpm run dev:api")
-        self.assertEqual(d["api_migrate"], "pnpm --dir apps/api run prisma:migrate:deploy")
+        self.assertEqual(d["api_migrate"], "pnpm --dir apps/api run prisma:generate && pnpm --dir apps/api run prisma:migrate:deploy")
         self.assertEqual(d["api_ready_url"], "http://localhost:3000/health")
         self.assertEqual(d["uncertain"], [])
 
@@ -136,7 +136,7 @@ class DetectTest(unittest.TestCase):
             {"mobile_dir": "apps/mobile", "pm": "npm", "android_package": "app.gc.mobile", "api_dir": "backend",
              "db_service": "db", "api_url_env": "EXPO_PUBLIC_API_BASE_URL", "api_url_suffix": "/api/v1"})
         self.assertEqual(d["api_start"], "npm --prefix backend run dev")
-        self.assertEqual(d["api_migrate"], "cd backend && npx prisma migrate deploy")
+        self.assertEqual(d["api_migrate"], "cd backend && npx prisma generate && npx prisma migrate deploy")
         self.assertEqual(d["api_ready_url"], "")  # no health route to be found: it waits for the port instead
 
     def test_no_expo_app(self):

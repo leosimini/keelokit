@@ -231,10 +231,12 @@ if api:
         out["api_start"] = pm_run(pm, api, s) if s else ""
         if not s:
             unc.append("api_start")
+    # a fresh checkout has no Prisma client: the API does not compile until it is generated
     if "prisma:migrate:deploy" in scripts:
-        out["api_migrate"] = pm_run(pm, api, "prisma:migrate:deploy")
+        gen = pm_run(pm, api, "prisma:generate") + " && " if "prisma:generate" in scripts else f"cd {api} && npx prisma generate && "
+        out["api_migrate"] = gen + pm_run(pm, api, "prisma:migrate:deploy")
     elif os.path.isdir(os.path.join(ap, "prisma")):
-        out["api_migrate"] = f"cd {api} && npx prisma migrate deploy"
+        out["api_migrate"] = f"cd {api} && npx prisma generate && npx prisma migrate deploy"
     m = re.search(r"(?m)^PORT=(\d+)", reads(os.path.join(ap, ".env.example")))
     if m:
         out["api_port"] = m.group(1)
