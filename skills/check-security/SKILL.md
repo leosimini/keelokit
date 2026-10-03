@@ -16,7 +16,7 @@ developer-facing project (library, CLI, plugin) gets supply-chain questions inst
 on the user's machine, which network calls it makes, what permissions it asks for, and whether
 anything private ends up in what it distributes.
 
-The day-to-day checks already run on every push: secret scan (SEC-1), `pnpm audit` (SEC-3),
+The day-to-day checks already run on every push: secret scan (SEC-1), `pnpm audit` through `.keelokit/bin/audit.py` (SEC-3: blocks what has a fix, lists what doesn't),
 Semgrep (SAST-1), the access matrix (AUTHZ-1). This skill looks for what they can't.
 
 ## 1. Data map — `docs/privacy/data-map.md`

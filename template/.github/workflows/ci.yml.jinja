@@ -54,7 +54,7 @@ jobs:
       - name: Harness doctor
         run: python3 .keelokit/bin/doctor.py --ci
       - name: Dependency audit
-        run: pnpm audit --audit-level=high
+        run: python3 .keelokit/bin/audit.py
 
   unit:
     name: Unit tests

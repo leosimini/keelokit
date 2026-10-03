@@ -12,6 +12,9 @@
   file it opens to a screen reader (A11Y-4).
 - The guard's message for deleting or touching an `.env` file says that, not "don't write" (LOG-3).
 - Two runs of `scripts/test-template.sh` on one machine take turns installing browsers (PKG-3).
+- Generated projects' dependency audit fails only on advisories that have a fix, and lists the
+  ones that don't yet (`.keelokit/bin/audit.py`). Three such advisories upstream were failing
+  every new project's `verify`. `harness-upgrade` brings it.
 
 ## 0.8.1 — 2026-09-28 — a stricter guard, safer links and workflows, and accessibility fixes
 

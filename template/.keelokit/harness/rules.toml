@@ -36,8 +36,8 @@ enforced_by = ["claude-hook:guard.py", "git-hook:pre-commit"]
 [[rule]]
 id = "SEC-3"
 level = "MUST NOT"
-rule = "Ship with a high or critical dependency vulnerability."
-why = "pnpm audit in CI is the cheapest supply-chain gate."
+rule = "Ship with a high or critical dependency vulnerability that has a fixed version."
+why = "pnpm audit in CI is the cheapest supply-chain gate. One with no fix yet is listed on every run and blocks once upstream ships the fix (.keelokit/bin/audit.py)."
 enforced_by = ["ci:checks", "script:scripts/verify.sh"]
 needs = ["typescript"]
 

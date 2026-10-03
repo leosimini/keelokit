@@ -9,6 +9,7 @@ reads a value for (a `case` branch that reads `$2`) and run it with the value mi
 another option in its place: the script must stop at once with exit 2 and a line naming the
 option, before it runs anything on PATH. A value that is a real word must still be taken."""
 import os
+import json
 import re
 import stat
 import subprocess
@@ -114,6 +115,48 @@ class ConcurrentRunsTest(unittest.TestCase):
                         locked = line.lstrip().startswith("flock ")
                         fallback = i >= 2 and lines[i - 1].strip() == "else" and lines[i - 2].lstrip().startswith("flock ")
                         self.assertTrue(locked or fallback, line)
+
+
+class AuditTest(unittest.TestCase):
+    """SEC-3: a generated project's audit fails on a high or critical advisory with a fix, and only
+    lists one with no fix yet (three of those, upstream, turned every new project red)."""
+    AUDIT = ROOT / "template/.keelokit/bin/audit.py"
+
+    def run_with(self, advisories):
+        tmp = Path(tempfile.mkdtemp())
+        shim = tmp / "pnpm"
+        shim.write_text("#!/bin/sh\ncat " + str(tmp / "out.json") + "\n")
+        shim.chmod(0o755)
+        (tmp / "out.json").write_text(json.dumps({"advisories": advisories, "metadata": {}}))
+        env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"}
+        return subprocess.run(["python3", str(self.AUDIT)], cwd=tmp, env=env, capture_output=True, text=True)
+
+    def adv(self, name, severity, patched):
+        return {"module_name": name, "severity": severity, "patched_versions": patched, "vulnerable_versions": "<=1",
+                "title": "t", "github_advisory_id": f"GHSA-{name}", "findings": [{"paths": [f".>{name}"]}]}
+
+    def test_SEC_3_blocks_what_has_a_fix_and_lists_what_doesnt(self):
+        run = self.run_with({"1": self.adv("braces", "high", "<0.0.0"), "2": self.adv("low-one", "moderate", ">=2")})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("no fix yet, not blocking: high braces", run.stdout)
+        run = self.run_with({"1": self.adv("minimist", "critical", ">=1.2.6"), "2": self.adv("braces", "high", "<0.0.0")})
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("minimist", run.stderr)
+
+    def test_SEC_3_an_audit_that_cant_run_fails(self):
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "pnpm").write_text("#!/bin/sh\necho '{\"error\": {\"code\": \"ERR_PNPM_AUDIT_BAD_RESPONSE\"}}'\n")
+        (tmp / "pnpm").chmod(0o755)
+        run = subprocess.run(["python3", str(self.AUDIT)], cwd=tmp, env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}"},
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 1)
+
+    def test_SEC_3_the_template_audits_only_through_it(self):
+        for rel in ("template/scripts/verify.sh", "template/.github/workflows/ci.yml.jinja"):
+            with self.subTest(rel):
+                text = (ROOT / rel).read_text()
+                self.assertIn("python3 .keelokit/bin/audit.py", text)
+                self.assertNotIn("pnpm audit", text)
 
 
 if __name__ == "__main__":

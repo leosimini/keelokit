@@ -136,6 +136,6 @@ if $db; then
   done
 fi
 step 'Dependency audit'
-pnpm audit --audit-level=high
+python3 .keelokit/bin/audit.py
 
 printf '\n\033[32m✔ verify passed\033[0m\n'
