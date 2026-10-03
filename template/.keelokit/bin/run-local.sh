@@ -763,6 +763,7 @@ pick_android() { # sets A_SERIAL and A_MODEL; only physical devices, never an An
     i=0
     while read -r l; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$l"; done <<<"$ready"
     read -r -p "  $(L 'Which one? ' '¿Cuál? ')" choice || return 1
+    [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
     ready=$(sed -n "${choice:-1}p" <<<"$ready")
   fi
   A_SERIAL=$(awk '{print $1}' <<<"$ready")
@@ -804,6 +805,7 @@ pick_ios() { # sets I_UDID and I_NAME: the simulator you chose last time, or a m
   else
     while read -r l; do i=$((i + 1)); printf '  %d) %s\n' "$i" "${l#* }"; done <<<"$sims"
     read -r -p "  $(L 'Which simulator? [1] ' '¿Qué simulador? [1] ')" choice || return 1
+    [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
     I_UDID=$(sed -n "${choice:-1}p" <<<"$sims" | cut -d' ' -f1)
     [ -n "$I_UDID" ] || return 1
     init_state || return 1
