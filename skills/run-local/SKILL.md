@@ -20,6 +20,9 @@ copies `.env.example` into the gitignored `.env`; real keys are the user's.
 
 ## 1. See where it stands
 
+No `.keelokit/` folder: the project isn't a Keelokit one yet, so there is no script to run. Say so and
+offer `/keelokit:project-adopt` (it adds only `.keelokit/`, the script included); come back here after.
+
 Read `[local]` in `.keelokit/profile.toml` and the profile's `traits`. No `mobile` trait: say there
 is no app to run here and stop. Then:
 
