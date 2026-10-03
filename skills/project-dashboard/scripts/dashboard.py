@@ -991,8 +991,13 @@ def next_step(s: dict, lang: str) -> dict:
     t, names = T[lang], {k: v[0] for k, v in STAGES[lang].items()}
     blocking = [g for g in s["gaps"] if g["blocking"]]
     flow = "/keelokit:project-adopt" if s["layout"] == "harness" else "/keelokit:project-new"
-    if s["pending"]:
+    # LOG-303: once the harness is in place its errors come first; before that they're expected.
+    harness = any(x["id"] in ("skeleton", "adopt") and x["status"] == "done" for x in s["stages"])
+    if s["pending"] and not (s["errors"] and harness):
         stage = next(x for x in s["stages"] if x["id"] == s["pending"])
+        if stage["status"] == "review" and stage["id"] == "intake" and blocking:
+            return {"title": t["next_gaps"], "detail": plural(t, "next_gaps_d", len(blocking)),
+                    "command": "/keelokit", "anchor": "stage-intake"}
         if stage["status"] == "review":
             return {"title": t["next_review"].format(stage=names[stage["id"]]), "detail": t["next_review_d"],
                     "command": None, "anchor": f"stage-{stage['id']}"}

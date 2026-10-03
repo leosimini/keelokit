@@ -624,6 +624,25 @@ class DashboardTest(unittest.TestCase):
         self.assertTrue(html.startswith("<!doctype html>"))
         self.assertIn('href="https://github.com/acme/shop/blob/main/docs/context/gaps.md"', html)
 
+    def test_LOG_303_errors_and_blocking_questions_come_before_approving_a_stage(self):
+        """LOG-303: next_step() returned "review and approve" for any pending stage before looking at
+        harness errors or blocking questions. A blocking question comes before approving the context,
+        and harness errors before any stage once the harness is in place; before that (a project
+        mid-interview, a repo not adopted yet) errors are expected and the stage stays the next step."""
+        dash = load_dashboard()
+        self.context("| GAP-001 | domain.md | m | o | What is X? | yes |\n")
+        self.write(".keelokit/state.toml", "[dashboard]\nlang = \"en\"\n")
+        s = dash.collect(self.root)
+        self.assertEqual(s["pending"], "intake")
+        self.assertEqual(dash.next_step({**s, "errors": 0}, "en")["title"], dash.T["en"]["next_gaps"])
+        early = dash.next_step({**s, "errors": 3, "gaps": []}, "en")
+        self.assertEqual(early["anchor"], "stage-intake", "no harness yet: its errors don't pre-empt the stage")
+        self.gates("intake", "product", "stack", "skeleton")
+        s = dash.collect(self.root)
+        self.assertEqual(s["pending"], "backlog")
+        self.assertEqual(dash.next_step({**s, "errors": 3}, "en")["title"], dash.T["en"]["next_doctor"])
+        self.assertEqual(dash.next_step({**s, "errors": 0}, "en")["anchor"], "stage-backlog")
+
     def test_I18N_5_the_report_writes_dates_in_its_language(self):
         """I18N-5: the report printed every date as ISO in both languages, though the skill says the
         page's language governs dates. Visible dates follow the language; requests keep ISO."""
