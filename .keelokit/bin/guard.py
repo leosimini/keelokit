@@ -149,6 +149,8 @@ def bash_problem(cmd: str) -> str | None:
             except ValueError:
                 targets = words
             if any(is_env_file(t.lstrip(">")) for t in targets):
+                if re.match(r"\s*(rm|touch|ln)\b", segment) and not re.search(r">", segment):  # LOG-3
+                    return "SEC-2: .env files are the human's: don't delete, create or link them from the shell; ask in chat"
                 return "SEC-2: don't write .env files from the shell; edit .env.example, real values go in the secret store"
             if any(applied_migration(t) for t in targets if "prisma/migrations/" in t):
                 return "DB-1: that migration is already on origin/main; create a new one"

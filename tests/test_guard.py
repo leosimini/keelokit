@@ -293,6 +293,17 @@ class GuardTest(unittest.TestCase):
                 self.assertEqual(self.claude("Write", file_path=target, content=secret), 2)
         self.assertEqual(self.claude("Write", file_path=target, content="postgresql://app:app@localhost:5432/app"), 0)
 
+    def test_LOG_3_deleting_or_touching_an_env_file_says_so(self):
+        """LOG-3: rm/touch of .env was blocked with a message about writing real values."""
+        for cmd in ["rm .env", "touch apps/api/.env", "ln -s x .env"]:
+            with self.subTest(cmd=cmd):
+                run = subprocess.run(["python3", str(self.repo / ".keelokit/bin/guard.py"), "--claude"], cwd=self.repo,
+                                     input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+                                     capture_output=True, text=True)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("don't delete, create or link", run.stderr)
+        self.assertEqual(self.bash("echo X=1 > .env"), 2)
+
     def test_sec_1_more_token_families_and_split_keys(self):
         """SEC-1 (bug bash 2026-09-27): npm, GitLab, JWT and Azure keys, and a key split over a MultiEdit's edits."""
         target = str(self.repo / "a.ts")
