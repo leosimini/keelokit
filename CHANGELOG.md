@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## Unreleased — new projects pass their audit, and a dashboard that puts first what comes first
 
+- **New projects pass `verify` again.** Three high advisories with no fixed version upstream
+  (in Expo, Jest and Astro dependencies) were failing every new project's dependency audit. The
+  audit (`.keelokit/bin/audit.py`, in `verify` and CI) now fails on advisories that have a fix and
+  lists the ones that don't yet; they start failing once upstream ships one. `harness-upgrade`
+  brings it to existing projects.
 - The dashboard's next step puts first what comes first: a blocking question before approving the
   context, and harness errors before any stage once the harness is in place (LOG-303).
 - A bug bash under way shows on the dashboard and the report as running, with its findings so far,
@@ -12,9 +17,6 @@
   file it opens to a screen reader (A11Y-4).
 - The guard's message for deleting or touching an `.env` file says that, not "don't write" (LOG-3).
 - Two runs of `scripts/test-template.sh` on one machine take turns installing browsers (PKG-3).
-- Generated projects' dependency audit fails only on advisories that have a fix, and lists the
-  ones that don't yet (`.keelokit/bin/audit.py`). Three such advisories upstream were failing
-  every new project's `verify`. `harness-upgrade` brings it.
 
 ## 0.8.1 — 2026-09-28 — a stricter guard, safer links and workflows, and accessibility fixes
 
