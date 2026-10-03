@@ -744,8 +744,12 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             errors.append(f"story {sid}: declares 'integrity' — list the invariants it must keep (invariants = [\"INV-001\"])")
         if invs and "integrity" not in (dims or []):
             errors.append(f"story {sid}: lists invariants — declare the 'integrity' dimension too")
-        if sid not in done and (hit := areas_hit(meta.get("touches", []), areas)) and "integrity" not in (dims or []):
-            errors.append(f"story {sid}: touches critical area {', '.join(hit)} — declare 'integrity' and the invariants it must keep")
+        if (hit := areas_hit(meta.get("touches", []), areas)) and "integrity" not in (dims or []):
+            if sid not in done:
+                errors.append(f"story {sid}: touches critical area {', '.join(hit)} — declare 'integrity' and the invariants it must keep")
+            else:  # LOG-304: shipped before (or despite) the area; visible, but not a retroactive red CI
+                warnings.append(f"story {sid} is done but touches critical area {', '.join(hit)} without 'integrity': "
+                                "add it with the invariants the code keeps, and their tests")
     kept = {i for m in stories.values() for i in m.get("invariants", [])}
     if stories:
         for iid in sorted(set(invariants) - kept):

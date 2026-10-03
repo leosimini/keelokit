@@ -464,6 +464,22 @@ class DoctorTest(unittest.TestCase):
         self.write("packages/shared/src/allocate.ts", "export const a = 2;\n")
         self.assertEqual(self.doctor("--critical", "--changed").split(), ["packages/shared/src/allocate.ts"])
 
+    def test_LOG_304_a_done_story_in_a_critical_area_without_integrity_stays_visible(self):
+        """LOG-304: the critical-area check skipped done stories, so a story that shipped critical code
+        without 'integrity' was never reported again. It stays an error while the story is pending
+        and becomes a warning once it's done (an area declared after the code shipped mustn't turn
+        CI red retroactively, but the gap mustn't go silent)."""
+        self.rules()
+        self.write("apps/api/src/pay/charge.ts", "export const charge = 1;\n")
+        self.write(".keelokit/critical.toml", '[[area]]\nname = "money"\nwhy = "w"\npaths = ["apps/api/src/pay/"]\n')
+        self.integrity_story("PAY-001", 1, '"apps/api/src/pay/"', '"api"')
+        self.commit("init")
+        self.assertRegex(self.doctor(), r"ERROR\s+story PAY-001: touches critical area money")
+        self.commit("feat: pay\n\nStory: PAY-001")
+        out = self.doctor()
+        self.assertNotRegex(out, r"ERROR\s+story PAY-001: touches critical area")
+        self.assertRegex(out, r"warn\s+story PAY-001 is done but touches critical area money without 'integrity'")
+
     def test_scope_catches_undeclared_critical_work_and_edited_acceptance_tests(self):
         self.rules()
         self.write("apps/api/src/pay/charge.ts", "export const charge = 1;\n")

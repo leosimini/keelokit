@@ -23,6 +23,7 @@ python3 .keelokit/bin/doctor.py
 | Story errors | Fix front matter, file name, or unknown `depends_on`; remove any `status` field. |
 | Invariant without a class, or a story naming an unknown one | Add `class: <class>` to the `INV-nnn` line in `domain.md` (how does it break? see the plugin's `references/invariants.md`); fix the story's `invariants`. A new invariant is a product rule: ask the user. |
 | Story touches a critical area without `integrity`, or two stories of one area share a wave | Add `integrity` and the invariants it keeps; move one story to a later wave. Never shrink an area to go green. |
+| A done story touches a critical area without `integrity` (a warning: the code shipped before the area, or despite it) | Add `integrity` and the invariants the code keeps to the story, with a test citing each (INV-1). |
 | Done story's invariant not cited by a test (INV-1) | Delegate to the verifier: the test its class calls for, titled with the id. |
 | Critical area points at a missing path | The code moved or went away: update `.keelokit/critical.toml`, don't delete the area unless the code is gone. |
 | Escape row incomplete (ESC-1) | Fill in the class and the check that now catches it, or `none — <why>`. |
