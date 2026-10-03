@@ -113,7 +113,7 @@ Después, en una carpeta vacía, abrí Claude Code y corré `/keelokit:project-n
 tenés, `/keelokit:project-adopt`. Para generar desde tu propio fork: `KEELOKIT_TEMPLATE=gh:<vos>/keelokit`.
 
 `/keelokit:run-local` funciona solo en macOS por ahora. Lancé una app con él en el simulador de iOS, en
-una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit; un teléfono Android real, Expo Go y Apple Silicon no los probé, así que tomá esos
+una Mac Intel con Xcode 26, en un proyecto que no generó Keelokit, y en un Samsung Galaxy S20 por USB; Expo Go, la depuración inalámbrica, Apple Silicon y un proyecto generado por la plantilla no los probé, así que tomá esos
 caminos como sin probar.
 
 ## Bueno saber

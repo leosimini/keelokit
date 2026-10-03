@@ -82,5 +82,6 @@ shows "Local environment: ready".
 Tested with simulated commands: detection on three project shapes, the coherence check, the
 diagnosis, and the questions before anything is killed or edited. This version launched an app on the
 iOS simulator, on an Intel Mac with Xcode 26, in a project Keelokit did not generate (not yet one
-the template made). **Never tested:** a real Android phone, Expo Go on a phone, Apple Silicon. Say so when it
+the template made). It also launched an app on a Samsung Galaxy S20 over USB. **Never tested:** Expo Go on a phone,
+wireless debugging, Apple Silicon. Say so when it
 matters, and read the failure instead of assuming the path works.

@@ -15,7 +15,7 @@
   New projects with a mobile app get the block and `pnpm run:local`; `project-adopt` writes the
   block after a yes. A new house rule, RUN-1 (SHOULD, mobile projects), asks for the script and the
   block; the doctor warns when the block is missing, and the dashboard shows the local
-  environment. Not tested: a real Android phone, Expo Go on a phone, Apple Silicon.
+  environment. Launched on the iOS simulator and on a Galaxy S20 over USB (Intel Mac). Not tested: Expo Go on a phone, wireless debugging, Apple Silicon.
 - Upgrading from 0.8.x: `/keelokit:harness-upgrade` brings the script. `profile.toml` is the
   project's, so a mobile project gets no `[local]` block from it: run `/keelokit:run-local` to
   detect and write one, or the doctor keeps warning (RUN-1).
