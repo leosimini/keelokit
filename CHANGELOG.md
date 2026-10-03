@@ -55,6 +55,16 @@
     lines with their source (`--json` too, and in `status --json`). A short block is printed when a
     launch starts and after the seed. It reads only files of the project, never `.env`, and writes
     nothing. The skill asks the same questions with the question tool and maps them to the flags.
+- **`run-local` keeps Metro alive when nobody is at a terminal.** Run from Claude, CI or the
+  background, Expo read the end of its input and shut Metro down, leaving the app installed with no
+  Metro. The command now gets an input that never ends (and Expo Go's one `y` with `--yes`), stopped
+  with the command, and if Metro still ends by itself with no Ctrl+C the script says so and exits 1
+  with the log, instead of calling it a normal stop.
+- **`users` takes the accounts table, not every line that mentions an email or a password.** It finds
+  the largest run of consecutive lines with an email, adds the table header, the password sentence
+  above it and a password note below it, drops env assignments, shell commands, links and install
+  rows, cuts at 15 lines saying where the rest is, and when there is no table of two accounts it
+  offers a guess from lines pairing a user with a password and says it is a guess.
 - **Expo Go with `--yes`.** When Expo asks to install or update Expo Go on the simulator or phone
   (it downloads the app from Expo), `--yes` answers it and says so; without `--yes` at a terminal Expo
   asks as before. If that prompt is cancelled for lack of a terminal, the run fails with exit 3 and

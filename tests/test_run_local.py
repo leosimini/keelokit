@@ -265,7 +265,7 @@ class SourcedTest(unittest.TestCase):
     """Functions run on their own with shims: the script's promises about what it never does."""
 
     def lib(self, p: Project, body: str, stdin: str = "", env: dict | None = None):
-        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", **(env or {})}
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", "RUN_LOCAL_QUICK": "0", **(env or {})}
         script = f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; {body}'
         return subprocess.run(["bash", "-c", script], env=e, input=stdin, capture_output=True, text=True, timeout=60)
 
@@ -472,7 +472,7 @@ class Lib:
     """Sources the script with shims and runs a snippet: functions on their own."""
 
     def lib(self, p: Project, body: str, stdin: str = "", env: dict | None = None):
-        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", **(env or {})}
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", "RUN_LOCAL_QUICK": "0", **(env or {})}
         script = f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; {body}'
         return subprocess.run(["bash", "-c", script], env=e, input=stdin, capture_output=True, text=True, timeout=90)
 
@@ -1619,7 +1619,7 @@ class ExpoGoPromptTest(Lib, unittest.TestCase):
         p = self.project("true")
         p.shim("script", 'read -r a; echo "got:$a" >>"' + str(p.calls) + '"; if read -r -t 1 b; then echo "second:$b" >>"' + str(p.calls) + '"; else echo "still-open" >>"' + str(p.calls) + '"; fi; echo "Logs for your project" >"$2"')
         import time
-        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1"}
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", "RUN_LOCAL_QUICK": "0"}
         proc = subprocess.Popen(["bash", "-c", f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; YES=1; expo_go_yes; launch ios true; echo "rc=$?"'],
                                 env=e, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         t = time.time()
@@ -2051,6 +2051,91 @@ class NoisyGuideTest(Lib, unittest.TestCase):
         d = self.users(self.project({"docs/local-android-testing.md": NOISY_GUIDE}))
         self.assertEqual(set(d), {"source", "accounts"})
         self.assertTrue(all(set(a) == {"line"} for a in d["accounts"]))
+
+
+def stray_sleepers() -> int:
+    out = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout
+    return sum(1 for l in out.splitlines() if "sleep 2147483647" in l)
+
+
+class LiveStdinTest(Lib, unittest.TestCase):
+    """Run with no terminal (Claude, CI), Expo reads EOF on stdin and stops Metro: the command gets a
+    stdin that never ends, and Metro that ends by itself is not reported as a normal stop."""
+
+    def project(self, script_body: str):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        p.shim("script", script_body)
+        return p
+
+    PROBE = ('t=$SECONDS; if read -r -t 2 line; then echo "got:$line" >>"%s"; elif [ $((SECONDS - t)) -ge 1 ]; then echo "open" >>"%s"; else echo "eof" >>"%s"; fi; '
+             'echo "Logs for your project" >"$2"')
+
+    def probe(self, p, feed=False):
+        body = self.PROBE % ((str(p.calls),) * 3)
+        p.shim("script", body)
+        return self.lib(p, ("YES=1; expo_go_yes; " if feed else "") + "launch metro true; echo rc=$?", stdin="")
+
+    def test_stdin_is_never_at_eof_without_a_terminal(self):
+        before = stray_sleepers()
+        p = self.project("true")
+        r = self.probe(p)
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual([c for c in p.called() if c in ("open", "eof")], ["open"], "the command saw a live stdin, not EOF")
+        self.assertEqual(stray_sleepers(), before, "the feeder is gone")
+
+    def test_expo_go_with_yes_gets_its_y_and_then_a_live_stdin(self):
+        p = self.project("true")
+        r = self.probe(p, feed=True)
+        self.assertIn("got:y", p.called())
+        self.assertIn("rc=0", r.stdout)
+
+    def test_no_feeder_is_left_when_the_command_fails(self):
+        before = stray_sleepers()
+        p = self.project('echo "BUILD FAILED" >"$2"; exit 1')
+        self.lib(p, "repair() { return 1; }; launch android true; echo rc=$?")
+        self.assertEqual(stray_sleepers(), before)
+
+    def test_no_feeder_survives_a_term_to_the_run(self):
+        import signal, time
+        before = stray_sleepers()
+        p = self.project("sleep 30")
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1"}
+        proc = subprocess.Popen(["bash", "-c", f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; launch metro true'], env=e,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        time.sleep(3)
+        self.assertEqual(stray_sleepers(), before + 1, "the feeder runs while the command does")
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=20)
+        time.sleep(1)
+        self.assertEqual(stray_sleepers(), before, "TERM leaves nothing behind")
+
+    def test_metro_that_stopped_itself_is_not_a_normal_stop(self):
+        p = self.project('printf "Starting Metro\\nLogs for your project will appear below.\\nStopping server\\nStopped server\\n" >"$2"')
+        r = self.lib(p, "launch android true; echo rc=$?")
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("Metro exited on its own", r.stdout)
+        self.assertIn(".local-dev/logs/android.log", r.stdout)
+        self.assertNotIn("stopped\n", r.stdout.replace("Stopped", ""))
+
+    def test_metro_gone_within_seconds_is_not_a_normal_stop_either(self):
+        p = self.project('echo "Logs for your project will appear below." >"$2"')
+        r = self.lib(p, "launch ios true; echo rc=$?", env={"RUN_LOCAL_QUICK": "10"})
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("Metro exited on its own", r.stdout)
+
+    def test_ctrl_c_is_still_a_normal_stop(self):
+        p = self.project('printf "Stopping server\\n" >"$2"; exit 130')
+        r = self.lib(p, "launch android true; echo rc=$?", env={"RUN_LOCAL_QUICK": "10"})
+        self.assertIn("rc=0", r.stdout)
+        self.assertNotIn("exited on its own", r.stdout)
+
+    def test_a_terminal_keeps_the_plain_path(self):
+        text = SCRIPT.read_text()
+        body = text[text.index("script_run() {"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn('if [ -t 0 ] && [ "$feed" != 1 ]; then', body)
 
 
 class StaticTest(unittest.TestCase):

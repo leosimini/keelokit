@@ -74,7 +74,10 @@ command and flag does.
    never waits on a menu: it takes the remembered or first simulator, phone or emulator and says
    which; without `--yes` and without a terminal it exits 4 after 20 seconds, so a menu is never a
    hang): `bash .keelokit/bin/run-local.sh <target> --yes --phone --no-seed`. Metro keeps running in
-   it: run it where the user can see it, or in the background and read `logs`.
+   it (the script gives it an input that never ends when there is no terminal, so it survives being
+   run in the background): run it where the user can see it, or in the background and read `logs`.
+   If it reports "Metro exited on its own" (exit 1), the app is installed but has no Metro: read the
+   log and run it again.
 
 **It does not rebuild what is already there.** The first run builds the native app (10–20 minutes:
 say so). A later `android` or `ios` finds the app installed on the target and the native inputs

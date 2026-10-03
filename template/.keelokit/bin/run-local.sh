@@ -1096,30 +1096,56 @@ expo_go_prompt_cancelled() { # <log>
   grep -q 'Install the recommended Expo Go' "$1" && ! grep -q 'Logs for your project' "$1"
 }
 
-# `script` with one `y` fed to the command's stdin (FEED_Y=1), stdin kept open afterwards so Metro
-# stays alive; the feeder is stopped when the command ends.
-script_feeding_y() { # <log> <command...>
-  local log=$1 fifo feeder rc
-  shift
-  fifo=$(mktemp -u "${TMPDIR:-/tmp}/run-local.XXXXXX") && mkfifo "$fifo" || return 1
-  ( printf 'y\n'; exec cat ) >"$fifo" &
-  feeder=$!
-  script -q "$log" "$@" <"$fifo"
+# Runs the command under `script` (the terminal stays live and the output is logged). When stdin is
+# not a terminal (Claude, CI, a background run) Expo reads EOF and shuts Metro down, so the command
+# gets a stdin that never ends: a fifo held open by a sleeping writer, with the one `y` for Expo Go's
+# prompt first when feed is 1. The writer is stopped when the command ends, and on TERM or HUP.
+FEEDER_PID= FEEDER_FIFO=
+stop_feeder() {
+  [ -n "$FEEDER_PID" ] && kill "$FEEDER_PID" 2>/dev/null
+  [ -n "$FEEDER_FIFO" ] && rm -f "$FEEDER_FIFO"
+  FEEDER_PID= FEEDER_FIFO=
+  return 0
+}
+trap 'stop_feeder' EXIT
+trap 'stop_feeder; exit 143' TERM HUP
+
+script_run() { # <log> <feed y: 1|0> <command...>
+  local log=$1 feed=$2 rc
+  shift 2
+  if [ -t 0 ] && [ "$feed" != 1 ]; then
+    script -q "$log" "$@"
+    return $?
+  fi
+  FEEDER_FIFO=$(mktemp -u "${TMPDIR:-/tmp}/run-local.XXXXXX") && mkfifo "$FEEDER_FIFO" || return 1
+  if [ "$feed" = 1 ]; then ( printf 'y\n'; exec sleep 2147483647 ) >"$FEEDER_FIFO" &
+  else ( exec sleep 2147483647 ) >"$FEEDER_FIFO" & fi
+  FEEDER_PID=$!
+  script -q "$log" "$@" <"$FEEDER_FIFO"
   rc=$?
-  kill "$feeder" 2>/dev/null
-  rm -f "$fifo"
+  stop_feeder
   return "$rc"
 }
 
+# Metro that ended by itself: nobody pressed Ctrl+C (130) and there was no terminal to do it on. Expo
+# says "Stopping server" when it is shut down from outside (an EOF on stdin, a signal).
+metro_exited_on_its_own() { # <rc> <log> <seconds it ran>
+  [ -t 0 ] && return 1
+  [ "$1" = 130 ] && return 1
+  grep -qE 'Stopping server|Stopped server' "$2" && return 0
+  [ "$3" -lt "${RUN_LOCAL_QUICK:-10}" ]
+}
+
 launch() { # <step> <command...>
-  local step=$1 attempt=1 rc feed=${FEED_Y:-0}
+  local step=$1 attempt=1 rc feed=${FEED_Y:-0} started
   FEED_Y=0
   shift
   init_state || return 1
   show_users
   while :; do
     : >"$LOG/$step.log"
-    if [ "$feed" = 1 ]; then script_feeding_y "$LOG/$step.log" "$@"; else script -q "$LOG/$step.log" "$@"; fi
+    started=$SECONDS
+    script_run "$LOG/$step.log" "$feed" "$@"
     rc=$?
     if [ "$rc" != 130 ] && expo_go_prompt_cancelled "$LOG/$step.log"; then
       record_error "$step" "$rc" "$LOG/$step.log"
@@ -1128,6 +1154,10 @@ launch() { # <step> <command...>
       return 1
     fi
     if ! launch_failed "$rc" "$LOG/$step.log"; then
+      if metro_exited_on_its_own "$rc" "$LOG/$step.log" $((SECONDS - started)); then
+        bad "$(L "Metro exited on its own (nobody pressed Ctrl+C, and there was no terminal). The app is installed but has no Metro. Log: $LOG/$step.log" "Metro terminó solo (nadie apretó Ctrl+C y no había terminal). La app quedó instalada pero sin Metro. Log: $LOG/$step.log")"
+        return 1
+      fi
       ok "$(L 'stopped' 'detenido')"
       return 0
     fi
