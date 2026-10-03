@@ -32,6 +32,10 @@
   partition (`--new-avd`; an installed image is reused without a download), or to cold boot with
   `-wipe-data` (named, with the warning that it erases the emulator's apps and data); with `--yes` it
   stops and lists them. Not tested: the emulator itself and wireless debugging.
+- **`run-local` never waits on a menu nobody can answer.** With `--yes` it takes the remembered
+  simulator, phone or emulator (else a booted simulator, else the first), says which and how to change
+  it, and goes on (it never creates an emulator that way). Without `--yes` and without a terminal it
+  gives up after 20 seconds (`RUN_LOCAL_ASK_TIMEOUT`) with exit 4 instead of blocking forever.
 - **The rest of the environment.** `[local] services` (redis, mailpit...) start and stop with the
   database. The seed is detected and offered once, never run silently (`seed` runs it by name).
   The JDK follows React Native (17 from 0.73, 11 before) and Node follows `.nvmrc`, `.node-version`

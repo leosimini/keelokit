@@ -25,6 +25,9 @@
 #   --rebuild (always build the native app), --no-build (never build it: fail if it is not installed),
 #   --emulator (use an Android emulator), --new-avd (create a new emulator with an 8 GB data partition), --device <serial|model|name|udid>, --help.
 #
+# Questions: with --yes nothing is asked, and a menu takes the remembered choice, else the first one
+#   (and says so). Without --yes and without a terminal an unanswered question gives up after 20 s
+#   (RUN_LOCAL_ASK_TIMEOUT) as declined: exit 4, never a hang.
 # Exit codes: 0 done · 1 failed, or something is missing · 2 usage · 3 stopped on something only a
 #   person can do (Xcode, no phone, no emulator image) · 4 a question was declined, or there was
 #   no terminal to answer it.
@@ -96,10 +99,22 @@ say() { emit say "$*"; [ "$JSONMODE" = 1 ] || printf '\n\033[1m▶ %s\033[0m\n' 
 ok() { [ "$QUIET" = 1 ] && return 0; emit ok "$*"; [ "$JSONMODE" = 1 ] || printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { emit warn "$*"; [ "$JSONMODE" = 1 ] || printf '  \033[33m!\033[0m %s\n' "$*"; }
 bad() { emit bad "$*"; [ "$JSONMODE" = 1 ] || printf '  \033[31m✗\033[0m %s\n' "$*"; }
+# Reads an answer into <var>. At a terminal it waits as long as it takes. Without one (a pipe, a
+# script, stdin held open by a tool) it waits RUN_LOCAL_ASK_TIMEOUT seconds (20) and then gives up:
+# the question counts as declined (exit 4) and the script says so, instead of blocking forever.
+ask() { # <var> <prompt>
+  local to=()
+  [ -t 0 ] || to=(-t "${RUN_LOCAL_ASK_TIMEOUT:-20}")
+  read -r "${to[@]}" -p "$2" "$1" && return 0
+  DECLINED=1
+  printf '\n' >&2
+  bad "$(L 'No answer and no terminal to ask on: nothing was chosen for you. Run it in a terminal, or add --yes to take the defaults.' 'Sin respuesta y sin terminal para preguntar: no elegí nada por vos. Corrélo en una terminal, o agregá --yes para tomar lo predeterminado.')" >&2
+  return 1
+}
 confirm() {
   [ "$YES" = 1 ] && return 0
   local a
-  read -r -p "  $1 $(L '[Y/n]' '[S/n]') " a || { DECLINED=1; return 1; } # no terminal, no yes
+  ask a "  $1 $(L '[Y/n]' '[S/n]') " || return 1
   [[ -z $a || $a =~ ^[sSyY] ]] && return 0
   DECLINED=1
   return 1
@@ -644,7 +659,7 @@ setup_local() {
     i=0
     for d in $(tr ',' ' ' <<<"$dirs"); do i=$((i + 1)); printf '  %d) %s\n' "$i" "$d"; done
     if [ "$YES" = 0 ]; then
-      read -r -p "  $(L 'Which one? [1] ' '¿Cuál? [1] ') " ans || return 1
+      ask ans "  $(L 'Which one? [1] ' '¿Cuál? [1] ') " || return 1
       DET_mobile_dir=$(tr ',' '\n' <<<"$dirs" | sed -n "${ans:-1}p")
       [ -n "$DET_mobile_dir" ] || return 1
     fi
@@ -658,7 +673,7 @@ setup_local() {
     eval "cur=\${DET_$k:-}"
     warn "$(L "not certain: $k" "no estoy seguro: $k")"
     if [ "$YES" = 0 ]; then
-      read -r -p "  $k [$cur]: " ans || return 1
+      ask ans "  $k [$cur]: " || return 1
       [ -n "$ans" ] && eval "DET_$k=\$ans"
     fi
   done
@@ -1340,11 +1355,11 @@ pair_android() {
   echo "  $(L 'On the phone (same Wi-Fi as this Mac): Settings → Developer options → Wireless debugging → on,' 'En el teléfono (misma Wi-Fi que esta Mac): Ajustes → Opciones de desarrollador → Depuración inalámbrica → activada,')"
   echo "  $(L 'then "Pair device with pairing code": it shows an address and a code.' 'luego «Vincular dispositivo con código»: muestra una dirección y un código.')"
   local addr conn
-  read -r -p "  $(L 'Pairing address (ip:port): ' 'Dirección de vinculación (ip:puerto): ')" addr || return 1
+  ask addr "  $(L 'Pairing address (ip:port): ' 'Dirección de vinculación (ip:puerto): ')" || return 1
   [[ $addr =~ ^[A-Za-z0-9._:-]+$ ]] || { bad "$(L 'that is not an address' 'eso no es una dirección')"; return 1; }
   echo "  $(L 'adb will ask you for the code; it is not kept anywhere.' 'adb te va a pedir el código; no se guarda en ningún lado.')"
   adb pair "$addr" || { bad "$(L 'pairing failed' 'falló la vinculación')"; return 1; }
-  read -r -p "  $(L 'Connect address (ip:port on the main Wireless debugging screen, not the pairing one): ' 'Dirección de conexión (ip:puerto de la pantalla principal de Depuración inalámbrica, no la de vinculación): ')" conn || return 1
+  ask conn "  $(L 'Connect address (ip:port on the main Wireless debugging screen, not the pairing one): ' 'Dirección de conexión (ip:puerto de la pantalla principal de Depuración inalámbrica, no la de vinculación): ')" || return 1
   [[ $conn =~ ^[A-Za-z0-9._:-]+$ ]] || { bad "$(L 'that is not an address' 'eso no es una dirección')"; return 1; }
   adb connect "$conn" || return 1
   adb devices -l
@@ -1367,10 +1382,13 @@ pick_phone() { # <phones: "serial|model|state|kind" lines>; sets A_SERIAL, A_MOD
     [ -n "$last" ] && line=$(awk -F'|' -v d="$last" '$1==d {print; exit}' <<<"$phones")
     if [ -n "$line" ]; then
       ok "$(L "phone from last time (to change it: --device, or rm $STATE/android-device)" "teléfono de la vez pasada (para cambiarlo: --device, o rm $STATE/android-device)")"
+    elif [ "$YES" = 1 ]; then # never waits: the first one, and it says so
+      line=$(sed -n 1p <<<"$phones")
+      warn "$(L "several phones; --yes took the first (${line%%|*}). To choose: --device <serial|model>" "hay varios teléfonos; --yes tomó el primero (${line%%|*}). Para elegir: --device <serial|modelo>")"
     else
       i=0
       while read -r l; do i=$((i + 1)); printf '  %d) %s\n' "$i" "${l//|/  }"; done <<<"$phones"
-      read -r -p "  $(L 'Which one? [1] ' '¿Cuál? [1] ')" choice || return 1
+      ask choice "  $(L 'Which one? [1] ' '¿Cuál? [1] ')" || return 1
       [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
       line=$(sed -n "${choice:-1}p" <<<"$phones")
       [ -n "$line" ] || line=$(sed -n 1p <<<"$phones")
@@ -1494,12 +1512,14 @@ use_emulator() { # <emulators: "serial|model|state|kind" lines>; sets A_SERIAL, 
       chosen=$AVD_NAME
     else
       n=$(grep -c . <<<"$avds")
-      if [ "$YES" = 1 ]; then chosen=$(sed -n 1p <<<"$avds") # --yes never creates one
+      if [ "$YES" = 1 ]; then # --yes never waits and never creates one: the first
+        chosen=$(sed -n 1p <<<"$avds")
+        warn "$(L "--yes took the emulator $chosen. To choose: --device <AVD name>, or android --new-avd" "--yes tomó el emulador $chosen. Para elegir: --device <nombre del AVD>, o android --new-avd")"
       else
         i=0
         while read -r l; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$l"; done <<<"$avds"
         printf '  n) %s\n' "$(L 'a NEW emulator (8 GB of storage)' 'un emulador NUEVO (8 GB de almacenamiento)')"
-        read -r -p "  $(L 'Which emulator? [1] ' '¿Cuál emulador? [1] ')" choice || return 1
+        ask choice "  $(L 'Which emulator? [1] ' '¿Cuál emulador? [1] ')" || return 1
         if [[ $choice == [nN] ]]; then create_avd || return 1; chosen=$AVD_NAME
         else
           [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
@@ -1561,7 +1581,8 @@ select_android_target() {
       warn "$(L 'No phone in sight. Connect it by USB with USB debugging on, or over Wi-Fi: bash .keelokit/bin/run-local.sh pair' 'No veo ningún teléfono. Conectalo por USB con «Depuración USB» activada, o por Wi-Fi: bash .keelokit/bin/run-local.sh pair')"
     fi
     BLOCKED=1
-    read -r -p "  $(L 'Enter to retry, q to quit: ' 'Enter para reintentar, q para salir: ')" choice || return 1
+    [ "$YES" = 1 ] && return 1 # nobody to plug the phone in while it waits
+    ask choice "  $(L 'Enter to retry, q to quit: ' 'Enter para reintentar, q para salir: ')" || return 1
     [ "$choice" = q ] && return 1
     BLOCKED=0
   done
@@ -1724,9 +1745,15 @@ pick_ios() { # sets I_UDID and I_NAME: --device, the simulator you chose last ti
   elif [ -n "$last" ] && grep -q "^$last" <<<"$sims"; then
     I_UDID=$last
     ok "$(L "simulator: $(grep "^$last" <<<"$sims" | cut -d' ' -f2-) (to change it: --device, or rm $STATE/ios-device)" "simulador: $(grep "^$last" <<<"$sims" | cut -d' ' -f2-) (para cambiarlo: --device, o rm $STATE/ios-device)")"
+  elif [ "$YES" = 1 ]; then # never waits: a booted iPhone, else the first; remembered, and said
+    I_UDID=$(grep '(Booted)$' <<<"$sims" | head -1 | cut -d' ' -f1)
+    [ -n "$I_UDID" ] || I_UDID=$(sed -n 1p <<<"$sims" | cut -d' ' -f1)
+    [ -n "$I_UDID" ] || { block "$(L 'there is no iPhone simulator' 'no hay un simulador de iPhone')"; return 1; }
+    warn "$(L "--yes took the simulator $(grep "^$I_UDID" <<<"$sims" | cut -d' ' -f2- | sed 's/ ([A-Za-z]*)$//'). To choose: --device <name|UDID>, or rm $STATE/ios-device" "--yes tomó el simulador $(grep "^$I_UDID" <<<"$sims" | cut -d' ' -f2- | sed 's/ ([A-Za-z]*)$//'). Para elegir: --device <nombre|UDID>, o rm $STATE/ios-device")"
+    init_state && echo "$I_UDID" >$STATE/ios-device
   else
     while read -r l; do i=$((i + 1)); printf '  %d) %s\n' "$i" "${l#* }"; done <<<"$sims"
-    read -r -p "  $(L 'Which simulator? [1] ' '¿Qué simulador? [1] ')" choice || return 1
+    ask choice "  $(L 'Which simulator? [1] ' '¿Qué simulador? [1] ')" || return 1
     [[ ${choice:-1} =~ ^[0-9]+$ ]] || choice=1
     I_UDID=$(sed -n "${choice:-1}p" <<<"$sims" | cut -d' ' -f1)
     [ -n "$I_UDID" ] || return 1
@@ -1917,12 +1944,13 @@ main() {
         "$(L 'Local environment' 'Entorno local')" "$(L 'Android: phone or emulator' 'Android: teléfono o emulador')" "$(L 'iOS: simulator' 'iOS: simulador')" \
         "$(L 'Only the API and the database' 'Solo la API y la base de datos')" "$(L 'Diagnosis' 'Diagnóstico')" \
         "$(L 'Stop the API and the database' 'Detener API y base de datos')" "$(L 'What is running' 'Qué está corriendo')" "$(L 'Quit' 'Salir')"
-      read -r -p "  $(L 'Choose: ' 'Elegí: ')" rc || break
+      ask rc "  $(L 'Choose: ' 'Elegí: ')" || break
       case "$rc" in
         1) run_android ;; 2) run_ios ;; 3) ensure base && start_backend ;;
         4) ensure base android ios ;; 5) stop_backend ;; 6) cmd_status ;; q | Q | "") break ;;
       esac
     done
+    [ "$DECLINED" = 1 ] && exit 4
     exit 0
   fi
   dispatch

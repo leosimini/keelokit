@@ -1462,6 +1462,129 @@ class LocalShapeTest(unittest.TestCase):
         self.assertNotIn("'node'", r.stdout)
 
 
+class NeverWaitsTest(Lib, unittest.TestCase):
+    """--yes never blocks on a menu, and with no terminal nothing blocks either: it gives up (exit 4)."""
+
+    SIMS = ("-- iOS 26.0 --\n    iPhone 17 Pro (AAAAAAAA-0000-0000-0000-000000000001) (Shutdown)\n"
+            "    iPhone 17 (BBBBBBBB-0000-0000-0000-000000000002) (Booted)\n"
+            "    iPhone Air (CCCCCCCC-0000-0000-0000-000000000003) (Shutdown)\n")
+
+    def project(self, sims=None):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        self.xcrun(p, sims or self.SIMS)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        return p
+
+    def xcrun(self, p, sims):
+        (p.dir.parent / "sims.txt").write_text(sims)
+        booted = "\n".join(l for l in sims.splitlines() if "(Booted)" in l)
+        (p.dir.parent / "booted.txt").write_text(booted + "\n" if booted else "")
+        p.shim("xcrun", f'case "$*" in *"list devices booted"*) cat "{p.dir.parent}/booted.txt";; *"list devices"*) cat "{p.dir.parent}/sims.txt";; esac')
+
+    def held_open(self, p, body, env=None, timeout=60):
+        """Runs `body` with stdin an open pipe nobody writes to; returns (stdout, seconds)."""
+        import time
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", "RUN_LOCAL_ASK_TIMEOUT": "1", **(env or {})}
+        proc = subprocess.Popen(["bash", "-c", f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; {body}'], env=e,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        t = time.time()
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        finally:
+            proc.kill()
+        return out, err, time.time() - t
+
+    def test_yes_takes_the_booted_simulator_says_so_and_remembers(self):
+        p = self.project()
+        out, err, secs = self.held_open(p, 'YES=1; pick_ios; echo "rc=$? udid=$I_UDID name=$I_NAME"')
+        self.assertIn("rc=0 udid=BBBBBBBB-0000-0000-0000-000000000002 name=iPhone 17", out)
+        self.assertIn("--yes took the simulator iPhone 17", out)
+        self.assertIn("--device", out)
+        self.assertLess(secs, 20)
+        self.assertEqual((p.dir / ".local-dev/ios-device").read_text().strip(), "BBBBBBBB-0000-0000-0000-000000000002")
+
+    def test_yes_without_a_booted_one_takes_the_first(self):
+        p = self.project(self.SIMS.replace("(Booted)", "(Shutdown)"))
+        out, err, secs = self.held_open(p, 'YES=1; pick_ios; echo "rc=$? name=$I_NAME"')
+        self.assertIn("rc=0 name=iPhone 17 Pro", out)
+
+    def test_yes_prefers_the_remembered_simulator(self):
+        p = self.project()
+        (p.dir / ".local-dev/ios-device").write_text("CCCCCCCC-0000-0000-0000-000000000003\n")
+        out, err, secs = self.held_open(p, 'YES=1; pick_ios; echo "rc=$? name=$I_NAME"')
+        self.assertIn("rc=0 name=iPhone Air", out)
+
+    def test_without_yes_and_stdin_held_open_it_gives_up_with_exit_4(self):
+        p = self.project()
+        out, err, secs = self.held_open(p, 'pick_ios; rc=$?; echo "rc=$rc declined=$DECLINED"; finish $rc; echo "exit=$?"')
+        self.assertIn("rc=1 declined=1", out)
+        self.assertIn("exit=4", out)
+        self.assertIn("No answer and no terminal", out + err)
+        self.assertIn("1) iPhone 17 Pro", out, "the menu is shown")
+        self.assertLess(secs, 20)
+        self.assertFalse((p.dir / ".local-dev/ios-device").exists(), "nothing was chosen for the user")
+
+    def test_without_yes_and_stdin_from_dev_null_it_gives_up_at_once(self):
+        p = self.project()
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1"}
+        r = subprocess.run(["bash", "-c", f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; pick_ios; rc=$?; echo "rc=$rc declined=$DECLINED"; finish $rc; echo "exit=$?"'],
+                           env=e, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        self.assertIn("rc=1 declined=1", r.stdout)
+        self.assertIn("exit=4", r.stdout)
+
+    def test_a_piped_answer_still_works(self):
+        p = self.project()
+        r = self.lib(p, 'pick_ios; echo "rc=$? name=$I_NAME"', stdin="3\ny\n")
+        self.assertIn("rc=0 name=iPhone Air", r.stdout)
+
+    def phones(self, p):
+        p.shim("adb", 'case "$1" in devices) printf "List of devices attached\\nS1\\tdevice usb:1 model:Galaxy_S20\\nR2\\tdevice usb:2 model:Pixel_8\\n";; esac')
+
+    def test_several_phones_with_yes_take_the_remembered_one_else_the_first(self):
+        p = self.project()
+        self.phones(p)
+        phones = "S1|Galaxy_S20|device|phone\nR2|Pixel_8|device|phone"
+        out, err, secs = self.held_open(p, f'YES=1; pick_phone "{phones}"; echo "rc=$? serial=$A_SERIAL"')
+        self.assertIn("rc=0 serial=S1", out)
+        self.assertIn("--yes took the first (S1)", out)
+        (p.dir / ".local-dev/android-device").write_text("R2\n")
+        out, err, secs = self.held_open(p, f'YES=1; pick_phone "{phones}"; echo "rc=$? serial=$A_SERIAL"')
+        self.assertIn("rc=0 serial=R2", out)
+        out, err, secs = self.held_open(p, f'DEVICE=; rm .local-dev/android-device; pick_phone "{phones}"; echo "rc=$? declined=$DECLINED"')
+        self.assertIn("rc=1 declined=1", out)
+
+    def test_avd_choice_with_yes_takes_the_remembered_or_the_first_and_never_creates(self):
+        p = self.project()
+        p.shim("emulator", 'case "$1" in -list-avds) printf "Pixel_7_API_34\\nTablet_API_33\\n";; *) exec sleep 5;; esac')
+        p.shim("adb", 'case "$1" in devices) if grep -q "emulator -avd" "' + str(p.calls) + '"; then printf "List of devices attached\\nemulator-5554\\tdevice product:sdk\\n"; else printf "List of devices attached\\n"; fi;; esac\ncase "$*" in *getprop*) echo 1;; esac')
+        p.shim("avdmanager")
+        out, err, secs = self.held_open(p, 'YES=1; EMULATOR_FLAG=1; load_config; ensure() { return 0; }; select_android_target; echo "rc=$? id=$A_ID"')
+        self.assertIn("rc=0 id=avd:Pixel_7_API_34", out)
+        self.assertIn("--yes took the emulator Pixel_7_API_34", out)
+        self.assertFalse([c for c in p.called() if c.startswith("avdmanager")])
+
+    def test_no_phone_with_yes_does_not_wait_for_one(self):
+        p = self.project()
+        p.shim("adb", 'case "$1" in devices) printf "List of devices attached\\n";; esac')
+        out, err, secs = self.held_open(p, 'YES=1; ANDROID_TARGET=phone; ensure() { return 0; }; select_android_target; rc=$?; echo "rc=$rc blocked=$BLOCKED"; finish $rc; echo "exit=$?"')
+        self.assertIn("rc=1 blocked=1", out)
+        self.assertIn("exit=3", out)
+        self.assertLess(secs, 20)
+
+    def test_the_menu_gives_up_with_exit_4_when_nobody_answers(self):
+        p = self.project()
+        p.shim("uname", "echo Darwin")
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_ASK_TIMEOUT": "1"}
+        proc = subprocess.Popen(["bash", ".keelokit/bin/run-local.sh"], cwd=p.dir, env=e, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            proc.communicate(timeout=30)
+        finally:
+            proc.kill()
+        self.assertEqual(proc.returncode, 4)
+
+
 class StaticTest(unittest.TestCase):
     def test_bash_3_2_compatible(self):
         """macOS ships bash 3.2: no mapfile, associative arrays, case conversion or negative indexes."""

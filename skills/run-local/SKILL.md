@@ -57,7 +57,9 @@ command and flag does.
 3. Ask which target: **Android** (a phone, or an emulator: `--emulator`), **iOS simulator**, only
    **Metro** (the user opens the app by hand), or only the **API and database** (`android`, `ios`,
    `metro`, `backend`). One at a time; the script shuts other simulators down.
-4. After the user accepts the list, run the target with `--yes`:
+4. After the user accepts the list, run the target with `--yes` (it never waits on a menu: it takes
+   the remembered or first simulator, phone or emulator and says which; without `--yes` and without a
+   terminal it exits 4 after 20 seconds, so a menu is never a hang):
    `bash .keelokit/bin/run-local.sh <target> --yes`. Metro keeps running in it: run it where the
    user can see it, or in the background and read `logs`.
 
