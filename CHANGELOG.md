@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — run your app on a phone, an emulator or a simulator
+## 0.9.0 — 2026-10-03 — run your app on a phone, an emulator or a simulator
 
 - **`/keelokit:run-local` and `.keelokit/bin/run-local.sh`:** the project's Expo app and its API on
   an Android phone or an iOS simulator, with one command (macOS only). The script looks at what

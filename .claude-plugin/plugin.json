@@ -1,6 +1,6 @@
 {
   "name": "keelokit",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "description": "Stop agents from calling buggy code \"done\". Separate agents test, review and try to break every story, and each bug leaves a check so it can't return. From idea to a TypeScript app with CI and a live dashboard.",
   "author": {
     "name": "Leopoldo Simini",
