@@ -55,6 +55,13 @@
     lines with their source (`--json` too, and in `status --json`). A short block is printed when a
     launch starts and after the seed. It reads only files of the project, never `.env`, and writes
     nothing. The skill asks the same questions with the question tool and maps them to the flags.
+- **`run-local` no longer mistakes another project's API for its own.** Something answering on the
+  API port is reused only when its working directory or command line is this project's (or its
+  compose project publishes the port). Otherwise it says who holds the port, and asks: stop it (only
+  with a yes), start this project's API on the next free port (passed to the app through the API URL
+  variable and kept in `.local-dev/api_port`), or cancel. With `--yes` or no terminal it takes the
+  next free port when the API reads `PORT`, else exits 3 and explains; it never reuses or stops a
+  foreign API, and an owner it can't determine counts as foreign. `status --json` has `api.owned`.
 - **`run-local` keeps Metro alive when nobody is at a terminal.** Run from Claude, CI or the
   background, Expo read the end of its input and shut Metro down, leaving the app installed with no
   Metro. The command now gets an input that never ends (and Expo Go's one `y` with `--yes`), stopped

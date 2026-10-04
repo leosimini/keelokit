@@ -1292,7 +1292,7 @@ class CommandsTest(Lib, unittest.TestCase):
         (p.dir / ".local-dev/android-device").write_text("S1\n")
         data = json.loads(p.run("status", "--json").stdout)
         self.assertEqual(set(data), {"api", "database", "metro", "android", "ios", "ports", "users"})
-        self.assertEqual(data["api"], {"configured": True, "up": True, "port": 3000, "pid": 4242, "process": "node"})
+        self.assertEqual(data["api"], {"configured": True, "up": True, "port": 3000, "pid": 4242, "process": "node", "owned": None})
         self.assertEqual(data["database"]["services"], {"postgres": "running"})
         self.assertEqual((data["metro"]["up"], data["metro"]["pid"]), (True, 4242))
         self.assertEqual(data["android"]["chosen"], "S1")
@@ -2248,6 +2248,163 @@ class RealScriptTest(Lib, unittest.TestCase):
         self.assertIn("rc=0", r.stdout, r.stderr)
         self.assertIn("got:y", log)
         self.assertIn("end", log)
+
+
+class ApiOwnershipTest(Lib, unittest.TestCase):
+    """Something answers on the API port: is it this project's API? Never reuse or stop a foreign one."""
+
+    def project(self, cwd="", pid=4242, port_env=True, answering=True, alt=True, extra_local=""):
+        p = Project(self, pnpm_monorepo, LOCAL_DEV.replace('api_start = "true"', 'api_start = "echo $PORT >started.txt"') + extra_local)
+        (p.dir / ".gitignore").write_text(".local-dev/\n")
+        (p.dir / ".local-dev/logs").mkdir(parents=True)
+        if not port_env:
+            (p.dir / "apps/api/.env.example").write_text("")
+        cwd_line = f'printf "p{pid}\\nfcwd\\nn{cwd}\\n"' if cwd else "true"
+        p.shim("lsof", f'case "$*" in *"-d cwd"*) {cwd_line};; *"tcp:3000"*) [ -n "{pid}" ] && echo {pid} || exit 1;; *) exit 1;; esac')
+        p.shim("ps", 'case "$*" in *comm=*) echo /usr/bin/node;; *command=*) echo "node /somewhere/else/server.js";; esac')
+        p.shim("curl", 'case "$*" in *:3001*) [ -f started.txt ] && echo 200 || echo 000;; *) echo ' + ("200" if answering else "000") + ';; esac')
+        p.shim("docker")
+        return p
+
+    def start(self, p, pre="", stdin="", tty=False):
+        env = {"RUN_LOCAL_TTY": "1"} if tty else {}
+        body = f'ensure() {{ return 0; }}; seed_step() {{ return 0; }}; API_MIGRATE=; {pre or ":"}; start_backend; rc=$?; echo "rc=$rc port=$API_PORT blocked=$BLOCKED declined=$DECLINED"; finish $rc; echo "exit=$?"'
+        return self.lib(p, body, stdin=stdin, env=env)
+
+    def root(self, p):
+        return str(p.dir.resolve())
+
+    def test_our_own_api_is_reused(self):
+        p = self.project()
+        p.shim("lsof", f'case "$*" in *"-d cwd"*) printf "p4242\\nfcwd\\nn{self.root(p)}/apps/api\\n";; *"tcp:3000"*) echo 4242;; *) exit 1;; esac')
+        r = self.start(p, "YES=1")
+        self.assertIn("API already running on port 3000", r.stdout)
+        self.assertIn("rc=0 port=3000", r.stdout)
+        self.assertFalse((p.dir / "started.txt").exists(), "nothing was started")
+
+    def test_an_api_whose_command_line_holds_the_project_root_is_ours(self):
+        p = self.project(cwd="/elsewhere")
+        p.shim("ps", f'case "$*" in *comm=*) echo node;; *command=*) echo "node {self.root(p)}/apps/api/dist/main.js";; esac')
+        self.assertIn("API already running on port 3000", self.start(p, "YES=1").stdout)
+
+    def test_a_foreign_api_with_yes_moves_to_the_next_free_port_and_never_kills(self):
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        p = self.project(cwd="/Users/me/other-project/apps/api", pid=proc.pid)
+        r = self.start(p, "YES=1")
+        self.assertIn("port 3000 is used by node from /Users/me/other-project/apps/api, not by this project's API", r.stdout)
+        self.assertNotIn("API already running", r.stdout)
+        self.assertIn("rc=0 port=3001", r.stdout)
+        self.assertEqual((p.dir / "started.txt").read_text().strip(), "3001", "PORT reached the API")
+        self.assertEqual((p.dir / ".local-dev/api_port").read_text().strip(), "3001")
+        self.assertIn("http://localhost:3001", r.stdout)
+        self.assertIn("EXPO_PUBLIC_API_URL", r.stdout)
+        self.assertIsNone(proc.poll(), "the foreign API was not touched")
+
+    def test_the_app_gets_the_new_port(self):
+        p = self.project(cwd="/x/y")
+        r = self.lib(p, 'ensure() { return 0; }; seed_step() { return 0; }; API_MIGRATE=; YES=1; start_backend >/dev/null; api_url; echo "[$API_READY]"')
+        self.assertIn("http://localhost:3001", r.stdout)
+        self.assertIn("[http://localhost:3001/health]", r.stdout)
+
+    def test_a_foreign_api_that_cannot_take_a_port_stops_with_exit_3_when_nobody_can_answer(self):
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        p = self.project(cwd="/x/y", pid=proc.pid, port_env=False)
+        for pre, tty in (("YES=1", False), (":", False)):
+            r = self.start(p, pre, tty=tty)
+            self.assertIn("rc=1 port=3000 blocked=1", r.stdout)
+            self.assertIn("exit=3", r.stdout)
+            self.assertIn("does not read PORT", r.stdout)
+        self.assertFalse((p.dir / "started.txt").exists())
+        self.assertIsNone(proc.poll())
+
+    def test_with_no_terminal_and_no_yes_it_does_the_same_as_yes(self):
+        p = self.project(cwd="/x/y")
+        r = self.start(p)
+        self.assertIn("rc=0 port=3001", r.stdout)
+
+    def test_at_a_terminal_it_asks_and_cancel_is_the_default(self):
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        p = self.project(cwd="/x/y", pid=proc.pid)
+        r = self.start(p, stdin="\n", tty=True)
+        self.assertIn("a) stop it and start this project's API on 3000", r.stdout)
+        self.assertIn("b) start this project's API on port 3001", r.stdout)
+        self.assertIn("c) cancel", r.stdout)
+        self.assertIn("rc=1 port=3000 blocked=0 declined=1", r.stdout)
+        self.assertIn("exit=4", r.stdout)
+        self.assertIsNone(proc.poll())
+        self.assertFalse((p.dir / "started.txt").exists())
+
+    def test_choice_b_uses_the_next_port(self):
+        p = self.project(cwd="/x/y")
+        r = self.start(p, stdin="b\n", tty=True)
+        self.assertIn("rc=0 port=3001", r.stdout)
+
+    def test_choice_a_stops_the_other_api_only_after_a_second_yes(self):
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        p = self.project(cwd="/x/y", pid=proc.pid)
+        self.start(p, stdin="a\nn\n", tty=True)
+        self.assertIsNone(proc.poll(), "declined: still running")
+        r = self.start(p, stdin="a\ny\n", tty=True)
+        proc.wait(timeout=10)
+
+    def test_an_undeterminable_owner_is_treated_as_foreign_and_never_killed(self):
+        # lsof shows a listener but not its directory (another user's process)
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        p = self.project(cwd="", pid=proc.pid)
+        r = self.start(p, "YES=1")
+        self.assertIn("I can't tell who answers on port 3000", r.stdout)
+        self.assertIn("rc=0 port=3001", r.stdout)
+        self.assertIsNone(proc.poll())
+        # lsof empty altogether
+        p = self.project(cwd="", pid="")
+        r = self.start(p, "YES=1")
+        self.assertIn("I can't tell who answers", r.stdout)
+        self.assertNotIn("API already running", r.stdout)
+
+    def test_choice_a_is_not_possible_when_the_process_is_unknown(self):
+        p = self.project(cwd="", pid="")
+        r = self.start(p, stdin="a\ny\n", tty=True)
+        self.assertIn("I do not know its process", r.stdout)
+        self.assertIn("rc=1", r.stdout)
+
+    def test_status_json_says_who_owns_the_api(self):
+        for cwd_kind, want in (("ours", True), ("foreign", False), ("none", None)):
+            with self.subTest(owner=cwd_kind):
+                p = self.project()
+                cwd = {"ours": f"{self.root(p)}/apps/api", "foreign": "/x/y", "none": ""}[cwd_kind]
+                p.shim("lsof", ('case "$*" in *"-d cwd"*) ' + (f'printf "p4242\\nfcwd\\nn{cwd}\\n"' if cwd else "true") + ';; *"tcp:3000"*) echo 4242;; *) exit 1;; esac'))
+                p.shim("uname", "echo Darwin")
+                data = json.loads(p.run("status", "--json").stdout)
+                self.assertEqual(data["api"]["owned"], want)
+
+    def test_status_json_owned_is_null_when_the_api_is_down(self):
+        p = self.project(answering=False)
+        p.shim("lsof", "exit 1")
+        p.shim("uname", "echo Darwin")
+        self.assertIsNone(json.loads(p.run("status", "--json").stdout)["api"]["owned"])
+
+    def test_a_chosen_port_is_dropped_when_the_usual_one_is_free_again(self):
+        p = self.project(answering=False)
+        p.shim("lsof", "exit 1")
+        p.shim("curl", '[ -f started.txt ] && echo 200 || echo 000')
+        (p.dir / ".local-dev/api_port").write_text("3001\n")
+        r = self.lib(p, 'echo "port=$API_PORT cfg=$API_PORT_CFG"')
+        self.assertIn("port=3001 cfg=3000", r.stdout, "an earlier choice is honored on load")
+        r = self.lib(p, 'ensure() { return 0; }; seed_step() { return 0; }; API_MIGRATE=; API_START="echo x >started.txt"; YES=1; start_backend >/dev/null 2>&1; echo "port=$API_PORT"; ls .local-dev')
+        self.assertIn("port=3000", r.stdout)
+        self.assertNotIn("api_port", r.stdout)
+
+    def test_the_door_for_a_project_whose_api_is_ours_stays_open_with_a_docker_proxy(self):
+        p = self.project(cwd="")
+        p.shim("ps", 'case "$*" in *comm=*) echo com.docker.backend;; *command=*) echo "/Applications/Docker.app/com.docker.backend";; esac')
+        p.shim("docker", 'case "$*" in *"ps --format"*) echo "0.0.0.0:3000->3000/tcp";; esac')
+        r = self.start(p, "YES=1")
+        self.assertIn("API already running on port 3000", r.stdout)
 
 
 class StaticTest(unittest.TestCase):

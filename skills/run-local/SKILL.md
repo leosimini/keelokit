@@ -52,7 +52,8 @@ command and flag does.
    prompt) and `blockers` as what is the user's to do: Xcode, a phone with USB debugging on, Expo Go
    on an Android phone.
 2. `bash .keelokit/bin/run-local.sh status --json` says what already runs, so nothing is started
-   twice or killed by surprise: `api`, `database.services`, `metro`, `android.devices` (phones and
+   twice or killed by surprise (`api.owned` false means another project's API holds the port: the
+   script will offer its next free port, or stop and ask; never reuse it): `api`, `database.services`, `metro`, `android.devices` (phones and
    emulators, with `kind`), `ios.booted`, and `ports` with the pid and the process that holds each.
 3. Ask before launching, with the multiple-choice question tool: at most three short questions, only
    the ones that apply, the last answers as defaults. Run in a terminal by the user, the script asks

@@ -40,7 +40,7 @@
 #      "missing":[{"label":"...","command":"..."}],      installs it would offer
 #      "blockers":["..."]}                                only a person can fix these
 #   status --json
-#     {"api":{"configured":true,"up":true,"port":3000,"pid":123,"process":"node"},
+#     {"api":{"configured":true,"up":true,"port":3000,"pid":123,"process":"node","owned":true|false|null},
 #      "database":{"services":{"db":"running|stopped|unknown"}},
 #      "metro":{"up":false,"port":8081,"pid":null,"process":null},
 #      "android":{"devices":[{"serial":"...","model":"...","state":"device","kind":"phone|emulator"}],"chosen":null},
@@ -433,7 +433,7 @@ if mode == "users":
     sys.exit()
 
 if mode == "json_status":
-    out = {"api": {"configured": False, "up": False, "port": None, "pid": None, "process": None},
+    out = {"api": {"configured": False, "up": False, "port": None, "pid": None, "process": None, "owned": None},
            "database": {"services": {}}, "metro": {"up": False, "port": 8081, "pid": None, "process": None},
            "android": {"devices": [], "chosen": None}, "ios": {"booted": [], "chosen": None}, "ports": {},
            "users": find_users(sys.argv[3] if len(sys.argv) > 3 else "")}
@@ -441,7 +441,8 @@ if mode == "json_status":
         k = r[0]
         if k == "api":
             out["api"] = {"configured": True, "up": r[1] == "up", "port": int(r[2]),
-                          "pid": int(r[3]) if r[3] else None, "process": r[4] or None}
+                          "pid": int(r[3]) if r[3] else None, "process": r[4] or None,
+                          "owned": {"true": True, "false": False}.get(r[5] if len(r) > 5 else "")}
         elif k == "db":
             out["database"]["services"][r[1]] = r[2]
         elif k == "metro":
@@ -800,6 +801,8 @@ load_config() {
   ANDROID_TARGET=$(cfg android_target)
   AVD_CFG=$(cfg avd)
   [ -n "$API_PORT" ] || API_PORT=3000
+  API_PORT_CFG=$API_PORT
+  [ -s "$STATE/api_port" ] && set_api_port "$(cat "$STATE/api_port")"
   [ -n "$CLIENT" ] || CLIENT=auto
   [ -n "$JDK" ] || JDK=17
   [ -n "$ANDROID_TARGET" ] || ANDROID_TARGET=ask
@@ -1342,6 +1345,96 @@ api_up() { # the API answers (below 500) at its ready url, or listens on its por
   fi
 }
 
+set_api_port() { # <port>: this run's API port; the ready url follows it
+  local old=$API_PORT
+  case "$1" in '' | *[!0-9]*) return 0 ;; esac
+  API_PORT=$1
+  [ -n "$API_READY" ] && API_READY=${API_READY/:$old/:$1}
+  return 0
+}
+
+# Who answers on the API port, and is it this project's own API? Sets OWN_STATE (ours, foreign or
+# unknown), OWN_PID, OWN_CWD and OWN_PROC. The listener's working directory or command line holds this
+# project's root, or (docker) this project's compose project publishes the port: ours. When it can't
+# be told (lsof says nothing, another user's process) it is unknown, and treated as not ours.
+api_ownership() {
+  local pid cwd cmd root
+  OWN_STATE=unknown OWN_PID= OWN_CWD= OWN_PROC=
+  pid=$(lsof -ti "tcp:$API_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
+  [ -n "$pid" ] || return 0
+  OWN_PID=$pid
+  cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+  OWN_PROC=$(ps -o comm= -p "$pid" 2>/dev/null | sed 's#.*/##')
+  cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  OWN_CWD=$cwd
+  root=$(pwd -P)
+  case "$cwd/" in "$root"/*) OWN_STATE=ours; return 0 ;; esac
+  case "$cmd" in *"$root"*) OWN_STATE=ours; return 0 ;; esac
+  case "$OWN_PROC $cmd" in
+    *docker* | *vpnkit* | *com.docker*)
+      compose_args
+      if docker compose "${COMPOSE_ENV[@]}" ps --format '{{.Ports}}' 2>/dev/null | grep -q ":$API_PORT->"; then OWN_STATE=ours; return 0; fi ;;
+  esac
+  [ -n "$cwd" ] && OWN_STATE=foreign
+  return 0
+}
+
+# Does the API's start command take its port from PORT? Nest and Express templates read it.
+api_reads_port() {
+  [ -n "$API_DIR" ] || return 1
+  grep -qs '^PORT=' "$API_DIR/.env.example" "$API_DIR/.env" && return 0
+  grep -rqs --include='*.ts' --include='*.js' 'process\.env\.PORT\|env\.PORT' "$API_DIR/src" 2>/dev/null
+}
+
+free_api_port() { # the next port above this one nobody listens on
+  local n=$((API_PORT + 1))
+  while lsof -ti "tcp:$n" -sTCP:LISTEN >/dev/null 2>&1; do n=$((n + 1)); done
+  echo "$n"
+}
+
+# Something that is not this project's API answers on its port. Never reused, never stopped without a
+# yes. At a terminal: stop it, move to the next free port, or cancel. With --yes or no terminal: the
+# next free port when the API can take PORT, else stop with exit 3 explaining.
+foreign_api() {
+  local who choice new
+  if [ "$OWN_STATE" = foreign ]; then
+    who="$OWN_PROC${OWN_CWD:+ $(L 'from' 'de') $OWN_CWD}"
+    warn "$(L "port $API_PORT is used by $who, not by this project's API" "el puerto $API_PORT lo usa $who, no la API de este proyecto")"
+  else
+    warn "$(L "I can't tell who answers on port $API_PORT (no process or working directory visible), so I treat it as not this project's API" "no puedo saber quién responde en el puerto $API_PORT (no veo el proceso ni su directorio), así que lo trato como si no fuera la API de este proyecto")"
+  fi
+  new=$(free_api_port)
+  if [ "$YES" = 1 ] || ! interactive; then
+    if api_reads_port; then choice=b
+    else
+      bad "$(L "This project's API cannot take another port (it does not read PORT), and port $API_PORT is taken: stop the other one yourself, or run with a terminal." "La API de este proyecto no puede usar otro puerto (no lee PORT) y el puerto $API_PORT está ocupado: detené la otra vos, o corré con una terminal.")"
+      BLOCKED=1
+      return 1
+    fi
+  else
+    printf '  a) %s\n  b) %s\n  c) %s\n' \
+      "$(L "stop it and start this project's API on $API_PORT" "detenerlo y arrancar la API de este proyecto en el $API_PORT")" \
+      "$(L "start this project's API on port $new" "arrancar la API de este proyecto en el puerto $new")" "$(L 'cancel' 'cancelar')"
+    ask choice "  $(L 'Which? [c] ' '¿Cuál? [c] ')" || return 1
+  fi
+  case "$choice" in
+    a | A)
+      [ -n "$OWN_PID" ] || { bad "$(L 'I do not know its process, so I cannot stop it' 'no conozco su proceso, así que no puedo detenerlo')"; return 1; }
+      confirm "$(L "Stop $OWN_PROC (pid $OWN_PID)?" "¿Detengo $OWN_PROC (pid $OWN_PID)?")" || return 1
+      kill "$OWN_PID" 2>/dev/null
+      sleep 1
+      return 0 ;;
+    b | B)
+      api_reads_port || { bad "$(L "This project's API does not read PORT: it cannot start on port $new." "La API de este proyecto no lee PORT: no puede arrancar en el puerto $new.")"; BLOCKED=1; return 1; }
+      set_api_port "$new"
+      init_state && echo "$new" >"$STATE/api_port"
+      API_START_ENV="PORT=$new"
+      ok "$(L "this project's API will run on port $new; the app gets $(api_url) through $API_URL_ENV (kept in $STATE/api_port)" "la API de este proyecto va a correr en el puerto $new; la app recibe $(api_url) por $API_URL_ENV (guardado en $STATE/api_port)")"
+      return 0 ;;
+    *) DECLINED=1; return 1 ;;
+  esac
+}
+
 # Another database on the port this one needs: ask before moving to a free one.
 db_port() { # <env-file args...>
   local port pids new
@@ -1434,9 +1527,23 @@ start_backend() {
   fi
   [ -n "$API_MIGRATE" ] && { run migrate bash -c "$API_MIGRATE" || return 1; }
   seed_step || return 1
-  if api_up; then ok "$(L "API already running on port $API_PORT" "API ya corriendo en el puerto $API_PORT")"; return 0; fi
+  # a port chosen on an earlier run is dropped once the usual one is free again
+  if [ -s "$STATE/api_port" ] && ! lsof -ti "tcp:$API_PORT_CFG" -sTCP:LISTEN >/dev/null 2>&1; then
+    rm -f "$STATE/api_port"
+    set_api_port "$API_PORT_CFG"
+  fi
+  API_START_ENV=
+  if api_up; then
+    api_ownership
+    if [ "$OWN_STATE" = ours ]; then ok "$(L "API already running on port $API_PORT" "API ya corriendo en el puerto $API_PORT")"; return 0; fi
+    foreign_api || return 1
+  fi
   init_state || return 1
-  nohup bash -c "$API_START" >"$LOG/api.log" 2>&1 &
+  if [ -n "$API_START_ENV" ]; then
+    nohup env "$API_START_ENV" bash -c "$API_START" >"$LOG/api.log" 2>&1 &
+  else
+    nohup bash -c "$API_START" >"$LOG/api.log" 2>&1 &
+  fi
   for _ in $(seq 90); do # the first build takes a while
     api_up && { ok "$(L "API on port $API_PORT (log: $LOG/api.log)" "API en el puerto $API_PORT (log: $LOG/api.log)")"; return 0; }
     sleep 2
@@ -1484,8 +1591,13 @@ status_facts() { # tab-separated lines (see json_status in detect_py)
   local pid proc svc up p running dbp o
   if [ -n "$API_DIR" ]; then
     o=$(owner "$API_PORT")
-    if api_up; then up=up; else up=down; fi
-    printf 'api\t%s\t%s\t%s\n' "$up" "$API_PORT" "$o"
+    local owned=
+    if api_up; then
+      up=up
+      api_ownership
+      case "$OWN_STATE" in ours) owned=true ;; foreign) owned=false ;; esac
+    else up=down; fi
+    printf 'api\t%s\t%s\t%s\t%s\n' "$up" "$API_PORT" "$o" "$owned"
   fi
   if [ -n "$DB_SERVICE$SERVICES" ]; then
     compose_args
@@ -1523,7 +1635,7 @@ cmd_status() {
   local k a b c d e
   while IFS=$'\037' read -r k a b c d e; do
     case "$k" in
-      api) ok "API: $a (port $b)${d:+ · $d (pid $c)}" ;;
+      api) ok "API: $a (port $b)${d:+ · $d (pid $c)}$([ "$e" = false ] && L ' · not this project' ' · no es de este proyecto')" ;;
       db) ok "$(L 'container' 'contenedor') $a: $b" ;;
       metro) ok "Metro: $a${c:+ · $c (pid $b)}" ;;
       android) ok "Android: $a ($b) $c · $d" ;;
