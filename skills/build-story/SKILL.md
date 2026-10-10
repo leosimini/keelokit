@@ -1,6 +1,6 @@
 ---
 name: build-story
-description: Build one backlog story end to end with independent checks — done-contract from its dimensions and invariants, acceptance tests written by the verifier before any code, implementation, a cold review and an adversarial breaker before landing (again after the rebase if main moved), verification in the running app, then merge. Use when the user says "build the next story", "implement AUTH-003", "next", "continue the backlog", "construí la siguiente historia", "implementá AUTH-003", "seguí con el backlog", or picks a ready story from /keelokit. With a count ("build 3") or several ids of one wave ("build AUTH-002 AUTH-003"), runs those ready stories in parallel worktrees. "--light" for small, low-risk stories.
+description: Build one backlog story end to end with independent checks — done-contract, acceptance tests written before any code, implementation, cold review and adversarial attack proportioned to the story's risk (trivial, light or full, chosen by you from its dimensions and touches, never asked of the user), verification in the running app, then merge. Use when the user says "build the next story", "implement AUTH-003", "next", "continue the backlog", "construí la siguiente historia", "implementá AUTH-003", "seguí con el backlog", or picks a ready story from /keelokit. With a count or several ids of one wave, runs those stories in parallel worktrees.
 ---
 
 # Build — the builder never grades its own work
@@ -16,16 +16,41 @@ is the procedure. Roles are separate agents with fresh context:
 | Reviewer — reads the diff cold | `agents/reviewer.md` | Sonnet; the session's model for `integrity` stories |
 | Breaker — tries to break the branch | `agents/breaker.md` | Sonnet; the session's model for `integrity` stories |
 
-Change the models in the agent files if your budget or the story's risk asks for it.
+Change the models in the agent files if your budget or the story's risk asks for it. Which of these roles run depends on the tier (step 0).
 
-## 0. Full or light
+## 0. Choose the tier — you decide, the user is never asked
 
-**Light** (`--light`, or propose it) when the story declares at most two dimensions and none of
-`data`, `auth`, `security`, `contract`, `nfr`, `integrity` (a story whose `touches` reach a
-critical area must declare `integrity`; doctor enforces it): the builder runs step 3's tests
-itself and step 5 runs the reviewer without the breaker. The verifier still writes the tests
-first and walks the result (steps 3 and 6), and the reviewer still reads every diff. Everything
-else runs **full**. Say which mode and why in one line.
+Read the story's front matter (`dimensions`, `touches`, `invariants`) and the diff you expect,
+then pick the lightest tier whose condition holds. Say it in one line: tier and the reason. The
+user can force a tier with `--trivial`, `--light` or `--full`; without a flag it is your call.
+
+| Tier | Pick it when ALL hold | What runs |
+|---|---|---|
+| **trivial** | dimensions ⊆ {`docs`, `copy`, `config`, `dx`, `ui`}; `touches` has no logic (text, docs, styles, config, locale files); no critical area; the text promises nothing (no time, amount, "we'll notify you", "you can undo", "free": COPY-1) | The builder writes the scenario tests the doctor's TRACE-1 asks for, and runs `pnpm verify`. You run `doctor --scope`, read the diff yourself and, for a screen, look at it once. No verifier A, no reviewer, no breaker, no verifier B |
+| **light** | at most two dimensions, none of `data`, `auth`, `security`, `contract`, `nfr`, `integrity`; no critical area; no money, quota, permission, notice or data-deletion path | Verifier A writes the tests first; the builder runs them; ONE reviewer; verifier B walks the result. No breaker |
+| **full** | anything else | Every step below |
+
+Rules for the choice:
+- **When in doubt, go up one tier.** Missing an escape costs more than a reviewer's tokens.
+- `integrity`, a critical area, money, reservations, quotas, credits, refunds, notices,
+  permissions or an assistant are always **full** (doctor enforces the declaration).
+- **Re-evaluate after the builder, escalate only.** If `doctor --scope` fails, or the diff reaches
+  `auth`, `data`, a shared contract, a critical area, or a new endpoint or write path the tier
+  didn't expect, rerun from the missing steps at the higher tier. Never lower a tier after a
+  finding.
+- A trivial story whose diff turns out to carry a promise or logic becomes light.
+
+## Spend less, same checks (every tier)
+
+- One agent per role per story. A later round **continues the same agent** (`SendMessage`)
+  instead of launching one that rereads everything; the verifier reproduces ALL the round's
+  findings in one pass, not one agent per finding.
+- Agents get **paths**, not pasted files: the story, the contract, the base sha. Reports are at
+  most 10 lines with `file:line` and commit hashes; the full detail stays in the commit or file.
+- Roles read only what the story needs: the `dimensions.md` rows of its declared dimensions, the
+  `invariants.md` classes of its invariants. Not the whole catalogue.
+- NON-BLOCKING findings are batched into one commit at the end, never a round of their own.
+- Wait on a background run once (`until` on its log or exit status); don't poll.
 
 ## 1. Pick
 

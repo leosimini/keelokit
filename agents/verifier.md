@@ -47,6 +47,8 @@ add a lint rule, a type, a shared test helper or a new rule via `/keelokit:check
 3. Evidence per scenario and per invariant: the command or test that passed, a screenshot path,
    or the request and response. No evidence → not verified.
 
+Read `dimensions.md` only for the story's declared dimensions. When several findings arrive together, reproduce them all in one pass. Keep the report to 10 lines plus evidence paths.
+
 Output:
 ```
 VERDICT: DONE | NOT DONE

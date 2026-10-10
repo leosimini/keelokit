@@ -1,6 +1,6 @@
 ---
 name: project-dashboard
-description: Open or refresh the project's Keelokit dashboard — one short, branded page for day-to-day work, kept live — where the project is, the next step with its command to copy, what waits for you (approvals, decisions from bug bashes and security reviews, environments, harness updates), the development waves with every story linked to its file, health and environments, and links to the project's documents. Built from the repo, so it always reflects where the project really is. Use when the user says "dashboard", "tablero", "abrí el tablero", "mostrame el avance", "dónde estamos", "en qué quedamos", "show progress", when resuming a half-finished project-new or project-adopt, and after every gate, story or wave (the other skills call it). For the complete, read-only report to share or export, use project-report.
+description: Open or refresh the project's Keelokit dashboard — one short page, kept live: where the project is, the next step with its command, what waits for the human, the waves with every story linked, health, environments and documents. Built from the repo. Use when the user says "dashboard", "tablero", "mostrame el avance", "dónde estamos", "en qué quedamos", "show progress", when resuming a half-finished project-new or project-adopt, and after every gate, story or wave (the other skills call it). For the complete read-only report to share, use project-report.
 ---
 
 # Dashboard — one page to work from, rebuilt from the repo, kept live

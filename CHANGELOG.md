@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`build-story` chooses its own tier.** The agent now picks trivial, light or full from the story's dimensions and `touches` (never asking the user), goes up one tier when in doubt, and escalates (never lowers) if the diff turns out riskier than expected; `integrity`, critical areas, money, quotas, permissions and notices are always full. Trivial stories (docs, copy, config, styles with no promises) skip the separate verifier, reviewer and breaker. Every tier continues the same agent between rounds, batches findings, hands agents paths instead of files and caps reports at 10 lines; agents read only the dimension rows and invariant classes the story declares. Five skill descriptions (loaded in every session) were shortened.
+
 ## 0.9.0 — 2026-10-03 — run your app on a phone, an emulator or a simulator
 
 - **`/keelokit:run-local` and `.keelokit/bin/run-local.sh`:** the project's Expo app and its API on

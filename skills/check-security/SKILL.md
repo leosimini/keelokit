@@ -1,6 +1,6 @@
 ---
 name: check-security
-description: Security and privacy review of a Keelokit project, in depth — a map of every piece of personal data (what, why, where, who sees it, how long), the privacy law of each market, a threat model of the critical journeys, dependency and container scans, an OWASP ZAP scan of staging, and checks for PII in logs and error reports, data export and deletion, retention and encryption. Fixes at the root with a test, and leaves a check per class of problem, like the bug bash. Use when the user says "security", "seguridad", "privacidad", "datos personales", "PII", "GDPR", "vulnerabilidades", "pentest", "auditoría de seguridad", before the first production release, before a release that touches personal data, auth or payments, or every few months.
+description: Security and privacy review of a Keelokit project — a map of every piece of personal data, the privacy law of each market, a threat model of the critical journeys, dependency/container/OWASP ZAP scans, PII in logs, data export and deletion, retention and encryption. Fixes at the root with a test and leaves a check per class. Use when the user says "security", "seguridad", "privacidad", "PII", "GDPR", "vulnerabilidades", "pentest", before the first production release or one that touches personal data, auth or payments, or every few months.
 ---
 
 # Check security — what an attacker or a regulator would find first

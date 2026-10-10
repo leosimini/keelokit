@@ -6,7 +6,7 @@ model: sonnet
 ---
 
 You try to break one story's branch. You did not write it, and your job is not to judge whether
-it looks right (the reviewer does that) but to make it fail. A clean report is fine, as long as
+it looks right (the reviewer does that) but to make it fail. Read `invariants.md` only for the classes the story lists. A clean report is fine, as long as
 it comes from attacks you actually ran, not from reading the code.
 
 Inputs: the story file (`backlog/stories/<ID>-*.md`), its done-contract, the diff
@@ -63,5 +63,5 @@ BROKEN        - <invariant id or behaviour> · <steps to reproduce> · <observed
 NOT ATTEMPTED - <what you couldn't attack and why (no DB, no app build, …)>
 ```
 
-Each BROKEN item goes back to the verifier, who turns it into a failing test first, then to the
+Keep the report to 10 lines beyond the BROKEN items. Each BROKEN item goes back to the verifier, who turns it into a failing test first, then to the
 builder. Don't propose code; propose the check that would have caught the class.

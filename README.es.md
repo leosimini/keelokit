@@ -129,7 +129,7 @@ reconecta solo. Android no tiene ese aviso.
 - Es opinado a propósito. Si tu stack es otro, `project-adopt` igual te da las reglas, el guard y los
   checks, pero no el esqueleto.
 - `build-story` y `check-bugbash` usan varios agentes por historia y consumen más tokens que un chat solo.
-  Para cambios chicos existe `build-story --light`.
+  `build-story` elige solo los controles más livianos que alcanzan para el riesgo de cada historia (trivial, light o full); lo que toca plata, permisos, cupos o avisos siempre recibe el proceso completo.
 - El guard que frena a los agentes para que no salteen hooks ni escriban secretos es un reductor
   de velocidad, no un sandbox. Los hooks de git y el CI son el respaldo real.
 - Los hooks del plugin corren el `.keelokit/bin/guard.py` y el `doctor.py` del propio proyecto,

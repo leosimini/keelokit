@@ -1,6 +1,6 @@
 ---
 name: ship-setup
-description: Set up where the product runs — staging and production — for people who have never deployed anything. Writes docs/deploy.md, a step-by-step guide with a checklist per environment, does every step that doesn't need the user's credentials or money (Fly.io apps and config, GitHub environments with production approval, deploy tokens piped straight into GitHub secrets), walks the user through the rest (accounts, logins, payment, their own API keys), and verifies each step for real. Use when the user says "setup", "infra", "infraestructura", "configurá staging", "prepará producción", "deploy guide", "guía de despliegue", "dónde lo publico", after project-new's skeleton, before the first ship-release, or when the dashboard shows an environment not ready.
+description: Set up where the product runs — staging and production — for people who have never deployed. Writes docs/deploy.md with a checklist per environment, does every step that needs no credentials or money (Fly.io apps, GitHub environments with production approval, deploy tokens into GitHub secrets), walks the user through the rest, and verifies each step for real. Use when the user says "setup", "infra", "configurá staging", "prepará producción", "deploy guide", "dónde lo publico", after project-new's skeleton, before the first ship-release, or when the dashboard shows an environment not ready.
 ---
 
 # Ship setup — environments a founder can own

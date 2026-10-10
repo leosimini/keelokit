@@ -126,7 +126,7 @@ reconnect by itself. Android has no such prompt.
 - It's opinionated on purpose. If your stack is different, `project-adopt` still gives you the rules,
   the guard and the checks, but not the skeleton.
 - `build-story` and `check-bugbash` run several agents per story; they use more tokens than a single chat.
-  `build-story --light` exists for small changes.
+  `build-story` picks the lightest checks that fit each story's risk (trivial, light or full) on its own; anything touching money, permissions, quotas or notices always gets the full process.
 - The guard that stops agents from bypassing hooks or writing secrets is a speed bump, not a
   sandbox. The git hooks and CI are the real backstop.
 - The plugin's hooks run the project's own `.keelokit/bin/guard.py` and `doctor.py`, on every
