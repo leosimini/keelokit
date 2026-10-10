@@ -4,7 +4,9 @@
 # never your dev database. Mutation testing (MUT-1) is slower and runs apart: `pnpm mutation`.
 #
 #   pnpm verify         typecheck/test/build/e2e only for packages changed since origin/main
-#                       (and their dependents); lint, format, doctor and audit stay repo-wide
+#                       (and their dependents); format only the changed files; lint (cached),
+#                       doctor stay repo-wide; the audit reuses a green result for the same
+#                       lockfile for 24 h
 #   pnpm verify --all   everything, like CI
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -82,9 +84,28 @@ if $has_api; then
   pnpm --filter ./apps/api prisma:generate >/dev/null
 fi
 step 'Format'
-pnpm format:check
+fmt_files=
+fmt_all=$all
+if ! $all; then
+  # Changed and untracked files only. A change to a formatter or linter config can reclassify any
+  # file, so those (like the root manifests above) mean everything.
+  changed=$({ git diff --name-only --diff-filter=d origin/main; git ls-files --others --exclude-standard; } | sort -u)
+  if printf '%s\n' "$changed" | grep -Eq '(^|/)(\.prettier|prettier\.config|\.editorconfig|eslint\.config)'; then
+    echo 'A formatter or linter config changed: checking every file.'
+    fmt_all=true
+  else
+    fmt_files=$changed
+  fi
+fi
+if $fmt_all; then
+  pnpm format:check
+elif [ -n "$fmt_files" ]; then
+  printf '%s\n' "$fmt_files" | tr '\n' '\0' | xargs -0 pnpm exec prettier --check --cache --ignore-unknown
+else
+  echo '(no changed files to format)'
+fi
 step 'Lint'
-pnpm lint
+pnpm lint --cache
 step 'Typecheck'
 pnpm "${scope[@]}" --if-present run typecheck
 step 'Harness doctor'
@@ -136,6 +157,16 @@ if $db; then
   done
 fi
 step 'Dependency audit'
-python3 .keelokit/bin/audit.py
+# A green audit holds for the same lockfile for 24 h (advisories appear over time, so it expires);
+# `--all` and CI always run it.
+audit_stamp="$(git rev-parse --git-dir)/keelokit-audit-ok"
+lock_id=$(git hash-object pnpm-lock.yaml 2>/dev/null || echo none)
+if ! $all && [ -f "$audit_stamp" ] && [ "$(cat "$audit_stamp")" = "$lock_id" ] &&
+  [ -n "$(find "$audit_stamp" -mmin -1440 2>/dev/null)" ]; then
+  echo '(same lockfile as the last green audit, less than 24 h ago: skipped; `pnpm verify --all` runs it)'
+else
+  python3 .keelokit/bin/audit.py
+  [ "$lock_id" = none ] || printf '%s' "$lock_id" >"$audit_stamp"
+fi
 
 printf '\n\033[32m✔ verify passed\033[0m\n'

@@ -19,3 +19,4 @@ ios/
 android/
 __pycache__
 .local-dev/
+.eslintcache

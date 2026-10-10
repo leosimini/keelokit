@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **`build-story` chooses its own tier.** The agent now picks trivial, light or full from the story's dimensions and `touches` (never asking the user), goes up one tier when in doubt, and escalates (never lowers) if the diff turns out riskier than expected; `integrity`, critical areas, money, quotas, permissions and notices are always full. Trivial stories (docs, copy, config, styles with no promises) skip the separate verifier, reviewer and breaker. Every tier continues the same agent between rounds, batches findings, hands agents paths instead of files and caps reports at 10 lines; agents read only the dimension rows and invariant classes the story declares. Five skill descriptions (loaded in every session) were shortened.
+- **Faster `pnpm verify`.** Outside `--all`, Prettier checks only the files changed since `origin/main` (with its cache; a formatter or linter config change checks everything), ESLint runs with `--cache`, and a green dependency audit is reused for the same lockfile for 24 hours. `pnpm verify --all` and CI run all of it, as before.
 
 ## 0.9.0 — 2026-10-03 — run your app on a phone, an emulator or a simulator
 
