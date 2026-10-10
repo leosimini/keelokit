@@ -115,7 +115,7 @@ jobs:
           - { name: adopt, flags: --adopt }
           # An upgrade from the last release that changed the template, with the CHANGELOG's manual
           # steps (docs/releasing.md step 6; tests/test_release.py fails until it is moved).
-          - { name: update from v0.9.0, apps: '["api","web","mobile"]', flags: --update-from v0.9.0 }
+          - { name: update from v0.9.1, apps: '["api","web","mobile"]', flags: --update-from v0.9.1 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
