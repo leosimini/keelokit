@@ -295,6 +295,83 @@ class VerifyUntrackedCostTest(GitStates, unittest.TestCase):
         self.assertLessEqual(per_file, 10, f"{per_file:.1f} traced lines per untracked file")
 
 
+class FormatAndAuditShortcutsTest(GitStates, unittest.TestCase):
+    """What `pnpm verify` formats and audits outside `--all`: only the changed files, and a green
+    audit of the same lockfile is reused for 24 h. `--all` (CI) always runs both in full."""
+
+    def run_verify(self, tmp, root, *flags):
+        shims = tmp / "shims"
+        shims.mkdir(exist_ok=True)
+        log = tmp / "calls.txt"
+        log.unlink(missing_ok=True)
+        for name in ("pnpm", "python3"):
+            (shims / name).write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> '{log}'\n")
+            (shims / name).chmod(0o755)
+        env = {**os.environ, "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"}
+        r = subprocess.run(["bash", "scripts/verify.sh", *flags], cwd=root, env=env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return log.read_text().splitlines() if log.exists() else []
+
+    def edit(self, root, rel, text="\nmore\n"):
+        with open(root / rel, "a") as f:
+            f.write(text)
+
+    def prettier(self, calls):
+        return [c for c in calls if "prettier" in c or "format:check" in c]
+
+    def test_only_the_changed_files_are_format_checked_and_lint_is_cached(self):
+        tmp, root = self.fixture()
+        self.branch(root)
+        self.edit(root, "docs/notes.md")
+        (root / "docs/new.md").write_text("# New\n")
+        calls = self.run_verify(tmp, root)
+        self.assertEqual(self.prettier(calls), ["pnpm exec prettier --check --cache --ignore-unknown "
+                                                "docs/new.md docs/notes.md"])
+        self.assertIn("pnpm lint --cache", calls)
+
+    def test_nothing_changed_checks_no_file(self):
+        tmp, root = self.fixture()
+        self.branch(root)
+        self.assertEqual(self.prettier(self.run_verify(tmp, root)), [])
+
+    def test_a_formatter_or_linter_config_change_checks_every_file(self):
+        for config in (".prettierrc", "eslint.config.mjs", ".editorconfig", "prettier.config.js"):
+            with self.subTest(config=config):
+                tmp, root = self.fixture()
+                self.branch(root)
+                (root / config).write_text("{}\n")
+                self.assertEqual(self.prettier(self.run_verify(tmp, root)), ["pnpm format:check"])
+
+    def test_all_checks_every_file(self):
+        tmp, root = self.fixture()
+        self.branch(root)
+        self.edit(root, "docs/notes.md")
+        self.assertEqual(self.prettier(self.run_verify(tmp, root, "--all")), ["pnpm format:check"])
+
+    def audits(self, calls):
+        return [c for c in calls if "audit.py" in c]
+
+    def test_a_green_audit_of_the_same_lockfile_is_reused_for_24_hours(self):
+        tmp, root = self.fixture()
+        self.branch(root)
+        self.assertEqual(len(self.audits(self.run_verify(tmp, root))), 1)
+        stamp = root / ".git/keelokit-audit-ok"
+        self.assertTrue(stamp.exists())
+        self.assertEqual(self.audits(self.run_verify(tmp, root)), [], "same lockfile: reused")
+        self.assertEqual(len(self.audits(self.run_verify(tmp, root, "--all"))), 1, "--all always audits")
+        old = stamp.stat().st_mtime - 25 * 3600
+        os.utime(stamp, (old, old))
+        self.assertEqual(len(self.audits(self.run_verify(tmp, root))), 1, "older than 24 h: audited again")
+
+    def test_a_changed_lockfile_is_audited_again(self):
+        tmp, root = self.fixture()
+        self.branch(root)
+        self.run_verify(tmp, root)
+        self.edit(root, "pnpm-lock.yaml", "# bump\n")
+        self.assertEqual(len(self.audits(self.run_verify(tmp, root))), 1)
+
+
 class CriticalChangedTest(GitStates, unittest.TestCase):
     """The same matrix for `doctor.py --critical --changed`, the files `pnpm mutation` mutates."""
 
