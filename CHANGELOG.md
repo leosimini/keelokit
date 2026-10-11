@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — lessons from weeks of parallel use
+## 0.10.0 — 2026-10-11 — lessons from weeks of parallel use
 
 Nine lessons from a real monorepo that ran many sessions at once, as rules with a check. Each is
 opt-in or additive; nothing in a project that already uses Keelokit breaks (see *Upgrading*).
