@@ -63,6 +63,10 @@ said. One worktree each (`git worktree add ../<repo>-<ID> -b <id-lower>`), steps
 story in parallel. Give each worktree its own ports:
 `E2E_PORT=41<n>0 E2E_MOBILE_PORT=81<n>0 E2E_API_PORT=31<n>0` (n = 1..N).
 
+For parallel *sessions* (one per story, possibly on several terminals) the shared brief is
+`.keelokit/harness/agent-brief.md`; `/keelokit:coordinate` runs the rounds. Stories that add a
+migration go one per wave (MIG-1).
+
 How many at once comes from `[run]` in `.keelokit/state.toml`: `build = "serial"` → one;
 `build = "parallel"` → up to `parallel` ready stories of the wave. A count the user gives now
 wins for this run only. Never ask again when `[run]` is set; if it isn't, ask once, in plain words
@@ -140,7 +144,10 @@ builder.
    Story: AUTH-003
    ```
 4. If the result differs from the story, append `## Addendum — <date>` to the story file.
-5. Push and merge per the project's flow; production deploys stay with the human.
+5. Push and merge per the project's flow; production deploys stay with the human. The story is
+   landed only when `git log origin/main` shows its commit: report that hash, never "done" alone.
+   A test that fails intermittently while you land is a race: find the cause (FLAKY-1), never a
+   longer timeout, a retry or a skip.
 6. `python3 .keelokit/bin/doctor.py` passes: TRACE-1 now checks this story's scenarios and INV-1
    its invariants.
 

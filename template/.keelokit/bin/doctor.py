@@ -8,6 +8,7 @@
                                                critical areas and acceptance tests
     python3 .keelokit/bin/doctor.py --critical [--changed]
                                                critical source files (all, or changed since main)
+    python3 .keelokit/bin/doctor.py --launch   the pre-launch debt ledger: exit 1 while a row is open
 
 Any other command line (a missing ID, an unknown mode, an extra argument) prints the usage and exits 2.
 
@@ -26,6 +27,13 @@ critical area, a story touching a critical area declares `integrity` and its inv
 scenario and invariant of a done story is cited by an active test title; the escape log names the
 check each escaped bug left behind. A story is done when a commit reachable from main carries the
 trailer `Story: <ID>` — status is never stored in a file.
+
+Process checks (CI-1, CI-2, FMT-1, FLAKY-1, MIG-1, DEBT-1): no CI job without `timeout-minutes` and
+none whose timeout, test timeout or retries grew since main (split or shard instead); every CI job
+is in `.keelokit/verify-map.toml` and every step named there exists in scripts/verify.sh; line endings
+pinned so local and CI formatting agree; new migrations sort after the last one on main and two
+stories of a wave don't both add one; the pre-launch debt ledger is well-formed and never says
+"known issue".
 """
 import sys
 
@@ -121,6 +129,7 @@ SHAPES = {
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
     ".keelokit/state.toml": ({"gates": "table"}, {}),
+    ".keelokit/verify-map.toml": ({"ci_only": "texts", "jobs": "table"}, {}),
     # Story front matter (backlog/README.md).
     "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
                               "touches": "texts", "dimensions": "texts", "invariants": "texts", "origin": "text"}, {}),
@@ -801,6 +810,221 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
     return {"total": len(stories), "done": done, "ready": ready, "stories": stories}
 
 
+# ── Process checks: CI budget, the verify map, formatting, migrations, flaky tests, the debt ledger ──
+def workflow_jobs(text: str) -> dict[str, str]:
+    """Job id → its text, for one workflow file."""
+    jobs = re.search(r"(?ms)^jobs:[ \t]*(?:#[^\n]*)?\n(.*?)(?=^[^\s#]|\Z)", text)
+    indent = jobs and re.search(r"(?m)^( +)[^\s#]", jobs.group(1))
+    if not indent:
+        return {}
+    n = len(indent.group(1))
+    return {m.group(1): m.group(2) for m in re.finditer(
+        rf"(?ms)^ {{{n}}}([\w-]+):[ \t]*(?:#[^\n]*)?\n(.*?)(?=^ {{{n}}}[\w-]+:|\Z)", jobs.group(1))}
+
+
+def job_timeout(body: str) -> int | None:
+    m = re.search(r"(?m)^\s+timeout-minutes:\s*(\d+)\s*(?:#.*)?$", body)
+    return int(m.group(1)) if m else None
+
+
+def at_main(path: str) -> str | None:
+    ref = main_ref()
+    if not ref:
+        return None
+    res = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=ROOT, capture_output=True, text=True)
+    return res.stdout if res.returncode == 0 else None
+
+
+def flag(rid: str, excepted: set[str], message: str) -> None:
+    """An error, or a warning while an approved exception for the rule is active."""
+    (warnings if rid in excepted else errors).append(f"{rid}: {message}" + (" (excepted)" if rid in excepted else ""))
+
+
+def number(expr: str) -> int | None:
+    parts = [p.replace("_", "").strip() for p in expr.split("*")]
+    if not all(p.isdigit() for p in parts):
+        return None
+    out = 1
+    for p in parts:
+        out *= int(p)
+    return out
+
+
+def check_ci_budget(excepted: set[str]) -> dict[str, str]:
+    """CI-1. Returns every CI job id (to the file it is in) for the verify map."""
+    ids: dict[str, str] = {}
+    for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+        text, name = read(path) or "", str(path.relative_to(ROOT))
+        before = workflow_jobs(at_main(name) or "")
+        gated = "pull_request" in text.split("\njobs:", 1)[0]  # the workflow that gates changes; a release workflow isn't one
+        for job, body in workflow_jobs(text).items():
+            if gated:
+                ids[job] = name
+            if re.search(r"(?m)^\s+uses:", body.split("steps:")[0]):
+                continue  # a reusable workflow call has no timeout of its own
+            now = job_timeout(body)
+            if now is None:
+                warnings.append(f"CI-1: job '{job}' in {name} has no timeout-minutes (GitHub's default is 360: a hung job runs for hours)")
+            elif job in before and (was := job_timeout(before[job])) is not None and now > was:
+                flag("CI-1", excepted, f"job '{job}' in {name} had its timeout raised ({was} → {now} min). Split the job by kind of test "
+                                       "or shard it (docs/ci.md); a longer timeout only hides the next growth")
+    return ids
+
+
+def check_verify_map(ci_jobs: dict[str, str], excepted: set[str]) -> None:
+    """CI-2: every CI job is in .keelokit/verify-map.toml, and every verify step it names exists."""
+    path = ROOT / ".keelokit/verify-map.toml"
+    data = (read_toml(path, ".keelokit/verify-map.toml") or {}) if path.exists() else None
+    if not ci_jobs or not (ROOT / "scripts/verify.sh").exists():
+        return
+    if data is None:
+        warnings.append("CI-2: no .keelokit/verify-map.toml — it says which verify step runs each CI job locally "
+                        "(`copier update` brings the template's)")
+        return
+    jobs = data.get("jobs", {})
+    verify = read(ROOT / "scripts/verify.sh") or ""
+    steps = {m.strip() for m in re.findall(r"step\s+['\"]([^'\"]+)['\"]", verify)}
+    valid = {j for j, e in jobs.items() if isinstance(e, dict) and isinstance(e.get("step"), str) and isinstance(e.get("when"), str)}
+    for job in sorted(set(ci_jobs) - valid - set(data.get("ci_only", []))):
+        flag("CI-2", excepted, f"CI job '{job}' is not in .keelokit/verify-map.toml: say which verify step runs it locally, "
+                               "or list it under ci_only with the reason it can't run on a machine")
+    for job, entry in jobs.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("step"), str) or not isinstance(entry.get("when"), str):
+            warnings.append(f".keelokit/verify-map.toml: jobs.{job} needs `step` (text) and `when` (text); it counts as unmapped")
+            continue
+        if not any(entry["step"] in s for s in steps):
+            flag("CI-2", excepted, f"verify-map says CI job '{job}' runs locally as the verify step '{entry['step']}', "
+                                   "but scripts/verify.sh has no such step")
+
+
+def check_formatting(excepted: set[str]) -> None:
+    """FMT-1: local and CI formatting agree only when line endings are pinned and `format:check` exists."""
+    pkg = ROOT / "package.json"
+    if not pkg.exists() or not (ROOT / ".prettierrc").exists():
+        return
+    attrs = read(ROOT / ".gitattributes") or ""
+    if not re.search(r"(?m)^\*\s.*\beol=lf\b", attrs):
+        warnings.append("FMT-1: no `* text=auto eol=lf` in .gitattributes — a checkout with other line endings makes the "
+                        "formatter rewrite files locally and in CI differently (one commit reformatted 56 files)")
+    if '"format:check"' not in (read(pkg) or ""):
+        flag("FMT-1", excepted, "package.json has no `format:check` script, so nothing fails when `format` would leave a diff")
+
+
+def check_migrations(excepted: set[str]) -> None:
+    """MIG-1: a migration added on this branch sorts after the last one on main (else it applies out of order)."""
+    ref = main_ref()
+    if not ref:
+        return
+    for mdir in sorted(ROOT.glob("apps/*/prisma/migrations")) + sorted(ROOT.glob("*/migrations")) + sorted(ROOT.glob("db/migrations")):
+        rel = str(mdir.relative_to(ROOT))
+        on_main = {p.split("/")[len(rel.split("/"))] for p in git("ls-tree", "-r", "--name-only", ref, "--", rel).split()
+                   if p.count("/") > len(rel.split("/"))}
+        mine = {p.name for p in mdir.iterdir() if p.is_dir()}
+        if not on_main:
+            continue
+        last = max(on_main)
+        late = sorted(m for m in mine - on_main if m < last)
+        if late:
+            flag("MIG-1", excepted, f"{rel}: new migration(s) {', '.join(late)} sort before '{last}', already on main — "
+                                    "rename them (a later timestamp) after rebasing; never edit the applied ones")
+
+
+def check_migration_waves(backlog: dict, done: set[str], excepted: set[str]) -> None:
+    """MIG-1: stories that add migrations go one at a time — two in a wave would pick colliding timestamps and schemas."""
+    waves: dict = {}
+    for sid, meta in backlog["stories"].items():
+        if sid not in done and any("migrations" in t for t in meta.get("touches", [])):
+            waves.setdefault(meta.get("wave"), []).append(sid)
+    for wave, sids in sorted(waves.items(), key=lambda kv: str(kv[0])):
+        if len(sids) > 1:
+            flag("MIG-1", excepted, f"stories {', '.join(sorted(sids))} share wave {wave} and all add migrations — "
+                                    "move them to separate waves so they serialize")
+
+
+KNOB = re.compile(r"\b(retries|testTimeout|hookTimeout|timeout|retry)\s*:\s*([\d_]+(?:\s*\*\s*[\d_]+)*)")
+
+
+def check_flaky(excepted: set[str]) -> None:
+    """FLAKY-1: a flaky test is a race. Retries and test timeouts that grew since main are the cure that hides it."""
+    tracked = git("ls-files", "-co", "--exclude-standard", "--", "*playwright*.config.*", "*vitest*.config.*").split("\n")
+    for path in sorted(ROOT / f for f in tracked if f and "node_modules" not in f):
+        rel = str(path.relative_to(ROOT))
+        before = at_main(rel)
+        if before is None:
+            continue
+        old: dict[str, int] = {}
+        for k, v in KNOB.findall(before):
+            if (n := number(v)) is not None:
+                old[k] = max(old.get(k, 0), n)
+        for k, v in KNOB.findall(read(path) or ""):
+            if (n := number(v)) is not None and k in old and n > old[k]:
+                flag("FLAKY-1", excepted, f"{rel}: `{k}` raised from {old[k]} to {n}. An intermittent test is a race — find the "
+                                          "cause and add its guard to docs/escapes.md; never lengthen or retry it")
+
+
+DEBT_PATH = "docs/prelaunch-debt-ledger.md"
+DEBT_ROW = re.compile(r"^\|\s*(D-\d{3})\s*\|")
+OWNER_ROW = re.compile(r"^\|\s*(N-\d{3})\s*\|")
+DEBT_BANNED = re.compile(r"known issue|known bug|pending known|pendiente conocido|\blater\b|\bTBD\b|\bluego\b|\bmás adelante\b|no action|won'?t fix", re.I)
+
+
+def debt_rows() -> tuple[list[list[str]], list[list[str]]]:
+    debt, owner = [], []
+    for line in (read(ROOT / DEBT_PATH) or "").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if DEBT_ROW.match(line):
+            debt.append(cells)
+        elif OWNER_ROW.match(line):
+            owner.append(cells)
+    return debt, owner
+
+
+def check_debt() -> tuple[int, int]:
+    """DEBT-1: every finding is fixed, or decided with a recommendation; none is a 'known issue'.
+    Returns (open findings, items still waiting on the owner)."""
+    if not (ROOT / DEBT_PATH).exists():
+        return 0, 0
+    debt, owner = debt_rows()
+    text = read(ROOT / DEBT_PATH) or ""
+    if not re.search(r"(?im)^#+\s*(needs the owner|necesita al due[ñn]o)", text):
+        errors.append(f"{DEBT_PATH}: missing the section 'Needs the owner' (legal data, tokens, accounts: what only the owner can supply)")
+    open_rows = 0
+    for cells in debt:  # | id | found | finding | status | fix or decision + recommendation |
+        if len(cells) < 5 or not all(cells[:5]):
+            errors.append(f"{DEBT_PATH}: {cells[0]} needs id, date found, finding, status and fix-or-decision")
+            continue
+        status = cells[3].lower()
+        if status not in ("open", "fixed", "decided"):
+            errors.append(f"{DEBT_PATH}: {cells[0]} status must be open, fixed or decided (not '{cells[3]}')")
+        if status == "open":
+            open_rows += 1
+        if status == "decided" and not re.search(r"recommend|recomend", cells[4], re.I):
+            errors.append(f"{DEBT_PATH}: {cells[0]} is 'decided' without a recommendation (say what you advise and why)")
+        if DEBT_BANNED.search(cells[2] + " " + cells[4]) and status != "open":
+            errors.append(f"{DEBT_PATH}: {cells[0]} reads as a 'known issue / later'. Fix it, or decide it with a recommendation")
+    waiting = 0
+    for cells in owner:  # | id | what | why needed | status |
+        if len(cells) < 4 or not all(cells[:4]):
+            errors.append(f"{DEBT_PATH}: {cells[0]} needs id, what is needed, why and status")
+        elif cells[3].lower() not in ("needed", "provided"):
+            errors.append(f"{DEBT_PATH}: {cells[0]} status must be needed or provided")
+        else:
+            waiting += cells[3].lower() == "needed"
+    return open_rows, waiting
+
+
+def check_launch() -> int:
+    """`doctor --launch`: the ledger as a go/no-go list."""
+    if not (ROOT / DEBT_PATH).exists():
+        print(f"No {DEBT_PATH}: copy it from the template before a launch.")
+        return 1
+    open_rows, waiting = check_debt()
+    for e in errors:
+        print(f"ERROR {e}")
+    print(f"Pre-launch debt: {open_rows} open finding(s), {waiting} item(s) waiting on the owner.")
+    return 1 if errors or open_rows or waiting else 0
+
+
 def gate_state() -> dict:
     return (read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {}).get("gates", {})
 
@@ -857,6 +1081,7 @@ def check_scope(sid: str) -> int:
 USAGE = """usage: doctor.py
        doctor.py --brief
        doctor.py --ci
+       doctor.py --launch
        doctor.py --scope ID
        doctor.py --critical [--changed]"""
 
@@ -872,7 +1097,7 @@ def main() -> int:
     if mode == "--scope" and (len(args) != 2 or not args[1] or args[1].startswith("-")):
         print("usage: doctor.py --scope ID  (a story id, e.g. AUTH-001)", file=sys.stderr)
         return 2
-    if mode != "--scope" and args not in ([], ["--brief"], ["--ci"], ["--critical"], ["--critical", "--changed"]):
+    if mode != "--scope" and args not in ([], ["--brief"], ["--ci"], ["--launch"], ["--critical"], ["--critical", "--changed"]):
         print(f"doctor.py: unexpected arguments: {' '.join(args)}\n{USAGE}", file=sys.stderr)
         return 2
     if mode == "--scope":
@@ -894,12 +1119,21 @@ def main() -> int:
         return 0
     rules = load_rules()
     profile = load_profile()
-    check_rules(rules, check_exceptions(set(rules)), profile)
+    excepted = check_exceptions(set(rules))
+    if mode == "--launch":
+        return check_launch()
+    check_rules(rules, excepted, profile)
     gaps, blocking = check_context()
     invariants = check_invariants()
     areas, _ = load_critical()
     escapes = check_escapes()
     backlog = check_backlog(invariants, areas)
+    check_verify_map(check_ci_budget(excepted), excepted)
+    check_formatting(excepted)
+    check_migrations(excepted)
+    check_migration_waves(backlog, backlog["done"], excepted)
+    check_flaky(excepted)
+    debt_open, debt_waiting = check_debt()
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
     layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", read(answers) or "") else "project"
@@ -929,6 +1163,8 @@ def main() -> int:
     print(f"  Invariants: {len(invariants)} · Critical areas: {len(areas)} · Escapes logged: {escapes}")
     print(f"  Backlog: {len(backlog['done'])}/{backlog['total']} done"
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))
+    if debt_open or debt_waiting:
+        print(f"  Pre-launch debt: {debt_open} open · {debt_waiting} waiting on the owner (`doctor --launch`)")
     for w in warnings:
         print(f"  warn  {w}")
     for e in errors:

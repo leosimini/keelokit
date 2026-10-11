@@ -27,7 +27,15 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
   runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).
+- `bin/ci.py` — the CI from the command line: health of main (a cancelled run is not green), time per
+  job against its timeout, which job and step failed, a manual dispatch. The CI's last job runs
+  its `summary`. `bin/status.py` — ten lines for whoever coordinates parallel sessions.
+- `verify-map.toml` — which `pnpm verify` step runs each CI job; the doctor keeps them in step.
+- `harness/agent-brief.md` — the one page every parallel session is told to read.
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
+
+The process rules that came from long parallel use (CI budget, local gate, sessions, migrations,
+flaky tests, formatting, debt) are listed with their reason and check in [process-rules.md](process-rules.md).
 
 ## The project's profile
 

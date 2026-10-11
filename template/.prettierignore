@@ -13,3 +13,4 @@ pnpm-lock.yaml
 apps/api/src/generated
 # Markdown is rendered from templates and read by humans/agents; tables stay as written.
 *.md
+ci-timings

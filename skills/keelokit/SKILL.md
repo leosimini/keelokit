@@ -28,6 +28,8 @@ Answer three things, in this order, in at most ten lines:
    | The project's harness (`_commit` in `.keelokit/answers.yml`) is older than the plugin | Offer `/keelokit:harness-upgrade` |
    | The profile has `mobile` and no `[local]` block (the doctor warns RUN-1), or the user wants to see the app | Offer `/keelokit:run-local` (macOS) |
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
+   | Several sessions or worktrees running, or the user asks how they are doing | `/keelokit:coordinate` (`python3 .keelokit/bin/status.py`) |
+   | The CI of main is red or cancelled twice in a row (`python3 .keelokit/bin/ci.py health`) | `ci.py jobs` for the failing job and step; fix before starting stories |
    | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave) |
    | A wave just finished, or a release is near | Propose `/keelokit:check-bugbash` |
    | A wave is done and its bug bash is clean | Propose `/keelokit:ship-release` (and `/keelokit:check-security` before the first production release) |

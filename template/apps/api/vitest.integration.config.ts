@@ -5,5 +5,10 @@ import { defineConfig } from 'vitest/config';
 if (existsSync('.env')) process.loadEnvFile('.env');
 
 export default defineConfig({
-  test: { include: ['src/**/*.integration.spec.ts'] },
+  test: {
+    // CI: per-test timings for the run summary's 10 slowest tests (.keelokit/bin/ci.py summary).
+    reporters: process.env.CI ? ['default', 'json'] : ['default'],
+    outputFile: { json: '../../ci-timings/integration-api.json' },
+    include: ['src/**/*.integration.spec.ts'],
+  },
 });

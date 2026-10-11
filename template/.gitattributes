@@ -1,0 +1,7 @@
+# Same bytes on every machine: the formatter (FMT-1) and the CI then agree on every file.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.woff2 binary

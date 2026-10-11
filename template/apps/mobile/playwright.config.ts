@@ -8,7 +8,14 @@ export default defineConfig({
   testDir: 'e2e',
   // e2e/stack/ runs against the real API instead (playwright.stack.config.ts, `pnpm e2e:stack`).
   testIgnore: 'stack/**',
-  reporter: [['list'], ['html', { open: 'never' }]],
+  // CI: per-test timings for the run summary's 10 slowest tests (.keelokit/bin/ci.py summary).
+  reporter: process.env.CI
+    ? [
+        ['list'],
+        ['html', { open: 'never' }],
+        ['json', { outputFile: '../../ci-timings/e2e-mobile.json' }],
+      ]
+    : [['list'], ['html', { open: 'never' }]],
   use: { baseURL: `http://localhost:${port}`, trace: 'retain-on-failure' },
   projects: [{ name: 'chromium', use: devices['Desktop Chrome'] }],
   // Serves the export (`pnpm e2e` builds it first), not the dev server.

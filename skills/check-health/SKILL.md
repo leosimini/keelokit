@@ -20,6 +20,12 @@ python3 .keelokit/bin/doctor.py
 | Enforced only by review | Acceptable for SHOULD; for MUST, find a computational check or tell the user it is weak. |
 | Exception incomplete or expired | Ask the user: renew (new date, reason, approver) or remove it and comply. Never renew on your own. |
 | docs/context missing / vague / untracked gap | Missing → `/keelokit:plan-intake`. Vague → ask for the number or name. Untracked gap → add its row to `gaps.md`. |
+| CI-1: a job without `timeout-minutes`, or a timeout / test timeout / retries raised | Add the timeout. For a raise: undo it and split the job by kind of test or shard it (`docs/ci.md`); an exception only with the user's yes |
+| CI-2: a CI job missing from `.keelokit/verify-map.toml`, or a step it names that `verify.sh` lacks | Add the job to the map with the verify step that runs it, or add the step to `scripts/verify.sh`; `ci_only` only for what can't run on a machine |
+| FMT-1: no `eol=lf` in `.gitattributes`, or no `format:check` | Add `* text=auto eol=lf` (then `pnpm format` once, alone in its commit) and the script |
+| FLAKY-1: a timeout or `retries` raised in a test config | Undo it; reproduce the intermittent failure, fix the race, add its row to `docs/escapes.md` |
+| MIG-1: a migration that sorts before main's last, or two stories of a wave adding migrations | Rename the new one with a later timestamp after rebasing (never edit the applied ones); move one story to a later wave |
+| DEBT-1: a ledger row malformed, "decided" without a recommendation, or reading as "known issue / later" | Fix it or decide it with a recommendation; a missing 'Needs the owner' section is added empty |
 | Story errors | Fix front matter, file name, or unknown `depends_on`; remove any `status` field. |
 | Invariant without a class, or a story naming an unknown one | Add `class: <class>` to the `INV-nnn` line in `domain.md` (how does it break? see the plugin's `references/invariants.md`); fix the story's `invariants`. A new invariant is a product rule: ask the user. |
 | Story touches a critical area without `integrity`, or two stories of one area share a wave | Add `integrity` and the invariants it keeps; move one story to a later wave. Never shrink an area to go green. |

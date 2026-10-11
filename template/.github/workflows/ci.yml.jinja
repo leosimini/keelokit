@@ -1,5 +1,16 @@
 {% raw %}# Fail-fast pipeline: secrets -> checks -> tests -> integration -> build -> deploy (main only).
-# Same gates as `pnpm verify` (scripts/verify.sh), which runs them locally before every push.
+# Same gates as `pnpm verify` (scripts/verify.sh), which runs them locally before every push;
+# .keelokit/verify-map.toml says which verify step is which job (the doctor checks it, CI-2).
+#
+# The local gate decides and this file audits: besides pushes and pull requests it runs every night
+# and by hand (Actions > CI > Run workflow, or `python3 .keelokit/bin/ci.py dispatch`). To bill
+# minutes only for the audit, delete the `pull_request` and `push` triggers (docs/ci.md).
+#
+# Time budget (CI-1). Jobs are split by kind of test: cheap checks, unit, UI/mobile journeys, and
+# integration with the database, each with its own `timeout-minutes`. A job that nears its timeout
+# is not 'failed' but 'cancelled', and the last job (ci-report) prints each job's share of its
+# budget and the 10 slowest tests in the run summary. NEVER raise a timeout to fix a slow job:
+# split it by kind of test, or shard it (docs/ci.md). The doctor fails when a timeout grows.
 # API-only jobs are rendered only when the API exists (GitHub rejects hashFiles in a job-level
 # `if`); adding an app is a `copier update`, which re-renders this file.
 name: CI
@@ -9,6 +20,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    - cron: '17 5 * * *' # the nightly audit of main
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -73,6 +87,12 @@ jobs:
         if: hashFiles('apps/api/prisma/schema.prisma') != ''
         run: pnpm --filter ./apps/api prisma:generate
       - run: pnpm test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timings-unit
+          path: ci-timings
+          if-no-files-found: ignore
 
 {% endraw %}{% if 'api' in apps %}{% raw %}  integration:
     name: Integration tests (real PostgreSQL)
@@ -104,6 +124,12 @@ jobs:
       - run: pnpm --filter ./apps/api prisma:migrate:deploy
       - run: pnpm --filter ./apps/api db:seed
       - run: pnpm --filter ./apps/api test:integration
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timings-integration
+          path: ci-timings
+          if-no-files-found: ignore
 
 {% endraw %}{% endif %}{% raw %}  # E2E-1: each app's `e2e` script builds, serves and walks its critical journeys (hermetic:
   # the API is mocked at the network layer, so this job needs no database).
@@ -128,6 +154,12 @@ jobs:
         with:
           name: e2e-report
           path: apps/*/playwright-report
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timings-e2e
+          path: ci-timings
           if-no-files-found: ignore
 
 {% endraw %}{% if 'api' in apps and ('web' in apps or 'mobile' in apps) %}{% raw %}  # E2E-2: the critical journeys again, against the real API and PostgreSQL — no network mocks.
@@ -168,6 +200,12 @@ jobs:
           name: e2e-stack-report
           path: apps/*/playwright-report
           if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timings-e2e-stack
+          path: ci-timings
+          if-no-files-found: ignore
 
 {% endraw %}{% endif %}{% raw %}  # MUT-1: mutate the critical code (.keelokit/critical.toml) and fail under its threshold. A pull
   # request mutates the critical files it changes; main mutates all of them.
@@ -189,7 +227,7 @@ jobs:
       - name: Prisma client
         if: hashFiles('apps/api/prisma/schema.prisma') != ''
         run: pnpm --filter ./apps/api prisma:generate
-      - run: pnpm mutation ${{ github.event_name == 'push' && '--all' || '' }}
+      - run: pnpm mutation ${{ contains(fromJSON('["push", "schedule"]'), github.event_name) && '--all' || '' }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -225,7 +263,35 @@ jobs:
       - name: Prisma client
         if: hashFiles('apps/api/prisma/schema.prisma') != ''
         run: pnpm --filter ./apps/api prisma:generate
-      - run: pnpm build{% endraw %}{% if 'api' in apps %}{% raw %}
+      - run: pnpm build
+
+  # Time per job against its timeout, the 10 slowest tests, and how many runs main has gone without
+  # a green (a 'cancelled' run is not green). Never fails the run: it only reports.
+  ci-report:
+    name: Run report (time per job, slowest tests)
+    needs: [secrets, checks, unit, {% endraw %}{% if 'api' in apps %}integration, {% endif %}{% raw %}e2e, {% endraw %}{% if 'api' in apps and ('web' in apps or 'mobile' in apps) %}e2e-stack, {% endif %}{% raw %}mutation, sast, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true # no test job uploaded timings (they were skipped)
+        with:
+          pattern: timings-*
+          path: ci-timings
+          merge-multiple: true
+      - run: python3 .keelokit/bin/ci.py summary --tests ci-timings
+      - name: Main without a green run?
+        if: github.ref == 'refs/heads/main'
+        run: |
+          python3 .keelokit/bin/ci.py health | tee -a "$GITHUB_STEP_SUMMARY" ||
+            echo "::warning title=CI health::main has runs without a green one (cancelled counts); see the run summary"{% endraw %}{% if 'api' in apps %}{% raw %}
 
   # Staging deploys on every green main. It is a hard failure (never continue-on-error): a red
   # staging must be seen. Until the FLY_API_TOKEN secret exists the job skips itself, and

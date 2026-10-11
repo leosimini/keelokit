@@ -12,7 +12,7 @@ project, on a branch, and never rewrites their product.
 
 The template owns infrastructure (CI, lint/format/ts base configs, `scripts/verify.sh`, git
 hooks, `.keelokit/` except the project's own choices: `rules.local.toml`, `exceptions.toml`,
-`critical.toml` and `profile.toml`). The product owns its code (apps' `src/`, e2e, prisma schema
+`critical.toml`, `profile.toml` and `verify-map.toml`). The product owns its code (apps' `src/`, e2e, prisma schema
 and migrations, locale files, packages' `src/`) and its knowledge (`docs/context/`, `docs/prd.md`,
 `docs/escapes.md`, `backlog/`, `README.md`, `CHANGELOG.md`) — Copier never overwrites those once
 they exist.
@@ -26,6 +26,12 @@ they exist.
    `-a .keelokit/answers.yml` is required (Keelokit keeps its answers there). If `_src_path` in that
    file is a local path, the project can only upgrade from that machine — point it at the git
    source (`gh:<owner>/keelokit`) first.
+   From a version before 0.10.0 the update brings new files and checks, none of which breaks the
+   project. The doctor warns (not fails) about a missing `.gitattributes` `eol=lf`; CI-2 fails only for a
+   CI job *you added* that `.keelokit/verify-map.toml` lacks (add it to the map, same commit); and
+   `docs/prelaunch-debt-ledger.md`, `docs/ci.md`, `.keelokit/bin/ci.py`, `status.py` and the agent brief
+   arrive as new files. `verify` now also takes a per-machine lock; the CI gains a nightly
+   trigger, a manual trigger and a `ci-report` job.
 4. Resolve every `*.rej`: keep the project's intent, take the template's structure; delete the
    `.rej` files. Read the Keelokit CHANGELOG entries between the two versions for what changed and
    why.

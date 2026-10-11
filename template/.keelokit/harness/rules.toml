@@ -297,3 +297,57 @@ rule = "Launch the app locally with one command: the run-local script exists and
 why = "Getting a phone or a simulator to show the app took a dozen manual steps that nobody wrote down twice."
 enforced_by = ["script:.keelokit/bin/run-local.sh"]
 needs = ["mobile"]
+
+
+# ── Process lessons from long, parallel use (docs/ci.md, .keelokit/harness/agent-brief.md) ──────
+
+[[rule]]
+id = "CI-1"
+level = "MUST NOT"
+rule = "Raise a CI job's timeout (or a test's timeout or retries) to make it pass; split the job by kind of test, or shard it, and give every job its own timeout-minutes."
+why = "One job with one timeout broke silently when its steps grew: GitHub shows 'cancelled', not 'failed', and a longer limit only hid the next growth."
+enforced_by = ["script:.keelokit/bin/doctor.py", "script:.keelokit/bin/ci.py"]
+
+[[rule]]
+id = "CI-2"
+level = "MUST"
+rule = "Run locally, with `pnpm verify`, everything the CI runs: every CI job is in .keelokit/verify-map.toml and names a step scripts/verify.sh really has. The local gate decides; CI audits."
+why = "Billed CI minutes went to finding what a local run would have found in seconds, and a CI step missing from verify only failed after the push."
+enforced_by = ["script:.keelokit/bin/doctor.py", "script:scripts/verify.sh", "git-hook:pre-push"]
+
+[[rule]]
+id = "FMT-1"
+level = "MUST"
+rule = "Format before every commit; `format:check` fails when `format` would leave a diff, and line endings are pinned so local and CI formatting agree. A rebase that conflicts only on formatting keeps your content and is reformatted."
+why = "A formatter that disagreed between a laptop and CI reformatted 56 files in one commit and turned every parallel branch into a conflict."
+enforced_by = ["ci:checks", "script:scripts/verify.sh", "script:.keelokit/bin/doctor.py"]
+needs = ["typescript"]
+
+[[rule]]
+id = "FLAKY-1"
+level = "MUST NOT"
+rule = "Silence an intermittent test with a longer timeout, a retry or a skip; find the race, fix it, and log the guard in docs/escapes.md with its date, cause and check."
+why = "Intermittent tests were always races in the code; retries made them rarer and harder, never gone."
+enforced_by = ["script:.keelokit/bin/doctor.py"]
+
+[[rule]]
+id = "MIG-1"
+level = "MUST"
+rule = "A new migration sorts after the last one on main, and stories that add migrations go one per wave."
+why = "Parallel stories each added a migration; the one that landed second applied before the first and broke every database that had run it."
+enforced_by = ["script:.keelokit/bin/doctor.py"]
+needs = ["database"]
+
+[[rule]]
+id = "DEBT-1"
+level = "SHOULD"
+rule = "Before a launch, keep docs/prelaunch-debt-ledger.md: every finding is fixed or decided with a recommendation, never left as a 'known issue', and what only the owner can supply is listed under 'Needs the owner'."
+why = "Findings parked as 'pending' piled up until the launch week, and the legal data and tokens only the owner had were found missing last."
+enforced_by = ["script:.keelokit/bin/doctor.py", "review:reviewer"]
+
+[[rule]]
+id = "SESS-1"
+level = "SHOULD"
+rule = "Run parallel sessions from the shared brief (.keelokit/harness/agent-brief.md): one session, one finished and pushed job; the coordinator verifies hashes on origin/main."
+why = "Sessions reported 'done' with work that never reached main, and prompts repeating the rules drifted apart."
+enforced_by = ["script:.keelokit/harness/agent-brief.md", "script:.keelokit/bin/status.py"]

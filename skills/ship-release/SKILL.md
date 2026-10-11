@@ -17,7 +17,11 @@ environment: the release is the tag, the notes and publishing the package where 
 ## 1. Ready?
 
 - On `main`, up to date, working tree clean; CI green on the tip (the staging deploy included).
-- `python3 .keelokit/bin/doctor.py` passes.
+- `python3 .keelokit/bin/doctor.py` passes, and `python3 .keelokit/bin/ci.py health` doesn't alarm
+  (a cancelled run is not a green one).
+- For a launch (the first production release): `python3 .keelokit/bin/doctor.py --launch` exits 0 —
+  `docs/prelaunch-debt-ledger.md` has every finding fixed or decided with a recommendation, and
+  nothing under "Needs the owner" is still `needed`. A "known issue" is not a decision (DEBT-1).
 - Nothing half-done: every story merged since the last tag has its `Story:` trailer; a wave that
   is only partly done is fine — say which stories are in and which wait.
 - A bug bash since the last release is recommended (`docs/bugbash/`); if there is none, say so

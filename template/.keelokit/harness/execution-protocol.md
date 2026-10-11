@@ -30,6 +30,12 @@ inherits it; change it in the Keelokit template, not here.
   `docs/escapes.md` naming the check that now catches its whole class.
 - Unknown fact → never guess. Record a gap in `docs/context/gaps.md` (id, owner, exact question,
   blocking yes/no) and continue with what doesn't depend on it, or stop and ask.
+- Format before every commit (`pnpm format`). A rebase that conflicts only on formatting: keep your
+  content, then reformat (FMT-1). Never reformat files the story doesn't touch.
+- A test that fails sometimes is a race: find the cause, never lengthen its timeout, retry or skip
+  it (FLAKY-1). A slow CI job is split or sharded, never given a longer timeout (CI-1).
+- Several sessions at once: read `.keelokit/harness/agent-brief.md`. A session ends landed on
+  `origin/main` or it is not finished; the coordinator checks the hash, not the message (SESS-1).
 - A command fails twice for the same reason → stop, report what you tried, ask.
 
 ## Done means
@@ -43,6 +49,8 @@ inherits it; change it in the Keelokit template, not here.
   anywhere else doesn't count.
 - If what was built differs from the story, append `## Addendum — <date>` to the story saying how.
 - Report: what changed, how it was verified, what is left, and anything the human must decide.
+- Every finding is fixed or decided with a recommendation, never left as a "known issue"; before a
+  launch, `docs/prelaunch-debt-ledger.md` holds them and `doctor --launch` must pass (DEBT-1).
 
 ## Reserved for the human
 

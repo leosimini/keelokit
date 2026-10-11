@@ -1,0 +1,22 @@
+# Which `pnpm verify` step runs each CI job on your machine, and when. Doctor (CI-2) fails when a CI
+# job is missing here or names a step scripts/verify.sh doesn't have, so the local gate and the CI
+# can't drift apart. The local gate decides; CI is the audit (nightly and by hand, docs/ci.md).
+#
+# `step`  a substring of a `step '…'` title in scripts/verify.sh
+# `when`  what makes verify run it: always · changed packages (and their dependents, since
+#         origin/main) · the API or its app changed · pnpm verify --all
+# A docs-only change reaches only the `always` steps: seconds, not minutes.
+#
+# New CI job? Add it here in the same commit. A job that can't run on a machine goes in `ci_only`.
+ci_only = ["deploy-staging", "deploy-production", "ci-report"]
+
+[jobs]
+secrets = { step = "Secret scan", when = "always" }
+checks = { step = "Lint", when = "always (format: changed files; --all: every file)" }
+unit = { step = "Unit tests", when = "changed packages" }
+integration = { step = "Integration tests", when = "the API changed (needs Docker)" }
+e2e = { step = "End-to-end journeys", when = "changed packages" }
+"e2e-stack" = { step = "End-to-end on the real stack", when = "the API or the app changed (needs Docker)" }
+mutation = { step = "Mutation", when = "pnpm mutation (critical code changed on this branch)" }
+sast = { step = "Static analysis", when = "always" }
+build = { step = "Build", when = "changed packages" }

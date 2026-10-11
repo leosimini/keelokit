@@ -8,6 +8,12 @@
 #                       doctor stay repo-wide; the audit reuses a green result for the same
 #                       lockfile for 24 h
 #   pnpm verify --all   everything, like CI
+#
+# The local gate decides; the CI audits (nightly and by hand, docs/ci.md): the steps below are the
+# CI's jobs, and .keelokit/verify-map.toml says which is which (the doctor checks it, CI-2). A
+# change that only touches docs reaches the few steps that always run: seconds, not minutes.
+# One verify runs per machine at a time (the lock below), so parallel sessions don't starve each
+# other into timeouts that aren't bugs. `VERIFY_LOCK_WAIT=<seconds>` (default 1800) bounds the wait.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -15,6 +21,34 @@ all=false
 [ "${1:-}" = --all ] && all=true
 
 step() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
+
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd)
+lock="$common/keelokit-verify.lock"
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+  holder=$(cat "$lock/pid" 2>/dev/null || true)
+  # A holder that died (or never wrote its pid) leaves a lock nobody will release.
+  if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } ||
+    { [ -z "$holder" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+    rm -rf "$lock"
+    continue
+  fi
+  [ "$waited" -eq 0 ] && echo "Another verify is running on this machine (pid ${holder:-?}, in $(cat "$lock/where" 2>/dev/null || echo '?')): waiting for it."
+  if [ "$waited" -ge "${VERIFY_LOCK_WAIT:-1800}" ]; then
+    echo "Gave up after ${waited}s waiting for the verify lock ($lock). If nothing is running, delete it."
+    exit 1
+  fi
+  sleep 5
+  waited=$((waited + 5))
+done
+echo $$ >"$lock/pid"
+pwd >"$lock/where"
+DB=
+cleanup() {
+  [ -z "$DB" ] || docker rm -f "$DB" >/dev/null 2>&1 || true
+  rm -rf "$lock"
+}
+trap cleanup EXIT
 
 if git remote get-url origin >/dev/null 2>&1; then
   step 'Up to date with origin/main (GIT-1)'
@@ -127,7 +161,6 @@ if $has_api && { affected apps/api || [ -n "$stack_apps" ]; }; then
     image=$(grep -m1 'image:' docker-compose.yml | awk '{print $2}')
     DB=$(docker run -d --rm -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app -e POSTGRES_DB=app \
       -p 127.0.0.1::5432 "$image")
-    trap 'docker rm -f "$DB" >/dev/null' EXIT
     port=$(docker port "$DB" 5432/tcp | head -1 | cut -d: -f2)
     export DATABASE_URL="postgresql://app:app@localhost:$port/app"
     until docker exec "$DB" pg_isready -U app -d app -h 127.0.0.1 >/dev/null 2>&1; do sleep 1; done
@@ -155,6 +188,24 @@ if $db; then
     step "End-to-end on the real stack ($app)"
     pnpm --filter "$app" run e2e:stack
   done
+fi
+
+# MUT-1: the CI's mutation job. Only when critical code changed on this branch (all of it with --all).
+if [ -f scripts/mutation.sh ]; then
+  critical=--changed
+  $all && critical=
+  if [ -n "$(python3 .keelokit/bin/doctor.py --critical $critical 2>/dev/null)" ]; then
+    step 'Mutation testing (critical code)'
+    if $all; then bash scripts/mutation.sh --all; else bash scripts/mutation.sh; fi
+  fi
+fi
+
+# SAST-1: the CI's Semgrep job, when Semgrep is installed (`brew install semgrep`).
+if command -v semgrep >/dev/null; then
+  step 'Static analysis (Semgrep)'
+  semgrep scan --config p/typescript --config p/react --config p/secrets --error --metrics=off --quiet
+else
+  echo '(semgrep not installed — `brew install semgrep`. CI still scans.)'
 fi
 step 'Dependency audit'
 # A green audit holds for the same lockfile for 24 h (advisories appear over time, so it expires);

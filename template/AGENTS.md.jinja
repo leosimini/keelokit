@@ -16,6 +16,9 @@ This file is for every agent and every human. It points; the detail lives in the
 | What to build next | `backlog/` — run `pnpm run doctor --brief` |
 | Where a bug costs most, and what must always hold | `.keelokit/critical.toml`; invariants in `docs/context/domain.md` |
 | What escaped before and the check it left | `docs/escapes.md` |
+| CI: time budget, health, starting it, reading a run | `docs/ci.md` |
+| Running several sessions at once | `.keelokit/harness/agent-brief.md` |
+| What must be fixed or decided before a launch | `docs/prelaunch-debt-ledger.md` |
 
 ## Layout
 
@@ -39,6 +42,8 @@ backlog/     epics.md, stories/<ID>-<slug>.md
 | `pnpm e2e:stack` | The journeys against the real API and database (needs `DATABASE_URL`; `pnpm verify` starts one) |
 {%- endif %}
 | `pnpm format` | Before committing |
+| `python3 .keelokit/bin/status.py` | Parallel sessions: worktrees, branches not on main, verify lock, CI of main |
+| `python3 .keelokit/bin/ci.py health` · `budget` · `jobs` | CI of main (cancelled is not green), time per job, which step failed (`docs/ci.md`) |
 {%- for app in apps %}
 | `pnpm dev:{{ app }}` | Run {{ app }} locally |
 {%- endfor %}
@@ -58,7 +63,9 @@ backlog/     epics.md, stories/<ID>-<slug>.md
    property tests for totals, `race()` on the real database for limits, replays for one-time
    side effects. Critical areas (`.keelokit/critical.toml`) go one story at a time, in full mode,
    with `pnpm mutation` green.
-8. A bug that escaped leaves a check for its whole class, logged in `docs/escapes.md`.
+8. A bug that escaped leaves a check for its whole class, logged in `docs/escapes.md`. An
+   intermittent test is a race: never raise its timeout, retry or skip it. A slow CI job is split,
+   never given a longer timeout.
 9. Production deploys, money, legal and data deletion wait for the human's yes.
 
 ## Changing the rules

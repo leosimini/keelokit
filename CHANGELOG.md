@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased — lessons from weeks of parallel use
+
+Nine lessons from a real monorepo that ran many sessions at once, as rules with a check. Each is
+opt-in or additive; nothing in a project that already uses Keelokit breaks (see *Upgrading*).
+
+- **CI time budget (CI-1).** Every job has its own `timeout-minutes` and the doctor warns when one has
+  none; it **fails when a job's timeout, a test timeout or `retries` grows against main**: split the
+  job by kind of test or shard it (`docs/ci.md`). The template's CI was already split by kind of test
+  (checks, unit, UI journeys, integration with the database), so that stays; new is the `ci-report`
+  job, which writes each job's time and share of its budget (warning above 2/3) and the 10 slowest
+  tests (vitest / Playwright JSON) into the run summary. `.keelokit/bin/ci.py budget` does the same by hand.
+- **Cancelled is not green.** `ci.py health` counts the runs of main since its last green one; a
+  failure or timeout at the head, or two runs in a row without a green (cancelled included), is an
+  alarm. The nightly run prints it; `ci.py jobs` says which job and step failed (and not to read the
+  database container's log).
+- **The local gate decides, the CI audits (CI-2).** `pnpm verify` already ran the CI's checks routed by what
+  changed; now it also runs mutation testing (when critical code changed) and Semgrep (when
+  installed), takes a **per-machine lock** so parallel sessions wait instead of starving each other
+  into fake timeouts, and `.keelokit/verify-map.toml` maps every CI job to its verify step: the
+  doctor fails when a job isn't in the map or a step doesn't exist. The CI also runs nightly and by
+  hand (`workflow_dispatch`); delete its `push` and `pull_request` triggers to bill minutes only for the audit.
+- **Starting the CI without a person** (`docs/ci.md`): the nightly trigger, `ci.py dispatch` with a
+  token that has Actions write, and what a 403 means (the token, not the CI).
+- **Parallel sessions (SESS-1).** `.keelokit/harness/agent-brief.md` is the shared brief (one session = one
+  finished and pushed job, reports ≤ 8 lines, paths not contents, one `until` to wait, machine limits,
+  how to land); prompts say "read the brief". `/keelokit:coordinate` runs the rounds: a session that
+  ends well doesn't message its parent, the coordinator verifies the hash on `origin/main`, and "done"
+  without a push to main is not done. `.keelokit/bin/status.py` is the ten-line status (worktrees,
+  branches not on main, verify lock, CI of main, backlog).
+- **Migrations (MIG-1).** The doctor fails when a new migration sorts before the last one on main, or
+  two pending stories of a wave both touch `migrations`.
+- **Intermittent tests are races (FLAKY-1).** Never a longer timeout, a retry or a skip (the doctor and
+  the guard enforce it); the cause and its check go in `docs/escapes.md`, which is the quality-gates
+  log (it already had date, cause and check per row, so it stays instead of a second file).
+- **Formatting (FMT-1).** `.gitattributes` pins line endings (the doctor warns without it) and
+  `format:check` must exist; the rule to format before each commit, and to keep your content and
+  reformat when a rebase conflicts only on formatting, is in the execution protocol.
+- **Zero debt before launch (DEBT-1).** `docs/prelaunch-debt-ledger.md`: every finding ends fixed or
+  decided *with a recommendation*, never "known issue"; a "Needs the owner" section lists what only
+  the owner can supply. `doctor --launch` is the go/no-go, and `ship-release` checks it.
+- Already there, now aligned: **risk-proportioned process** (`build-story`'s trivial / light / full tiers, tests by a
+  separate verifier before the builder, a cold reviewer, the breaker in full mode) — unchanged.
+- Left out on purpose: levels, product rules and texts specific to the project that taught these
+  lessons.
+
+### Upgrading from 0.9.x
+
+`/keelokit:harness-upgrade` brings the new files (`ci.py`, `status.py`, the agent brief,
+`docs/ci.md`, `docs/prelaunch-debt-ledger.md`, `.keelokit/verify-map.toml`, `.gitattributes`) and the
+merged `ci.yml`, `verify.sh` and configs. Nothing fails because of what's new except: a CI job you
+added yourself that `.keelokit/verify-map.toml` lacks (add it, same commit), a job whose timeout
+you raise later, and `retries` or test timeouts that grow. A missing `.gitattributes` `eol=lf`
+or a job without `timeout-minutes` are warnings. Adopted repos (`mode=harness`) get the new bin
+files, the brief and the rules but not the map. The CI changes (nightly cron, `ci-report`, timing
+reporters in the vitest and Playwright configs) need a push of the merged workflow.
+
 ## 0.9.1 — 2026-10-10
 
 - **`build-story` chooses its own tier.** The agent now picks trivial, light or full from the story's dimensions and `touches` (never asking the user), goes up one tier when in doubt, and escalates (never lowers) if the diff turns out riskier than expected; `integrity`, critical areas, money, quotas, permissions and notices are always full. Trivial stories (docs, copy, config, styles with no promises) skip the separate verifier, reviewer and breaker. Every tier continues the same agent between rounds, batches findings, hands agents paths instead of files and caps reports at 10 lines; agents read only the dimension rows and invariant classes the story declares. Five skill descriptions (loaded in every session) were shortened.

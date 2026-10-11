@@ -9,7 +9,14 @@ const apiPort = Number(process.env.E2E_API_PORT ?? 3100);
 
 export default defineConfig({
   testDir: 'e2e/stack',
-  reporter: [['list'], ['html', { open: 'never' }]],
+  // CI: per-test timings for the run summary's 10 slowest tests (.keelokit/bin/ci.py summary).
+  reporter: process.env.CI
+    ? [
+        ['list'],
+        ['html', { open: 'never' }],
+        ['json', { outputFile: '../../ci-timings/e2e-stack-web.json' }],
+      ]
+    : [['list'], ['html', { open: 'never' }]],
   use: { baseURL: `http://localhost:${port}`, trace: 'retain-on-failure' },
   projects: [{ name: 'chromium', use: devices['Desktop Chrome'] }],
   webServer: [
