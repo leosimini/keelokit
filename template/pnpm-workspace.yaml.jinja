@@ -19,11 +19,17 @@ onlyBuiltDependencies:
   # mobile:start
   # mobile:end
 {%- endif %}
-{%- if 'api' in apps %}
+{%- if 'api' in apps or 'mobile' in apps %}
 
-# Prisma pins these exactly and the pinned versions carry high advisories.
-# ponytail: drop each override once Prisma ships the fixed version itself.
+# Pinned dependencies carrying high advisories that have a fix (SEC-3): a new advisory turns the audit red
+# with no code change, so the override goes in and comes out once the tool ships the fixed version itself.
+# ponytail: drop each override once its owner ships the fixed version.
 overrides:
+{%- if 'api' in apps %}
   'prisma>mysql2': ^3.23.1
   '@prisma/config>deepmerge-ts': ^8.0.2
+{%- endif %}
+{%- if 'mobile' in apps %}
+  '@expo/cli>zod': ^4.6.6
+{%- endif %}
 {%- endif %}

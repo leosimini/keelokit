@@ -84,6 +84,8 @@ if [ -n "$from" ]; then
     [ -f "$spec" ] && ! grep -q 'E2E-1' "$spec" &&
       { printf '%s\n' '// Enforces house rule E2E-1.'; cat "$spec"; } >"$spec.tmp" && mv "$spec.tmp" "$spec"
   done
+  # 0.11.0: happy-dom 21.0.4 (two high advisories with a fix in 20.x; the audit turns red until it is bumped).
+  [ -f "$dir/apps/web/package.json" ] && (cd "$dir/apps/web" && npm pkg set devDependencies.happy-dom=^21.0.4)
   # 0.5.0: fast-check for the property tests, and the real-stack E2E scripts (E2E-2).
   (cd "$dir/packages/shared" && npm pkg set devDependencies.fast-check=^4.10.2)
   if [ -f "$dir/apps/api/package.json" ]; then
