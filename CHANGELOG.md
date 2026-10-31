@@ -1,5 +1,76 @@
 # Changelog
 
+## Unreleased — a verify you can trust, and a captain that survives
+
+Lessons from weeks of parallel work on a real monorepo, in five parts. Everything is additive or opt-in
+(see *Upgrading*). Written as notes for the version it will ship in; not released yet.
+
+### A verify that doesn't cost you an afternoon
+- **`pnpm verify --keep-going`** runs every independent step and lists all the reds at the end. A train that
+  failed three full runs in a row, one cause per run, now costs one fix round. Setup steps (database, client)
+  still stop the run.
+- **`pnpm verify --preflight`**: tools, secret scan, format, lint, typecheck and the doctor, in minutes, before
+  a run of an hour. It takes no lock.
+- **A run you can tell is dead.** The verify writes its state (running / pass / fail, step, pid) in the git
+  directory and `status.py` says **CUT** when a run's process is gone without finishing. A verify killed by a
+  signal exits non-zero (143/130/129) and says at which step; after a red, the log is scanned for known causes
+  (memory, disk, the database starting, formatting, secrets, lockfile, migrations, time zones, kills; add your
+  own in `.keelokit/red-causes.toml`) and prints where to look first. The result is the exit code, never a phrase in the log.
+- **The green seal.** A clean, green run records the commit and the base it passed against; the pre-push hook
+  skips the repeat only for that exact commit, base and clean tree. It replaces the `--no-verify`-after-a-green-run
+  exception with a mechanism (`KEELOKIT_NO_SEAL=1` turns it off). Agents still can't use `--no-verify`.
+- **A missing required tool fails.** `gitleaks` and `semgrep` absent used to print a note; two fake tokens reached
+  main that way. Now exit 4, unless `KEELOKIT_ALLOW_MISSING="semgrep"` says so on purpose. *This changes the
+  behaviour of existing projects on upgrade.*
+- **`--all` won't start on a busy machine** (load above 1.5 × cores, or a Jest/Vitest/Gradle/Playwright run going):
+  exit 3; `VERIFY_FORCE=1` overrides.
+- **`--since REF`** for a branch agent to run only its part. Never sealed.
+- **Time per step** at the end of every run, and `keelokit-verify.history`, one JSON line per run.
+- **Date bombs.** With libfaketime installed, `--all` reruns the unit tests a year ahead; the template's CI does it
+  every night (new `clock` job; the unit tests with `FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+365d'`).
+  Verified with Vitest on Node 22.
+
+### Verify by what changed
+- **`.keelokit/verify-routing.toml`** maps files to the steps they need. Docs-only ⇒ the format check, the secret scan
+  and the doctor. The guards: *a file no route knows runs everything*, *`--all` is every step*, first matching route wins,
+  and tests walk the template's files. When files match no route, verify says which kinds so the map grows.
+  Combined with the package-level routing that already existed.
+
+### Risk and roles with a mechanism behind them
+- **`.keelokit/risk.toml` + `doctor --tier <ID|--branch|--files…>`**: the lowest build tier a change's files allow.
+  Unknown paths are `full`; the agent goes up, never down (RISK-1). The tier names and the agents are the ones
+  `build-story` already had; the new part is the floor.
+- **`review.py`**: counts review rounds (the third is refused unless a BLOCKING finding is open), checks the
+  reviewer's report format and an agent's final report (≤ 8 lines, with a hash, nothing pasted).
+- **`escapes.py add`** refuses an escaped bug without a guard of its whole class (invariant, concurrency, arch-spec, lint,
+  reviewer-checklist, test), or an explicit exception with an owner, and says when the class had already bitten.
+- **`references/stable-tests.md`** (nine rules for tests that stay green, read by the verifier and the reviewer),
+  **`references/arch-specs/`** (tests that walk the source tree: no sleeps, no literal dates, no inherited `GIT_*`),
+  and **`.keelokit/bin/flaky.sh`**, which reproduces an intermittent test under stress and other time zones.
+
+### Parallel sessions that outlive the captain
+- **`/keelokit:orquestador`** and **`.keelokit/bin/coord.py`**: a logbook on the branch `coord/board` (no CI, no main), a
+  **watch** with a check-in that expires (3 h), a handoff of at most 40 lines, and an hourly scheduled check that takes the
+  watch if it lapsed. The first push wins; a second claimant is rejected, never forced (tested with two clones racing).
+- **Convoys** (a wave of stories that sails together: one `verify --all`, one push): `coord.py convoy new|add|piece|pending|docs|ready|seam|ship`.
+  `ready` checks the four conditions to sail; `seam` lists the files two pieces both change.
+- **`coord.py budget`**: low / medium / high from active sessions, usage-limit stops and a running verify, with what to do.
+  No amounts: a session can't read the remaining allowance.
+- **`report.py`**: reds by cause, time per step, convoys, escapes by class (and how many repeated a class), review rounds.
+  Tokens per role are not reported: nothing records them.
+- `docs/orchestrator-design.md` has the options, the table of what each Claude Code piece can and can't do, and the plan by stages.
+
+New rules: VER-1, RISK-1, COORD-1.
+
+### Upgrading from 0.10.x
+`/keelokit:harness-upgrade` brings the new files: `verify_tools.py`, `coord.py`, `review.py`, `escapes.py`, `report.py`,
+`flaky.sh`, `verify-routing.toml`, `red-causes.toml`, `risk.toml`, `docs/verify.md`, `docs/convoys.md`, and the merged
+`verify.sh`, `ci.yml` and pre-push hook. What changes behaviour: **a missing `gitleaks`/`semgrep` now fails the verify**
+(install it, or `KEELOKIT_ALLOW_MISSING`); the pre-push hook is `pnpm verify --use-seal`; a docs-only change runs fewer steps;
+`--all` may refuse a busy machine. New doctor warnings and errors only for what you do next: a raised timeout, a CI job missing
+from `verify-map.toml`, a migration that sorts before main's. Adopted repos (`mode=harness`) get the scripts and rules but not
+the routing and map files. The nightly `clock` job and the timing reporters need the merged workflow pushed.
+
 ## 0.10.0 — 2026-10-11 — lessons from weeks of parallel use
 
 Nine lessons from a real monorepo that ran many sessions at once, as rules with a check. Each is

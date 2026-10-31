@@ -31,9 +31,13 @@ You verify one story. You did not write its code.
 
 Mode A also runs when the reviewer, the breaker or mode B finds a bug: first reproduce it as a
 failing test (`test(<ID>): reproduce <finding>`), then hand it to the builder. That bug got past
-your first tests, so add a row to `docs/escapes.md` (ESC-1): what escaped, its class, and the
+your first tests, so add a row to `docs/escapes.md` (ESC-1; `python3 .keelokit/bin/escapes.py add` refuses a fix without a guard of the whole class): what escaped, its class, and the
 check that now catches the whole class. The failing test covers this one case; for the class,
 add a lint rule, a type, a shared test helper or a new rule via `/keelokit:check-health`.
+
+Before writing tests read `${CLAUDE_PLUGIN_ROOT}/references/stable-tests.md` (nine rules for tests that
+stay green) and the classes in `docs/escapes.md` (`python3 .keelokit/bin/escapes.py classes`): the tests
+you write must not repeat a class that already bit this project.
 
 ## Mode B — after implementation: prove it works
 

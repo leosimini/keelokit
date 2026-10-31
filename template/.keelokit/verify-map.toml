@@ -20,3 +20,4 @@ e2e = { step = "End-to-end journeys", when = "changed packages" }
 mutation = { step = "Mutation", when = "pnpm mutation (critical code changed on this branch)" }
 sast = { step = "Static analysis", when = "always" }
 build = { step = "Build", when = "changed packages" }
+clock = { step = "Clock a year ahead", when = "pnpm verify --all, with libfaketime installed (nightly in the CI)" }

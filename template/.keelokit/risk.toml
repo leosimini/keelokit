@@ -1,0 +1,35 @@
+# The lowest build tier a change can have (trivial < light < full), by the files it touches.
+# `python3 .keelokit/bin/doctor.py --tier <STORY-ID | --branch | --files …>` prints the floor, and
+# /keelokit:build-story starts there: the agent may pick a HIGHER tier, never a lower one. A path no
+# rule knows takes `unknown` (full): what nobody classified goes up, not down.
+#
+# Rules: each one gives the paths it covers (globs; `**` crosses folders) and the `min` tier. A change
+# takes the highest tier any of its files reaches. Replace the examples with your own dangerous
+# folders (money, permissions, notices, migrations, shared contracts); `/keelokit:check-health` can
+# propose them from the repo.
+unknown = "full"
+
+# Prose and records: no logic.
+[[rule]]
+paths = ["**/*.md", "docs/**", "backlog/**", "LICENSE", ".gitignore", ".gitattributes", ".prettierrc", ".prettierignore"]
+min = "trivial"
+why = "docs and records"
+
+# Texts people read. A promise hides in a text (COPY-1), so the story's own text decides; the path alone can't.
+[[rule]]
+paths = ["**/locales/**", "**/i18n/**"]
+min = "trivial"
+why = "copy"
+
+# Behaviour: app code and tests are never trivial (a test file changing is a behaviour changing).
+[[rule]]
+paths = ["apps/*/src/**", "packages/*/src/**", "**/*.test.*", "**/*.spec.*", "**/e2e/**"]
+min = "light"
+why = "code and tests"
+
+# The dangerous list: money, permissions, notices, data model, shared contracts, anything on the wire.
+[[rule]]
+paths = ["**/prisma/**", "**/migrations/**", "**/auth/**", "**/permissions/**", "**/payments/**", "**/billing/**",
+         "**/notifications/**", "**/emails/**", "**/prompts/**", "**/*.dto.ts", "packages/shared/**", "**/contracts.*"]
+min = "full"
+why = "money, permissions, notices, data model or shared contract"

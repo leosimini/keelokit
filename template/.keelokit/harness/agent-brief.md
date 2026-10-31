@@ -16,6 +16,14 @@ parallel. (SESS-1)
   land, rebases, and takes a timestamp after it. A migration that sorts before the last one on
   main fails the doctor.
 
+## Convoys (when several sessions land together)
+
+With `landing = "convoy"` in `.keelokit/state.toml` `[run]`, a session never pushes to `main`: it hands
+its finished, reviewed branch to the convoy's conductor by name and hash
+(`coord.py convoy add`). The conductor merges, reads the seams (`coord.py convoy seam N`), runs one
+`pnpm verify --all` and pushes once. Nothing else reaches main between convoys, except the fix of a
+red main. `docs/convoys.md` has the roles; `/keelokit:orquestador` runs them.
+
 ## Landing
 
 1. `git fetch origin main && git rebase origin/main`. A conflict only in formatting: keep **your**
@@ -36,10 +44,25 @@ process or container you did not start.
 One `until` loop on one condition (a log line, an exit status, `gh`/`ci.py` state), with a sleep
 inside. Never poll with repeated short calls, never `sleep` alone.
 
+A run that lasts more than a few minutes (`pnpm verify --all`) goes in the background with a log,
+because a command a tool keeps in the foreground is killed at about 30 minutes and the run is lost:
+`nohup pnpm verify --all > run.log 2>&1 &`, then wait with one `until`. Read its result from the
+exit code and from `status.py` (`verify: last pass`, or `CUT` when it died), never by searching
+the log for a phrase. Run `pnpm verify --preflight` first: a red there costs minutes, not an hour.
+`--keep-going` lists every red of a run at once.
+
 ## The report: 8 lines at most
 
 The story id, the commit hash on `origin/main`, tier, what `verify` ran, anything the person must
 decide. **Paths, not contents:** point at the file or commit; never paste a diff or a log.
+`python3 .keelokit/bin/review.py lint-report -` checks it (8 lines, a hash, no pasted blocks).
+
+## Review rounds
+
+Two per story (`review.py round <ID>`): the second only reads what the first round's fixes changed;
+a third is refused unless a BLOCKING finding is still open. A reviewer's report follows
+`agents/reviewer.md` exactly (`review.py lint-review -`). Fixes go to the agent that wrote the code,
+as one list, not one message per finding.
 
 ## The coordinator trusts nothing but origin/main
 

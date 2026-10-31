@@ -5,6 +5,9 @@ description: Run several Keelokit sessions at once and keep them honest — one 
 
 # Coordinate — origin/main is the only truth
 
+For rounds on one machine this skill is enough. When the plan must outlive this session (a convoy,
+a handoff, a scheduled check, sessions stopped by a usage limit), use `/keelokit:orquestador`.
+
 The brief every session follows is `.keelokit/harness/agent-brief.md` (SESS-1). Read it once.
 
 ## Start sessions

@@ -9,6 +9,10 @@
     python3 .keelokit/bin/doctor.py --critical [--changed]
                                                critical source files (all, or changed since main)
     python3 .keelokit/bin/doctor.py --launch   the pre-launch debt ledger: exit 1 while a row is open
+    python3 .keelokit/bin/doctor.py --tier ID  the lowest build tier (trivial < light < full) the story's
+                                               `touches` allow, by .keelokit/risk.toml
+    python3 .keelokit/bin/doctor.py --tier --branch
+                                               the same for the files this branch changed
 
 Any other command line (a missing ID, an unknown mode, an extra argument) prints the usage and exits 2.
 
@@ -130,6 +134,7 @@ SHAPES = {
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
     ".keelokit/state.toml": ({"gates": "table"}, {}),
     ".keelokit/verify-map.toml": ({"ci_only": "texts", "jobs": "table"}, {}),
+    ".keelokit/risk.toml": ({"unknown": "text", "rule": "tables"}, {"rule": {"paths": "texts", "min": "text", "why": "text"}}),
     # Story front matter (backlog/README.md).
     "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
                               "touches": "texts", "dimensions": "texts", "invariants": "texts", "origin": "text"}, {}),
@@ -1025,6 +1030,84 @@ def check_launch() -> int:
     return 1 if errors or open_rows or waiting else 0
 
 
+# ── The build tier a change can't go below (.keelokit/risk.toml) ─────────────────────────────────
+TIERS = ["trivial", "light", "full"]
+
+
+def risk_glob(pattern: str) -> re.Pattern:
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out + r"\Z")
+
+
+def tier_of(paths: list[str]) -> tuple[str, list[str]]:
+    """The highest `min` among the rules the paths hit; a path no rule knows takes `unknown` (default full):
+    unknown goes up, never down. Returns (tier, reasons)."""
+    data = read_toml(ROOT / ".keelokit/risk.toml", ".keelokit/risk.toml") or {}
+    unknown = data.get("unknown", "full")
+    if unknown not in TIERS:
+        errors.append(f".keelokit/risk.toml: unknown = '{unknown}' is not one of {', '.join(TIERS)}")
+        unknown = "full"
+    rules = []
+    for r in data.get("rule", []):
+        if r.get("min") not in TIERS:
+            errors.append(f".keelokit/risk.toml: a rule has min = '{r.get('min')}', which is not one of {', '.join(TIERS)}")
+            continue
+        rules.append(([risk_glob(p) for p in r.get("paths", [])], r["min"], r.get("why", "")))
+    best, reasons = "trivial", []
+    for path in paths:
+        probe = path if "." in path.rsplit("/", 1)[-1] and not path.endswith("/") else path.rstrip("/") + "/x"  # a folder in `touches`
+        hits = [(tier, why) for pats, tier, why in rules if any(p.match(probe) for p in pats)]
+        tier, why = (max(hits, key=lambda h: TIERS.index(h[0])) if hits else (unknown, "no rule in .keelokit/risk.toml knows this path"))
+        if TIERS.index(tier) > TIERS.index(best):
+            best, reasons = tier, []
+        if tier == best and len(reasons) < 3:
+            reasons.append(f"{path} → {tier}" + (f" ({why})" if why else ""))
+    return best, reasons
+
+
+def check_tier(args: list[str]) -> int:
+    if not (ROOT / ".keelokit/risk.toml").exists():
+        print("No .keelokit/risk.toml: the tier is the agent's call (build-story, step 0). `copier update` brings the template's.")
+        return 0
+    if args[:1] == ["--branch"]:
+        base = main_base()
+        if base is None:
+            print(NO_MAIN.format(what="compare this branch with"))
+            return 2
+        paths = [f for f in git("diff", "--name-only", base).split("\n") if f] + [f for f in git("ls-files", "--others", "--exclude-standard").split("\n") if f]
+    else:
+        sid = args[0] if args else ""
+        story = next((m for p in sorted((ROOT / "backlog/stories").glob("*.md"))  # sid is never a glob
+                      if p.name.startswith(f"{sid}-") and (m := read_story(p))), None) if sid else None
+        if not story:
+            print(f"No story {sid or '(missing id)'} in backlog/stories")
+            return 1
+        paths = story.get("touches", []) or []
+        if not paths:
+            print(f"{sid} declares no `touches`: its tier floor is full until it does")
+            return 0
+    if not paths:
+        print("tier floor: trivial — nothing changed")
+        return 0
+    tier, reasons = tier_of(paths)
+    for e in errors:
+        print(f"ERROR {e}")
+    print(f"tier floor: {tier} — {'; '.join(reasons)}")
+    print("Pick this tier or a higher one, never a lower one; going up is always allowed.")
+    return 1 if errors else 0
+
+
 def gate_state() -> dict:
     return (read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {}).get("gates", {})
 
@@ -1082,6 +1165,8 @@ USAGE = """usage: doctor.py
        doctor.py --brief
        doctor.py --ci
        doctor.py --launch
+       doctor.py --tier ID
+       doctor.py --tier --branch
        doctor.py --scope ID
        doctor.py --critical [--changed]"""
 
@@ -1097,6 +1182,12 @@ def main() -> int:
     if mode == "--scope" and (len(args) != 2 or not args[1] or args[1].startswith("-")):
         print("usage: doctor.py --scope ID  (a story id, e.g. AUTH-001)", file=sys.stderr)
         return 2
+    if mode == "--tier":
+        rest = args[1:]
+        if not ((len(rest) == 1 and rest[0] and not rest[0].startswith("-")) or rest == ["--branch"]):
+            print("usage: doctor.py --tier ID  |  doctor.py --tier --branch", file=sys.stderr)
+            return 2
+        return check_tier(rest)
     if mode != "--scope" and args not in ([], ["--brief"], ["--ci"], ["--launch"], ["--critical"], ["--critical", "--changed"]):
         print(f"doctor.py: unexpected arguments: {' '.join(args)}\n{USAGE}", file=sys.stderr)
         return 2
@@ -1130,6 +1221,8 @@ def main() -> int:
     backlog = check_backlog(invariants, areas)
     check_verify_map(check_ci_budget(excepted), excepted)
     check_formatting(excepted)
+    if (ROOT / ".keelokit/risk.toml").exists():
+        tier_of([])  # reads and validates the file: a bad `min` is an error, never a crash
     check_migrations(excepted)
     check_migration_waves(backlog, backlog["done"], excepted)
     check_flaky(excepted)

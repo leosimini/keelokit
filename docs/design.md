@@ -31,6 +31,11 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   job against its timeout, which job and step failed, a manual dispatch. The CI's last job runs
   its `summary`. `bin/status.py` — ten lines for whoever coordinates parallel sessions.
 - `verify-map.toml` — which `pnpm verify` step runs each CI job; the doctor keeps them in step.
+  `verify-routing.toml` — which files need which steps; `risk.toml` — the lowest build tier by file;
+  `red-causes.toml` — the project's known causes of a red. `bin/verify_tools.py` plans, times and diagnoses.
+- `bin/coord.py` — the logbook of parallel sessions on the branch `coord/board` (the watch, convoys, the budget);
+  `bin/review.py`, `bin/escapes.py`, `bin/report.py`, `bin/flaky.sh` — rounds and report formats, the escape
+  log with a guard, metrics, reproducing an intermittent test. Design: [orchestrator-design.md](orchestrator-design.md).
 - `harness/agent-brief.md` — the one page every parallel session is told to read.
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
 

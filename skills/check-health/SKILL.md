@@ -26,6 +26,9 @@ python3 .keelokit/bin/doctor.py
 | FLAKY-1: a timeout or `retries` raised in a test config | Undo it; reproduce the intermittent failure, fix the race, add its row to `docs/escapes.md` |
 | MIG-1: a migration that sorts before main's last, or two stories of a wave adding migrations | Rename the new one with a later timestamp after rebasing (never edit the applied ones); move one story to a later wave |
 | DEBT-1: a ledger row malformed, "decided" without a recommendation, or reading as "known issue / later" | Fix it or decide it with a recommendation; a missing 'Needs the owner' section is added empty |
+| Tier floor: `doctor --tier` says a higher tier than the one chosen (RISK-1), or `risk.toml` has an invalid `min` | Start at the floor; fix `min` to trivial, light or full; add a rule for the dangerous folder the repo has and the file lacks |
+| `verify: CUT` in `status.py`, or a verify that exits 4 (a required tool missing) / 3 (busy machine) | CUT: read the state file's step and the known causes the next red prints; fewer parallel sessions. 4: install the tool, or `KEELOKIT_ALLOW_MISSING=<tool>` knowingly. 3: wait, or `VERIFY_FORCE=1` |
+| "N changed files match no route" | Add a route for that kind of file to `.keelokit/verify-routing.toml` (specific routes first) |
 | Story errors | Fix front matter, file name, or unknown `depends_on`; remove any `status` field. |
 | Invariant without a class, or a story naming an unknown one | Add `class: <class>` to the `INV-nnn` line in `domain.md` (how does it break? see the plugin's `references/invariants.md`); fix the story's `invariants`. A new invariant is a product rule: ask the user. |
 | Story touches a critical area without `integrity`, or two stories of one area share a wave | Add `integrity` and the invariants it keeps; move one story to a later wave. Never shrink an area to go green. |

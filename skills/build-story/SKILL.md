@@ -30,6 +30,11 @@ user can force a tier with `--trivial`, `--light` or `--full`; without a flag it
 | **light** | at most two dimensions, none of `data`, `auth`, `security`, `contract`, `nfr`, `integrity`; no critical area; no money, quota, permission, notice or data-deletion path | Verifier A writes the tests first; the builder runs them; ONE reviewer; verifier B walks the result. No breaker |
 | **full** | anything else | Every step below |
 
+**The floor comes from the files.** Run `python3 .keelokit/bin/doctor.py --tier <ID>` (or `--branch`):
+it gives the lowest tier `.keelokit/risk.toml` allows for the story's `touches` — a path no rule
+knows is `full`. Start at the floor or higher, never below it (RISK-1). Without `risk.toml` the
+choice below is yours alone.
+
 Rules for the choice:
 - **When in doubt, go up one tier.** Missing an escape costs more than a reviewer's tokens.
 - `integrity`, a critical area, money, reservations, quotas, credits, refunds, notices,
@@ -122,8 +127,10 @@ the tests that kill them (MUT-1).
    contract and the recorded base.
 4. Every BLOCKING or BROKEN item: the verifier reproduces it as a failing test first (mode A),
    and adds its row to `docs/escapes.md` with the check that now catches its class (ESC-1).
-   Then back to step 4. Two rounds at most; a third means the story itself is wrong: stop and
-   tell the user.
+   Then back to step 4. Two rounds at most (`python3 .keelokit/bin/review.py round <ID>` counts them
+   and refuses the third unless a BLOCKING item is open): a third means the story itself is wrong:
+   stop and tell the user. Check each report with `review.py lint-review -`; the escape row goes in
+   with `escapes.py add`, which refuses a fix without a guard of the whole class.
 
 ## 6. Verify — verifier, mode B
 
@@ -136,7 +143,10 @@ builder.
    between: `git rebase origin/main`, then `breaker` in mode B (old base → new base × this
    story) and, if it touched the same journeys, a verifier mode B re-walk of them. Findings go
    through the step 5.4 loop.
-2. `pnpm verify` (the pre-push hook runs it again).
+2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
+   runs it with the seal, which skips the repeat only for this exact, unchanged commit). In a
+   convoy you do not push to main: hand the branch and its hash to the conductor
+   (`coord.py convoy add`).
 3. Commit with the trailer that closes the story, as the message's last line:
    ```
    feat(auth): sign up with email

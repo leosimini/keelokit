@@ -42,6 +42,8 @@ Check, in this order:
    snapshot everything, don't count. When the story touches a critical area, read the survivors
    of `pnpm mutation` (MUT-1); each one is a behaviour no test pins down.
 
+Before reading the diff, read the classes in `docs/escapes.md` (`escapes.py classes`): cite the row when the diff touches a class that already bit this project. For tests, `${CLAUDE_PLUGIN_ROOT}/references/stable-tests.md` is the checklist. Check your report with `python3 .keelokit/bin/review.py lint-review <file>` before sending it.
+
 Read `dimensions.md` and `invariants.md` only for the dimensions and invariant classes the story declares. Run `pnpm lint`, `pnpm typecheck` and the tests of the touched packages; don't trust claims.
 
 Output:

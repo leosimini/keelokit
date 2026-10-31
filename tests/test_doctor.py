@@ -945,6 +945,7 @@ HEALTHY = {
     ".keelokit/critical.toml": ({"mutation_break": "70"}, {"area": [{"name": '"money"', "why": '"w"', "paths": '["src/pay"]'}]}),
     ".keelokit/state.toml": ({"gates": '{intake = "2026-09-27"}'}, {}),
     ".keelokit/verify-map.toml": ({"ci_only": '["deploy"]', "jobs": '{checks = {step = "Lint", when = "always"}}'}, {}),
+    ".keelokit/risk.toml": ({"unknown": '"full"'}, {"rule": [{"paths": '["docs/**"]', "min": '"trivial"', "why": '"docs"'}]}),
     "backlog/stories/*.md": ({"id": '"AUTH-001"', "epic": '"AUTH"', "title": '"t"', "wave": "1", "depends_on": "[]",
                               "touches": '["apps/a/"]', "dimensions": '["api"]', "invariants": "[]", "origin": '"x"'}, {}),
 }
@@ -1000,6 +1001,7 @@ class DoctorInputContractTest(unittest.TestCase):
             ".keelokit/profile.toml": ["template/.keelokit/profile.toml.jinja"],
             ".keelokit/critical.toml": ["template/.keelokit/critical.toml.jinja"],
             ".keelokit/verify-map.toml": ["template/.keelokit/verify-map.toml"],
+            ".keelokit/risk.toml": ["template/.keelokit/risk.toml"],
             "backlog/stories/*.md": [],
         }
         texts = {rel: "\n".join((self.repo / f).read_text() for f in files) for rel, files in docs.items()}
