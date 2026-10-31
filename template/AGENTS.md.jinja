@@ -17,6 +17,7 @@ This file is for every agent and every human. It points; the detail lives in the
 | Where a bug costs most, and what must always hold | `.keelokit/critical.toml`; invariants in `docs/context/domain.md` |
 | What escaped before and the check it left | `docs/escapes.md` |
 | CI: time budget, health, starting it, reading a run | `docs/ci.md` |
+| `pnpm verify`: routing, the seal, keep-going, known causes, date bombs | `docs/verify.md` |
 | Running several sessions at once | `.keelokit/harness/agent-brief.md` |
 | What must be fixed or decided before a launch | `docs/prelaunch-debt-ledger.md` |
 
@@ -42,6 +43,7 @@ backlog/     epics.md, stories/<ID>-<slug>.md
 | `pnpm e2e:stack` | The journeys against the real API and database (needs `DATABASE_URL`; `pnpm verify` starts one) |
 {%- endif %}
 | `pnpm format` | Before committing |
+| `pnpm verify --preflight` · `--keep-going` · `--all` | Before a long run: the cheap checks, in minutes · every red in one run · everything, like CI (`docs/verify.md`) |
 | `python3 .keelokit/bin/status.py` | Parallel sessions: worktrees, branches not on main, verify lock, CI of main |
 | `python3 .keelokit/bin/ci.py health` · `budget` · `jobs` | CI of main (cancelled is not green), time per job, which step failed (`docs/ci.md`) |
 {%- for app in apps %}

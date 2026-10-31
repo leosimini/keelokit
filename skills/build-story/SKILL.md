@@ -136,7 +136,8 @@ builder.
    between: `git rebase origin/main`, then `breaker` in mode B (old base → new base × this
    story) and, if it touched the same journeys, a verifier mode B re-walk of them. Findings go
    through the step 5.4 loop.
-2. `pnpm verify` (the pre-push hook runs it again).
+2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
+   runs it with the seal, which skips the repeat only for this exact, unchanged commit).
 3. Commit with the trailer that closes the story, as the message's last line:
    ```
    feat(auth): sign up with email

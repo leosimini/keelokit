@@ -17,7 +17,8 @@ _skip_if_exists:
   - .keelokit/exceptions.toml
   - .keelokit/critical.toml
   - .keelokit/profile.toml
-  - .keelokit/verify-map.toml
+  - .keelokit/verify-routing.toml
+  - .keelokit/red-causes.toml
   - docs/escapes.md
   - docs/prelaunch-debt-ledger.md
   - CHANGELOG.md
@@ -70,6 +71,8 @@ _exclude:
   - "{% if mode == 'harness' %}!.keelokit/**{% endif %}"
   # An adopted repo has its own CI jobs and checks: the map of the template's jobs is for generated ones.
   - "{% if mode == 'harness' %}.keelokit/verify-map.toml{% endif %}"
+  - "{% if mode == 'harness' %}.keelokit/verify-routing.toml{% endif %}"
+  - "{% if mode == 'harness' %}.keelokit/red-causes.toml{% endif %}"
 
 mode:
   type: str

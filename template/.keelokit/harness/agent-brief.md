@@ -36,6 +36,13 @@ process or container you did not start.
 One `until` loop on one condition (a log line, an exit status, `gh`/`ci.py` state), with a sleep
 inside. Never poll with repeated short calls, never `sleep` alone.
 
+A run that lasts more than a few minutes (`pnpm verify --all`) goes in the background with a log,
+because a command a tool keeps in the foreground is killed at about 30 minutes and the run is lost:
+`nohup pnpm verify --all > run.log 2>&1 &`, then wait with one `until`. Read its result from the
+exit code and from `status.py` (`verify: last pass`, or `CUT` when it died), never by searching
+the log for a phrase. Run `pnpm verify --preflight` first: a red there costs minutes, not an hour.
+`--keep-going` lists every red of a run at once.
+
 ## The report: 8 lines at most
 
 The story id, the commit hash on `origin/main`, tier, what `verify` ran, anything the person must

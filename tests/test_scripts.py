@@ -25,7 +25,7 @@ READS_NEXT = re.compile(r"\$\{?2\b")
 LEADING = {"scripts/test-template.sh": ['["api"]']}
 # Commands a script could reach once parsing is done; each shim logs its call and fails.
 # Scripts outside scripts/ that find their own folder and can be run from anywhere.
-SELF_CONTAINED = {"template/.keelokit/bin/run-local.sh"}
+SELF_CONTAINED = {"template/.keelokit/bin/run-local.sh", "template/scripts/verify.sh"}
 SHIMS = ["uvx", "copier", "pnpm", "npm", "npx", "claude", "gh"]
 
 

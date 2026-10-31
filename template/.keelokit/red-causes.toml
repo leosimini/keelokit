@@ -1,0 +1,9 @@
+# Causes of a red this project has met, in the order to look. After a failed `pnpm verify` the log
+# is scanned for each `pattern` (a regex) and the matching `look` lines are printed, so whoever
+# reads the failure starts at the known cause. The tool's own list already covers memory, disk,
+# the database starting, formatting, secrets, the lockfile, migrations, timezones and kills.
+#
+# [[cause]]
+# id = "shared-types"
+# pattern = "Cannot find module '@acme/shared'"
+# look = "build the shared package first: pnpm --filter @acme/shared build"

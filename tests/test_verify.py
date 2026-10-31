@@ -145,7 +145,7 @@ class VerifyScopeTest(GitStates, unittest.TestCase):
         for name, text in stubs.items():
             (bin_dir / name).write_text(text)
             (bin_dir / name).chmod(0o755)
-        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        env = {**os.environ, "KEELOKIT_ALLOW_MISSING": "gitleaks semgrep", "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
         r = subprocess.run(["bash", "scripts/verify.sh"], cwd=root, env=env, capture_output=True, text=True,
                            timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -246,7 +246,7 @@ class VerifyUntrackedCostTest(GitStates, unittest.TestCase):
         for name in ("pnpm", "gitleaks", "python3", "docker"):
             (shims / name).write_text(own[name])
             (shims / name).chmod(0o755)
-        env = {**os.environ, "PATH": str(shims)}
+        env = {**os.environ, "KEELOKIT_ALLOW_MISSING": "gitleaks semgrep", "PATH": str(shims)}
         script = 'exec 9>"$0"; BASH_XTRACEFD=9; PS4=\'+${BASHPID}| \'; set -x; . scripts/verify.sh'
         r = subprocess.run([bash, "-c", script, str(trace)], cwd=root, env=env,
                            capture_output=True, text=True, timeout=300)
@@ -307,7 +307,7 @@ class FormatAndAuditShortcutsTest(GitStates, unittest.TestCase):
         for name in ("pnpm", "python3"):
             (shims / name).write_text(f"#!/bin/sh\nprintf '%s\\n' \"{name} $*\" >> '{log}'\n")
             (shims / name).chmod(0o755)
-        env = {**os.environ, "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"}
+        env = {**os.environ, "KEELOKIT_ALLOW_MISSING": "gitleaks semgrep", "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"}
         r = subprocess.run(["bash", "scripts/verify.sh", *flags], cwd=root, env=env,
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

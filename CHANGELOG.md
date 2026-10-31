@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — a verify you can trust
+
+What cost the most time in real use was the verify: an hour-long run that stopped at its first red, died unnoticed, or
+skipped a scanner it should have run. Everything here is additive except the missing-tool failure (see *Upgrading*).
+
+- **`pnpm verify --keep-going`** runs every independent step and lists all the reds at the end. A train that failed three
+  full runs in a row, one cause per run, now costs one fix round. Setup steps (database, client) still stop the run.
+- **`pnpm verify --preflight`**: tools, secret scan, format, lint, typecheck and the doctor, in minutes, before a run of an
+  hour. It takes no lock.
+- **A run you can tell is dead.** The verify writes its state (running / pass / fail, step, pid) in the git directory and
+  `status.py` says **CUT** when a run's process is gone without finishing. A verify killed by a signal exits non-zero
+  (143/130/129) and says at which step. After a red, the log is scanned for known causes (memory, disk, the database
+  starting, formatting, secrets, lockfile, migrations, time zones, kills; add your own in `.keelokit/red-causes.toml`) and
+  prints where to look first. The result is the exit code, never a phrase in the log.
+- **The green seal.** A clean, green run records the commit and the base it passed against; the pre-push hook
+  (`verify --use-seal`) skips the repeat only for that exact commit, base and clean tree. It replaces the
+  `--no-verify`-after-a-green-run exception with a mechanism (`KEELOKIT_NO_SEAL=1` turns it off). Agents still can't use
+  `--no-verify`.
+- **A missing required tool fails.** `gitleaks` and `semgrep` absent used to print a note; two fake tokens reached main that
+  way. Now exit 4, unless `KEELOKIT_ALLOW_MISSING="semgrep"` says so on purpose.
+- **`--all` won't start on a busy machine** (load above 1.5 × cores, or a Jest/Vitest/Gradle/Playwright run going): exit 3;
+  `VERIFY_FORCE=1` overrides.
+- **`--since REF`** for a branch agent to run only its part. Never sealed.
+- **Verify by what changed.** `.keelokit/verify-routing.toml` maps files to the steps they need: docs-only ⇒ the format check,
+  the secret scan and the doctor. A file no route knows runs everything, `--all` is every step, the first matching route
+  wins, and tests walk the template's files. When files match no route, verify says which kinds so the map grows.
+- **Time per step** at the end of every run, and `keelokit-verify.history`, one JSON line per run.
+- **Date bombs.** With libfaketime installed, `--all` reruns the unit tests a year ahead; the template's CI does it every
+  night (new `clock` job). Verified with Vitest on Node 22.
+- `docs/verify.md` in the generated project explains all of it. New rule: VER-1.
+
+### Dependencies that turned the audit red with no code change
+Two new high advisories with a fix hit every generated project: `happy-dom` 20.x (web) and `zod` under `@expo/cli`
+(mobile). New projects start with `happy-dom` 21 and a `pnpm.overrides` entry for `@expo/cli>zod`.
+
+### Upgrading from 0.10.x
+**Bump `happy-dom` to `^21.0.4` in `apps/web/package.json`** (the product owns that file). `/keelokit:harness-upgrade` brings
+`verify_tools.py`, `verify-routing.toml`, `red-causes.toml`, `docs/verify.md` and the merged `verify.sh`, `ci.yml` and
+pre-push hook. What changes behaviour: **a missing `gitleaks`/`semgrep` now fails the verify** (install it, or
+`KEELOKIT_ALLOW_MISSING`); the pre-push hook is `pnpm verify --use-seal`; a docs-only change runs fewer steps; `--all` may
+refuse a busy machine. `verify-map.toml` is now the template's file, so the update adds its new row (`clock`) to yours.
+Adopted repos (`mode=harness`) get the scripts and the rule but not the routing and map files. The nightly `clock` job
+needs the merged workflow pushed.
+
 ## 0.10.0 — 2026-10-11 — lessons from weeks of parallel use
 
 Nine lessons from a real monorepo that ran many sessions at once, as rules with a check. Each is

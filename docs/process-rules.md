@@ -16,3 +16,10 @@ Lessons from long, parallel use of Keelokit on a real monorepo. Each is a house 
 | **FMT-1** format | Format before every commit; `format:check` fails on a diff; line endings pinned; on a rebase that conflicts only on formatting, keep your content and reformat | A formatter that differed between laptop and CI reformatted 56 files | `ci:checks`, `verify.sh`, doctor (`.gitattributes` `eol=lf`) |
 | **Risk process** | Tests by a different agent than the builder, adversarial review, depth by risk | A builder grading its own work | Already `build-story` (trivial / light / full), VERIFY-2, REVIEW-1 |
 | **DEBT-1** zero debt | Every finding fixed or decided with a recommendation, never "known issue"; "Needs the owner" lists what only the owner can supply | Parked findings piled up for the launch week | Doctor and `doctor --launch` on `docs/prelaunch-debt-ledger.md` |
+
+## Added after 0.10.0
+
+| Rule | What | Why | How it is checked |
+|---|---|---|---|
+| **VER-1** trustworthy verify | A required tool missing fails; a killed run exits non-zero and leaves its state; the exit code decides; only the exact green commit is skipped (the seal); `--keep-going`, `--preflight`, known causes, a busy machine refused | One red per hour-long run, a missing scanner that let two fake tokens through, a run cut by memory that nobody noticed | `tests/test_verify_operativo.py` (state, seal, keep-going, preflight, signals, load, `--since`, routing); `status.py` shows CUT |
+| **Routing** | Each change runs the steps it needs; unknown files run everything; `--all` is every step | A docs change paid for the whole suite | `tests/test_verify_plan.py` walks the template's files |

@@ -34,6 +34,21 @@ def alive(pid: str) -> bool:
         return False
 
 
+def verify_line(common: Path) -> str:
+    """The last verify in this clone: running, passed, failed, or CUT (its process is gone and it never finished)."""
+    try:
+        st = dict(l.split("=", 1) for l in (common / "keelokit-verify.state").read_text().splitlines() if "=" in l)
+    except OSError:
+        return "verify: no run recorded in this clone"
+    age = int((__import__("time").time() - int(st.get("since", "0"))) // 60)
+    head = st.get("head", "?")[:7]
+    if st.get("state") == "running":
+        if alive(st.get("pid", "")):
+            return f"verify: running '{st.get('step')}' for {age} min ({st.get('level')}, {head})"
+        return f"verify: CUT — it stopped at '{st.get('step')}' after {age} min and nobody finished it ({head}); see {st.get('log')}"
+    return f"verify: last {st.get('state')} (exit {st.get('rc')}) on {head}, {st.get('level')}"
+
+
 def main() -> int:
     lines: list[str] = []
     if "--no-ci" not in sys.argv and not os.environ.get("KEELOKIT_STATUS_OFFLINE"):
@@ -70,6 +85,8 @@ def main() -> int:
     else:
         res = subprocess.run([sys.executable, str(BIN / "ci.py"), "health"], cwd=ROOT, capture_output=True, text=True, timeout=90)
         lines.append("CI of main: " + ((res.stdout.strip().splitlines() or [res.stderr.strip() or "unknown"])[0]))
+
+    lines.append(verify_line(lock.parent))
 
     brief = subprocess.run([sys.executable, str(BIN / "doctor.py"), "--brief"], cwd=ROOT, capture_output=True, text=True)
     lines += [l for l in brief.stdout.strip().splitlines()[:3]]

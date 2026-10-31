@@ -235,6 +235,29 @@ jobs:
           path: '**/reports/mutation/'
           if-no-files-found: ignore
 
+  # Date bombs: a test that passes today and fails when the calendar moves puts main red with no code
+  # change. Every night the unit tests run again with the clock a year ahead (`pnpm verify --all` does
+  # the same locally when libfaketime is installed).
+  clock:
+    name: Clock a year ahead (date bombs)
+    if: github.event_name == 'schedule'
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma client
+        if: hashFiles('apps/api/prisma/schema.prisma') != ''
+        run: pnpm --filter ./apps/api prisma:generate
+      - run: sudo apt-get install -y --no-install-recommends faketime
+      - run: FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+365d' pnpm test
+
   # SAST-1: static analysis for injection, unsafe APIs and hard-coded secrets.
   sast:
     name: Static analysis (Semgrep)
