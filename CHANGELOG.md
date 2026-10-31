@@ -62,6 +62,9 @@ Lessons from weeks of parallel work on a real monorepo, in five parts. Everythin
 
 New rules: VER-1, RISK-1, COORD-1.
 
+### Dependencies that turned the audit red with no code change
+Two new high advisories with a fix hit every generated project: `happy-dom` 20.x (web) and `zod` under `@expo/cli` (mobile). New projects start with `happy-dom` 21 and a `pnpm.overrides` entry for `@expo/cli>zod` (see *Upgrading* for the `happy-dom` bump).
+
 ### Upgrading from 0.10.x
 **Bump `happy-dom` to `^21.0.4` in `apps/web/package.json`** (the product owns that file): two high advisories with a fix turned the dependency audit red for every project on 20.x, with no code change. New projects start with 21.
 
