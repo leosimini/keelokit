@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # Generates a project from this checkout (uncommitted changes included) and runs its pipeline.
 #
-#   scripts/test-template.sh '["api","web"]' [--postgis]   new product → # The scanners (gitleaks, semgrep) are the CI's own jobs; this script checks the template's pipeline, and a
-# missing scanner now fails verify on purpose, so it is skipped knowingly here.
-export KEELOKIT_ALLOW_MISSING="${KEELOKIT_ALLOW_MISSING:-gitleaks semgrep}"
-pnpm verify --all
+#   scripts/test-template.sh '["api","web"]' [--postgis]   new product → pnpm verify --all
 #   scripts/test-template.sh --adopt                        existing repo → only .keelokit/ added
 #   scripts/test-template.sh '["api","web"]' --update-from v0.4.0
 #                                                           generate at tag, update to HEAD, verify
@@ -137,6 +134,9 @@ if command -v flock >/dev/null; then
 else
   pnpm -r --workspace-concurrency=1 --if-present e2e:install
 fi
+# The scanners (gitleaks, semgrep) are the CI's own jobs; this script checks the template's pipeline, and a
+# missing scanner now fails verify on purpose, so it is skipped knowingly here.
+export KEELOKIT_ALLOW_MISSING="${KEELOKIT_ALLOW_MISSING:-gitleaks semgrep}"
 pnpm verify --all
 
 # MUT-1 must bite: the template's critical example passes, and the same code under a suite that
