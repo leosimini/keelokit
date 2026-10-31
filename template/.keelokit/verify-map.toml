@@ -7,7 +7,8 @@
 #         origin/main) · the API or its app changed · pnpm verify --all
 # A docs-only change reaches only the `always` steps: seconds, not minutes.
 #
-# New CI job? Add it here in the same commit. A job that can't run on a machine goes in `ci_only`.
+# This file is the template's: `copier update` merges its new rows into yours (keep your own rows below the template's).
+# New CI job of your own? Add it here in the same commit. A job that can't run on a machine goes in `ci_only`.
 ci_only = ["deploy-staging", "deploy-production", "ci-report"]
 
 [jobs]
