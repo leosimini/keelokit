@@ -44,6 +44,7 @@ if sys.version_info < (3, 11):
 import datetime as dt  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
+import ast  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
 import tomllib  # noqa: E402
@@ -75,6 +76,11 @@ ESCAPE_ROW_RE = re.compile(r"^\|\s*(ESC-\d{3})\s*\|")
 SOURCE_RE = re.compile(r"\.[cm]?[jt]sx?$")
 SCENARIO_RE = re.compile(r"(?im)^\s*(?:scenario|escenario)[^:\n]*:\s*\[(S\d+)\]")
 TEST_FILE_RE = re.compile(r"(\.(test|spec)\.[cm]?[jt]sx?$)|(/e2e/.*\.[jt]s$)")
+# Python tests (unittest, pytest): test_*.py or *_test.py, under the folders TITLE_DIRS walks.
+PY_TEST_FILE_RE = re.compile(r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
+TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test")
+# A Python test's name cites ids with underscores: test_AUTH_001_S1_works → "test AUTH-001.S1 works".
+PY_CITE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]*)_(\d+)(?:_([Ss]\d+))?(?=_|$)")
 # Title of an active test/describe call. `.skip`, `.todo`, `xit` and friends never match, so a
 # skipped test (or a comment) can't satisfy a rule or a scenario.
 TEST_TITLE_RE = re.compile(
@@ -361,8 +367,37 @@ SETUP_STEPS = re.compile(r"(checkout|setup-node|action-setup|setup-uv|setup-pyth
 ALWAYS = {v: rf"(?i:(?P<q>['\"]?)(?:{v}|\$\{{\{{\s*{v}\s*\}}\}})(?P=q))[ \t]*(?:#.*)?$" for v in ("true", "false")}
 
 
-def test_titles(text: str) -> list[str]:
+def test_titles(text: str, path: str = "") -> list[str]:
+    if path.endswith(".py"):
+        return py_test_titles(text)
     return [m.group(2) for m in TEST_TITLE_RE.finditer(text)]
+
+
+def py_test_titles(text: str) -> list[str]:
+    """Active Python tests (`def test_*`, in a class or not), as titles that cite like the JS ones. A test,
+    or a class, under a skip decorator (unittest.skip/skipIf/skipUnless, pytest.mark.skip/skipif) doesn't
+    count, like `it.skip`; a file that doesn't parse has none."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return []
+
+    def skipped(node: ast.AST) -> bool:
+        return any("skip" in ast.unparse(d).lower() for d in getattr(node, "decorator_list", []))
+
+    titles: list[str] = []
+
+    def walk(nodes: list[ast.stmt]) -> None:
+        for node in nodes:
+            if isinstance(node, ast.ClassDef) and not skipped(node):
+                walk(node.body)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test") \
+                    and not skipped(node):
+                cited = PY_CITE_RE.sub(lambda m: f"{m[1]}-{m[2]}" + (f".{m[3]}" if m[3] else ""), node.name)
+                titles.append(re.sub(r"_+", " ", cited).strip())
+
+    walk(tree.body)
+    return titles
 
 
 def enforcer_problem(rid: str, ref: str) -> str | None:
@@ -402,7 +437,7 @@ def enforcer_problem(rid: str, ref: str) -> str | None:
         # A glob (apps/*/e2e/*.spec.ts) is satisfied when at least one match names the rule and
         # has an active test; a plain path must do both itself.
         texts = {f: t for f in files if (t := read_file(f, lenient=True)[0]) is not None}
-        live = [f for f, t in texts.items() if re.search(rf"\b{re.escape(rid)}\b", t) and test_titles(t)]
+        live = [f for f, t in texts.items() if re.search(rf"\b{re.escape(rid)}\b", t) and test_titles(t, f.name)]
         if live:
             return None
         rel = ", ".join(str(f.relative_to(ROOT)) for f in files)
@@ -680,11 +715,11 @@ def read_story(path: Path) -> dict | None:
 def cited_titles() -> str:
     """Active test titles across the repo, for TRACE-1."""
     titles = []
-    for base in ("apps", "packages", "e2e"):
+    for base in TITLE_DIRS:
         for path in (ROOT / base).rglob("*") if (ROOT / base).exists() else []:
             rel = path.relative_to(ROOT).as_posix()
-            if path.is_file() and "node_modules" not in rel and TEST_FILE_RE.search(rel):
-                titles += test_titles(read(path, lenient=True) or "")
+            if path.is_file() and "node_modules" not in rel and (TEST_FILE_RE.search(rel) or PY_TEST_FILE_RE.search(rel)):
+                titles += test_titles(read(path, lenient=True) or "", rel)
     return "\n".join(titles)
 
 

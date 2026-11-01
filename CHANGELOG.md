@@ -50,6 +50,9 @@ says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.p
   the verifier, reviewer and breaker to Opus; the agent files stay on Sonnet.
 
 ### Verify interfaces for Harbor
+- **TRACE-1 reads Python tests.** `def test_AUTH_001_S1_…` in `test_*.py` / `*_test.py` (under `apps/`, `packages/`,
+  `e2e/`, `tests/`, `test/`) cites `AUTH-001.S1`; a skipped test or class cites nothing. A test enforcer can be a Python
+  file too.
 - **`pnpm verify --steps unit,e2e-stack`** runs only the named steps (the routing's names plus `secrets` and `doctor`);
   an unknown name is exit 2. Never sealed.
 - **`pnpm verify --rerun-failed`** repeats what the last red run of this commit or an ancestor did not pass, plus what the

@@ -309,6 +309,43 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("no active test title cites AUTH-001.S1", out)
         self.assertNotIn("AUTH-001.S10,", out)
 
+    def test_trace_reads_python_test_names(self):
+        """A Python repo cites scenarios in test names: test_AUTH_001_S1_… is AUTH-001.S1. A skipped test,
+        or one in a skipped class, cites nothing, and S1 doesn't stand for S10."""
+        self.rules()
+        self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))
+        self.write("tests/test_auth.py", """\
+            import unittest
+
+            class SignUp(unittest.TestCase):
+                def test_AUTH_001_S1_signs_up(self):
+                    pass
+
+                @unittest.skip("later")
+                def test_AUTH_001_S10_also_works(self):
+                    pass
+
+            @unittest.skip("whole class")
+            class Off(unittest.TestCase):
+                def test_AUTH_001_S10_in_a_skipped_class(self):
+                    pass
+            """)
+        self.commit("feat: x\n\nStory: AUTH-001")
+        out = self.doctor()
+        self.assertIn("no active test title cites AUTH-001.S10 (TRACE-1)", out)
+        self.assertNotIn("AUTH-001.S1,", out)
+        self.write("tests/unit/auth_test.py", "async def test_AUTH_001_S10_with_pytest():\n    pass\n")
+        out = self.doctor()
+        self.assertNotIn("TRACE-1", out)
+        self.assertIn("harness healthy", out)
+
+    def test_a_python_file_that_does_not_parse_cites_nothing(self):
+        self.rules()
+        self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))
+        self.write("tests/test_auth.py", "def test_AUTH_001_S1_x(:\n")
+        self.commit("feat: x\n\nStory: AUTH-001")
+        self.assertIn("no active test title cites AUTH-001.S1, AUTH-001.S10", self.doctor())
+
     def test_wave_collisions_and_scope(self):
         self.rules()
         self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/src/auth/"'))

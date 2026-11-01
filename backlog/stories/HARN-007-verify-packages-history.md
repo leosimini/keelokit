@@ -41,5 +41,4 @@ Scenario: [S3] The history says which packages a run covered
 
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test named `test_HARN_007_S<n>_…`,
-`docs/verify.md` updated. The `Story:` trailer waits for TRACE-1 to read Python test names (it reads
-only JS/TS titles under apps/, packages/ and e2e/).
+`docs/verify.md` updated, `Story:` trailer on the completing commit.
