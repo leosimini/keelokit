@@ -25,22 +25,22 @@ skipped a scanner it should have run. Everything here is additive except the mis
 - **`--since REF`** for a branch agent to run only its part. Never sealed.
 - **Verify by what changed.** `.keelokit/verify-routing.toml` maps files to the steps they need: docs-only ⇒ the format check,
   the secret scan and the doctor. A file no route knows runs everything, `--all` is every step, the first matching route
-  wins, and tests walk the template's files. When files match no route, verify says which kinds so the map grows.
+  wins. When files match no route, verify says which kinds so the map grows.
 - **Time per step** at the end of every run, and `keelokit-verify.history`, one JSON line per run.
 - **Date bombs.** With libfaketime installed, `--all` reruns the unit tests a year ahead; the template's CI does it every
   night (new `clock` job). Verified with Vitest on Node 22.
 - `docs/verify.md` in the generated project explains all of it. New rule: VER-1.
 
 ### A landing policy, so Keelokit can run under Harbor
-Harbor is a companion plugin that lands *convoys*: branches from many sessions, accounts and machines, merged into
-`convoy/<n>`, verified once and pushed to main in one push. Keelokit keeps landing each session directly unless a project
-says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.py` holds that).
+Harbor is a companion plugin, still in development, that will land *convoys*: branches from many sessions, accounts and
+machines, merged into `convoy/<n>`, verified once and pushed to main in one push. Keelokit keeps landing each session
+directly unless a project says otherwise; with no `[landing]` table nothing changes.
 
 - **`[landing] policy = "direct" | "convoy"`** in `.keelokit/state.toml`; absent means `direct`. Any other value is a
   doctor error.
 - **The agent brief lands by policy.** `direct` is word for word what it was. `convoy`: the session pushes its own branch
-  with `pnpm verify --since origin/main` green on the final hash, reports branch, hash and verify result, and never pushes
-  main. A story is done when the convoy holding it reaches main with its `Story:` trailer.
+  with `pnpm verify --since origin/main` green on the final hash, reports the branch, the full hash, the tier and the
+  verify result, and never pushes main. A story is done when the convoy holding it reaches main with its `Story:` trailer.
 - **`/keelokit:coordinate`** hands coordination to `/harbor:*` under `convoy` and only runs `status.py`, which now says
   **delivered, waiting for a convoy** for branches whose head is on origin, and keeps *not finished* for the rest.
 - **The doctor notes, never fails,** that under `convoy` the pre-push hook only gates main: Harbor adds the per-branch gate.
@@ -60,7 +60,8 @@ says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.p
 - **A rerun that completes a red run seals the commit.** When `--rerun-failed` passes and, with the red run it builds on
   (same base, scope and level, clean tree), covers every step of the diff on the same packages, it writes the seal at that
   level; the history marks it `composite_of`. A pass is kept only where nothing it looks at moved: the audit, the clock,
-  the doctor and Semgrep always run again, a new file reruns what reads the whole repo, a file inside a package everything per package.
+  the doctor and Semgrep always run again, a new file reruns what reads the whole repo, and a file inside a package
+  reruns every step that runs per package.
 - **`pnpm verify --packages ./apps/api,…`** (or `--filter SELECTOR`, passed to pnpm as is) verifies those packages and
   their dependents. Never sealed.
 - **The history says what a run covered**: full head, base, planned/passed/failed step names, the packages in scope and
@@ -68,22 +69,26 @@ says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.p
 - **Shared seals**: with `[verify] shared_seals = "origin/harbor/log:harbor/seals/{head}.toml"` in `state.toml`,
   `--use-seal` also accepts a seal another machine pushed, under the same conditions as a local one. Trusting that branch
   is trusting whoever can push to it; the doctor checks the key.
-- **A convoy report** carries the branch, the full hash, the tier and the verify result.
 
 ### Dependencies that turned the audit red with no code change
 Two new high advisories with a fix hit every generated project: `happy-dom` 20.x (web) and `zod` under `@expo/cli`
 (mobile). New projects start with `happy-dom` 21 and a `pnpm.overrides` entry for `@expo/cli>zod`.
 
 ### Upgrading from 0.10.x
-**Bump `happy-dom` to `^21.0.4` in `apps/web/package.json`** (the product owns that file). `/keelokit:harness-upgrade` brings
-`verify_tools.py`, `verify-routing.toml`, `red-causes.toml`, `docs/verify.md` and the merged `verify.sh`, `ci.yml` and
-pre-push hook. What changes behaviour: **a missing `gitleaks`/`semgrep` now fails the verify** (install it, or
-`KEELOKIT_ALLOW_MISSING`); the pre-push hook is `pnpm verify --use-seal`; a docs-only change runs fewer steps; `--all` may
-refuse a busy machine. `verify-map.toml` is now the template's file, so the update adds its new row (`clock`) to yours.
-Adopted repos (`mode=harness`) get the scripts and the rule but not the routing and map files. The nightly `clock` job
-needs the merged workflow pushed.
-The landing policy needs nothing: the update brings the brief, the protocol, `status.py` and the doctor, and a project
-opts into `convoy` by adding `[landing]` to its `state.toml` when it joins Harbor.
+`/keelokit:harness-upgrade` brings `verify_tools.py`, `verify-routing.toml`, `red-causes.toml`, `docs/verify.md` and the
+merged `verify.sh`, `ci.yml` and pre-push hook. Then, by hand:
+
+1. **Install `gitleaks` and `semgrep`** where `pnpm verify` runs (`brew install gitleaks semgrep`), or name the ones you
+   skip on purpose: `KEELOKIT_ALLOW_MISSING="gitleaks semgrep" pnpm verify`. Without either, the verify now stops with
+   exit 4 instead of printing a note.
+2. **Bump `happy-dom` to `^21.0.4` in `apps/web/package.json`** (the product owns that file), or the audit stays red.
+3. **Push the merged workflow**, so the nightly `clock` job runs.
+
+What else changes behaviour: the pre-push hook is `pnpm verify --use-seal`; a docs-only change runs fewer steps; `--all`
+may refuse a busy machine. `verify-map.toml` is now the template's file, so the update adds its new row (`clock`) to
+yours. Adopted repos (`mode=harness`) get the scripts and the rule but not the routing and map files. The landing policy,
+the new verify flags and the doctor's reading of Python tests need nothing: a project opts into `convoy` by adding
+`[landing]` to its `state.toml`.
 
 ## 0.10.0 — 2026-10-11 — lessons from weeks of parallel use
 
