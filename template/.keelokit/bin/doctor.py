@@ -78,7 +78,9 @@ SCENARIO_RE = re.compile(r"(?im)^\s*(?:scenario|escenario)[^:\n]*:\s*\[(S\d+)\]"
 TEST_FILE_RE = re.compile(r"(\.(test|spec)\.[cm]?[jt]sx?$)|(/e2e/.*\.[jt]s$)")
 # Python tests (unittest, pytest): test_*.py or *_test.py, under the folders TITLE_DIRS walks.
 PY_TEST_FILE_RE = re.compile(r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
-TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test")
+TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test")  # tests/ and test/: Python files only
+# Folders of installed code: never read for titles (third-party test files, and slow).
+VENDORED = {"node_modules", ".venv", "venv", "site-packages", "__pycache__", ".tox", ".nox"}
 # A Python test's name cites ids with underscores: test_AUTH_001_S1_works → "test AUTH-001.S1 works".
 PY_CITE_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]*)_(\d+)(?:_([Ss]\d+))?(?=_|$)")
 # Title of an active test/describe call. `.skip`, `.todo`, `xit` and friends never match, so a
@@ -374,16 +376,36 @@ def test_titles(text: str, path: str = "") -> list[str]:
 
 
 def py_test_titles(text: str) -> list[str]:
-    """Active Python tests (`def test_*`, in a class or not), as titles that cite like the JS ones. A test,
-    or a class, under a skip decorator (unittest.skip/skipIf/skipUnless, pytest.mark.skip/skipif) doesn't
-    count, like `it.skip`; a file that doesn't parse has none."""
+    """Active Python tests (`def test_*`, in a class or not), as titles that cite like the JS ones. Like
+    `it.skip` and `it.failing`, these don't count: a test or class under a skip or expected-failure decorator
+    (unittest.skip/skipIf/skipUnless/expectedFailure, pytest.mark.skip/skipif/xfail), a module with a
+    skipping `pytestmark`, a test whose first statement is `self.skipTest(…)`. A file that doesn't parse
+    (or nests too deep to) has none."""
     try:
         tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
+    off = ("skip", "xfail", "expectedfailure")
+
+    def says_off(node: ast.AST) -> bool:
+        try:
+            return any(w in ast.unparse(node).lower() for w in off)
+        except RecursionError:
+            return True
 
     def skipped(node: ast.AST) -> bool:
-        return any("skip" in ast.unparse(d).lower() for d in getattr(node, "decorator_list", []))
+        if any(says_off(d) for d in getattr(node, "decorator_list", [])):
+            return True
+        body = getattr(node, "body", None)
+        first = body[0] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and body else None
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and len(body) > 1:
+            first = body[1]  # past the docstring
+        return (isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
+                and isinstance(first.value.func, ast.Attribute) and first.value.func.attr in ("skipTest", "skip"))
+
+    if any(isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in n.targets)
+           and says_off(n.value) for n in tree.body):
+        return []
 
     titles: list[str] = []
 
@@ -718,7 +740,9 @@ def cited_titles() -> str:
     for base in TITLE_DIRS:
         for path in (ROOT / base).rglob("*") if (ROOT / base).exists() else []:
             rel = path.relative_to(ROOT).as_posix()
-            if path.is_file() and "node_modules" not in rel and (TEST_FILE_RE.search(rel) or PY_TEST_FILE_RE.search(rel)):
+            if VENDORED & set(rel.split("/")) or not path.is_file():
+                continue
+            if (TEST_FILE_RE.search(rel) and base not in ("tests", "test")) or PY_TEST_FILE_RE.search(rel):
                 titles += test_titles(read(path, lenient=True) or "", rel)
     return "\n".join(titles)
 

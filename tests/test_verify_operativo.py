@@ -379,10 +379,47 @@ class RerunFailedTest(VerifyFixture):
         self.calls.write_text("")
         r = self.verify("--rerun-failed")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.ran("prettier", "run build", "doctor.py", "run test", "lint"),
-                         {"prettier": True, "run build": True, "doctor.py": True, "run test": False, "lint": False})
+        # format for the new file; lint, doctor and secrets read the whole repo; nothing per package (docs/ is in none)
+        self.assertEqual(self.ran("prettier", "run build", "doctor.py", "lint", "audit.py", "run test", "run typecheck"),
+                         {"prettier": True, "run build": True, "doctor.py": True, "lint": True, "audit.py": True,
+                          "run test": False, "run typecheck": False})
         self.assertEqual((self.seal()["head"], self.seal()["composite_of"]), (fixed, red))
         self.assertNotIn("format", self.history()[-1]["inherited"])
+
+    def test_HARN_006_S8_a_fix_inside_a_package_reruns_every_per_package_step(self):
+        """A locale file routes to format, lint, typecheck and unit, but e2e asserts its texts: inside a package,
+        every pass that runs per package is dropped and run again, so the seal covers what a verify would."""
+        self.commit_change()
+        self.assertEqual(self.verify("--keep-going", FAIL_ON="run test").returncode, 1)
+        self.commit_change("apps/web/src/i18n/locales/en.json", '{"hi": "hello"}\n')
+        self.calls.write_text("")
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran("run test", "run build", "run e2e", "run typecheck"),
+                         {"run test": True, "run build": True, "run e2e": True, "run typecheck": True})
+        self.assertIsNotNone(self.seal())
+        # and a red e2e there is caught, not sealed over
+        self.commit_change("apps/web/src/i18n/locales/en.json", '{"hi": "hola"}\n')
+        self.assertEqual(self.verify("--rerun-failed", FAIL_ON="run e2e").returncode, 1)
+
+    def test_HARN_006_S8_passes_that_depend_on_the_date_are_never_kept(self):
+        self.commit_change()
+        self.assertEqual(self.verify("--all", "--keep-going", FAIL_ON="run e2e", VERIFY_FORCE="1").returncode, 1)
+        self.calls.write_text("")
+        r = self.verify("--all", "--rerun-failed", VERIFY_FORCE="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.ran("audit.py")["audit.py"], "the advisories may have changed since the red run")
+        self.assertTrue(self.ran("doctor.py")["doctor.py"], "an exception may have expired since the red run")
+        self.assertEqual(self.seal()["level"], "all")
+
+    def test_HARN_006_S9_no_seal_when_the_red_run_covered_no_packages_and_now_some(self):
+        """An empty package list is a list: it must not read as "this run kept nothing"."""
+        self.commit_change()
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)  # the stub's ls: no packages
+        r = self.verify("--rerun-failed", LS_OUT=str(self.repo / "apps/web"))
+        self.assertIn("apps/web came into scope after the red run", r.stdout)
+        self.assertIsNone(self.seal())
+        self.assertEqual(self.history()[-1]["proven_packages"], [])
 
     def test_HARN_006_S9_no_seal_when_the_runs_do_not_cover_the_plan(self):
         """A red --steps run planned only its steps; a rerun of it proves those, not the commit."""

@@ -56,10 +56,12 @@ Scenario: [S7] A step that ran twice and failed once is not passed
 Scenario: [S8] A rerun that completes the red run seals the commit
   Given a red run, and a rerun (on the same commit, or after a fix routed to another step) that passes
   When together they passed every step of the diff's plan, on a clean tree, at the same base and level
-  Then the seal is written at that level, and the history line has partial = false and composite_of
+  Then the seal is written at that level, and the history line has partial = false and composite_of;
+  a pass is kept only where nothing it looks at moved (a fix inside a package reruns every per-package
+  step; audit, clock, doctor and sast always run again)
 
 Scenario: [S9] No seal when coverage can't be proven
-  Given a red --steps run, a package that came into scope later, or a dirty tree
+  Given a red --steps run, a package that came into scope later (an empty list included), or a dirty tree
   When the rerun passes
   Then no seal, and it says why
 ```

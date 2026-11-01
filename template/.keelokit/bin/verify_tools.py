@@ -42,6 +42,14 @@ STEPS = ["format", "lint", "typecheck", "unit", "integration", "build", "e2e", "
 # Steps the routing doesn't decide: they look at every commit (gitleaks scans origin/main..HEAD, the doctor
 # reads the whole repo, clock reruns the unit tests), so a pass of theirs never outlives a new file.
 UNROUTED = {"secrets", "doctor", "clock"}
+# Steps whose result depends on the date, not only on the code: never kept from an earlier run (advisories
+# and semgrep's rule packs change, the calendar moves, the doctor's exceptions expire).
+TIMED = {"audit", "clock", "doctor", "sast"}
+# Steps that look at the whole repo, or at whichever files changed: any change reaches them.
+WHOLE_REPO = {"format", "lint", "sast"}
+# Steps that run per package: a change inside any package can change what they see (a text an e2e
+# asserts, a type a build needs), whatever the routing asks for when that file changes alone.
+PER_PACKAGE = {"typecheck", "unit", "integration", "build", "e2e", "e2e-stack", "mutation"}
 NAMES = ["secrets", *STEPS[:3], "doctor", *STEPS[3:], "clock"]  # clock: the date-bomb rerun, only with --all
 # Causes every TypeScript project meets; the project's own go in .keelokit/red-causes.toml.
 BUILTIN_CAUSES = [
@@ -194,12 +202,25 @@ def relative(path: str) -> str:
 
 def proven_packages(packages: list[str], kept_from: str) -> list[str] | None:
     """Where every step this run counts as passed holds. A run's own steps hold on its packages; a rerun's
-    kept passes hold where the red run proved them (`kept_from`, "?" when unknown): the intersection."""
-    if kept_from.strip() == "?":
+    kept passes hold where the red run proved them: `kept_from` is "" for a run that kept nothing, "?" when
+    unknown, else "@" followed by the list (so an empty list is not mistaken for "kept nothing")."""
+    if kept_from == "?":
         return None
-    if not kept_from.strip():
+    if not kept_from.startswith("@"):
         return packages
-    return sorted(set(packages) & set(kept_from.split()))
+    return sorted(set(packages) & set(kept_from[1:].split()))
+
+
+def in_a_package(path: str) -> bool:
+    """A file under apps/ or packages/, or whose nearest package.json isn't the root's."""
+    if path.startswith(("apps/", "packages/")):
+        return True
+    folder = (ROOT / path).parent
+    while folder != ROOT and ROOT in folder.parents:
+        if (folder / "package.json").is_file():
+            return True
+        folder = folder.parent
+    return False
 
 
 def cmd_record(args: list[str]) -> int:
@@ -208,8 +229,9 @@ def cmd_record(args: list[str]) -> int:
     --filter selectors, if any), VERIFY_PACKAGES (pnpm's parseable list of the packages in scope),
     VERIFY_STEP_PACKAGES ("step=dir " pairs for steps whose packages aren't the run's), VERIFY_PARTIAL and
     VERIFY_CLEAN (the tree had no uncommitted or untracked changes when the run started), and for a narrowed
-    rerun VERIFY_INHERITED (passes kept from the red run), VERIFY_PROVEN_PACKAGES (where those were proven)
-    and VERIFY_COMPOSITE_OF (the red run's head, when the two together sealed the commit)."""
+    rerun VERIFY_INHERITED (passes kept from the red run), VERIFY_PROVEN_PACKAGES (where those were proven),
+    VERIFY_RERUN_OF (the first red run of the chain) and VERIFY_COMPOSITE_OF (the same head, when the runs
+    together sealed the commit)."""
     file, result, rc, head, level, steps, failed, log = (args + [""] * 8)[:8]
     env = os.environ.get
     try:
@@ -230,6 +252,7 @@ def cmd_record(args: list[str]) -> int:
         "clean": env("VERIFY_CLEAN") == "true",
         "inherited": env("VERIFY_INHERITED", "").split(),
         "composite_of": env("VERIFY_COMPOSITE_OF") or None,
+        "rerun_of": env("VERIFY_RERUN_OF") or None,
         "proven_packages": proven_packages(packages, env("VERIFY_PROVEN_PACKAGES", "")),
         "planned": env("VERIFY_PLANNED", "").split(),
         "passed": [n for n in env("VERIFY_PASSED", "").split() if n not in env("VERIFY_FAILED_STEPS", "").split()],
@@ -314,14 +337,20 @@ def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> t
         return [], (f"{len(unknown)} file(s) changed since then match no route" if unknown
                     else "the files changed since then call for every step"), {}
     todo |= set(steps)
-    if files:  # a new file reaches every step the routing doesn't decide
-        todo |= {s for s in UNROUTED if s in last["planned"]}
+    if files:  # a new file reaches the steps the routing doesn't decide, and those that read the whole repo
+        todo |= {s for s in UNROUTED | WHOLE_REPO if s in last["planned"]}
+    if any(in_a_package(f) for f in files):  # and a file inside a package, everything that runs per package
+        todo |= {s for s in PER_PACKAGE if s in last["planned"]}
+    todo |= {s for s in TIMED if s in last["planned"]}  # advisories and the calendar move on their own
     if not todo:
         return [], "nothing failed or was left unrun", {}
-    proven = last.get("proven_packages")
-    proven = proven if isinstance(proven, list) else last.get("packages") if isinstance(last.get("packages"), list) else None
+    if "proven_packages" in last:
+        proven = last["proven_packages"] if isinstance(last["proven_packages"], list) else None
+    else:
+        proven = last.get("packages") if isinstance(last.get("packages"), list) else None
     kept = sorted(passed & set(NAMES) - todo)
-    return [n for n in NAMES if n in todo], "", {"inherited": kept, "head": last["head"], "packages": proven}
+    root = last.get("rerun_of") if isinstance(last.get("rerun_of"), str) and last.get("rerun_of") else last["head"]
+    return [n for n in NAMES if n in todo], "", {"inherited": kept, "head": root, "packages": proven}
 
 
 def cmd_rerun(args: list[str]) -> int:
@@ -333,7 +362,7 @@ def cmd_rerun(args: list[str]) -> int:
         return 0
     packages = base_on["packages"]
     print("|".join([" ".join(steps), " ".join(base_on["inherited"]), base_on["head"],
-                    "?" if packages is None else " ".join(packages)]))
+                    "?" if packages is None else "@" + " ".join(packages)]))
     return 0
 
 
@@ -347,11 +376,11 @@ def cmd_covers(args: list[str]) -> int:
         print(f"the steps {', '.join(missing)} passed in no run of this diff")
         return 1
     if inherited.split():
-        if proven.strip() == "?":
+        if not proven.startswith("@"):
             print("the red run recorded no packages")
             return 1
         now = {relative(l) for l in packages.splitlines() if l.strip()}
-        outside = sorted(now - set(proven.split()))
+        outside = sorted(now - set(proven[1:].split()))
         if outside:
             print(f"{', '.join(outside)} came into scope after the red run, whose passes didn't cover it")
             return 1

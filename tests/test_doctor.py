@@ -339,6 +339,30 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("TRACE-1", out)
         self.assertIn("harness healthy", out)
 
+    def test_python_tests_that_do_not_really_run_cite_nothing(self):
+        """Expected failures, a skipping pytestmark, a skipTest() first, installed code, a JS test under
+        tests/ (outside the folders JS titles come from) and a file too deep to parse: none cite, none crash."""
+        self.rules()
+        self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))
+        self.write("tests/test_a.py", "import unittest\n"
+                                      "class T(unittest.TestCase):\n"
+                                      "    @unittest.expectedFailure\n"
+                                      "    def test_AUTH_001_S1_a(self): pass\n"
+                                      "    def test_AUTH_001_S1_b(self):\n"
+                                      "        'doc'\n"
+                                      "        self.skipTest('later')\n")
+        self.write("tests/test_b.py", "import pytest\npytestmark = pytest.mark.skip\ndef test_AUTH_001_S1_c(): pass\n")
+        self.write("tests/test_c.py", "import pytest\n@pytest.mark.xfail\ndef test_AUTH_001_S1_d(): pass\n")
+        self.write("tests/test_d.py", "import pytest\ndef test_AUTH_001_S1_e():\n    pytest.skip('later')\n")
+        self.write("tests/.venv/lib/site-packages/x/test_x.py", "def test_AUTH_001_S1_vendored(): pass\n")
+        self.write("tests/e.test.ts", "it('AUTH-001.S1 js under tests', () => {})\n")
+        self.write("tests/test_deep.py", "x = " + "1+" * 20000 + "1\ndef test_AUTH_001_S1_deep(): pass\n")  # RecursionError in ast
+        self.write("apps/api/a.test.ts", "it('AUTH-001.S10 ok', () => {})\n")
+        self.commit("feat: x\n\nStory: AUTH-001")
+        out = self.doctor()
+        self.assertIn("no active test title cites AUTH-001.S1 (TRACE-1)", out)
+        self.assertNotIn("Traceback", out)
+
     def test_a_python_file_that_does_not_parse_cites_nothing(self):
         self.rules()
         self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))

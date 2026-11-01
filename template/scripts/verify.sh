@@ -215,7 +215,7 @@ finish() {
   if [ -n "$steps_log" ] && [ -f "$tools" ]; then
     printf '%s' "$steps_log" | python3 "$tools" table 2>/dev/null || true
     [ "$rc" -eq 0 ] || python3 "$tools" causes "$log" 2>/dev/null || true
-    $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
+    $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_RERUN_OF=${rerun_from:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
       VERIFY_SCOPE=${explicit_scope_text:-} VERIFY_PACKAGES=${pkg_list:-} VERIFY_STEP_PACKAGES=${step_packages:-} \
       VERIFY_PARTIAL=$partial VERIFY_CLEAN=$clean_at_start python3 "$tools" record "$history" "$([ "$rc" -eq 0 ] && echo pass || echo fail)" "$rc" "$head_sha" \
       "$($requested_all && echo all || echo changed)" "$steps_log" "$failed" "$log" 2>/dev/null || true
@@ -317,7 +317,9 @@ want() {
   case " $plan " in *" all "*) return 0 ;; *" $1 "*) return 0 ;; esac
   return 1
 }
-if [ -n "$only" ]; then
+if $rerun_narrowed; then
+  : # said above; it seals only if it and the red run cover the whole plan
+elif [ -n "$only" ]; then
   say "Only these steps: $only (no seal: a partial run proves less than a verify)."
 else
   case " $plan " in *" all "*) ;; *) say "Plan for this change: ${plan:-nothing beyond the always-on steps} (.keelokit/verify-routing.toml; --all runs everything)." ;; esac

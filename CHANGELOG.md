@@ -51,15 +51,16 @@ says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.p
 
 ### Verify interfaces for Harbor
 - **TRACE-1 reads Python tests.** `def test_AUTH_001_S1_…` in `test_*.py` / `*_test.py` (under `apps/`, `packages/`,
-  `e2e/`, `tests/`, `test/`) cites `AUTH-001.S1`; a skipped test or class cites nothing. A test enforcer can be a Python
-  file too.
+  `e2e/`, `tests/`, `test/`) cites `AUTH-001.S1`; a skipped, xfail or expected-failure test (or class, or module) cites
+  nothing, and installed code (`.venv`, `site-packages`) is not read. A test enforcer can be a Python file too.
 - **`pnpm verify --steps unit,e2e-stack`** runs only the named steps (the routing's names plus `secrets` and `doctor`);
   an unknown name is exit 2. Never sealed.
 - **`pnpm verify --rerun-failed`** repeats what the last red run of this commit or an ancestor did not pass, plus what the
   files changed since then call for; when it can't tell, it says why and runs the normal verify.
 - **A rerun that completes a red run seals the commit.** When `--rerun-failed` passes and, with the red run it builds on
   (same base, scope and level, clean tree), covers every step of the diff on the same packages, it writes the seal at that
-  level; the history marks it `composite_of`. A new commit always reruns the secret scan, the doctor and the clock.
+  level; the history marks it `composite_of`. A pass is kept only where nothing it looks at moved: the audit, the clock,
+  the doctor and Semgrep always run again, a new file reruns what reads the whole repo, a file inside a package everything per package.
 - **`pnpm verify --packages ./apps/api,…`** (or `--filter SELECTOR`, passed to pnpm as is) verifies those packages and
   their dependents. Never sealed.
 - **The history says what a run covered**: full head, base, planned/passed/failed step names, the packages in scope and
