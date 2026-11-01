@@ -9,7 +9,64 @@ The local gate decides; the CI audits (`docs/ci.md`). Rules: VER-1, CI-2, FMT-1,
 | `pnpm verify --keep-going` | Do not stop at the first red: every independent step runs, and the reds are listed together at the end. Setup steps (database, client generation) still stop the run |
 | `pnpm verify --all` | Everything, like the CI. Refuses to start on a loaded machine (`VERIFY_FORCE=1` overrides; `VERIFY_MAX_LOAD_FACTOR`, default 1.5 × cores) |
 | `pnpm verify --since REF` | Compare with `REF` instead of `origin/main`: a branch agent runs only its part. Never sealed |
-| `pnpm verify --use-seal` | What the pre-push hook runs: skip the run if this exact commit already passed |
+| `pnpm verify --use-seal` | What the pre-push hook runs: skip the run if this exact commit already passed, here or in a shared seal |
+| `pnpm verify --steps unit,e2e-stack` | Only these steps (names below) and their setup. Never sealed |
+| `pnpm verify --rerun-failed` | Only what the last red run did not pass, plus what files changed since then call for. Never sealed |
+| `pnpm verify --packages ./apps/api,./packages/x` | These packages and their dependents instead of the changed ones (`--filter SELECTOR` goes to pnpm as is). Never sealed |
+
+`--steps`, `--rerun-failed` and `--packages`/`--filter` combine with `--since`, `--all` and
+`--keep-going` (`--steps` and `--rerun-failed` exclude each other and `--preflight`). They prove less
+than a verify, so they never write a seal and a seal never skips them; they write the run state and
+the history as usual.
+
+## Partial runs
+
+**Step names** (`--steps`, the history): `secrets`, `format`, `lint`, `typecheck`, `doctor`, `unit`,
+`integration`, `build`, `e2e`, `e2e-stack`, `mutation`, `sast`, `audit`, `clock` — the routing's steps,
+the secret scan, the doctor and the date-bomb rerun (`clock` runs only with `--all`). An unknown name stops the run with exit 2 before anything runs. A named
+step brings its setup: the up-to-date check, the Prisma client and the throwaway database.
+
+**`--rerun-failed`** reads `keelokit-verify.history`. The last run of this commit or an ancestor decides:
+if it was red, started on a clean tree, and had the same base (`origin/main`, or `--since`), the same
+`--packages`/`--filter` and the same level (`--all` or not), the run is the steps it planned and did not pass (the red ones and the ones
+a first red never reached) plus what the files changed since its commit call for. Otherwise — no
+history, a green last run, a red in a setup step, a run that saw uncommitted changes, a file no route
+knows, every step needed — it says
+why and runs the normal verify (which seals when green). Unknown goes up, never down.
+
+**`--packages`** takes package folders (each must have a `package.json`) and runs them and their
+dependents with the steps the changed files call for; `--filter` passes a pnpm selector as is and
+must select at least one package.
+
+## The history
+
+`keelokit-verify.history` has one JSON line per run: `head` (the full sha), `base`, `level`, `result`,
+`rc`, `partial`, `clean` (the tree at the start), `scope` (the `--packages`/`--filter` selectors), `steps` (name and seconds), `failed`
+(step titles), `planned` / `passed` / `failed_steps` (step names), `packages` (the folders pnpm put in
+scope, `.` for the root) and `step_packages` (only the steps whose packages differ from the run's:
+`lint` runs at the root, `integration` on `apps/api`, `e2e-stack` on each app it walked), and the
+known `causes` of a red. A tool can tell from it whether a green step still holds after a fix: the
+fix's files and the packages the step covered.
+
+## Shared seals
+
+A seal lives in the clone that ran the verify, so a push from another machine runs it again. With
+`[verify] shared_seals = "origin/harbor/log:harbor/seals/{head}.toml"` in `.keelokit/state.toml`,
+`--use-seal` also fetches that branch and reads the TOML file for this commit (`{head}` is the full
+sha), written by whoever verified it (Harbor does):
+
+```toml
+head = "<full sha>"
+base = "<origin/main's sha when it passed>"
+exit = 0
+level = "changed"   # or "all"
+```
+
+It is accepted only when `head` is this exact commit, `base` is `origin/main` now, `exit` is 0, the
+level covers the request (`all` for `--all`), the tree is clean and the partial-run flags are absent;
+otherwise verify says which condition failed and runs. `KEELOKIT_NO_SEAL=1` turns it off. **Trusting
+that branch is trusting everyone who can push to it**: whoever can write a file there can let a commit
+skip the local gate, so protect it like `main`. The doctor checks the key's shape.
 
 ## Landing policy
 

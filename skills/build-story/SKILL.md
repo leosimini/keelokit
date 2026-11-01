@@ -150,7 +150,8 @@ builder.
 5. Push and merge per the project's flow; production deploys stay with the human. The story is
    landed only when `git log origin/main` shows its commit: report that hash, never "done" alone.
    With `[landing] policy = "convoy"` in `.keelokit/state.toml`, push the branch only, never main:
-   the agent brief's convoy landing; report branch, hash and verify result.
+   the agent brief's convoy landing; report the branch, the full hash, the tier
+   (trivial/light/full) and the verify result.
    A test that fails intermittently while you land is a race: find the cause (FLAKY-1), never a
    longer timeout, a retry or a skip.
 6. `python3 .keelokit/bin/doctor.py` passes: TRACE-1 now checks this story's scenarios and INV-1

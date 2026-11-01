@@ -1,6 +1,7 @@
 """The operational side of `pnpm verify`: run state, the green seal, --keep-going, --preflight, tools that must
 exist, signals, a busy machine, --since and the routing of a change to the steps it needs. A fixture repo with
 a bare origin and a stub pnpm; the real verify.sh and verify_tools.py. Run: python3 -m unittest discover -s tests"""
+import json
 import os
 import shutil
 import signal
@@ -16,7 +17,7 @@ T = Path(__file__).resolve().parents[1] / "template"
 
 PNPM = """#!/bin/sh
 printf '%s\\n' "pnpm $*" >> "$CALLS"
-case "$*" in *"ls --depth"*) exit 0 ;; esac
+case "$*" in *"ls --depth"*) [ -z "${LS_OUT:-}" ] || printf '%s\n' $LS_OUT; exit 0 ;; esac
 if [ -n "${SLEEP_ON:-}" ] && printf '%s' "$*" | grep -q -- "$SLEEP_ON"; then sleep 30; fi
 if [ -n "${FAIL_ON:-}" ] && printf '%s' "$*" | grep -q -- "$FAIL_ON"; then echo "${FAIL_MSG:-boom}"; exit 1; fi
 exit 0
@@ -88,6 +89,9 @@ class VerifyFixture(unittest.TestCase):
 
     def state(self):
         return dict(l.split("=", 1) for l in (self.git_dir / "keelokit-verify.state").read_text().splitlines())
+
+    def history(self):
+        return [json.loads(l) for l in (self.git_dir / "keelokit-verify.history").read_text().splitlines()]
 
 
 class StateAndSealTest(VerifyFixture):
@@ -273,6 +277,262 @@ class RoutingTest(VerifyFixture):
     def test_all_is_every_step_even_for_docs(self):
         self.commit_change("docs/guide.md", "# guide\n")
         self.verify("--all", VERIFY_FORCE="1")
+        self.assertTrue(any("run test" in c for c in self.called()))
+
+
+class StepsTest(VerifyFixture):
+    """HARN-005: `--steps` runs the named steps and nothing more, never seals, and refuses unknown names."""
+
+    def test_HARN_005_S1_only_the_named_steps_run(self):
+        self.commit_change()
+        r = self.verify("--steps", "unit")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.called()
+        self.assertTrue(any("run test" in c for c in calls), calls)
+        for other in ("lint", "run typecheck", "run build", "run e2e", "prettier", "doctor.py", "audit.py"):
+            self.assertFalse(any(other in c for c in calls), f"{other} ran: {calls}")
+        self.assertIn("Only these steps: unit", r.stdout)
+
+    def test_HARN_005_S2_an_unknown_name_is_an_error_before_anything_runs(self):
+        self.commit_change()
+        r = self.verify("--steps", "unit,e2e-stak")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown step(s) e2e-stak", r.stderr)
+        self.assertEqual(self.called(), [])
+        self.assertEqual(self.verify("--steps").returncode, 2)
+        self.assertEqual(self.verify("--steps", "unit", "--preflight").returncode, 2)
+        self.assertEqual(self.verify("--steps", "clock").returncode, 2, "clock without --all would run nothing")
+
+    def test_HARN_005_S3_never_sealed_but_state_and_history_are_written(self):
+        self.commit_change()
+        self.assertEqual(self.verify("--steps", "unit,doctor").returncode, 0)
+        self.assertFalse((self.git_dir / "keelokit-verify.seal").exists())
+        self.assertEqual(self.state()["state"], "pass")
+        entry = self.history()[-1]
+        self.assertTrue(entry["partial"])
+        self.assertEqual(entry["planned"], ["doctor", "unit"])
+        self.assertIn("python3 .keelokit/bin/doctor.py --ci", self.called())
+        # a sealed commit doesn't skip a partial run either
+        self.assertEqual(self.verify().returncode, 0)
+        self.assertNotIn("already passed", self.verify("--use-seal", "--steps", "unit").stdout)
+
+    def test_HARN_005_S4_combines_with_since_all_and_keep_going(self):
+        self.commit_change()
+        first = sh(self.repo, "git", "rev-parse", "HEAD~1")
+        self.assertEqual(self.verify("--steps", "unit", "--since", first).returncode, 0)
+        self.assertTrue(any(f"...[{first}]" in c and "run test" in c for c in self.called()), self.called())
+        self.calls.write_text("")
+        self.assertEqual(self.verify("--steps", "unit", "--all", VERIFY_FORCE="1").returncode, 0)
+        self.assertTrue(any(c.startswith("pnpm -r ") and "run test" in c for c in self.called()), self.called())
+        r = self.verify("--steps", "lint,unit", "--keep-going", FAIL_ON="lint\\|run test")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(sorted(self.history()[-1]["failed_steps"]), ["lint", "unit"])
+
+
+class RerunFailedTest(VerifyFixture):
+    """HARN-006: `--rerun-failed` repeats what the last red run didn't pass, plus what new files call for."""
+
+    def ran(self, *needles):
+        calls = self.called()
+        return {n: any(n in c for c in calls) for n in needles}
+
+    def test_HARN_006_S1_repeats_the_red_step_and_what_never_ran(self):
+        self.commit_change()
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        self.assertEqual(self.history()[-1]["failed_steps"], ["build"])
+        self.calls.write_text("")
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Rerun of what failed or never ran", r.stdout)
+        self.assertEqual(self.ran("run build", "run e2e", "audit.py", "lint", "run typecheck", "run test"),
+                         {"run build": True, "run e2e": True, "audit.py": True,
+                          "lint": False, "run typecheck": False, "run test": False})
+        self.assertFalse((self.git_dir / "keelokit-verify.seal").exists())
+
+    def test_HARN_006_S2_keep_going_reds_are_all_repeated(self):
+        self.commit_change()
+        self.assertEqual(self.verify("--keep-going", FAIL_ON="lint\\|run test").returncode, 1)
+        self.calls.write_text("")
+        self.assertEqual(self.verify("--rerun-failed").returncode, 0)
+        self.assertEqual(self.ran("lint", "run test", "run typecheck", "run build"),
+                         {"lint": True, "run test": True, "run typecheck": False, "run build": False})
+
+    def test_HARN_006_S3_a_new_commit_adds_what_its_files_call_for(self):
+        self.commit_change()
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        self.commit_change("docs/fix.md", "# fixed\n")  # routed to format only
+        self.calls.write_text("")
+        self.assertEqual(self.verify("--rerun-failed").returncode, 0)
+        self.assertEqual(self.ran("run build", "prettier", "run test"), {"run build": True, "prettier": True, "run test": False})
+        # code goes everywhere: no narrowing, and it says so
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        self.commit_change("apps/web/src/b.ts", "export const b = 1\n")
+        self.calls.write_text("")
+        r = self.verify("--rerun-failed")
+        self.assertIn("can't narrow the run", r.stderr)
+        self.assertTrue(self.ran("run test")["run test"])
+
+    def test_HARN_006_S4_without_a_red_run_it_is_the_normal_verify_and_says_why(self):
+        self.commit_change()
+        r = self.verify("--rerun-failed")
+        self.assertIn("no verify history", r.stderr)
+        self.assertTrue(self.ran("run test", "lint")["run test"])
+        self.assertTrue((self.git_dir / "keelokit-verify.seal").exists(), "a normal green verify seals")
+        r = self.verify("--rerun-failed")
+        self.assertIn("passed: nothing failed", r.stderr)
+
+    def test_HARN_006_S5_an_all_run_is_only_narrowed_with_all(self):
+        self.commit_change()
+        self.assertEqual(self.verify("--all", FAIL_ON="run build", VERIFY_FORCE="1").returncode, 1)
+        self.calls.write_text("")
+        self.assertEqual(self.verify("--rerun-failed", "--all", FAIL_ON="run build", VERIFY_FORCE="1").returncode, 1)
+        self.assertEqual(self.ran("run build", "run test"), {"run build": True, "run test": False})
+        self.assertIn("rerun it with --all", self.verify("--rerun-failed").stderr)
+
+    def test_HARN_006_S5_a_narrower_red_does_not_narrow_an_all_request(self):
+        self.commit_change()
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        self.calls.write_text("")
+        r = self.verify("--rerun-failed", "--all", VERIFY_FORCE="1")
+        self.assertIn("its passes don't cover an --all request", r.stderr)
+        self.assertTrue(self.ran("run test")["run test"])
+
+    def test_HARN_006_S6_a_red_run_on_a_dirty_tree_is_not_narrowed(self):
+        """The history keeps the commit, not the edits the run saw: reverting them must not leave a pass behind."""
+        self.commit_change()
+        (self.repo / "apps/web/src/a.ts").write_text("export const a = 'uncommitted fix'\n")
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        sh(self.repo, "git", "checkout", "--", "apps/web/src/a.ts")
+        self.calls.write_text("")
+        r = self.verify("--rerun-failed")
+        self.assertIn("uncommitted or untracked changes", r.stderr)
+        self.assertTrue(self.ran("run test")["run test"])
+
+    def test_HARN_006_S7_a_step_that_ran_twice_and_failed_once_is_not_passed(self):
+        """e2e-stack runs once per app under one name: web green, mobile red is a red e2e-stack."""
+        self.commit_change()
+        head = sh(self.repo, "git", "rev-parse", "HEAD")
+        history = self.git_dir / "keelokit-verify.history"
+        env = {**os.environ, "VERIFY_BASE": sh(self.repo, "git", "rev-parse", "origin/main"), "VERIFY_CLEAN": "true",
+               "VERIFY_PLANNED": "unit e2e-stack audit", "VERIFY_PASSED": "unit e2e-stack ",
+               "VERIFY_FAILED_STEPS": " e2e-stack "}
+        subprocess.run([sys.executable, ".keelokit/bin/verify_tools.py", "record", str(history), "fail", "1", head,
+                        "changed", "", "", ""], cwd=self.repo, env=env, check=True)
+        self.assertEqual(self.history()[-1]["passed"], ["unit"])
+        out = subprocess.run([sys.executable, ".keelokit/bin/verify_tools.py", "rerun", str(history), "--head", head,
+                              "--base", env["VERIFY_BASE"], "--scope", "", "--level", "changed"],
+                             cwd=self.repo, capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["e2e-stack", "audit"])
+
+
+class PackagesAndHistoryTest(VerifyFixture):
+    """HARN-007: an explicit package scope, and the packages each run covered in the history."""
+
+    def test_HARN_007_S1_packages_and_their_dependents_instead_of_the_changed_ones(self):
+        (self.repo / "packages/x").mkdir(parents=True)
+        (self.repo / "packages/x/package.json").write_text('{"name":"x"}\n')
+        (self.repo / "apps/web/package.json").write_text('{"name":"web"}\n')
+        self.commit_change()
+        r = self.verify("--packages", "./packages/x,apps/web/")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        tests = [c for c in self.called() if "run test" in c]
+        self.assertEqual(len(tests), 1, self.called())
+        self.assertIn("--filter ...{./packages/x} --filter ...{./apps/web}", tests[0])
+        self.assertNotIn("...[origin/main]", tests[0])
+        self.assertFalse((self.git_dir / "keelokit-verify.seal").exists())
+        self.assertEqual(self.verify("--packages", "./nope").returncode, 2)
+
+    def test_HARN_007_S2_a_filter_goes_to_pnpm_as_is_and_must_select_something(self):
+        self.commit_change()
+        r = self.verify("--filter", "@demo/web")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--filter @demo/web selects no package", r.stderr)
+        r = self.verify("--filter", "@demo/web", LS_OUT=str(self.repo / "apps/web"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any("--filter @demo/web" in c and "run test" in c for c in self.called()), self.called())
+        self.assertEqual(self.history()[-1]["scope"], "--filter @demo/web")
+
+    def test_HARN_007_S3_the_history_says_which_packages_a_run_covered(self):
+        self.commit_change()
+        self.assertEqual(self.verify(LS_OUT=f"{self.repo / 'apps/web'} {self.repo / 'packages/shared'}").returncode, 0)
+        entry = self.history()[-1]
+        self.assertEqual(entry["packages"], ["apps/web", "packages/shared"])
+        self.assertEqual(entry["step_packages"].get("lint"), ["."])
+        self.assertEqual(len(entry["head"]), 40)
+        self.assertEqual(entry["base"], sh(self.repo, "git", "rev-parse", "origin/main"))
+        self.assertIn("unit", entry["passed"])
+
+
+class SharedSealTest(VerifyFixture):
+    """HARN-008: `--use-seal` also accepts a seal another machine pushed to git ([verify] shared_seals)."""
+
+    SPEC = 'origin/harbor/log:harbor/seals/{head}.toml'
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / ".keelokit/state.toml").write_text(f'[verify]\nshared_seals = "{self.SPEC}"\n')
+        self.commit_change()
+
+    def publish(self, **fields):
+        """Push a seal for HEAD to origin's harbor/log from another clone, as Harbor would."""
+        head = sh(self.repo, "git", "rev-parse", "HEAD")
+        seal = {"head": f'"{head}"', "base": f'"{sh(self.repo, "git", "rev-parse", "origin/main")}"',
+                "exit": "0", "level": '"changed"', **fields}
+        other = self.tmp / "harbor"
+        if not other.exists():
+            sh(self.tmp, "git", "clone", "-q", str(self.origin), str(other))
+            sh(other, "git", "checkout", "-q", "--orphan", "harbor/log")
+            sh(other, "git", "rm", "-rqf", ".")
+        (other / "harbor/seals").mkdir(parents=True, exist_ok=True)
+        (other / f"harbor/seals/{head}.toml").write_text("".join(f"{k} = {v}\n" for k, v in seal.items()))
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qm", "seal", "--allow-empty")
+        sh(other, "git", "push", "-qf", "origin", "HEAD:refs/heads/harbor/log")
+
+    def test_HARN_008_S1_a_seal_from_another_machine_skips_the_run(self):
+        self.publish()
+        r = self.verify("--use-seal")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already passed a changed verify", r.stdout)
+        self.assertIn("whoever can push to that branch", r.stdout)
+        self.assertEqual(self.called(), [])
+
+    def test_HARN_008_S2_every_condition_is_checked_and_a_refusal_says_why(self):
+        for fields, why, flags in [
+            ({"head": '"' + "0" * 40 + '"'}, "its head is another commit", ()),
+            ({"base": f'"{sh(self.repo, "git", "rev-parse", "HEAD")}"'}, "its base is not origin/main now", ()),
+            ({"exit": "1"}, "its exit is not 0", ()),
+            ({"exit": "0.0"}, "its exit is not 0", ()),
+            ({"exit": "false"}, "its exit is not 0", ()),
+            ({"level": '"changed"'}, "its level doesn't cover this request", ("--all",)),
+        ]:
+            with self.subTest(why=why):
+                self.publish(**fields)
+                (self.git_dir / "keelokit-verify.seal").unlink(missing_ok=True)  # only the shared one may apply
+                self.calls.write_text("")
+                r = self.verify("--use-seal", *flags, VERIFY_FORCE="1")
+                self.assertIn(why, r.stdout)
+                self.assertNotIn("already passed", r.stdout)
+                self.assertTrue(any("run test" in c for c in self.called()))
+
+    def test_HARN_008_S3_a_dirty_tree_a_missing_seal_or_no_seal_flag_runs(self):
+        self.assertIn("can't fetch origin/harbor/log", self.verify("--use-seal").stdout)
+        self.publish(head='"x"')
+        sh(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "another commit, no seal for it")
+        self.assertIn("no seal for this commit there", self.verify("--use-seal").stdout)
+        (self.git_dir / "keelokit-verify.seal").unlink(missing_ok=True)
+        self.publish()
+        (self.repo / "docs/notes.md").write_text("# edited\n")
+        self.assertIn("the working tree has changes", self.verify("--use-seal").stdout)
+        sh(self.repo, "git", "checkout", "--", "docs/notes.md")
+        self.assertNotIn("already passed", self.verify("--use-seal", KEELOKIT_NO_SEAL="1").stdout)
+        self.assertNotIn("already passed", self.verify("--use-seal", "--steps", "unit").stdout)
+
+    def test_HARN_008_S4_without_the_key_nothing_changes(self):
+        (self.repo / ".keelokit/state.toml").write_text("[gates]\n")
+        sh(self.repo, "git", "commit", "-qam", "no shared seals")
+        r = self.verify("--use-seal")
+        self.assertNotIn("shared seal", r.stdout + r.stderr)
         self.assertTrue(any("run test" in c for c in self.called()))
 
 

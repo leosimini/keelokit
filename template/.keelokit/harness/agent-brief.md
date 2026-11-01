@@ -34,7 +34,8 @@ main. The session **never pushes to main**:
 1. Rebase on `origin/main` as in step 1 above.
 2. `pnpm verify --since origin/main` green on the final commit. A commit after it means verify again.
 3. `git push origin HEAD:<branch>`; `git ls-remote origin <branch>` shows the verified hash.
-4. The report is branch + hash + verify result. Not pushed, or green on another hash: not delivered.
+4. The report is branch + full hash + tier + verify result. Not pushed, or green on another hash:
+   not delivered.
 
 ## Models
 

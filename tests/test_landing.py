@@ -107,7 +107,7 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(self.p.listed(lines, NOT_FINISHED), {"b (+1)", "c (+2)"})
 
 
-class DoctorLandingTest(unittest.TestCase):
+class DoctorFixture(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
@@ -126,6 +126,8 @@ class DoctorLandingTest(unittest.TestCase):
     def doctor(self, *args: str) -> str:
         return run(self.root, "python3", ".keelokit/bin/doctor.py", *args)
 
+
+class DoctorLandingTest(DoctorFixture):
     def test_absent_policy_reads_as_before(self):
         absent = self.doctor(), self.doctor("--brief")
         self.assertNotIn(NOTE, absent[0])
@@ -155,6 +157,18 @@ class DoctorLandingTest(unittest.TestCase):
         self.assertRegex(self.doctor(), r'(?m)^  ERROR \.keelokit/state\.toml: \[landing\] policy is "direct" or "convoy"')
 
 
+class DoctorSharedSealsTest(DoctorFixture):
+    """HARN-008: the doctor checks the shape of [verify] shared_seals, which verify_tools.py reads."""
+
+    def test_HARN_008_S5_the_doctor_checks_the_shared_seals_key(self):
+        self.write(".keelokit/state.toml", '[verify]\nshared_seals = "origin/harbor/log:harbor/seals/{head}.toml"\n')
+        self.assertNotIn("shared_seals", self.doctor())
+        for bad in ('"harbor/seals/{head}.toml"', '"origin/harbor/log:seals.toml"', '"origin/../x:{head}"', "3"):
+            with self.subTest(bad=bad):
+                self.write(".keelokit/state.toml", f"[verify]\nshared_seals = {bad}\n")
+                self.assertRegex(self.doctor(), r"(?m)^  ERROR \.keelokit/state\.toml: \[verify\] shared_seals is ")
+
+
 class TextsTest(unittest.TestCase):
     """The pages agents read: the direct path stays word for word, the convoy path is there."""
 
@@ -172,7 +186,7 @@ class TextsTest(unittest.TestCase):
 3. `git push origin HEAD:main` (or the repo's way). If main moved, go back to 1.
 4. `git log origin/main --oneline -1` shows your commit. That hash is the report.""")
         convoy = re.search(r"(?s)## Landing — `convoy`\n\n(.*?)\n\n## ", brief).group(1)
-        for needle in ("never pushes to main", "pnpm verify --since origin/main", "branch + hash + verify result"):
+        for needle in ("never pushes to main", "pnpm verify --since origin/main", "branch + full hash + tier + verify result"):
             self.assertIn(needle, convoy)
         self.assertIn("absent = `direct`", brief)
         self.assertLessEqual(len(brief.splitlines()), 90, "the brief is one page")

@@ -49,6 +49,20 @@ says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.p
   docs; Opus to review and test in the full tier and for design that is hard to undo. `build-story` says where it moves
   the verifier, reviewer and breaker to Opus; the agent files stay on Sonnet.
 
+### Verify interfaces for Harbor
+- **`pnpm verify --steps unit,e2e-stack`** runs only the named steps (the routing's names plus `secrets` and `doctor`);
+  an unknown name is exit 2. Never sealed.
+- **`pnpm verify --rerun-failed`** repeats what the last red run of this commit or an ancestor did not pass, plus what the
+  files changed since then call for; when it can't tell, it says why and runs the normal verify.
+- **`pnpm verify --packages ./apps/api,…`** (or `--filter SELECTOR`, passed to pnpm as is) verifies those packages and
+  their dependents. Never sealed.
+- **The history says what a run covered**: full head, base, planned/passed/failed step names, the packages in scope and
+  the steps that ran elsewhere (`lint` at the root, `integration` on the API).
+- **Shared seals**: with `[verify] shared_seals = "origin/harbor/log:harbor/seals/{head}.toml"` in `state.toml`,
+  `--use-seal` also accepts a seal another machine pushed, under the same conditions as a local one. Trusting that branch
+  is trusting whoever can push to it; the doctor checks the key.
+- **A convoy report** carries the branch, the full hash, the tier and the verify result.
+
 ### Dependencies that turned the audit red with no code change
 Two new high advisories with a fix hit every generated project: `happy-dom` 20.x (web) and `zod` under `@expo/cli`
 (mobile). New projects start with `happy-dom` 21 and a `pnpm.overrides` entry for `@expo/cli>zod`.

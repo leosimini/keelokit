@@ -123,7 +123,7 @@ class ProcessTest(unittest.TestCase):
         jobs = set(re.findall(r"(?m)^  ([\w-]+):\s*$", ci.split("\njobs:\n", 1)[1]))
         data = tomllib.loads((TEMPLATE / ".keelokit/verify-map.toml").read_text())
         verify = (TEMPLATE / "scripts/verify.sh").read_text()
-        steps = re.findall(r"step\s+['\"]([^'\"]+)['\"]", verify)
+        steps = re.findall(r"step\s+(?:[\w-]+\s+)?['\"]([^'\"]+)['\"]", verify)  # step [ID] 'Title'
         self.assertEqual(jobs - set(data["jobs"]) - set(data["ci_only"]), set())
         for job, entry in data["jobs"].items():
             self.assertTrue(any(entry["step"] in s for s in steps), f"{job}: no verify step '{entry['step']}'")

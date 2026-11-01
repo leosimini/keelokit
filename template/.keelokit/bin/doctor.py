@@ -128,7 +128,7 @@ SHAPES = {
     ".keelokit/profile.toml": ({"kind": "text", "traits": "texts", "local": "table"}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
-    ".keelokit/state.toml": ({"gates": "table", "landing": "table"}, {}),
+    ".keelokit/state.toml": ({"gates": "table", "landing": "table", "verify": "table"}, {}),
     ".keelokit/verify-map.toml": ({"ci_only": "texts", "jobs": "table"}, {}),
     # Story front matter (backlog/README.md).
     "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
@@ -1049,6 +1049,15 @@ def landing_policy() -> str:
     return policy
 
 
+def check_shared_seals() -> None:
+    """`[verify] shared_seals` (read by bin/verify_tools.py): "<remote>/<branch>:<path with {head}>"."""
+    spec = state().get("verify", {}).get("shared_seals")
+    if spec is not None and not (isinstance(spec, str) and re.fullmatch(r"[\w.-]+/[\w./-]+:[^\s:]*\{head\}[^\s:]*", spec)
+                                 and ".." not in spec):
+        errors.append('.keelokit/state.toml: [verify] shared_seals is "<remote>/<branch>:<path with {head}>", e.g. '
+                      f'"origin/harbor/log:harbor/seals/{{head}}.toml" (found {repr(spec)[:60]})')
+
+
 def check_landing() -> None:
     """Convoy: sessions push branches, never main, so a pre-push hook is the gate of what lands on main only;
     the per-branch gate (verify on each delivered hash) is Harbor's. A note, not a failure."""
@@ -1166,6 +1175,7 @@ def main() -> int:
     check_flaky(excepted)
     debt_open, debt_waiting = check_debt()
     check_landing()
+    check_shared_seals()
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
     layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", read(answers) or "") else "project"
