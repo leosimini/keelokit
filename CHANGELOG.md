@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — a verify you can trust
+## 0.11.0 — 2026-11-01 — a verify you can trust
 
 What cost the most time in real use was the verify: an hour-long run that stopped at its first red, died unnoticed, or
 skipped a scanner it should have run. Everything here is additive except the missing-tool failure (see *Upgrading*).
