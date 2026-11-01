@@ -347,7 +347,69 @@ class RerunFailedTest(VerifyFixture):
         self.assertEqual(self.ran("run build", "run e2e", "audit.py", "lint", "run typecheck", "run test"),
                          {"run build": True, "run e2e": True, "audit.py": True,
                           "lint": False, "run typecheck": False, "run test": False})
-        self.assertFalse((self.git_dir / "keelokit-verify.seal").exists())
+
+    def seal(self):
+        path = self.git_dir / "keelokit-verify.seal"
+        return dict(l.split("=", 1) for l in path.read_text().splitlines()) if path.exists() else None
+
+    def test_HARN_006_S8_a_rerun_that_completes_the_red_run_seals_the_commit(self):
+        self.commit_change()
+        red = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Composite seal", r.stdout)
+        self.assertEqual(self.seal()["head"], red)
+        self.assertEqual(self.seal()["level"], "changed")
+        self.assertEqual(self.seal()["composite_of"], red)
+        entry = self.history()[-1]
+        self.assertEqual(entry["composite_of"], red)
+        self.assertFalse(entry["partial"])
+        self.assertIn("unit", entry["inherited"])
+        self.calls.write_text("")
+        self.assertIn("already passed", self.verify("--use-seal").stdout)
+        self.assertEqual(self.called(), [])
+
+    def test_HARN_006_S8_a_fix_routed_to_another_step_runs_it_and_still_seals(self):
+        self.commit_change()
+        red = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        self.commit_change("docs/fix.md", "# the fix's notes\n")  # routed to format, which had passed
+        fixed = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.calls.write_text("")
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran("prettier", "run build", "doctor.py", "run test", "lint"),
+                         {"prettier": True, "run build": True, "doctor.py": True, "run test": False, "lint": False})
+        self.assertEqual((self.seal()["head"], self.seal()["composite_of"]), (fixed, red))
+        self.assertNotIn("format", self.history()[-1]["inherited"])
+
+    def test_HARN_006_S9_no_seal_when_the_runs_do_not_cover_the_plan(self):
+        """A red --steps run planned only its steps; a rerun of it proves those, not the commit."""
+        self.commit_change()
+        self.assertEqual(self.verify("--steps", "lint", FAIL_ON="lint").returncode, 1)
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("No seal: the steps", r.stdout)
+        self.assertIsNone(self.seal())
+        self.assertTrue(self.history()[-1]["partial"])
+        self.assertIsNone(self.history()[-1]["composite_of"])
+
+    def test_HARN_006_S9_no_seal_when_a_package_came_into_scope_after_the_red_run(self):
+        self.commit_change()
+        web, x = str(self.repo / "apps/web"), str(self.repo / "packages/x")
+        self.assertEqual(self.verify(FAIL_ON="run build", LS_OUT=web).returncode, 1)
+        r = self.verify("--rerun-failed", LS_OUT=f"{web} {x}")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("packages/x came into scope after the red run", r.stdout)
+        self.assertIsNone(self.seal())
+
+    def test_HARN_006_S9_no_seal_on_a_dirty_tree_or_with_since(self):
+        self.commit_change()
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        (self.repo / "docs/scratch.md").write_text("u\n")
+        self.verify("--rerun-failed")
+        self.assertIsNone(self.seal())
 
     def test_HARN_006_S2_keep_going_reds_are_all_repeated(self):
         self.commit_change()
@@ -421,8 +483,9 @@ class RerunFailedTest(VerifyFixture):
         self.assertEqual(self.history()[-1]["passed"], ["unit"])
         out = subprocess.run([sys.executable, ".keelokit/bin/verify_tools.py", "rerun", str(history), "--head", head,
                               "--base", env["VERIFY_BASE"], "--scope", "", "--level", "changed"],
-                             cwd=self.repo, capture_output=True, text=True, check=True).stdout.split()
-        self.assertEqual(out, ["e2e-stack", "audit"])
+                             cwd=self.repo, capture_output=True, text=True, check=True).stdout.strip().split("|")
+        self.assertEqual(out[0].split(), ["e2e-stack", "audit"])
+        self.assertEqual(out[1].split(), ["unit"], "the passes it keeps: not e2e-stack")
 
 
 class PackagesAndHistoryTest(VerifyFixture):

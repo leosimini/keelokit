@@ -11,13 +11,13 @@ The local gate decides; the CI audits (`docs/ci.md`). Rules: VER-1, CI-2, FMT-1,
 | `pnpm verify --since REF` | Compare with `REF` instead of `origin/main`: a branch agent runs only its part. Never sealed |
 | `pnpm verify --use-seal` | What the pre-push hook runs: skip the run if this exact commit already passed, here or in a shared seal |
 | `pnpm verify --steps unit,e2e-stack` | Only these steps (names below) and their setup. Never sealed |
-| `pnpm verify --rerun-failed` | Only what the last red run did not pass, plus what files changed since then call for. Never sealed |
+| `pnpm verify --rerun-failed` | Only what the last red run did not pass, plus what files changed since then call for. Sealed when the two runs together cover the whole plan |
 | `pnpm verify --packages ./apps/api,./packages/x` | These packages and their dependents instead of the changed ones (`--filter SELECTOR` goes to pnpm as is). Never sealed |
 
 `--steps`, `--rerun-failed` and `--packages`/`--filter` combine with `--since`, `--all` and
 `--keep-going` (`--steps` and `--rerun-failed` exclude each other and `--preflight`). They prove less
-than a verify, so they never write a seal and a seal never skips them; they write the run state and
-the history as usual.
+than a verify, so a seal never skips them and they write none — except the composite seal below;
+they write the run state and the history as usual.
 
 ## Partial runs
 
@@ -29,7 +29,16 @@ step brings its setup: the up-to-date check, the Prisma client and the throwaway
 **`--rerun-failed`** reads `keelokit-verify.history`. The last run of this commit or an ancestor decides:
 if it was red, started on a clean tree, and had the same base (`origin/main`, or `--since`), the same
 `--packages`/`--filter` and the same level (`--all` or not), the run is the steps it planned and did not pass (the red ones and the ones
-a first red never reached) plus what the files changed since its commit call for. Otherwise — no
+a first red never reached) plus what the files changed since its commit call for. A new commit also
+reruns `secrets`, `doctor` and `clock`, which the routing doesn't decide: gitleaks scans the new commits
+and the doctor reads the whole repo.
+
+**The composite seal.** When a narrowed rerun passes on a clean tree without `--since`, `--packages` or
+`--filter`, and the steps it ran plus the passes it kept from the red run are every step of this diff's
+plan, on packages the red run covered, it writes the seal at the red run's level and records the line
+with `partial = false` and `composite_of` = the red run's head (the seal file gets `composite_of=` too).
+A chain of reruns works the same way. When it can't prove that (a red `--steps` run planned less, a
+package came into scope after the red run, a dirty tree), it says which and doesn't seal. Otherwise — no
 history, a green last run, a red in a setup step, a run that saw uncommitted changes, a file no route
 knows, every step needed — it says
 why and runs the normal verify (which seals when green). Unknown goes up, never down.
@@ -41,7 +50,9 @@ must select at least one package.
 ## The history
 
 `keelokit-verify.history` has one JSON line per run: `head` (the full sha), `base`, `level`, `result`,
-`rc`, `partial`, `clean` (the tree at the start), `scope` (the `--packages`/`--filter` selectors), `steps` (name and seconds), `failed`
+`rc`, `partial`, `clean` (the tree at the start), `composite_of` (the red run a composite seal builds
+on, else null), `inherited` (passes a rerun kept), `proven_packages` (where every pass counted holds),
+`scope` (the `--packages`/`--filter` selectors), `steps` (name and seconds), `failed`
 (step titles), `planned` / `passed` / `failed_steps` (step names), `packages` (the folders pnpm put in
 scope, `.` for the root) and `step_packages` (only the steps whose packages differ from the run's:
 `lint` runs at the root, `integration` on `apps/api`, `e2e-stack` on each app it walked), and the

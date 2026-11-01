@@ -9,8 +9,9 @@
                                                 (the rest comes from VERIFY_* variables, see cmd_record)
     verify_tools.py steps LIST | --list         check step names (comma list) / print every name
     verify_tools.py rerun HISTORY --head SHA --base SHA --scope TEXT --level LEVEL
-                                                the steps --rerun-failed runs; empty (and why) when it
-                                                can't tell, which means the normal verify
+                                                "steps|inherited|red head|proven packages": what
+                                                --rerun-failed runs, the passes it keeps, and from where;
+                                                empty steps (and why) when it can't tell = normal verify
     verify_tools.py shared-seal --head SHA --base SHA --level LEVEL
                                                 0: a shared seal covers this commit; 1: refused (why);
                                                 3: [verify] shared_seals is not set
@@ -38,6 +39,9 @@ from pathlib import Path  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 STEPS = ["format", "lint", "typecheck", "unit", "integration", "build", "e2e", "e2e-stack", "mutation", "sast", "audit"]
 # What --steps accepts: the routing's steps plus the two that run on every change.
+# Steps the routing doesn't decide: they look at every commit (gitleaks scans origin/main..HEAD, the doctor
+# reads the whole repo, clock reruns the unit tests), so a pass of theirs never outlives a new file.
+UNROUTED = {"secrets", "doctor", "clock"}
 NAMES = ["secrets", *STEPS[:3], "doctor", *STEPS[3:], "clock"]  # clock: the date-bomb rerun, only with --all
 # Causes every TypeScript project meets; the project's own go in .keelokit/red-causes.toml.
 BUILTIN_CAUSES = [
@@ -188,12 +192,24 @@ def relative(path: str) -> str:
         return path
 
 
+def proven_packages(packages: list[str], kept_from: str) -> list[str] | None:
+    """Where every step this run counts as passed holds. A run's own steps hold on its packages; a rerun's
+    kept passes hold where the red run proved them (`kept_from`, "?" when unknown): the intersection."""
+    if kept_from.strip() == "?":
+        return None
+    if not kept_from.strip():
+        return packages
+    return sorted(set(packages) & set(kept_from.split()))
+
+
 def cmd_record(args: list[str]) -> int:
     """One JSON line per run. Besides the arguments, from the environment: VERIFY_BASE (the base's sha),
     VERIFY_PLANNED / VERIFY_PASSED / VERIFY_FAILED_STEPS (step names), VERIFY_SCOPE (the --packages /
     --filter selectors, if any), VERIFY_PACKAGES (pnpm's parseable list of the packages in scope),
     VERIFY_STEP_PACKAGES ("step=dir " pairs for steps whose packages aren't the run's), VERIFY_PARTIAL and
-    VERIFY_CLEAN (the tree had no uncommitted or untracked changes when the run started)."""
+    VERIFY_CLEAN (the tree had no uncommitted or untracked changes when the run started), and for a narrowed
+    rerun VERIFY_INHERITED (passes kept from the red run), VERIFY_PROVEN_PACKAGES (where those were proven)
+    and VERIFY_COMPOSITE_OF (the red run's head, when the two together sealed the commit)."""
     file, result, rc, head, level, steps, failed, log = (args + [""] * 8)[:8]
     env = os.environ.get
     try:
@@ -205,16 +221,20 @@ def cmd_record(args: list[str]) -> int:
         name, _, folder = pair.partition("=")
         if folder and folder not in step_packages.setdefault(name, []):
             step_packages[name].append(folder)
+    packages = sorted({relative(l) for l in env("VERIFY_PACKAGES", "").splitlines() if l.strip()})
     entry = {
         "t": int(time.time()), "head": head, "base": env("VERIFY_BASE", ""), "level": level, "result": result,
         "rc": int(rc or 0), "partial": env("VERIFY_PARTIAL") == "true", "scope": " ".join(env("VERIFY_SCOPE", "").split()),
         "steps": [[n, int(s)] for s, _, n in (l.partition("|") for l in steps.splitlines()) if s.isdigit()],
         "failed": [l for l in failed.splitlines() if l],
         "clean": env("VERIFY_CLEAN") == "true",
+        "inherited": env("VERIFY_INHERITED", "").split(),
+        "composite_of": env("VERIFY_COMPOSITE_OF") or None,
+        "proven_packages": proven_packages(packages, env("VERIFY_PROVEN_PACKAGES", "")),
         "planned": env("VERIFY_PLANNED", "").split(),
         "passed": [n for n in env("VERIFY_PASSED", "").split() if n not in env("VERIFY_FAILED_STEPS", "").split()],
         "failed_steps": env("VERIFY_FAILED_STEPS", "").split(),
-        "packages": sorted({relative(l) for l in env("VERIFY_PACKAGES", "").splitlines() if l.strip()}),
+        "packages": packages,
         "step_packages": step_packages,
         "causes": [cid for cid, _ in causes_in(text)] if result != "pass" else [],
     }
@@ -245,14 +265,16 @@ def is_ancestor(old: str, new: str) -> bool:
     return subprocess.run(["git", "merge-base", "--is-ancestor", old, new], cwd=ROOT, capture_output=True).returncode == 0
 
 
-def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> tuple[list[str], str]:
-    """(steps to run, why). No steps means: run the normal verify, for the reason given. The last run of
-    this commit or an ancestor decides; only a red one with a clean tree and the same base, scope and level
-    can be narrowed to what it didn't pass plus what the files changed since then call for."""
+def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> tuple[list[str], str, dict]:
+    """(steps to run, why, what it builds on). No steps means: run the normal verify, for the reason given.
+    The last run of this commit or an ancestor decides; only a red one with a clean tree and the same base,
+    scope and level can be narrowed to what it didn't pass plus what the files changed since then call for.
+    The third value says which passes still hold (`inherited`), whose they are (`head`) and on which
+    packages they were proven (`packages`, None when unknown): what a composite seal needs."""
     try:
         lines = Path(history).read_text(encoding="utf-8").splitlines()
     except OSError:
-        return [], "no verify history in this clone"
+        return [], "no verify history in this clone", {}
     last = None
     for line in reversed(lines):
         try:
@@ -264,44 +286,75 @@ def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> t
             last = entry
             break
     if last is None:
-        return [], "no earlier verify of this commit or one before it"
+        return [], "no earlier verify of this commit or one before it", {}
     if last.get("result") == "pass":
-        return [], f"the last verify of {last['head'][:7]} passed: nothing failed"
+        return [], f"the last verify of {last['head'][:7]} passed: nothing failed", {}
     if not all(isinstance(last.get(k), list) for k in ("planned", "passed", "failed_steps")) or not last["planned"]:
-        return [], "the last red run recorded no steps (an older verify)"
+        return [], "the last red run recorded no steps (an older verify)", {}
     if last.get("base") != base:
-        return [], "origin/main (or --since) is not where it was for that run"
+        return [], "origin/main (or --since) is not where it was for that run", {}
     if " ".join(scope.split()) != last.get("scope", ""):
-        return [], "that run covered other packages (--packages / --filter differ)"
+        return [], "that run covered other packages (--packages / --filter differ)", {}
     if last.get("level") != level:
         return [], ("that run was --all: rerun it with --all" if last.get("level") == "all"
-                    else "that run was not --all, so its passes don't cover an --all request")
+                    else "that run was not --all, so its passes don't cover an --all request"), {}
     if last.get("clean") is not True:
-        return [], "that run saw uncommitted or untracked changes, so what passed is not this commit's"
+        return [], "that run saw uncommitted or untracked changes, so what passed is not this commit's", {}
     setup = [s for s in last["failed_steps"] if s not in NAMES]
     if setup:
-        return [], f"it stopped in a setup step ({', '.join(setup)})"
-    passed = set(last["passed"]) - set(last["failed_steps"])
+        return [], f"it stopped in a setup step ({', '.join(setup)})", {}
+    inherited = last.get("inherited") if isinstance(last.get("inherited"), list) else []
+    passed = (set(last["passed"]) | set(inherited)) - set(last["failed_steps"])
     todo = {s for s in last["planned"] if s in NAMES and s not in passed}
     files = changed_files(last["head"])
     if files is None:
-        return [], f"{last['head'][:7]} is not in this clone"
+        return [], f"{last['head'][:7]} is not in this clone", {}
     steps, unknown = plan_for(files, load_routes())
     if "all" in steps:
         return [], (f"{len(unknown)} file(s) changed since then match no route" if unknown
-                    else "the files changed since then call for every step")
+                    else "the files changed since then call for every step"), {}
     todo |= set(steps)
+    if files:  # a new file reaches every step the routing doesn't decide
+        todo |= {s for s in UNROUTED if s in last["planned"]}
     if not todo:
-        return [], "nothing failed or was left unrun"
-    return [n for n in NAMES if n in todo], ""
+        return [], "nothing failed or was left unrun", {}
+    proven = last.get("proven_packages")
+    proven = proven if isinstance(proven, list) else last.get("packages") if isinstance(last.get("packages"), list) else None
+    kept = sorted(passed & set(NAMES) - todo)
+    return [n for n in NAMES if n in todo], "", {"inherited": kept, "head": last["head"], "packages": proven}
 
 
 def cmd_rerun(args: list[str]) -> int:
-    steps, why = rerun_steps(args[0] if args else "", option(args, "--head"), option(args, "--base"),
-                             option(args, "--scope"), option(args, "--level", "changed"))
+    steps, why, base_on = rerun_steps(args[0] if args else "", option(args, "--head"), option(args, "--base"),
+                                      option(args, "--scope"), option(args, "--level", "changed"))
     if not steps:
         print(f"verify --rerun-failed: can't narrow the run ({why}): running the normal verify.", file=sys.stderr)
-    print(" ".join(steps))
+        print("")
+        return 0
+    packages = base_on["packages"]
+    print("|".join([" ".join(steps), " ".join(base_on["inherited"]), base_on["head"],
+                    "?" if packages is None else " ".join(packages)]))
+    return 0
+
+
+def cmd_covers(args: list[str]) -> int:
+    """covers PLANNED RAN INHERITED PROVEN PACKAGES: exit 0 when the steps this rerun ran plus the passes it
+    inherited are the whole plan, and every package now in scope is one the inherited passes were proven
+    on; otherwise print what is missing and exit 1. PROVEN "?" (unknown) never covers."""
+    planned, ran, inherited, proven, packages = (args + [""] * 5)[:5]
+    missing = sorted(set(planned.split()) - set(ran.split()) - set(inherited.split()))
+    if missing:
+        print(f"the steps {', '.join(missing)} passed in no run of this diff")
+        return 1
+    if inherited.split():
+        if proven.strip() == "?":
+            print("the red run recorded no packages")
+            return 1
+        now = {relative(l) for l in packages.splitlines() if l.strip()}
+        outside = sorted(now - set(proven.split()))
+        if outside:
+            print(f"{', '.join(outside)} came into scope after the red run, whose passes didn't cover it")
+            return 1
     return 0
 
 
@@ -379,6 +432,8 @@ def main() -> int:
         return cmd_steps(a[1:])
     if a[0] == "rerun":
         return cmd_rerun(a[1:])
+    if a[0] == "covers":
+        return cmd_covers(a[1:])
     if a[0] == "shared-seal":
         return cmd_shared_seal(a[1:])
     print(__doc__, file=sys.stderr)

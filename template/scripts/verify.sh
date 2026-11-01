@@ -21,7 +21,8 @@
 #                              only these steps (names from .keelokit/verify-routing.toml, plus secrets
 #                              and doctor); an unknown name is an error. Never sealed
 #   pnpm verify --rerun-failed repeat what the last red run of this commit (or an ancestor) did not pass,
-#                              plus what the files changed since then call for. Never sealed
+#                              plus what the files changed since then call for. Sealed only when it and
+#                              that red run together cover the whole plan (a composite seal)
 #   pnpm verify --packages ./apps/api,./packages/x   (or --filter SELECTOR, passed to pnpm as is)
 #                              these packages and their dependents, instead of the changed ones. Never sealed
 #
@@ -214,7 +215,7 @@ finish() {
   if [ -n "$steps_log" ] && [ -f "$tools" ]; then
     printf '%s' "$steps_log" | python3 "$tools" table 2>/dev/null || true
     [ "$rc" -eq 0 ] || python3 "$tools" causes "$log" 2>/dev/null || true
-    $preflight || VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
+    $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
       VERIFY_SCOPE=${explicit_scope_text:-} VERIFY_PACKAGES=${pkg_list:-} VERIFY_STEP_PACKAGES=${step_packages:-} \
       VERIFY_PARTIAL=$partial VERIFY_CLEAN=$clean_at_start python3 "$tools" record "$history" "$([ "$rc" -eq 0 ] && echo pass || echo fail)" "$rc" "$head_sha" \
       "$($requested_all && echo all || echo changed)" "$steps_log" "$failed" "$log" 2>/dev/null || true
@@ -299,10 +300,12 @@ plan=$(python3 "$tools" plan $($requested_all && echo --all) --base "$base" || e
 [ -n "$plan" ] || plan=all # no answer (no python helper, an old checkout) means everything, as before routing existed
 # --rerun-failed: what the last red run of this commit (or an ancestor) did not pass, plus what the files
 # changed since then call for. When it can't tell, it says so and the plan above runs (unknown goes up).
+rerun_narrowed=false inherited='' rerun_from='' rerun_proven=''
 if $rerun; then
   again=$(python3 "$tools" rerun "$history" --head "$head_sha" --base "$(base_sha)" --scope "$(printf '%s ' ${scope_explicit[@]+"${scope_explicit[@]}"})" --level "$($requested_all && echo all || echo changed)") || again=
   if [ -n "$again" ]; then
-    only=$again
+    IFS='|' read -r only inherited rerun_from rerun_proven <<<"$again"
+    rerun_narrowed=true
     say "Rerun of what failed or never ran: $only"
   elif [ -z "$packages$filters" ]; then
     partial=false # nothing to narrow it to: this is a normal verify, and a green one seals as usual
@@ -323,7 +326,10 @@ planned=
 for s in $(python3 "$tools" steps --list 2>/dev/null); do
   [ "$s" != clock ] || { $requested_all && ! $since; } || continue # the date-bomb rerun exists only in a full --all
   want "$s" && planned="$planned$s "
+  # A narrowed rerun records the whole plan of this diff, so the next rerun and the composite seal see it.
+  ! $rerun_narrowed || { only_saved=$only; only=; if want "$s"; then plan_full="${plan_full:-}$s "; fi; only=$only_saved; }
 done
+! $rerun_narrowed || planned=${plan_full:-}
 
 if want secrets && need_tool gitleaks '`brew install gitleaks`'; then
   step secrets 'Secret scan (gitleaks)'
@@ -547,7 +553,23 @@ if [ -n "$failed" ]; then
   exit 1
 fi
 
+# A composite seal: a narrowed rerun that passed, plus the passes it kept from the red run it builds on
+# (same base, scope and level, clean tree: rerun_steps checked), cover the whole plan of this diff on the
+# packages now in scope. It then seals like a verify, at that level; anything it can't prove, it doesn't.
+composite_of=
+if $rerun_narrowed; then
+  if ! $since && [ -z "$explicit_scope_text" ] && $clean_at_start && tree_clean; then
+    if why=$(python3 "$tools" covers "$planned" "$only" "$inherited" "$rerun_proven" "$pkg_list"); then
+      composite_of=$rerun_from
+      partial=false
+      say "Composite seal: this rerun and the red run of ${rerun_from:0:7} together passed every step of this diff."
+    else
+      say "No seal: ${why:-the rerun and the red run do not cover the whole plan}."
+    fi
+  fi
+fi
 if ! $since && ! $partial && tree_clean; then
   printf 'head=%s\nbase=%s\nlevel=%s\ndate=%s\n' "$head_sha" "$(base_sha)" "$($requested_all && echo all || echo changed)" "$(date -u +%FT%TZ)" >"$seal"
+  [ -z "$composite_of" ] || printf 'composite_of=%s\n' "$composite_of" >>"$seal"
 fi
 printf '\n\033[32m✔ verify passed\033[0m (%s steps ran, %s not needed for this change)\n' "$ran" "$skipped" | tee -a "$log"
