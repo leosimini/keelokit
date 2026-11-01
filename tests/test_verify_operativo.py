@@ -511,15 +511,16 @@ class RerunFailedTest(VerifyFixture):
         """e2e-stack runs once per app under one name: web green, mobile red is a red e2e-stack."""
         self.commit_change()
         head = sh(self.repo, "git", "rev-parse", "HEAD")
+        base = sh(self.repo, "git", "rev-parse", "origin/main")
         history = self.git_dir / "keelokit-verify.history"
-        env = {**os.environ, "VERIFY_BASE": sh(self.repo, "git", "rev-parse", "origin/main"), "VERIFY_CLEAN": "true",
+        env = {**os.environ, "VERIFY_BASE": base, "VERIFY_CLEAN": "true",
                "VERIFY_PLANNED": "unit e2e-stack audit", "VERIFY_PASSED": "unit e2e-stack ",
                "VERIFY_FAILED_STEPS": " e2e-stack "}
         subprocess.run([sys.executable, ".keelokit/bin/verify_tools.py", "record", str(history), "fail", "1", head,
                         "changed", "", "", ""], cwd=self.repo, env=env, check=True)
         self.assertEqual(self.history()[-1]["passed"], ["unit"])
         out = subprocess.run([sys.executable, ".keelokit/bin/verify_tools.py", "rerun", str(history), "--head", head,
-                              "--base", env["VERIFY_BASE"], "--scope", "", "--level", "changed"],
+                              "--base", base, "--scope", "", "--level", "changed"],
                              cwd=self.repo, capture_output=True, text=True, check=True).stdout.strip().split("|")
         self.assertEqual(out[0].split(), ["e2e-stack", "audit"])
         self.assertEqual(out[1].split(), ["unit"], "the passes it keeps: not e2e-stack")

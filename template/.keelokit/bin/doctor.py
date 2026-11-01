@@ -942,7 +942,8 @@ def check_verify_map(ci_jobs: dict[str, str], excepted: set[str]) -> None:
         return
     jobs = data.get("jobs", {})
     verify = read(ROOT / "scripts/verify.sh") or ""
-    steps = {m.strip() for m in re.findall(r"step\s+['\"]([^'\"]+)['\"]", verify)}
+    # `step 'Title'`, or `step id 'Title'` (verify.sh names each step for --steps and the history)
+    steps = {m.strip() for m in re.findall(r"step\s+(?:[\w-]+\s+)?['\"]([^'\"]+)['\"]", verify)}
     valid = {j for j, e in jobs.items() if isinstance(e, dict) and isinstance(e.get("step"), str) and isinstance(e.get("when"), str)}
     for job in sorted(set(ci_jobs) - valid - set(data.get("ci_only", []))):
         flag("CI-2", excepted, f"CI job '{job}' is not in .keelokit/verify-map.toml: say which verify step runs it locally, "

@@ -127,6 +127,10 @@ class ProcessTest(unittest.TestCase):
         self.assertEqual(jobs - set(data["jobs"]) - set(data["ci_only"]), set())
         for job, entry in data["jobs"].items():
             self.assertTrue(any(entry["step"] in s for s in steps), f"{job}: no verify step '{entry['step']}'")
+        # and the doctor's own reading of verify.sh agrees (CI-2), on the template's real files
+        self.write("scripts/verify.sh", verify)
+        self.write(".keelokit/verify-map.toml", (TEMPLATE / ".keelokit/verify-map.toml").read_text())
+        self.assertNotIn("has no such step", self.doctor())
 
     def test_a_new_migration_must_sort_after_mains_last(self):
         for name in ("20261001_a", "20261005_c"):
