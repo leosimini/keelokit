@@ -128,7 +128,7 @@ SHAPES = {
     ".keelokit/profile.toml": ({"kind": "text", "traits": "texts", "local": "table"}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
-    ".keelokit/state.toml": ({"gates": "table"}, {}),
+    ".keelokit/state.toml": ({"gates": "table", "landing": "table"}, {}),
     ".keelokit/verify-map.toml": ({"ci_only": "texts", "jobs": "table"}, {}),
     # Story front matter (backlog/README.md).
     "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
@@ -1025,8 +1025,39 @@ def check_launch() -> int:
     return 1 if errors or open_rows or waiting else 0
 
 
+_state: list[dict] = []
+
+
+def state() -> dict:
+    """.keelokit/state.toml, read once (its errors are reported once)."""
+    if not _state:
+        _state.append(read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {})
+    return _state[0]
+
+
 def gate_state() -> dict:
-    return (read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {}).get("gates", {})
+    return state().get("gates", {})
+
+
+def landing_policy() -> str:
+    """`[landing] policy`: "direct" (absent = direct: each session lands on main) or "convoy" (Harbor lands
+    batches of delivered branches). Any other value is an error and counts as direct."""
+    policy = state().get("landing", {}).get("policy", "direct")
+    if policy not in ("direct", "convoy"):
+        errors.append(f'.keelokit/state.toml: [landing] policy is "direct" or "convoy" (found {repr(policy)[:60]})')
+        return "direct"
+    return policy
+
+
+def check_landing() -> None:
+    """Convoy: sessions push branches, never main, so a pre-push hook is the gate of what lands on main only;
+    the per-branch gate (verify on each delivered hash) is Harbor's. A note, not a failure."""
+    if landing_policy() != "convoy":
+        return
+    text, _ = read_file(ROOT / ".githooks/pre-push", lenient=True)
+    if text is not None and "harbor" not in text.lower():
+        warnings.append("landing: policy is convoy and .githooks/pre-push protects only what reaches main; "
+                        "Harbor adds the per-branch gate")
 
 
 def check_scope(sid: str) -> int:
@@ -1134,6 +1165,7 @@ def main() -> int:
     check_migration_waves(backlog, backlog["done"], excepted)
     check_flaky(excepted)
     debt_open, debt_waiting = check_debt()
+    check_landing()
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
     layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", read(answers) or "") else "project"

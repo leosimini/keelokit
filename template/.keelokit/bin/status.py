@@ -6,6 +6,8 @@
 Worktrees and what they hold, branches with commits not on origin/main ("not finished"), the verify
 lock, the CI of main (`ci.py health`, skipped with --no-ci or without network), and the backlog.
 The coordinator runs it every round and trusts origin/main, not what a session said (SESS-1).
+With `[landing] policy = "convoy"` in .keelokit/state.toml, a branch whose head is already on origin
+is "delivered, waiting for a convoy": Harbor, not the session, takes it to main.
 """
 import sys
 
@@ -24,6 +26,23 @@ BIN = ROOT / ".keelokit/bin"
 def git(*args: str) -> str:
     res = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
     return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def landing_policy() -> str:
+    """"convoy" or "direct"; absent, unreadable or anything else is direct."""
+    try:
+        import tomllib
+        landing = tomllib.loads((ROOT / ".keelokit/state.toml").read_text()).get("landing", {})
+        return "convoy" if isinstance(landing, dict) and landing.get("policy") == "convoy" else "direct"
+    except (OSError, ValueError):
+        return "direct"
+
+
+def delivered(branch: str) -> bool:
+    """The branch's head is on origin (its remote branch contains it): pushed, nothing left local."""
+    return bool(git("rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}")) and subprocess.run(
+        ["git", "merge-base", "--is-ancestor", f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"],
+        cwd=ROOT, capture_output=True).returncode == 0
 
 
 def alive(pid: str) -> bool:
@@ -58,17 +77,20 @@ def main() -> int:
 
     trees = [b.splitlines() for b in git("worktree", "list", "--porcelain").split("\n\n") if b.strip()]
     lines.append(f"worktrees: {len(trees)}")
-    unpushed = []
+    convoy = landing_policy() == "convoy"
+    unpushed, waiting = [], []
     for t in trees:
         info = dict(l.split(" ", 1) for l in t if " " in l)
         path, branch = info.get("worktree", "?"), info.get("branch", "").removeprefix("refs/heads/")
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True).stdout.strip()
         ahead = git("rev-list", "--count", f"{main_ref}..{branch}") if branch else ""
         if branch and branch != "main" and ahead not in ("", "0"):
-            unpushed.append(f"{branch} (+{ahead})")
+            (waiting if convoy and delivered(branch) else unpushed).append(f"{branch} (+{ahead})")
         if len(lines) < 5 and (dirty or (ahead not in ("", "0") and branch != "main")):
             lines.append(f"  {Path(path).name}: {branch or 'detached'} · {ahead or 0} commit(s) not on main"
                          f"{' · uncommitted changes' if dirty else ''}")
+    if waiting:
+        lines.append("delivered, waiting for a convoy: " + ", ".join(waiting))
     lines.append("not finished (commits not on main): " + (", ".join(unpushed) if unpushed else "none"))
 
     lock = Path(git("rev-parse", "--git-common-dir") or ".git")

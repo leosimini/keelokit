@@ -35,7 +35,8 @@ inherits it; change it in the Keelokit template, not here.
 - A test that fails sometimes is a race: find the cause, never lengthen its timeout, retry or skip
   it (FLAKY-1). A slow CI job is split or sharded, never given a longer timeout (CI-1).
 - Several sessions at once: read `.keelokit/harness/agent-brief.md`. A session ends landed on
-  `origin/main` or it is not finished; the coordinator checks the hash, not the message (SESS-1).
+  `origin/main` (with convoy: delivered) or it is not finished; the coordinator checks the hash,
+  not the message (SESS-1).
 - A command fails twice for the same reason → stop, report what you tried, ask.
 
 ## Done means
@@ -46,7 +47,8 @@ inherits it; change it in the Keelokit template, not here.
   test citing `<ID>.S<n>` and every invariant a test citing `INV-nnn` (doctor checks both).
 - The commit that completes a story carries the trailer `Story: AUTH-003` (last line of the
   message). That trailer, reachable from `main`, is what makes the story done — mentioning the id
-  anywhere else doesn't count.
+  anywhere else doesn't count. With `[landing] policy = "convoy"`, that is when the convoy holding
+  the story reaches main.
 - If what was built differs from the story, append `## Addendum — <date>` to the story saying how.
 - Report: what changed, how it was verified, what is left, and anything the human must decide.
 - Every finding is fixed or decided with a recommendation, never left as a "known issue"; before a

@@ -11,6 +11,14 @@ The local gate decides; the CI audits (`docs/ci.md`). Rules: VER-1, CI-2, FMT-1,
 | `pnpm verify --since REF` | Compare with `REF` instead of `origin/main`: a branch agent runs only its part. Never sealed |
 | `pnpm verify --use-seal` | What the pre-push hook runs: skip the run if this exact commit already passed |
 
+## Landing policy
+
+`[landing] policy` in `.keelokit/state.toml` (absent = `direct`). `direct`: a session runs
+`pnpm verify` and pushes main; the pre-push hook is the last gate. `convoy`: a session never pushes
+main; it pushes its branch with `pnpm verify --since origin/main` green on that exact hash, and
+Harbor (`/harbor:*`) verifies the convoy branch once before it lands. The pre-push hook stays the
+template's gate for main; with `convoy` the doctor notes that the per-branch gate is Harbor's.
+
 ## What a change calls for (routing)
 
 `.keelokit/verify-routing.toml` maps files to steps: each file takes the first route that matches it,

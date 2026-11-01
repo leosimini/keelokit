@@ -10,13 +10,15 @@ is the procedure. Roles are separate agents with fresh context:
 
 | Role | Agent | Model |
 |---|---|---|
-| Orchestrator (you) | this session | the session's model |
-| Verifier — writes acceptance and invariant tests, declares done | `agents/verifier.md` | Sonnet |
+| Orchestrator (you) | this session | Sonnet; Opus while designing something hard to undo in full tier |
+| Verifier — writes acceptance and invariant tests, declares done | `agents/verifier.md` | Sonnet; **Opus in full tier** |
 | Builder — writes the code | a general agent you spawn | Sonnet |
-| Reviewer — reads the diff cold | `agents/reviewer.md` | Sonnet; the session's model for `integrity` stories |
-| Breaker — tries to break the branch | `agents/breaker.md` | Sonnet; the session's model for `integrity` stories |
+| Reviewer — reads the diff cold | `agents/reviewer.md` | Sonnet; **Opus in full tier** |
+| Breaker — tries to break the branch (full tier only) | `agents/breaker.md` | **Opus** |
 
-Change the models in the agent files if your budget or the story's risk asks for it. Which of these roles run depends on the tier (step 0).
+The agent files default to Sonnet; for the full tier pass `model: "opus"` when you delegate to the
+verifier, reviewer and breaker. Searches, logs, status and screenshots go to Haiku. The table by
+role and tier is in `.keelokit/harness/agent-brief.md` (Models). Which roles run depends on the tier (step 0).
 
 ## 0. Choose the tier — you decide, the user is never asked
 
@@ -147,6 +149,8 @@ builder.
 4. If the result differs from the story, append `## Addendum — <date>` to the story file.
 5. Push and merge per the project's flow; production deploys stay with the human. The story is
    landed only when `git log origin/main` shows its commit: report that hash, never "done" alone.
+   With `[landing] policy = "convoy"` in `.keelokit/state.toml`, push the branch only, never main:
+   the agent brief's convoy landing; report branch, hash and verify result.
    A test that fails intermittently while you land is a race: find the cause (FLAKY-1), never a
    longer timeout, a retry or a skip.
 6. `python3 .keelokit/bin/doctor.py` passes: TRACE-1 now checks this story's scenarios and INV-1

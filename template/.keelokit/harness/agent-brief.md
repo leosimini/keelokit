@@ -8,15 +8,16 @@ parallel. (SESS-1)
 ## One session, one finished job
 
 - A session takes **one** job — normally one story (`/keelokit:build-story <ID>`) — and ends it
-  **landed**: merged on `origin/main`, `pnpm verify` green, pushed. A branch with commits that are
-  not on `origin/main` is **not finished**, whatever the report says.
+  **landed** as `[landing] policy` in `.keelokit/state.toml` says (absent = `direct`). `direct`:
+  merged on `origin/main`, `pnpm verify` green, pushed; a branch with commits that are not on
+  `origin/main` is **not finished**, whatever the report says. `convoy`: delivered (below).
 - It works in its own worktree (`git worktree add ../<repo>-<id> -b <id>`), with its own ports
   (`E2E_PORT`, `E2E_MOBILE_PORT`, `E2E_API_PORT`).
 - Stories that add a **migration** run one at a time (MIG-1): the second waits for the first to
   land, rebases, and takes a timestamp after it. A migration that sorts before the last one on
   main fails the doctor.
 
-## Landing
+## Landing — `direct` (the default)
 
 1. `git fetch origin main && git rebase origin/main`. A conflict only in formatting: keep **your**
    content and run `pnpm format` (FMT-1). A real conflict: stop and say which files.
@@ -24,6 +25,28 @@ parallel. (SESS-1)
    laptop wait for each other instead of starving each other into fake timeouts.
 3. `git push origin HEAD:main` (or the repo's way). If main moved, go back to 1.
 4. `git log origin/main --oneline -1` shows your commit. That hash is the report.
+
+## Landing — `convoy`
+
+Harbor (`/harbor:*`) merges delivered branches into `convoy/<n>`, verifies them once and pushes
+main. The session **never pushes to main**:
+
+1. Rebase on `origin/main` as in step 1 above.
+2. `pnpm verify --since origin/main` green on the final commit. A commit after it means verify again.
+3. `git push origin HEAD:<branch>`; `git ls-remote origin <branch>` shows the verified hash.
+4. The report is branch + hash + verify result. Not pushed, or green on another hash: not delivered.
+
+## Models
+
+By role and tier, whatever the landing policy. The conductor of a session runs on Sonnet, except
+for full design (Opus).
+
+| Work | light | full |
+|---|---|---|
+| Searches, logs, status, screenshots | Haiku | Haiku |
+| Implement, integrate, resolve conflicts, docs | Sonnet | Sonnet |
+| Tests (verifier, breaker) and review | Sonnet | Opus |
+| Design that is hard to undo (schema, public contract, data model) | Opus | Opus |
 
 ## Machine limits
 
@@ -45,8 +68,9 @@ the log for a phrase. Run `pnpm verify --preflight` first: a red there costs min
 
 ## The report: 8 lines at most
 
-The story id, the commit hash on `origin/main`, tier, what `verify` ran, anything the person must
-decide. **Paths, not contents:** point at the file or commit; never paste a diff or a log.
+The story id, the commit hash on `origin/main` (convoy: branch and hash), tier, what `verify` ran,
+anything the person must decide. **Paths, not contents:** point at the file or commit; never paste
+a diff or a log.
 
 ## The coordinator trusts nothing but origin/main
 
@@ -55,5 +79,6 @@ decide. **Paths, not contents:** point at the file or commit; never paste a diff
   `python3 .keelokit/bin/status.py` and checks the hashes on `origin/main`.
 - "Done" without a pushed commit on main is **not done**: the coordinator sends the session back
   to land it, or lands it itself.
+- With `convoy`, Harbor coordinates (`/harbor:*`); `status.py` lists the delivered branches.
 - A session that failed or got stuck reports it (what it tried, the log path) and stops; it does
   not retry the same thing a third time (execution protocol).

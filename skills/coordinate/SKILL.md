@@ -7,6 +7,10 @@ description: Run several Keelokit sessions at once and keep them honest — one 
 
 The brief every session follows is `.keelokit/harness/agent-brief.md` (SESS-1). Read it once.
 
+First read `[landing] policy` in `.keelokit/state.toml` (absent = `direct`). With `convoy`, say in
+one line that coordination is `/harbor:*`'s, and only run and report `python3 .keelokit/bin/status.py`;
+the rest of this skill is for `direct`.
+
 ## Start sessions
 
 - One session per story, from the same wave (the doctor guarantees their `touches` don't overlap).

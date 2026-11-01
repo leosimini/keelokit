@@ -31,6 +31,24 @@ skipped a scanner it should have run. Everything here is additive except the mis
   night (new `clock` job). Verified with Vitest on Node 22.
 - `docs/verify.md` in the generated project explains all of it. New rule: VER-1.
 
+### A landing policy, so Keelokit can run under Harbor
+Harbor is a companion plugin that lands *convoys*: branches from many sessions, accounts and machines, merged into
+`convoy/<n>`, verified once and pushed to main in one push. Keelokit keeps landing each session directly unless a project
+says otherwise; with no `[landing]` table nothing changes (`tests/test_landing.py` holds that).
+
+- **`[landing] policy = "direct" | "convoy"`** in `.keelokit/state.toml`; absent means `direct`. Any other value is a
+  doctor error.
+- **The agent brief lands by policy.** `direct` is word for word what it was. `convoy`: the session pushes its own branch
+  with `pnpm verify --since origin/main` green on the final hash, reports branch, hash and verify result, and never pushes
+  main. A story is done when the convoy holding it reaches main with its `Story:` trailer.
+- **`/keelokit:coordinate`** hands coordination to `/harbor:*` under `convoy` and only runs `status.py`, which now says
+  **delivered, waiting for a convoy** for branches whose head is on origin, and keeps *not finished* for the rest.
+- **The doctor notes, never fails,** that under `convoy` the pre-push hook only gates main: Harbor adds the per-branch gate.
+- **Models by role and tier**, in the brief whatever the policy: Haiku for searches, logs, status and screenshots; Sonnet
+  (the default, and the session's conductor) to implement, test and review light, integrate, resolve conflicts and write
+  docs; Opus to review and test in the full tier and for design that is hard to undo. `build-story` says where it moves
+  the verifier, reviewer and breaker to Opus; the agent files stay on Sonnet.
+
 ### Dependencies that turned the audit red with no code change
 Two new high advisories with a fix hit every generated project: `happy-dom` 20.x (web) and `zod` under `@expo/cli`
 (mobile). New projects start with `happy-dom` 21 and a `pnpm.overrides` entry for `@expo/cli>zod`.
@@ -43,6 +61,8 @@ pre-push hook. What changes behaviour: **a missing `gitleaks`/`semgrep` now fail
 refuse a busy machine. `verify-map.toml` is now the template's file, so the update adds its new row (`clock`) to yours.
 Adopted repos (`mode=harness`) get the scripts and the rule but not the routing and map files. The nightly `clock` job
 needs the merged workflow pushed.
+The landing policy needs nothing: the update brings the brief, the protocol, `status.py` and the doctor, and a project
+opts into `convoy` by adding `[landing]` to its `state.toml` when it joins Harbor.
 
 ## 0.10.0 — 2026-10-11 — lessons from weeks of parallel use
 

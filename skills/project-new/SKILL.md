@@ -25,8 +25,9 @@ Rules for the whole run:
   the approval covers (the lists below). Then ask.
 - After each approval, record it in `.keelokit/state.toml` under `[gates]` as
   `<gate> = "<YYYY-MM-DD>"` (`"<YYYY-MM-DD> auto"` when automatic mode approved it). That file
-  holds the approvals, the run decisions (`[run]`) and the dashboard's settings (`[dashboard]`:
-  `lang`, `url`), nothing else.
+  holds the approvals, the run decisions (`[run]`), the dashboard's settings (`[dashboard]`:
+  `lang`, `url`) and, only when the project uses Harbor, `[landing] policy = "convoy"` (absent =
+  `direct`, see `.keelokit/harness/agent-brief.md`), nothing else.
 - Between gates report progress in one line and continue; stop only at the approvals above —
   and in automatic mode, only where a person is required (below).
 - Resume: if `.keelokit/state.toml` exists, continue from the first gate without a date, and
