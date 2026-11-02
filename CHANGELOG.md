@@ -47,6 +47,8 @@ to do by hand; what changes behaviour:
 2. **The integration step passes Vitest options** (`--reporter=default --reporter=json --outputFile.json=…`) to
    `apps/api`'s `test:integration` script. If you changed that script away from `vitest run`, keep it accepting them.
 3. **Pushing a proven commit that isn't checked out to a branch now works**; to `main` it is still refused.
+   The pre-push verify fetches its base from the URL the push goes to (a remote's `pushurl` included), and a push
+   whose destination can't be fetched is refused.
 4. **Optional:** add your users' zones to `.keelokit/verify-clock.toml`, install libfaketime where `pnpm verify` runs,
    and set `[verify] wip_branches = "wip/"` if sessions hand work over.
 

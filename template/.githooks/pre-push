@@ -76,4 +76,5 @@ fi
 # Only deletions, or only commits already proven: nothing to verify. No lines at all (the hook run by
 # hand): verify HEAD, as before.
 [ "$lines" -eq 0 ] || [ "$heads" -gt 0 ] || exit 0
-exec pnpm verify --use-seal
+# The verify compares with main as it is where this push goes ($2), not wherever origin's fetch URL points.
+KEELOKIT_PUSH_URL=$2 exec pnpm verify --use-seal

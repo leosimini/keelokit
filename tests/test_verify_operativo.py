@@ -1318,6 +1318,23 @@ exit 0
         self.assertNotEqual(r.returncode, 0, "proven against a main that has moved since")
         self.assertIsNone(self.remote("topic"))
 
+    def test_HARN_016_S4_the_verify_compares_with_main_where_the_push_goes(self):
+        """A fetch url pointing at a decoy whose main is HEAD would make the plan empty; the push url decides."""
+        decoy = self.tmp / "decoy.git"
+        sh(self.tmp, "git", "clone", "-q", "--bare", str(self.repo), str(decoy))  # its main is HEAD
+        sh(self.repo, "git", "config", "remote.origin.pushurl", str(self.origin))
+        sh(self.repo, "git", "config", "remote.origin.url", str(decoy))
+        self.commit_change("apps/web/src/new.ts", "export const n = 1\n")
+        sh(self.tmp, "git", "--git-dir", str(decoy), "fetch", "-q", str(self.repo), "+HEAD:refs/heads/main")
+        self.calls.write_text("")
+        r = self.push("HEAD:main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any("run test" in c for c in self.called()), "the real main lacks the change: tests run")
+        sh(self.repo, "git", "config", "remote.origin.pushurl", str(self.tmp / "nowhere.git"))
+        self.commit_change("apps/web/src/new.ts", "export const n = 2\n")
+        r = self.push("HEAD:main")
+        self.assertNotEqual(r.returncode, 0, "no base where the push goes: nothing pushed")
+
     def test_HARN_013_S2_a_push_of_head_runs_the_verify_as_before(self):
         r = self.push("HEAD:main")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

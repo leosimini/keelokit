@@ -113,6 +113,9 @@ $filters
 EOF_FILTERS
 
 head_sha=$(git rev-parse HEAD 2>/dev/null || echo none)
+# origin/main, fetched from where the push goes: the pre-push hook passes the URL it pushes to
+# (KEELOKIT_PUSH_URL, pushurl included), so a fetch URL pointing elsewhere can't choose the base.
+fetch_main() { git fetch --quiet "${KEELOKIT_PUSH_URL:-origin}" +refs/heads/main:refs/remotes/origin/main; }
 base_sha() { git rev-parse --verify --quiet "$base" 2>/dev/null || echo none; }
 tree_clean() { [ -z "$(git status --porcelain 2>/dev/null)" ]; }
 
@@ -120,7 +123,7 @@ tree_clean() { [ -z "$(git status --porcelain 2>/dev/null)" ]; }
 # (a new commit, a rebase that moved the base, an edit) and the run happens again.
 if $use_seal && [ "${KEELOKIT_NO_SEAL:-}" != 1 ] && ! $since && ! $partial &&
   { [ -f "$seal" ] || grep -qs '^[[:space:]]*shared_seals[[:space:]]*=' .keelokit/state.toml; }; then
-  git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
+  fetch_main 2>/dev/null || true
   if [ -f "$seal" ]; then
     seal_head=$(sed -n 's/^head=//p' "$seal")
     seal_base=$(sed -n 's/^base=//p' "$seal")
@@ -282,9 +285,12 @@ if $requested_all && ! $preflight && [ "${VERIFY_FORCE:-}" != 1 ]; then
   fi
 fi
 
-if git remote get-url origin >/dev/null 2>&1; then
+if git remote get-url origin >/dev/null 2>&1 || [ -n "${KEELOKIT_PUSH_URL:-}" ]; then
   step git 'Up to date with origin/main (GIT-1)'
-  git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main || true
+  if ! fetch_main && [ -n "${KEELOKIT_PUSH_URL:-}" ]; then
+    echo "can't fetch main from where this push goes ($KEELOKIT_PUSH_URL), so there is no base to verify against: nothing pushed."
+    exit 1
+  fi
   if git rev-parse --verify --quiet origin/main >/dev/null &&
     ! git merge-base --is-ancestor origin/main HEAD; then
     echo 'origin/main has commits this branch lacks: git fetch && git rebase origin/main'
