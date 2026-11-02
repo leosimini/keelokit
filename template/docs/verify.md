@@ -110,6 +110,14 @@ same, and the seal's level covers the request. A new commit, a rebase that moved
 edit means the run happens again. This replaces the habit of `git push --no-verify` after a green
 run: the guard still blocks `--no-verify` in agent sessions. `KEELOKIT_NO_SEAL=1` turns it off.
 
+**The pre-push hook pushes only HEAD.** Verify checks the checked-out commit and its working tree, so
+the hook reads the refs git is about to push and refuses any commit that isn't HEAD:
+`git push origin <sha>:main`, or pushing a branch you are not on, stops with "check it out and push
+from there". Check it out and push again: its verify runs, or its seal skips it if it already passed.
+A tag counts as the commit it names (a tag on HEAD pushes HEAD), and a push that only deletes refs
+verifies nothing. The usual push (`git push`, `git push origin HEAD:…`) runs `verify --use-seal`
+exactly as before.
+
 ## When it fails
 
 - The exit code is the result. A verify killed by a signal exits 143/130/129 and says at which step.

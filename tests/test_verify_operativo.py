@@ -637,5 +637,82 @@ class SharedSealTest(VerifyFixture):
         self.assertTrue(any("run test" in c for c in self.called()))
 
 
+class PrePushTest(VerifyFixture):
+    """HARN-009: the template's pre-push hook verifies what it pushes. Real pushes to the bare origin through
+    the hook; `pnpm verify` runs the real verify.sh, and a step goes red when the tree holds a file RED."""
+
+    PNPM_VERIFY = """#!/bin/sh
+printf '%s\\n' "pnpm $*" >> "$CALLS"
+case "$1" in verify) shift; exec bash scripts/verify.sh "$@" ;; esac
+case "$*" in *"ls --depth"*) exit 0 ;; esac
+[ ! -f RED ] || { echo "RED is red"; exit 1; }
+exit 0
+"""
+
+    def setUp(self):
+        super().setUp()
+        (self.shims / "pnpm").write_text(self.PNPM_VERIFY)
+        hooks = self.tmp / "hooks"
+        hooks.mkdir()
+        shutil.copy(T / ".githooks/pre-push", hooks / "pre-push")
+        sh(self.repo, "git", "config", "core.hooksPath", str(hooks))
+        self.commit_change()
+        self.assertEqual(self.verify().returncode, 0)  # HEAD is green and sealed
+        self.green = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "switch", "-qc", "red")
+        self.commit_change("RED", "red\n")
+        self.red = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "switch", "-q", "main")
+        self.calls.write_text("")
+
+    def push(self, *args):
+        return subprocess.run(["git", "push", "origin", *args], cwd=self.repo, capture_output=True, text=True,
+                              env=self.env(), timeout=60)
+
+    def remote(self, ref="main"):
+        r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{ref}"], cwd=self.origin,
+                           capture_output=True, text=True)
+        return r.stdout.strip() or None
+
+    def test_HARN_009_S1_a_commit_other_than_head_is_refused(self):
+        before = self.remote()
+        for args in [(f"{self.red}:main",), ("red:main",), ("red",), ("HEAD:main", "red")]:
+            with self.subTest(push=args):
+                r = self.push(*args)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn(f"would get {self.red[:7]}", r.stderr)
+                self.assertIn("check it out and push from there", r.stderr)
+                self.assertEqual(self.remote(), before)
+                self.assertIsNone(self.remote("red"))
+                self.assertEqual(self.called(), [])  # refused before any verify, even HEAD's sealed one
+
+    def test_HARN_009_S2_a_push_of_head_runs_the_verify_as_before(self):
+        r = self.push("HEAD:main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already passed", r.stdout)  # the seal skips the repeat
+        self.assertEqual(self.called(), ["pnpm verify --use-seal"])
+        self.assertEqual(self.remote(), self.green)
+        sh(self.repo, "git", "tag", "-a", "-m", "v1", "v1")  # an annotated tag on HEAD pushes HEAD
+        self.assertEqual(self.push("v1").returncode, 0)
+        # Checked out, the red commit gets its verify, which stops it.
+        sh(self.repo, "git", "switch", "-q", "red")
+        self.calls.write_text("")
+        r = self.push("HEAD:main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("RED is red", r.stdout + r.stderr)
+        self.assertNotIn("already passed", r.stdout)
+        self.assertGreater(len(self.called()), 1)  # the verify ran its steps
+        self.assertEqual(self.remote(), self.green)
+
+    def test_HARN_009_S3_a_deletion_pushes_nothing_to_verify(self):
+        self.assertEqual(self.push("HEAD:refs/heads/old").returncode, 0)
+        (self.repo / "RED").write_text("red\n")  # a verify now would be red
+        self.calls.write_text("")
+        r = self.push(":old")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.remote("old"))
+        self.assertEqual(self.called(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

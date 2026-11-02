@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **The pre-push hook verifies what it pushes.** It ran `pnpm verify --use-seal` on HEAD whatever was pushed, so with a
+  green HEAD `git push origin <red sha>:main`, or pushing another branch, reached the remote unverified. It now reads the
+  pushed refs and refuses a commit other than HEAD ("check it out and push from there"); a push of only deletions
+  verifies nothing; pushing HEAD runs exactly as before. `/keelokit:harness-upgrade` brings the new hook.
+
 ## 0.11.0 — 2026-11-01 — a verify you can trust
 
 What cost the most time in real use was the verify: an hour-long run that stopped at its first red, died unnoticed, or

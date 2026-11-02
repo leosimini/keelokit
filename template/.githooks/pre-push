@@ -1,3 +1,31 @@
 #!/usr/bin/env sh
 # Nothing reaches the remote without passing the same gates as CI. Never bypass with --no-verify.
+#
+# `pnpm verify` checks the checked-out commit and its working tree, so it vouches only for a push of
+# HEAD. Git lists what is pushed on stdin, "<local ref> <local sha> <remote ref> <remote sha>" per line:
+# a deletion (an all-zero local sha) pushes nothing; any commit other than HEAD is refused, so
+# `git push origin <sha>:main`, or pushing another branch, can't land a commit no verify saw.
+refs=
+[ -t 0 ] || refs=$(cat)
+head=$(git rev-parse --verify --quiet HEAD) || head=
+pushed=0 refused=0 lines=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "$local_sha" ] || continue
+  lines=$((lines + 1))
+  case $local_sha in *[!0]*) ;; *) continue ;; esac
+  pushed=$((pushed + 1))
+  # A tag pushes the commit it names: an annotated tag on HEAD pushes HEAD.
+  commit=$(git rev-parse --verify --quiet "$local_sha^{commit}") || commit=$local_sha
+  [ "$commit" != "$head" ] || continue
+  refused=$((refused + 1))
+  echo "pre-push: $remote_ref would get $(printf %.7s "$commit") ($local_ref), not the checked-out commit $(printf %.7s "${head:-none}")." >&2
+done <<EOF
+$refs
+EOF
+if [ "$refused" -gt 0 ]; then
+  echo "pre-push: refused. pnpm verify checks the checked-out commit, so it can't vouch for one pushed from elsewhere: check it out and push from there (git switch <branch>, or git checkout <sha>). A commit that already passed is skipped by its seal." >&2
+  exit 1
+fi
+# Only deletions: nothing to verify. No lines at all (the hook run by hand): verify HEAD, as before.
+[ "$lines" -eq 0 ] || [ "$pushed" -gt 0 ] || exit 0
 exec pnpm verify --use-seal
