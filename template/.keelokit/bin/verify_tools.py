@@ -17,6 +17,9 @@
     verify_tools.py proven REMOTE SHA           exit 0 when SHA passed a clean, full verify here against
                                                 REMOTE's main as it is now (the pre-push hook, for a
                                                 commit pushed to a branch from another checkout)
+    verify_tools.py wip-prefix REMOTE           print [verify] wip_branches (as REMOTE's main sets it), or exit 1
+    verify_tools.py wip-record SHA              remember a pushed wip tip in this clone
+    verify_tools.py wip-inside REMOTE SHA       exit 0 (and name it) when SHA holds unverified wip work
     verify_tools.py shared-seal --head SHA --base SHA --level LEVEL
                                                 0: a shared seal covers this commit; 1: refused (why);
                                                 3: [verify] shared_seals is not set
@@ -530,6 +533,56 @@ def proven(remote: str, sha: str) -> bool:
     return bool(main) and any(head == sha and base == main[0] for head, base, _ in green_runs())
 
 
+WIP_PREFIX = re.compile(r"[a-z0-9][\w.-]*/")
+
+
+def remote_state(remote: str) -> dict:
+    """.keelokit/state.toml as `remote`'s main holds it after a fetch: settings that loosen the push gate
+    are read from there, never from an uncommitted or unpushed edit."""
+    subprocess.run(["git", "fetch", "--quiet", remote, "main"], cwd=ROOT, capture_output=True)
+    shown = subprocess.run(["git", "show", f"refs/remotes/{remote}/main:.keelokit/state.toml"], cwd=ROOT,
+                           capture_output=True, text=True)
+    try:
+        return tomllib.loads(shown.stdout) if shown.returncode == 0 else {}
+    except ValueError:
+        return {}
+
+
+def wip_prefix(remote: str) -> str | None:
+    """[verify] wip_branches ("wip/"): branches under it carry unfinished work between sessions, run no
+    verify and never land. None when the key is absent or not a branch-name prefix ending in "/"."""
+    verify = remote_state(remote).get("verify")
+    prefix = verify.get("wip_branches") if isinstance(verify, dict) else None
+    return prefix if isinstance(prefix, str) and WIP_PREFIX.fullmatch(prefix) else None
+
+
+def wip_tips_file() -> Path:
+    common = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    return ROOT / common / "keelokit-wip-tips"
+
+
+def wip_inside(remote: str, sha: str) -> str | None:
+    """The first wip tip (a <remote>/<prefix>* branch, or a tip this clone pushed and remembers, so
+    deleting the branch doesn't hide it) that `sha` holds, `remote`'s main lacks, and no clean, full,
+    green verify here proved. None when there's none, or wip branches are off."""
+    prefix = wip_prefix(remote)
+    if prefix is None:
+        return None
+    main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
+    tips = git_lines("for-each-ref", "--format=%(objectname)", f"refs/remotes/{remote}/{prefix}")
+    try:
+        tips += [l.strip() for l in wip_tips_file().read_text().splitlines() if l.strip()]
+    except OSError:
+        pass
+    proven_here = {head for head, base, _ in green_runs() if main and base == main[0]}
+    for tip in dict.fromkeys(tips):
+        if tip in proven_here or (main and is_ancestor(tip, main[0])):
+            continue
+        if is_ancestor(tip, sha):
+            return tip
+    return None
+
+
 def tree(commit: str) -> dict[str, tuple[str, str]] | None:
     """path → (mode, blob) of every entry in a commit's tree, or None when git can't read it."""
     out = subprocess.run(["git", "ls-tree", "-r", "--full-tree", commit], cwd=ROOT, capture_output=True, text=True)
@@ -591,6 +644,20 @@ def main() -> int:
         return cmd_rerun(a[1:])
     if a[0] == "covers":
         return cmd_covers(a[1:])
+    if a[0] == "wip-prefix" and len(a) == 2:
+        prefix = wip_prefix(a[1])
+        if prefix:
+            print(prefix)
+        return 0 if prefix else 1
+    if a[0] == "wip-record" and len(a) == 2:
+        with open(wip_tips_file(), "a", encoding="utf-8") as f:
+            f.write(a[1] + "\n")
+        return 0
+    if a[0] == "wip-inside" and len(a) == 3:
+        tip = wip_inside(a[1], a[2])
+        if tip:
+            print(tip)
+        return 0 if tip else 1
     if a[0] == "proven" and len(a) == 3:
         return 0 if proven(a[1], a[2]) else 1
     if a[0] == "seal-branch-only" and len(a) == 2:

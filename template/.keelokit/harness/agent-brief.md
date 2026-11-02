@@ -16,9 +16,10 @@ parallel. (SESS-1)
 - **Names.** A session that starts another titles it with `python3 .keelokit/bin/status.py title
   <ID>` (`create_session`'s `title`; `--role coordinator` for the coordinator), renames itself with
   its own title on starting when its tool can, and starts each Agent's description `<ID> · <role>`.
+- Cut off mid-work? Push it to `wip/<topic>` (when `[verify] wip_branches` is set): unverified, never
+  lands; whoever takes it over verifies it before it goes anywhere else (WIP-1).
 - Stories that add a **migration** run one at a time (MIG-1): the second waits for the first to
-  land, rebases, and takes a timestamp after it. A migration that sorts before the last one on
-  main fails the doctor.
+  land, rebases, and takes a timestamp after it; one that sorts before main's last fails the doctor.
 
 ## Landing — `direct` (the default)
 

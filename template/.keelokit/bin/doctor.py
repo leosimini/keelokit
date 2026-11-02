@@ -1121,6 +1121,14 @@ def check_shared_seals() -> None:
                       f'"origin/harbor/log:harbor/seals/{{head}}.toml" (found {repr(spec)[:60]})')
 
 
+def check_wip_branches() -> None:
+    """`[verify] wip_branches` (read by bin/verify_tools.py from origin/main): a branch-name prefix like "wip/"."""
+    prefix = state().get("verify", {}).get("wip_branches")
+    if prefix is not None and not (isinstance(prefix, str) and re.fullmatch(r"[a-z0-9][\w.-]*/", prefix)):
+        errors.append('.keelokit/state.toml: [verify] wip_branches is a branch-name prefix ending in "/", e.g. "wip/" '
+                      f'(found {repr(prefix)[:60]})')
+
+
 def check_landing() -> None:
     """Convoy: the pre-push hook verifies every push, a session's branch included; the template's hook
     skips only a push of nothing but the [verify] shared_seals branch (Harbor's logbook, no code). A hook
@@ -1242,6 +1250,7 @@ def main() -> int:
     debt_open, debt_waiting = check_debt()
     check_landing()
     check_shared_seals()
+    check_wip_branches()
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
     layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", read(answers) or "") else "project"

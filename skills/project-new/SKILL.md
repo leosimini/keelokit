@@ -27,7 +27,7 @@ Rules for the whole run:
   `<gate> = "<YYYY-MM-DD>"` (`"<YYYY-MM-DD> auto"` when automatic mode approved it). That file
   holds the approvals, the run decisions (`[run]`), the dashboard's settings (`[dashboard]`:
   `lang`, `url`) and, only when the project uses Harbor, `[landing] policy = "convoy"` (absent =
-  `direct`, see `.keelokit/harness/agent-brief.md`) and `[verify] shared_seals` (`docs/verify.md`),
+  `direct`, see `.keelokit/harness/agent-brief.md`) and `[verify] shared_seals` / `wip_branches` (`docs/verify.md`),
   nothing else.
 - Between gates report progress in one line and continue; stop only at the approvals above —
   and in automatic mode, only where a person is required (below).

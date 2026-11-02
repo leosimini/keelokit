@@ -176,6 +176,18 @@ class DoctorSharedSealsTest(DoctorFixture):
                 self.assertRegex(self.doctor(), r"(?m)^  ERROR \.keelokit/state\.toml: \[verify\] shared_seals is ")
 
 
+class DoctorWipBranchesTest(DoctorFixture):
+    """HARN-017: the doctor checks the shape of [verify] wip_branches, which verify_tools.py reads."""
+
+    def test_HARN_017_S5_the_doctor_checks_the_wip_branches_key(self):
+        self.write(".keelokit/state.toml", '[verify]\nwip_branches = "wip/"\n')
+        self.assertNotIn("wip_branches", self.doctor())
+        for bad in ('"wip"', '"/"', '"refs/heads/wip/"', '"Wip/"', "true"):
+            with self.subTest(bad=bad):
+                self.write(".keelokit/state.toml", f"[verify]\nwip_branches = {bad}\n")
+                self.assertRegex(self.doctor(), r"(?m)^  ERROR \.keelokit/state\.toml: \[verify\] wip_branches is ")
+
+
 class TextsTest(unittest.TestCase):
     """The pages agents read: the direct path stays word for word, the convoy path is there."""
 

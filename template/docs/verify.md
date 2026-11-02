@@ -97,6 +97,16 @@ through the gate as usual: verified if it pushes the checked-out commit, refused
 pre-push hook pushes only HEAD"). The branch can't be `main`, `master` or `release`, and the path
 needs a folder.
 
+## Unfinished work: `wip/` branches
+
+A session cut off mid-work can't push a red branch, and `--no-verify` is not an option. With
+`[verify] wip_branches = "wip/"` in `.keelokit/state.toml` (read from `origin/main`, like the shared
+seals), a push to `wip/<topic>` carries the work to another session: it runs no verify and says it
+can't land. It never does: any other push (main, a branch) is refused while it holds a `wip/` tip that
+`origin/main` lacks and no clean, full verify here proved. Tips this clone pushed are remembered, so
+deleting the branch doesn't hide them. Whoever finishes the work verifies it, or redoes it on a branch
+from `origin/main` (WIP-1).
+
 ## Landing policy
 
 `[landing] policy` in `.keelokit/state.toml` (absent = `direct`). `direct`: a session runs

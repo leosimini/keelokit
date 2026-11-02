@@ -717,20 +717,14 @@ class StableTestsTest(VerifyFixture):
         self.assertIn("tests that stay green", (T / ".keelokit/harness/execution-protocol.md").read_text())
 
 
-class PrePushTest(VerifyFixture):
-    """HARN-010: the pre-push hook verifies every push but one that updates nothing but the [verify]
-    shared_seals branch (as origin/main configures it) with commits holding only files under the seals'
-    folder, each seal naming a commit that passed a full verify here: Harbor's logbook, no code. Real
-    pushes to the fixture's origin, with the template's hook on."""
-
-    SPEC = "origin/harbor/log:harbor/seals/{head}.toml"
+class PrePushFixture(VerifyFixture):
+    """The template's pre-push hook on, real pushes to the fixture's origin, a stub pnpm."""
 
     def setUp(self):
         super().setUp()
         (self.repo / ".githooks").mkdir()
         shutil.copy(T / ".githooks/pre-push", self.repo / ".githooks/pre-push")
         (self.repo / ".githooks/pre-push").chmod(0o755)
-        self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n')
         sh(self.repo, "git", "config", "core.hooksPath", ".githooks")
 
     def state(self, text, push=True):
@@ -740,6 +734,32 @@ class PrePushTest(VerifyFixture):
         sh(self.repo, "git", "commit", "-qm", "state")
         if push:
             self.push("main")
+
+    def push(self, *refs):
+        self.calls.write_text("")
+        self.last = subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.repo, capture_output=True,
+                                   text=True, env=self.env(), timeout=60)
+        return self.last
+
+    def verified(self):
+        return any(c.startswith("pnpm verify") for c in self.called())
+
+    def gated(self):
+        """The push went through the gate: verified, or refused because it isn't the checked-out commit
+        (HARN-013). Anything but the shared-seals exception ends in one of the two."""
+        return self.verified() or (self.last.returncode != 0 and "pre-push: refused" in self.last.stderr)
+
+
+class PrePushTest(PrePushFixture):
+    """HARN-010: the pre-push hook verifies every push but one that updates nothing but the [verify]
+    shared_seals branch (as origin/main configures it) with commits holding only files under the seals'
+    folder, each seal naming a commit that passed a full verify here: Harbor's logbook, no code."""
+
+    SPEC = "origin/harbor/log:harbor/seals/{head}.toml"
+
+    def setUp(self):
+        super().setUp()
+        self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n')
 
     def logbook(self, *files, contents=None):
         """A commit on the harbor/log branch holding `files` (paths), as Harbor writes its logbook."""
@@ -758,20 +778,6 @@ class PrePushTest(VerifyFixture):
         (self.repo / "harbor/seals/abc.toml").write_text(text)
         sh(self.repo, "git", "commit", "-qam", "logbook")
         sh(self.repo, "git", "checkout", "-q", "-f", "main")
-
-    def push(self, *refs):
-        self.calls.write_text("")
-        self.last = subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.repo, capture_output=True,
-                                   text=True, env=self.env(), timeout=60)
-        return self.last
-
-    def verified(self):
-        return any(c.startswith("pnpm verify") for c in self.called())
-
-    def gated(self):
-        """The push went through the gate: verified, or refused because it isn't the checked-out commit
-        (HARN-013). Anything but the shared-seals exception ends in one of the two."""
-        return self.verified() or (self.last.returncode != 0 and "pre-push: refused" in self.last.stderr)
 
     def test_HARN_010_S1_a_push_of_only_the_seal_branch_is_not_verified(self):
         self.logbook("harbor/seals/abc.toml")
@@ -893,6 +899,64 @@ class PrePushTest(VerifyFixture):
         self.commit_change(text="export const a = 4\n")
         self.push("main")
         self.assertTrue(self.gated(), "main can't be the seal branch")
+
+
+class WipBranchesTest(PrePushFixture):
+    """HARN-017: wip/<topic> branches carry unfinished work between sessions, unverified, and never land."""
+
+    def setUp(self):
+        super().setUp()
+        self.state('[verify]\nwip_branches = "wip/"\n')
+
+    def unfinished(self):
+        """Half-done work on a topic branch, then main checked out again."""
+        sh(self.repo, "git", "switch", "-qc", "topic")
+        self.commit_change("apps/web/src/half.ts", "export const half = (\n")
+        tip = sh(self.repo, "git", "rev-parse", "HEAD")
+        return tip
+
+    def test_HARN_017_S1_a_wip_push_runs_no_verify_and_says_it_cannot_land(self):
+        tip = self.unfinished()
+        r = self.push("HEAD:wip/topic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.verified())
+        self.assertIn("not verified, and it can't land", r.stdout)
+        self.assertEqual(sh(self.repo, "git", "ls-remote", "origin", "refs/heads/wip/topic").split()[0], tip)
+
+    def test_HARN_017_S2_a_push_holding_wip_work_is_refused_even_after_the_branch_is_gone(self):
+        self.unfinished()
+        self.push("HEAD:wip/topic")
+        self.commit_change("apps/web/src/half.ts", "export const half = 1\n")  # finished on top of the wip commit
+        r = self.push("HEAD:main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unverified wip work", r.stderr)
+        self.assertFalse(self.verified(), "refused before any verify")
+        self.push(":wip/topic")  # deleting the branch doesn't hide it: this clone remembers the tip
+        sh(self.repo, "git", "fetch", "-q", "--prune", "origin")
+        self.assertNotEqual(self.push("HEAD:main").returncode, 0)
+        r = self.push("HEAD:feature")  # nor a branch that would carry it on
+        self.assertIn("unverified wip work", r.stderr)
+
+    def test_HARN_017_S3_wip_work_that_passed_a_verify_here_no_longer_blocks(self):
+        self.unfinished()
+        (self.repo / "apps/web/src/half.ts").write_text("export const half = 1\n")
+        sh(self.repo, "git", "commit", "-qam", "finished")
+        self.push("HEAD:wip/topic")
+        self.assertEqual(self.verify().returncode, 0)  # the same commit, verified green and clean
+        r = self.push("HEAD:main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.verified())
+
+    def test_HARN_017_S4_without_the_key_a_wip_branch_is_an_ordinary_branch(self):
+        self.state("[gates]\n")
+        self.unfinished()
+        r = self.push("HEAD:wip/topic")
+        self.assertTrue(self.verified(), r.stdout + r.stderr)
+        # an uncommitted (or unpushed) key opens nothing: it is read from origin/main
+        (self.repo / ".keelokit/state.toml").write_text('[verify]\nwip_branches = "wip/"\n')
+        self.commit_change("apps/web/src/half.ts", "export const half = 2\n")
+        r = self.push("HEAD:wip/topic")
+        self.assertTrue(self.verified(), r.stdout + r.stderr)
 
 
 class PushWhatIsCheckedOutTest(VerifyFixture):

@@ -10,6 +10,9 @@
 #    `git push origin <sha>:main` can't land a commit no verify saw, except on a branch that isn't
 #    main, master or release, when that exact commit already passed a clean, full verify here
 #    against origin/main as it is now (verify_tools.py proven).
+# 3. With [verify] wip_branches = "wip/" (as origin/main's state.toml sets it), a push to wip/<topic>
+#    carries unfinished work between sessions: it runs no verify and says it can't land. Any other push
+#    is refused while it holds a wip tip that origin/main lacks and no green verify here proved.
 command -v python3 >/dev/null 2>&1 || { echo 'Keelokit: python3 not found, so the pre-push hook cannot check this push. Install Python 3.11+.' >&2; exit 1; }
 refs=
 [ -t 0 ] || refs=$(cat)
@@ -18,6 +21,7 @@ if [ -n "$refs" ] && printf '%s\n' "$refs" | python3 .keelokit/bin/verify_tools.
   exit 0
 fi
 head=$(git rev-parse --verify --quiet HEAD) || head=
+wip=$(python3 .keelokit/bin/verify_tools.py wip-prefix "$1" </dev/null) || wip=
 pushed=0 refused=0 lines=0 heads=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$local_sha" ] || continue
@@ -26,6 +30,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   pushed=$((pushed + 1))
   # A tag pushes the commit it names: an annotated tag on HEAD pushes HEAD.
   commit=$(git rev-parse --verify --quiet "$local_sha^{commit}") || commit=$local_sha
+  if [ -n "$wip" ]; then
+    case $remote_ref in
+      "refs/heads/$wip"*)
+        echo "pre-push: $remote_ref is ${wip%/} work: not verified, and it can't land until a verified branch redoes it."
+        python3 .keelokit/bin/verify_tools.py wip-record "$commit" </dev/null || true
+        continue
+        ;;
+    esac
+    if tip=$(python3 .keelokit/bin/verify_tools.py wip-inside "$1" "$commit" </dev/null); then
+      refused=$((refused + 1))
+      echo "pre-push: $remote_ref would get unverified ${wip%/} work ($(printf %.7s "$tip"), not on origin/main): redo it on a branch from origin/main, or verify it first." >&2
+      continue
+    fi
+  fi
   if [ "$commit" = "$head" ]; then heads=$((heads + 1)); continue; fi
   case $remote_ref in
     refs/heads/main | refs/heads/master | refs/heads/release) ;;

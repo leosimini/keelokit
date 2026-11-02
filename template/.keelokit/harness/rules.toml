@@ -360,3 +360,10 @@ level = "MUST"
 rule = "Make the local verify trustworthy: a tool the CI uses that is missing fails the run, a run killed by a signal exits non-zero and leaves its state, the result is read from the exit code and never from log text, and only the exact commit that passed (the seal) skips a rerun."
 why = "A missing gitleaks only printed a note and two fake tokens reached main; a verify cut for lack of memory went unnoticed for an hour and a half; a rule written in prose let anyone push with --no-verify."
 enforced_by = ["script:scripts/verify.sh", "script:.keelokit/bin/verify_tools.py", "git-hook:pre-push"]
+
+[[rule]]
+id = "WIP-1"
+level = "MUST"
+rule = "Unfinished work moves between sessions only on wip/ branches ([verify] wip_branches): they run no verify and never land; a push holding a wip tip that origin/main lacks and no green verify proved is refused."
+why = "A session cut off mid-work had no safe way to hand its work over: a red branch can't be pushed, and --no-verify is forbidden."
+enforced_by = ["git-hook:pre-push", "script:.keelokit/bin/verify_tools.py"]
