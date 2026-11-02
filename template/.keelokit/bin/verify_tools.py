@@ -14,6 +14,9 @@
                                                 empty steps (and why) when it can't tell = normal verify
     verify_tools.py seal-branch-only REMOTE      (the pre-push hook, its refs on stdin) exit 0 when every
                                                 ref pushed to REMOTE is the [verify] shared_seals branch
+    verify_tools.py proven REMOTE SHA           exit 0 when SHA passed a clean, full verify here against
+                                                REMOTE's main as it is now (the pre-push hook, for a
+                                                commit pushed to a branch from another checkout)
     verify_tools.py shared-seal --head SHA --base SHA --level LEVEL
                                                 0: a shared seal covers this commit; 1: refused (why);
                                                 3: [verify] shared_seals is not set
@@ -519,6 +522,14 @@ def seal_branch_only(remote: str, refs: str) -> bool:
     return True
 
 
+def proven(remote: str, sha: str) -> bool:
+    """`sha` has a clean, full, green verify in this clone's history (green_runs) against `remote`'s main
+    as it is after a fetch: the same proof a seal needs, for a commit that isn't checked out."""
+    subprocess.run(["git", "fetch", "--quiet", remote, "main"], cwd=ROOT, capture_output=True)
+    main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
+    return bool(main) and any(head == sha and base == main[0] for head, base, _ in green_runs())
+
+
 def tree(commit: str) -> dict[str, tuple[str, str]] | None:
     """path → (mode, blob) of every entry in a commit's tree, or None when git can't read it."""
     out = subprocess.run(["git", "ls-tree", "-r", "--full-tree", commit], cwd=ROOT, capture_output=True, text=True)
@@ -580,6 +591,8 @@ def main() -> int:
         return cmd_rerun(a[1:])
     if a[0] == "covers":
         return cmd_covers(a[1:])
+    if a[0] == "proven" and len(a) == 3:
+        return 0 if proven(a[1], a[2]) else 1
     if a[0] == "seal-branch-only" and len(a) == 2:
         return 0 if seal_branch_only(a[1], sys.stdin.read()) else 1
     if a[0] == "shared-seal":

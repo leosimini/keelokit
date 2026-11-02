@@ -944,6 +944,57 @@ exit 0
                 self.assertIsNone(self.remote("red"))
                 self.assertEqual(self.called(), [])  # refused before any verify, even HEAD's sealed one
 
+    def proven_branch(self):
+        """A branch whose tip passed a clean, full verify here, then main checked out again."""
+        sh(self.repo, "git", "switch", "-qc", "topic")
+        self.commit_change("apps/web/src/topic.ts", "export const topic = 1\n")
+        self.assertEqual(self.verify().returncode, 0)
+        tip = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "switch", "-q", "main")
+        self.calls.write_text("")
+        return tip
+
+    def test_HARN_016_S1_a_proven_commit_reaches_a_branch_from_another_checkout(self):
+        tip = self.proven_branch()
+        r = self.push("topic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already passed a clean, full verify here", r.stdout)
+        self.assertEqual(self.called(), [], "proven: nothing runs, HEAD's verify included")
+        self.assertEqual(self.remote("topic"), tip)
+
+    def test_HARN_016_S2_never_to_main_and_never_without_proof(self):
+        before = self.remote()
+        tip = self.proven_branch()
+        r = self.push("topic:main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("check it out and push from there", r.stderr)
+        self.assertEqual(self.remote(), before)
+        r = self.push("red")  # no green run of that commit
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIsNone(self.remote("red"))
+        # a run that proves less doesn't count: --since, or a dirty tree
+        sh(self.repo, "git", "switch", "-q", "red")
+        sh(self.repo, "git", "rm", "-q", "RED")
+        sh(self.repo, "git", "commit", "-qm", "fixed")
+        self.assertEqual(self.verify("--since", "origin/main").returncode, 0)
+        fixed = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "switch", "-q", "main")
+        self.assertNotEqual(self.push(f"{fixed}:refs/heads/fixed").returncode, 0)
+        self.assertIsNone(self.remote("fixed"))
+        self.assertTrue(tip)
+
+    def test_HARN_016_S3_a_moved_main_voids_the_proof(self):
+        self.proven_branch()
+        other = self.tmp / "other"
+        sh(self.tmp, "git", "clone", "-q", str(self.origin), str(other))
+        (other / "docs/more.md").write_text("m\n")
+        sh(other, "git", "add", "-A")
+        sh(other, "git", "-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qm", "main moved")
+        sh(other, "git", "push", "-q", "origin", "HEAD:main")  # a fresh clone: no hooks
+        r = self.push("topic")
+        self.assertNotEqual(r.returncode, 0, "proven against a main that has moved since")
+        self.assertIsNone(self.remote("topic"))
+
     def test_HARN_013_S2_a_push_of_head_runs_the_verify_as_before(self):
         r = self.push("HEAD:main")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

@@ -130,7 +130,10 @@ the hook reads the refs git is about to push and refuses any commit that isn't H
 from there". Check it out and push again: its verify runs, or its seal skips it if it already passed.
 A tag counts as the commit it names (a tag on HEAD pushes HEAD), and a push that only deletes refs
 verifies nothing. The usual push (`git push`, `git push origin HEAD:…`) runs `verify --use-seal`
-exactly as before.
+exactly as before. One exception, never for `main`, `master` or `release`: a commit pushed to another
+branch from elsewhere goes through when that exact commit already passed a clean, full verify in this
+clone (no `--since`, `--steps`, `--packages` or uncommitted change) against `origin/main` as it is
+now; a moved `origin/main` voids it.
 
 ## When it fails
 

@@ -6,8 +6,10 @@
 #    logbook), whose commits hold only seal files backed by a green run here, has nothing to verify
 #    (verify_tools.py seal-branch-only checks all of that).
 # 2. `pnpm verify` checks the checked-out commit and its working tree, so it vouches only for a push
-#    of HEAD: a deletion (an all-zero local sha) pushes nothing; any other commit is refused, so
-#    `git push origin <sha>:main`, or pushing another branch, can't land a commit no verify saw.
+#    of HEAD: a deletion (an all-zero local sha) pushes nothing. Any other commit is refused, so
+#    `git push origin <sha>:main` can't land a commit no verify saw, except on a branch that isn't
+#    main, master or release, when that exact commit already passed a clean, full verify here
+#    against origin/main as it is now (verify_tools.py proven).
 command -v python3 >/dev/null 2>&1 || { echo 'Keelokit: python3 not found, so the pre-push hook cannot check this push. Install Python 3.11+.' >&2; exit 1; }
 refs=
 [ -t 0 ] || refs=$(cat)
@@ -16,7 +18,7 @@ if [ -n "$refs" ] && printf '%s\n' "$refs" | python3 .keelokit/bin/verify_tools.
   exit 0
 fi
 head=$(git rev-parse --verify --quiet HEAD) || head=
-pushed=0 refused=0 lines=0
+pushed=0 refused=0 lines=0 heads=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$local_sha" ] || continue
   lines=$((lines + 1))
@@ -24,7 +26,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   pushed=$((pushed + 1))
   # A tag pushes the commit it names: an annotated tag on HEAD pushes HEAD.
   commit=$(git rev-parse --verify --quiet "$local_sha^{commit}") || commit=$local_sha
-  [ "$commit" != "$head" ] || continue
+  if [ "$commit" = "$head" ]; then heads=$((heads + 1)); continue; fi
+  case $remote_ref in
+    refs/heads/main | refs/heads/master | refs/heads/release) ;;
+    *)
+      if python3 .keelokit/bin/verify_tools.py proven "$1" "$commit" </dev/null; then
+        echo "pre-push: $remote_ref gets $(printf %.7s "$commit"), which already passed a clean, full verify here against origin/main: not run again."
+        continue
+      fi
+      ;;
+  esac
   refused=$((refused + 1))
   echo "pre-push: $remote_ref would get $(printf %.7s "$commit") ($local_ref), not the checked-out commit $(printf %.7s "${head:-none}")." >&2
 done <<EOF
@@ -34,6 +45,7 @@ if [ "$refused" -gt 0 ]; then
   echo "pre-push: refused. pnpm verify checks the checked-out commit, so it can't vouch for one pushed from elsewhere: check it out and push from there (git switch <branch>, or git checkout <sha>). A commit that already passed is skipped by its seal." >&2
   exit 1
 fi
-# Only deletions: nothing to verify. No lines at all (the hook run by hand): verify HEAD, as before.
-[ "$lines" -eq 0 ] || [ "$pushed" -gt 0 ] || exit 0
+# Only deletions, or only commits already proven: nothing to verify. No lines at all (the hook run by
+# hand): verify HEAD, as before.
+[ "$lines" -eq 0 ] || [ "$heads" -gt 0 ] || exit 0
 exec pnpm verify --use-seal
