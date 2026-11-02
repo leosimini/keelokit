@@ -750,8 +750,9 @@ class PrePushTest(VerifyFixture):
 
     def test_HARN_010_S5_a_seal_for_a_commit_that_never_passed_here_is_verified(self):
         head = sh(self.repo, "git", "rev-parse", "HEAD")
+        base = sh(self.repo, "git", "rev-parse", "origin/main")
         seal = f"harbor/seals/{head}.toml"
-        text = {seal: f'head = "{head}"\nbase = "x"\nexit = 0\nlevel = "changed"\n'}
+        text = {seal: f'head = "{head}"\nbase = "{base}"\nexit = 0\nlevel = "changed"\n'}
         self.logbook(seal, contents=text)
         self.push("harbor/log")
         self.assertTrue(self.verified(), "no green run of that commit in this clone: the seal is not taken on trust")
@@ -770,6 +771,45 @@ class PrePushTest(VerifyFixture):
         sh(self.repo, "git", "checkout", "-q", "-f", "main")
         self.push("harbor/log")
         self.assertTrue(self.verified())
+
+    def seal_on_logbook(self, head, base, how):
+        """Append, on top of the pushed logbook, a seal for `head`, the way `how` says."""
+        seal = f"harbor/seals/{head}.toml"
+        sh(self.repo, "git", "checkout", "-q", "harbor/log")
+        if how == "merge":  # a merge whose own tree brings the seal; its parents add nothing
+            sh(self.repo, "git", "checkout", "-q", "-b", "side")
+            sh(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "side")
+            sh(self.repo, "git", "checkout", "-q", "harbor/log")
+            sh(self.repo, "git", "merge", "-q", "--no-commit", "--no-ff", "side")
+        (self.repo / seal).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo / seal).unlink(missing_ok=True)
+        if how == "symlink":
+            (self.repo / seal).symlink_to("../../apps/web/src/a.ts")
+        else:
+            (self.repo / seal).write_text(f'head = "{head}"\nbase = "{base}"\nexit = 0\nlevel = "changed"\n')
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", f"seal ({how})")
+        sh(self.repo, "git", "checkout", "-q", "-f", "main")
+
+    def test_HARN_010_S5_merges_symlinks_and_runs_that_prove_less_back_no_seal(self):
+        self.logbook("harbor/notes.md")
+        self.push("harbor/log")
+        base = sh(self.repo, "git", "rev-parse", "origin/main")
+        self.commit_change()  # a red commit nobody verified
+        red = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.seal_on_logbook(red, base, "merge")
+        self.push("harbor/log")
+        self.assertTrue(self.verified(), "a merge's seal is checked like any other")
+        # passes that prove less than a verify don't back a seal: --since, or an uncommitted change
+        self.assertEqual(self.verify("--since", "HEAD").returncode, 0)
+        (self.repo / "docs/notes.md").write_text("# edited\n")
+        self.assertEqual(self.verify().returncode, 0)
+        sh(self.repo, "git", "checkout", "--", "docs/notes.md")
+        self.push("harbor/log")
+        self.assertTrue(self.verified())
+        self.seal_on_logbook(red, base, "symlink")
+        self.push("harbor/log")
+        self.assertTrue(self.verified(), "a symlink is not a seal")
 
     def test_HARN_010_S4_without_the_key_or_with_main_as_the_seal_branch_everything_is_verified(self):
         self.logbook("harbor/seals/abc.toml")

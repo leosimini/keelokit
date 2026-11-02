@@ -230,7 +230,8 @@ def cmd_record(args: list[str]) -> int:
     VERIFY_PLANNED / VERIFY_PASSED / VERIFY_FAILED_STEPS (step names), VERIFY_SCOPE (the --packages /
     --filter selectors, if any), VERIFY_PACKAGES (pnpm's parseable list of the packages in scope),
     VERIFY_STEP_PACKAGES ("step=dir " pairs for steps whose packages aren't the run's), VERIFY_PARTIAL and
-    VERIFY_CLEAN (the tree had no uncommitted or untracked changes when the run started), and for a narrowed
+    VERIFY_CLEAN (the tree had no uncommitted or untracked changes when the run started), VERIFY_SINCE (it
+    compared with a ref given by --since, not origin/main), and for a narrowed
     rerun VERIFY_INHERITED (passes kept from the red run), VERIFY_PROVEN_PACKAGES (where those were proven),
     VERIFY_RERUN_OF (the first red run of the chain) and VERIFY_COMPOSITE_OF (the same head, when the runs
     together sealed the commit)."""
@@ -251,7 +252,7 @@ def cmd_record(args: list[str]) -> int:
         "rc": int(rc or 0), "partial": env("VERIFY_PARTIAL") == "true", "scope": " ".join(env("VERIFY_SCOPE", "").split()),
         "steps": [[n, int(s)] for s, _, n in (l.partition("|") for l in steps.splitlines()) if s.isdigit()],
         "failed": [l for l in failed.splitlines() if l],
-        "clean": env("VERIFY_CLEAN") == "true",
+        "clean": env("VERIFY_CLEAN") == "true", "since": env("VERIFY_SINCE") == "true",
         "inherited": env("VERIFY_INHERITED", "").split(),
         "composite_of": env("VERIFY_COMPOSITE_OF") or None,
         "rerun_of": env("VERIFY_RERUN_OF") or None,
@@ -448,9 +449,12 @@ def seal_branch_only(remote: str, refs: str) -> bool:
     line) goes to `remote` and updates nothing but the [verify] shared_seals branch there: Harbor's
     logbook, which holds seals and no code, so there's nothing to verify. Checked, not assumed:
     - the key is read from `<remote>/main`'s .keelokit/state.toml, never from an uncommitted edit;
-    - every commit the push brings (not only its tip) holds only files under the seals' folder;
-    - every seal it adds names a commit with a full green verify in this clone's history, at the seal's
-      level: the exception carries seals, it can't mint one for a commit that never passed here.
+    - every commit the push brings beyond the remote's tip (git's own remote sha) holds only regular
+      files under the seals' folder, merges included;
+    - every seal file in those commits that the remote's tip doesn't already hold, byte for byte, names
+      a commit with a clean, full, green verify against origin/main in this clone, at the seal's level
+      and with the seal's base: the exception carries seals, it can't mint one for a commit that never
+      passed here.
     Anything else, an empty push included, is False: the hook runs the verify."""
     shown = subprocess.run(["git", "show", f"refs/remotes/{remote}/main:.keelokit/state.toml"], cwd=ROOT,
                            capture_output=True, text=True)
@@ -466,52 +470,73 @@ def seal_branch_only(remote: str, refs: str) -> bool:
     lines = [l.split() for l in refs.splitlines() if l.strip()]
     if not folder or not lines or not all(len(l) == 4 and l[2] == f"refs/heads/{m['branch']}" for l in lines):
         return False
-    seal_file = re.compile(re.escape(m["path"]).replace(re.escape("{head}"), "([0-9a-f]{40})") + r"\Z")
-    green = green_heads()
-    for _, sha, _, _ in lines:
+    seal_file = re.compile(re.escape(m["path"]).replace(re.escape("{head}"), "([0-9a-f]{40}|[0-9a-f]{64})") + r"\Z")
+    main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
+    green = green_runs()
+    for _, sha, _, remote_sha in lines:
         if set(sha) == {"0"}:  # a deletion pushes no commits
             continue
-        new = subprocess.run(["git", "rev-list", sha, "--not", f"--remotes={remote}"], cwd=ROOT,
+        known = set(remote_sha) != {"0"}
+        if known and subprocess.run(["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"], cwd=ROOT).returncode:
+            return False  # the remote's tip isn't here: what the push adds can't be told
+        new = subprocess.run(["git", "rev-list", sha, *(["--not", remote_sha] if known else [])], cwd=ROOT,
                              capture_output=True, text=True)
         if new.returncode:
             return False
+        have = tree(remote_sha) if known else {}
         for commit in new.stdout.split():
-            files = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit], cwd=ROOT, capture_output=True, text=True)
-            if files.returncode or any(not f.startswith(folder) for f in files.stdout.splitlines()):
+            entries = tree(commit)
+            if entries is None or have is None:
                 return False
-            added = subprocess.run(["git", "diff-tree", "--root", "--no-commit-id", "-r", "--name-only",
-                                    "--diff-filter=AM", commit], cwd=ROOT, capture_output=True, text=True)
-            if added.returncode:
-                return False
-            for f in added.stdout.splitlines():
-                if (hit := seal_file.match(f)) is None:
+            for path, (mode, blob) in entries.items():
+                if not path.startswith(folder) or mode not in ("100644", "100755"):
+                    return False  # code, a symlink or a submodule: verify
+                hit = seal_file.match(path)
+                if hit is None or have.get(path) == (mode, blob):
                     continue
                 try:
-                    level = tomllib.loads(subprocess.run(["git", "show", f"{commit}:{f}"], cwd=ROOT,
-                                                         capture_output=True, text=True).stdout).get("level")
+                    seal = tomllib.loads(subprocess.run(["git", "cat-file", "blob", blob], cwd=ROOT,
+                                                        capture_output=True, text=True).stdout)
                 except ValueError:
                     return False
-                if level not in green.get(hit[1], set()):
+                level, base = seal.get("level"), seal.get("base")
+                if not main or base != main[0] or (hit[1], base, level) not in green:
                     return False
     return True
 
 
-def green_heads() -> dict[str, set[str]]:
-    """Commit → the levels it passed a full verify at (not a partial run), from this clone's history.
+def tree(commit: str) -> dict[str, tuple[str, str]] | None:
+    """path → (mode, blob) of every entry in a commit's tree, or None when git can't read it."""
+    out = subprocess.run(["git", "ls-tree", "-r", "--full-tree", commit], cwd=ROOT, capture_output=True, text=True)
+    if out.returncode:
+        return None
+    entries = {}
+    for line in out.stdout.splitlines():
+        meta, _, path = line.partition("\t")
+        mode, _, obj = meta.split(" ", 2)
+        entries[path] = (mode, obj)
+    return entries
+
+
+def green_runs() -> set[tuple[str, str, str]]:
+    """(commit, base, level) of every clean, full, green verify against origin/main in this clone's
+    history: no --steps/--packages/--rerun-failed narrowing (partial), no --since, no uncommitted change.
     An "all" pass covers "changed" too."""
     common = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     try:
         lines = (ROOT / common / "keelokit-verify.history").read_text(encoding="utf-8").splitlines()
     except (OSError, ValueError):
-        return {}
-    green: dict[str, set[str]] = {}
+        return set()
+    green = set()
     for line in lines:
         try:
             e = json.loads(line)
         except ValueError:
             continue
-        if isinstance(e, dict) and e.get("result") == "pass" and e.get("partial") is False and isinstance(e.get("head"), str):
-            green.setdefault(e["head"], set()).update({"all", "changed"} if e.get("level") == "all" else {"changed"})
+        if (isinstance(e, dict) and e.get("result") == "pass" and e.get("partial") is False and e.get("clean") is True
+                and e.get("since") is False and isinstance(e.get("head"), str) and isinstance(e.get("base"), str)):
+            for level in ({"all", "changed"} if e.get("level") == "all" else {"changed"}):
+                green.add((e["head"], e["base"], level))
     return green
 
 

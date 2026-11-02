@@ -86,8 +86,9 @@ otherwise verify says which condition failed and runs. `KEELOKIT_NO_SEAL=1` turn
 Writing a seal is a push to that branch, and it holds no code: the pre-push hook doesn't verify a push
 whose refs all go to the `shared_seals` branch of the configured remote, as `origin/main`'s
 `state.toml` sets it, when every commit the push brings holds only files under the seals' folder
-(`harbor/` above) and every seal it adds names a commit that passed a full verify in this clone, at
-the seal's level. Any other ref in the same push, any other file, or a seal for a commit that never
+(`harbor/` above), as regular files, merges included, and every seal file the remote doesn't already
+hold names a commit that passed a clean, full verify against `origin/main` in this clone (no `--since`,
+`--steps`, `--packages` or uncommitted change), at the seal's level and with the seal's base. Any other ref in the same push, any other file, or a seal for a commit that never
 passed here, and the hook verifies as usual. The branch can't be `main`, `master` or `release`, and
 the path needs a folder. **Trusting
 that branch is trusting everyone who can push to it**: whoever can write a file there can let a commit
