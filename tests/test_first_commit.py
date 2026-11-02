@@ -4,7 +4,8 @@ project-new generates the monorepo, runs `pnpm install` (whose `prepare` turns t
 then commits, so the guard's pre-commit (QA-4) reads every file of the template as added. A line it
 blocks in the template (a `continue-on-error` set to true in ci.yml did) stops the first commit, and only a
 human may allow that. These render the template with copier, turn the hooks on as `prepare` does and
-make that commit. They need uv (CI's unit job installs it); without it they skip locally.
+make that commit. They need uv, like copier everywhere in Keelokit (CI's unit job installs it);
+without it they fail and say so: a skipped test cites no scenario (TRACE-1).
 
 Run: python3 -m unittest discover -s tests"""
 import shutil
@@ -22,9 +23,9 @@ def run(cwd: Path, *cmd: str) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
 
 
-@unittest.skipUnless(UV, "needs uv to run copier")
 class FirstCommitTest(unittest.TestCase):
     def generate(self, *data: str, existing: bool = False) -> Path:
+        self.assertTrue(UV, "these tests need uv, which runs copier: https://docs.astral.sh/uv/")
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         dest = tmp / "demo"
