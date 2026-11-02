@@ -160,6 +160,16 @@ now; a moved `origin/main` voids it.
 A missing `gitleaks` or `semgrep` fails the run (exit 4) instead of printing a note. To skip one on
 purpose: `KEELOKIT_ALLOW_MISSING="semgrep" pnpm verify`.
 
+## Awkward clocks
+
+The unit tests a change adds or edits run once more at each clock of `.keelokit/verify-clock.toml`
+(step `zones`, "Changed tests at awkward clocks"): late on the last day of a month and of a year west of
+UTC, where it is already tomorrow in UTC; a leap day; the hour a DST change skips and the one it
+repeats; just after midnight east of UTC. Each is a zone and a local time (`TZ` + faketime), and the
+product owns the file: add the zones its users live in. It needs libfaketime, like the date-bomb rerun;
+without it the step is a note. Only Vitest and Jest packages, and only the changed test files, so it
+costs seconds.
+
 ## Date bombs
 
 With libfaketime installed, `--all` reruns the unit tests with the clock a year ahead

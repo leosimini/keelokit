@@ -319,7 +319,7 @@ if $rerun; then
 fi
 want() {
   if [ -n "$only" ]; then case " $only " in *" $1 "*) return 0 ;; esac; return 1; fi
-  case $1 in secrets | doctor) return 0 ;; esac
+  case $1 in secrets | doctor) return 0 ;; zones) set -- unit ;; esac # zones goes with the unit tests
   case " $plan " in *" all "*) return 0 ;; *" $1 "*) return 0 ;; esac
   return 1
 }
@@ -458,6 +458,36 @@ if want unit; then
   step unit 'Unit tests'
   run pnpm "${scope[@]}" --if-present run test
 else skip 'Unit tests'; fi
+
+# The unit tests this change adds or edits, again at the clocks where date code breaks: month and year
+# ends late in the evening west of UTC, a leap day, the hour a DST change skips and the one it repeats
+# (.keelokit/verify-clock.toml; faketime + TZ). Optional like the date-bomb rerun: without faketime, a note.
+zones_run() {
+  local name zone at dir runner files
+  while IFS=$'\t' read -r name zone at; do
+    [ -n "$name" ] || continue
+    while IFS=$'\t' read -r dir runner files; do
+      [ -n "$dir" ] || continue
+      echo "  $name ($zone, $at): $dir"
+      # shellcheck disable=SC2086 # one test file per word
+      (cd "$dir" && TZ=$zone FAKETIME_DONT_FAKE_MONOTONIC=1 faketime "$at" pnpm exec $runner $([ "$runner" = vitest ] && echo run) $files) || return 1
+    done <<EOF_ZONES
+$zone_plan
+EOF_ZONES
+  done <<EOF_SCENARIOS
+$(python3 "$tools" clock-scenarios)
+EOF_SCENARIOS
+}
+zone_plan=
+if want zones && ! $preflight; then zone_plan=$(python3 "$tools" clock-plan --base "$base" 2>/dev/null || true); fi
+if [ -n "$zone_plan" ]; then
+  if command -v faketime >/dev/null; then
+    step zones 'Changed tests at awkward clocks'
+    run zones_run
+  else
+    echo '(faketime not installed — the changed tests at awkward clocks are skipped here; brew/apt install libfaketime runs them.)'
+  fi
+fi
 
 # E2E-2 walks web/mobile against the real API: it runs when the app or the API changed.
 stack_apps='' # a plain list: macOS's bash 3.2 rejects empty arrays under `set -u`

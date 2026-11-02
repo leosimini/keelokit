@@ -19,6 +19,7 @@ _skip_if_exists:
   - .keelokit/profile.toml
   - .keelokit/verify-routing.toml
   - .keelokit/red-causes.toml
+  - .keelokit/verify-clock.toml
   - docs/escapes.md
   - docs/prelaunch-debt-ledger.md
   - CHANGELOG.md
@@ -73,6 +74,7 @@ _exclude:
   - "{% if mode == 'harness' %}.keelokit/verify-map.toml{% endif %}"
   - "{% if mode == 'harness' %}.keelokit/verify-routing.toml{% endif %}"
   - "{% if mode == 'harness' %}.keelokit/red-causes.toml{% endif %}"
+  - "{% if mode == 'harness' %}.keelokit/verify-clock.toml{% endif %}"
 
 mode:
   type: str

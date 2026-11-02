@@ -14,6 +14,10 @@
                                                 empty steps (and why) when it can't tell = normal verify
     verify_tools.py seal-branch-only REMOTE      (the pre-push hook, its refs on stdin) exit 0 when every
                                                 ref pushed to REMOTE is the [verify] shared_seals branch
+    verify_tools.py clock-plan --base REF        "<package dir>\t<vitest|jest>\t<test files>" per package, for
+                                                the unit tests changed since REF (the zones step)
+    verify_tools.py clock-scenarios             "<name>\t<zone>\t<local time>" per scenario of
+                                                .keelokit/verify-clock.toml (built-in ones without it)
     verify_tools.py proven REMOTE SHA           exit 0 when SHA passed a clean, full verify here against
                                                 REMOTE's main as it is now (the pre-push hook, for a
                                                 commit pushed to a branch from another checkout)
@@ -57,8 +61,9 @@ TIMED = {"audit", "clock", "doctor", "sast"}
 WHOLE_REPO = {"format", "lint", "sast"}
 # Steps that run per package: a change inside any package can change what they see (a text an e2e
 # asserts, a type a build needs), whatever the routing asks for when that file changes alone.
-PER_PACKAGE = {"typecheck", "unit", "integration", "build", "e2e", "e2e-stack", "mutation"}
-NAMES = ["secrets", *STEPS[:3], "doctor", *STEPS[3:], "clock"]  # clock: the date-bomb rerun, only with --all
+PER_PACKAGE = {"typecheck", "unit", "integration", "build", "e2e", "e2e-stack", "mutation", "zones"}
+NAMES = ["secrets", *STEPS[:3], "doctor", *STEPS[3:], "clock", "zones"]  # clock: the date-bomb rerun, only with --all;
+# zones: the changed unit tests at awkward clocks (.keelokit/verify-clock.toml)
 # Causes every TypeScript project meets; the project's own go in .keelokit/red-causes.toml.
 BUILTIN_CAUSES = [
     ("heap", r"JavaScript heap out of memory|heap limit|FATAL ERROR: .*Allocation failed",
@@ -525,6 +530,58 @@ def seal_branch_only(remote: str, refs: str) -> bool:
     return True
 
 
+# Clocks where date code breaks: a day that is already tomorrow in UTC, month and year ends, a leap
+# day, the hour that doesn't exist and the one that happens twice. Local times, in each zone.
+CLOCKS = [
+    ("month-end-late", "America/Los_Angeles", "2027-01-31 23:30:00"),
+    ("year-end-late", "America/Los_Angeles", "2027-12-31 23:30:00"),
+    ("leap-day-early", "Europe/Berlin", "2028-02-29 00:30:00"),
+    ("dst-gap", "America/New_York", "2027-03-14 02:30:00"),
+    ("dst-overlap", "Europe/Berlin", "2027-10-31 02:30:00"),
+    ("midnight-east", "Australia/Sydney", "2027-07-01 00:30:00"),
+]
+UNIT_TEST = re.compile(r"\.(test|spec)\.[cm]?[jt]sx?$")
+
+
+def clock_scenarios() -> list[tuple[str, str, str]]:
+    """.keelokit/verify-clock.toml's [[scenario]] (name, zone, at = "YYYY-MM-DD HH:MM:SS" local time), or
+    the built-in CLOCKS when the file is missing, unreadable or names none."""
+    try:
+        data = tomllib.loads((ROOT / ".keelokit/verify-clock.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return CLOCKS
+    out = []
+    for s in data.get("scenario", []) if isinstance(data.get("scenario"), list) else []:
+        if (isinstance(s, dict) and all(isinstance(s.get(k), str) for k in ("name", "zone", "at"))
+                and re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", s["at"]) and re.fullmatch(r"[\w+/-]+", s["zone"])):
+            out.append((s["name"], s["zone"], s["at"]))
+    return out or CLOCKS
+
+
+def clock_plan(base: str) -> list[tuple[str, str, list[str]]]:
+    """The unit tests changed since `base` (not integration, not e2e), grouped by the package that holds
+    them and its runner (its `test` script starts with vitest or jest; any other is left out)."""
+    files = changed_files(base) or []
+    groups: dict[str, tuple[str, list[str]]] = {}
+    for f in files:
+        if not UNIT_TEST.search(f) or ".integration." in f or "/e2e/" in f or not (ROOT / f).is_file():
+            continue
+        folder = (ROOT / f).parent
+        while folder != ROOT and not (folder / "package.json").is_file():
+            folder = folder.parent
+        if folder == ROOT:
+            continue
+        try:
+            script = json.loads((folder / "package.json").read_text(encoding="utf-8")).get("scripts", {}).get("test", "")
+        except (OSError, ValueError, AttributeError):
+            continue
+        runner = next((r for r in ("vitest", "jest") if isinstance(script, str) and script.strip().startswith(r)), None)
+        if runner:
+            dir_ = folder.relative_to(ROOT).as_posix()
+            groups.setdefault(dir_, (runner, []))[1].append((ROOT / f).relative_to(folder).as_posix())
+    return [(d, r, sorted(fs)) for d, (r, fs) in sorted(groups.items())]
+
+
 def proven(remote: str, sha: str) -> bool:
     """`sha` has a clean, full, green verify in this clone's history (green_runs) against `remote`'s main
     as it is after a fetch: the same proof a seal needs, for a commit that isn't checked out."""
@@ -658,6 +715,14 @@ def main() -> int:
         if tip:
             print(tip)
         return 0 if tip else 1
+    if a[0] == "clock-plan":
+        for dir_, runner, files in clock_plan(option(a, "--base", "origin/main")):
+            print(f"{dir_}\t{runner}\t{' '.join(files)}")
+        return 0
+    if a[0] == "clock-scenarios":
+        for name, zone, at in clock_scenarios():
+            print(f"{name}\t{zone}\t{at}")
+        return 0
     if a[0] == "proven" and len(a) == 3:
         return 0 if proven(a[1], a[2]) else 1
     if a[0] == "seal-branch-only" and len(a) == 2:

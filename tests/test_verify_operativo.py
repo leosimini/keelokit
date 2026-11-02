@@ -717,6 +717,70 @@ class StableTestsTest(VerifyFixture):
         self.assertIn("tests that stay green", (T / ".keelokit/harness/execution-protocol.md").read_text())
 
 
+class ZonesTest(VerifyFixture):
+    """HARN-018: the unit tests a change adds or edits run again at the clocks where date code breaks."""
+
+    FAKETIME = """#!/bin/sh
+printf 'faketime TZ=%s %s\\n' "$TZ" "$1" >> "$CALLS"
+shift
+exec "$@"
+"""
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / "apps/web/package.json").write_text('{"name":"web","scripts":{"test":"vitest run"}}\n')
+        (self.repo / "apps/mobile/src").mkdir(parents=True)
+        (self.repo / "apps/mobile/package.json").write_text('{"name":"mobile","scripts":{"test":"jest --forceExit"}}\n')
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", "packages")
+        sh(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        sh(self.repo, "git", "fetch", "-q", "origin")
+        (self.shims / "faketime").write_text(self.FAKETIME)
+        (self.shims / "faketime").chmod(0o755)
+
+    def clocks(self):
+        return [c for c in self.called() if c.startswith("faketime ")]
+
+    def test_HARN_018_S1_a_changed_unit_test_runs_at_every_clock(self):
+        self.commit_change("apps/web/src/a.test.ts", "it('a', () => {})\n")
+        self.commit_change("apps/mobile/src/b.test.tsx", "it('b', () => {})\n")
+        r = self.verify()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Changed tests at awkward clocks", r.stdout)
+        clocks = self.clocks()
+        self.assertEqual(len(clocks), 12, clocks)  # 6 scenarios x 2 packages
+        self.assertIn("faketime TZ=America/New_York 2027-03-14 02:30:00", clocks)
+        self.assertIn("faketime TZ=Europe/Berlin 2028-02-29 00:30:00", clocks)
+        self.assertIn("pnpm exec vitest run src/a.test.ts", self.called())
+        self.assertIn("pnpm exec jest src/b.test.tsx", self.called())
+
+    def test_HARN_018_S2_only_changed_unit_tests_and_only_with_faketime(self):
+        self.commit_change("apps/web/src/c.ts", "export const c = 1\n")  # code, no test
+        self.commit_change("apps/api/src/d.integration.spec.ts", "it('d', () => {})\n")  # not a unit test
+        r = self.verify()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.clocks(), [])
+        self.commit_change("apps/web/src/a.test.ts", "it('a', () => {})\n")
+        (self.shims / "faketime").unlink()
+        r = self.verify()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("faketime not installed", r.stdout)
+
+    def test_HARN_018_S3_the_project_names_its_own_clocks(self):
+        (self.repo / ".keelokit/verify-clock.toml").write_text(
+            '[[scenario]]\nname = "market-close"\nzone = "America/Sao_Paulo"\nat = "2027-11-30 23:59:00"\n')
+        self.commit_change("apps/web/src/a.test.ts", "it('a', () => {})\n")
+        self.assertEqual(self.verify().returncode, 0)
+        self.assertEqual(self.clocks(), ["faketime TZ=America/Sao_Paulo 2027-11-30 23:59:00"])
+
+    def test_HARN_018_S4_a_red_at_one_clock_is_a_red_verify(self):
+        self.commit_change("apps/web/src/a.test.ts", "it('a', () => {})\n")
+        r = self.verify(FAIL_ON="exec vitest")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.history()[-1]["failed_steps"], ["zones"])
+        self.assertFalse((self.git_dir / "keelokit-verify.seal").exists())
+
+
 class PrePushFixture(VerifyFixture):
     """The template's pre-push hook on, real pushes to the fixture's origin, a stub pnpm."""
 
