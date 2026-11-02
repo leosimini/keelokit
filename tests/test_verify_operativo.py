@@ -670,6 +670,53 @@ class ConvoyBranchVerifyTest(VerifyFixture):
         self.assertTrue(self.called())
 
 
+class StableTestsTest(VerifyFixture):
+    """HARN-015: what most reds that weren't bugs taught, as defaults and known causes."""
+
+    ROOT = T.parent
+
+    def test_HARN_015_S1_verify_gives_node_a_bigger_heap_unless_one_is_chosen(self):
+        (self.shims / "pnpm").write_text('#!/bin/sh\nprintf "NODE_OPTIONS=%s\\n" "$NODE_OPTIONS" >> "$CALLS"\nexit 0\n')
+        self.commit_change()
+        self.assertEqual(self.verify(NODE_OPTIONS="").returncode, 0)
+        self.assertIn("NODE_OPTIONS=--max-old-space-size=4096", self.called())
+        self.calls.write_text("")
+        self.verify(NODE_OPTIONS="--use-openssl-ca")  # other options are kept
+        self.assertIn("NODE_OPTIONS=--max-old-space-size=4096 --use-openssl-ca", self.called())
+        self.calls.write_text("")
+        self.verify(NODE_OPTIONS="--max-old-space-size=8192 --enable-source-maps")
+        self.assertIn("NODE_OPTIONS=--max-old-space-size=8192 --enable-source-maps", self.called())
+        self.assertNotIn("4096", " ".join(self.called()))
+
+    def test_HARN_015_S2_the_reds_that_were_not_bugs_are_known_causes(self):
+        logs = {
+            "worker-exit": "A worker process has failed to exit gracefully and has been force exited",
+            "hook-timeout": 'Error: Hook timed out in 10000ms.',
+            "shared-rows": "Invalid `prisma.booking.create()` invocation: Unique constraint failed on the fields: (`slug`)",
+            "unbuilt-package": "Error: Cannot find module '@demo/shared' from 'src/app.ts'",
+            "unhandled": "Vitest caught 1 unhandled error during the test run. Unhandled Rejection",
+            "db-exists": 'ERROR:  database "app_w1" already exists',
+        }
+        for cid, log in logs.items():
+            with self.subTest(cause=cid):
+                path = self.tmp / f"{cid}.log"
+                path.write_text(f"some output\n{log}\nmore\n")
+                out = subprocess.run([sys.executable, str(T / ".keelokit/bin/verify_tools.py"), "causes", str(path)],
+                                     capture_output=True, text=True).stdout
+                self.assertIn(f"[{cid}]", out)
+
+    def test_HARN_015_S3_integration_files_run_one_at_a_time(self):
+        config = (T / "apps/api/vitest.integration.config.ts").read_text()
+        self.assertIn("fileParallelism: false", config)
+
+    def test_HARN_015_S4_the_verifier_writes_tests_that_stay_green(self):
+        verifier = (self.ROOT / "agents/verifier.md").read_text()
+        for rule in ("only your own data", "global table", "never `sleep`", "fixed clock", "final state",
+                     "teardown wins", "reaches every consumer"):
+            self.assertIn(rule, verifier)
+        self.assertIn("tests that stay green", (T / ".keelokit/harness/execution-protocol.md").read_text())
+
+
 class PrePushTest(VerifyFixture):
     """HARN-010: the pre-push hook verifies every push but one that updates nothing but the [verify]
     shared_seals branch (as origin/main configures it) with commits holding only files under the seals'

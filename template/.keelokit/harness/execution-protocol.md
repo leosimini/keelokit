@@ -33,7 +33,8 @@ inherits it; change it in the Keelokit template, not here.
 - Format before every commit (`pnpm format`). A rebase that conflicts only on formatting: keep your
   content, then reformat (FMT-1). Never reformat files the story doesn't touch.
 - A test that fails sometimes is a race: find the cause, never lengthen its timeout, retry or skip
-  it (FLAKY-1). A slow CI job is split or sharded, never given a longer timeout (CI-1).
+  it (FLAKY-1). A slow CI job is split or sharded, never given a longer timeout (CI-1). The verifier
+  writes tests that stay green: their own data, no sleeps, a fixed clock, nothing outliving teardown.
 - Several sessions at once: read `.keelokit/harness/agent-brief.md`. A session ends landed on
   `origin/main` (with convoy: delivered) or it is not finished; the coordinator checks the hash,
   not the message (SESS-1).

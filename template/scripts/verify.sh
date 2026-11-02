@@ -40,6 +40,12 @@
 # warning that scrolls by let two fake tokens reach main. To skip one knowingly:
 # KEELOKIT_ALLOW_MISSING="semgrep" (names, space separated).
 set -euo pipefail
+# Test workers that run out of heap are the most common red that isn't a bug: give Node 4 GB unless
+# the caller already chose a size.
+case " ${NODE_OPTIONS:-} " in
+  *--max-old-space-size*) ;;
+  *) export NODE_OPTIONS="--max-old-space-size=4096${NODE_OPTIONS:+ $NODE_OPTIONS}" ;;
+esac
 
 all=false keep_going=false preflight=false use_seal=false base=origin/main since=false
 only='' rerun=false packages='' filters=''

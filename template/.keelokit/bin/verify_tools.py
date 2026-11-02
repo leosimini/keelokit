@@ -66,6 +66,18 @@ BUILTIN_CAUSES = [
     ("migration", r"migration.*(already|out of order)|P3\d{3}", "migrations: a new one must sort after main's last; never edit an applied one"),
     ("timezone", r"timezone|tzdata|Intl\.DateTimeFormat.*RangeError", "a date/timezone dependency: compare this machine's tzdata with CI's"),
     ("killed", r"\bKilled\b|exit code 137|SIGKILL", "the process was killed, usually by memory: free the machine, fewer workers"),
+    ("worker-exit", r"A (jest )?worker process (has failed to exit|was terminated)|signal=SIGTERM",
+     "a test worker was stopped (memory, or a handle left open): fewer workers, close what the test opened"),
+    ("hook-timeout", r"Hook timed out in \d+ ?ms|Test timed out in \d+ ?ms|Exceeded timeout of \d+ ?ms",
+     "a test or hook ran out of time: run that file alone; a busy machine or a slow import in beforeAll, never a longer timeout (FLAKY-1)"),
+    ("shared-rows", r"Foreign key constraint (failed|violated)|Unique constraint failed|violates (foreign key|unique) constraint",
+     "two tests touched the same rows: each test filters to the rows it created; a global table needs a lock (FLAKY-1)"),
+    ("unbuilt-package", r"Cannot find module '@[\w.-]+/[\w.-]+'",
+     "a workspace package isn't built (or is stale): build it (pnpm -r build) before the tests that import it"),
+    ("unhandled", r"Unhandled (Errors?|Rejection)|window is not defined",
+     "every test passed but something threw outside a test: the error above names it (a timer or import that outlived its test)"),
+    ("db-exists", r'database "[^"]+" already exists',
+     "a throwaway database name was reused: each run (and each call) needs its own name"),
 ]
 
 

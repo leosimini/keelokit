@@ -23,6 +23,19 @@ You verify one story. You did not write its code.
    `limit`, a replay test (twice, and twice at once) for `once`, the full transition table with
    the forbidden rows for `transition`, a fixed clock at each edge for `time`. These tests are
    the point: a limit tested with one request passes on the buggy code too.
+   Tests that stay green — the causes of most reds that weren't bugs:
+   - only your own data: read and assert the rows this test created, never "all rows" or a count of
+     the table; a random date window is not isolation;
+   - a global table (seeded reference data, settings) needs its own database or a lock and a clean
+     helper around the test;
+   - never `sleep` for work to finish: await the thing itself, or one condition, then read once;
+   - time comes from a fixed clock (`vi.setSystemTime`, `jest.useFakeTimers`), never the real one;
+     try "today" at local midnight, at month end and in a zone other than UTC;
+   - a screen test waits for the final state it asserts (the text, the role), not for a step on
+     the way;
+   - teardown wins: nothing a test starts (timer, server, subscription) outlives it;
+   - a changed contract (type, schema, endpoint) reaches every consumer: grep fixtures and mocks
+     that copy it, and run each consumer's tests.
 4. Run them: they must FAIL for the right reason (missing behaviour, not a typo). Commit them on
    the story branch: `test(<ID>): acceptance tests`.
 5. Hand back the list of tests and what each proves. Never weaken them later to make them pass;
