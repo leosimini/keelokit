@@ -13,6 +13,9 @@ parallel. (SESS-1)
   `origin/main` is **not finished**, whatever the report says. `convoy`: delivered (below).
 - It works in its own worktree (`git worktree add ../<repo>-<id> -b <id>`), with its own ports
   (`E2E_PORT`, `E2E_MOBILE_PORT`, `E2E_API_PORT`).
+- **Names.** A session that starts another titles it with `python3 .keelokit/bin/status.py title
+  <ID>` (`create_session`'s `title`; `--role coordinator` for the coordinator), renames itself with
+  its own title on starting when its tool can, and starts each Agent's description `<ID> · <role>`.
 - Stories that add a **migration** run one at a time (MIG-1): the second waits for the first to
   land, rebases, and takes a timestamp after it. A migration that sorts before the last one on
   main fails the doctor.

@@ -29,7 +29,8 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).
 - `bin/ci.py` — the CI from the command line: health of main (a cancelled run is not green), time per
   job against its timeout, which job and step failed, a manual dispatch. The CI's last job runs
-  its `summary`. `bin/status.py` — ten lines for whoever coordinates parallel sessions.
+  its `summary`. `bin/status.py` — ten lines for whoever coordinates parallel sessions, and `status.py title`, the
+  canonical session title (`<project> · wave <n> · <ID>`) that build-story, coordinate and Harbor use.
 - `verify-map.toml` — which `pnpm verify` step runs each CI job; the doctor keeps them in step.
   `verify-routing.toml` — which files need which steps; `red-causes.toml` — the project's known causes of a red.
   `bin/verify_tools.py` plans, times and diagnoses; `scripts/verify.sh` keeps the run state, the seal and the history.

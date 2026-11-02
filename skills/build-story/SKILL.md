@@ -47,6 +47,8 @@ Rules for the choice:
 - One agent per role per story. A later round **continues the same agent** (`SendMessage`)
   instead of launching one that rereads everything; the verifier reproduces ALL the round's
   findings in one pass, not one agent per finding.
+- Each Agent's description starts `<ID> · <role>` (`AUTH-003 · reviewer`), so a list of agents reads
+  by story.
 - Agents get **paths**, not pasted files: the story, the contract, the base sha. Reports are at
   most 10 lines with `file:line` and commit hashes; the full detail stays in the commit or file.
 - Roles read only what the story needs: the `dimensions.md` rows of its declared dimensions, the
@@ -67,7 +69,9 @@ story in parallel. Give each worktree its own ports:
 
 For parallel *sessions* (one per story, possibly on several terminals) the shared brief is
 `.keelokit/harness/agent-brief.md`; `/keelokit:coordinate` runs the rounds. Stories that add a
-migration go one per wave (MIG-1).
+migration go one per wave (MIG-1). Names follow the brief: a session you start gets the title
+`python3 .keelokit/bin/status.py title <ID>` prints (`<project> · wave <n> · <ID>`), this session
+renames itself with its story's title when its tool can, and the branch stays the id in lowercase.
 
 How many at once comes from `[run]` in `.keelokit/state.toml`: `build = "serial"` → one;
 `build = "parallel"` → up to `parallel` ready stories of the wave. A count the user gives now

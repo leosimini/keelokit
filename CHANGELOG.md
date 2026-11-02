@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Session titles.** `python3 .keelokit/bin/status.py title <ID>` prints the canonical title of the session that builds
+  a story, `<project> · wave <n> · <ID>` (`ola` when `[dashboard] lang` is Spanish), and `title --role coordinator`
+  the coordinator's, `<project> · coordinator`. A story it can't find, or one without a wave, is exit 2 with the reason.
+  The agent brief, `build-story` and `coordinate` title the sessions they start with it, rename their own when the tool
+  can, and start each Agent's description with `<ID> · <role>`. Harbor reads the same titles.
+
 - **The first commit of a new product goes through.** The template's CI had `continue-on-error` set to true in the
   `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
   it. The line is gone: downloading timings that no job uploaded already succeeds.

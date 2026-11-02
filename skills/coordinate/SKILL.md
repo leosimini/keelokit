@@ -17,6 +17,9 @@ the rest of this skill is for `direct`.
   Stories that add migrations go one at a time (MIG-1).
 - The prompt is short: `Read .keelokit/harness/agent-brief.md, then /keelokit:build-story <ID>.` Pass paths, not
   contents; don't repeat the brief's rules.
+- Title each session with `python3 .keelokit/bin/status.py title <ID>` (`create_session`'s `title`),
+  and rename this one with `title --role coordinator` when the tool can. Exit 2 means the story or
+  its wave is missing: fix the backlog, never type a title by hand. Branches stay the id in lowercase.
 - Respect the machine: at most two sessions running tests at once (`pnpm verify` takes a per-machine
   lock, so more only wait).
 
