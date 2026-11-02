@@ -303,8 +303,9 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+      # A pattern that matches nothing (the test jobs were skipped) downloads nothing and succeeds, and
+      # the summary reads an empty folder: no continue-on-error, which the guard blocks (QA-4).
       - uses: actions/download-artifact@v4
-        continue-on-error: true # no test job uploaded timings (they were skipped)
         with:
           pattern: timings-*
           path: ci-timings

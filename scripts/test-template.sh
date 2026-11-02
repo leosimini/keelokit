@@ -126,6 +126,16 @@ step 'Install'
 pnpm install
 # pnpm-lock.yaml is part of the project: commit it, as project-new does, so verify compares it.
 git add -A && { git diff --cached --quiet || git -c user.name=t -c user.email=t@t commit -qm 'pnpm install'; }
+# project-new commits after the install, when `prepare` has turned the hooks on: the first commit of
+# the whole tree must get past the guard (HARN-009). The tree is clean here, so an orphan branch
+# replays that commit with the same files, and main is checked out again unchanged.
+step 'First commit with the hooks on, as project-new makes it'
+[ "$(git config core.hooksPath)" = .githooks ] || { echo 'pnpm install did not turn the git hooks on' >&2; exit 1; }
+[ -z "$(git status --porcelain)" ] || { echo 'the tree is not clean after the install commit' >&2; exit 1; }
+git checkout -q --orphan first-commit
+git -c user.name=t -c user.email=t@t commit -qm 'first commit, hooks on'
+git checkout -q main
+git branch -q -D first-commit
 # PKG-3: browser installs take apt's machine-wide lock and write the shared pnpm store, so two
 # runs on one machine take turns here (flock where it exists: Linux; elsewhere they don't wait).
 lock="${TMPDIR:-/tmp}/keelokit-e2e-install.lock"

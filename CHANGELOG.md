@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **The first commit of a new product goes through.** The template's CI had `continue-on-error` set to true in the
+  `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
+  it. The line is gone: downloading timings that no job uploaded already succeeds.
+
 ## 0.11.0 — 2026-11-01 — a verify you can trust
 
 What cost the most time in real use was the verify: an hour-long run that stopped at its first red, died unnoticed, or
