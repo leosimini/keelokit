@@ -1112,9 +1112,12 @@ def landing_policy() -> str:
 def check_shared_seals() -> None:
     """`[verify] shared_seals` (read by bin/verify_tools.py): "<remote>/<branch>:<path with {head}>"."""
     spec = state().get("verify", {}).get("shared_seals")
-    if spec is not None and not (isinstance(spec, str) and re.fullmatch(r"[\w.-]+/[\w./-]+:[^\s:]*\{head\}[^\s:]*", spec)
-                                 and ".." not in spec):
-        errors.append('.keelokit/state.toml: [verify] shared_seals is "<remote>/<branch>:<path with {head}>", e.g. '
+    m = re.fullmatch(r"[\w.-]+/([\w./-]+):([^\s:/]+/[^\s:]*\{head\}[^\s:]*)", spec) if isinstance(spec, str) else None
+    # A folder for the seals (the pre-push hook skips only commits that hold nothing else), on a branch
+    # that never carries code.
+    if spec is not None and not (m and ".." not in spec and m[1] not in ("main", "master", "release")):
+        errors.append('.keelokit/state.toml: [verify] shared_seals is "<remote>/<branch>:<folder>/<path with {head}>" '
+                      'on a branch other than main, master or release, e.g. '
                       f'"origin/harbor/log:harbor/seals/{{head}}.toml" (found {repr(spec)[:60]})')
 
 

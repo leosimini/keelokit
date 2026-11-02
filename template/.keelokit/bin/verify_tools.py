@@ -12,6 +12,8 @@
                                                 "steps|inherited|red head|proven packages": what
                                                 --rerun-failed runs, the passes it keeps, and from where;
                                                 empty steps (and why) when it can't tell = normal verify
+    verify_tools.py seal-branch-only REMOTE      (the pre-push hook, its refs on stdin) exit 0 when every
+                                                ref pushed to REMOTE is the [verify] shared_seals branch
     verify_tools.py shared-seal --head SHA --base SHA --level LEVEL
                                                 0: a shared seal covers this commit; 1: refused (why);
                                                 3: [verify] shared_seals is not set
@@ -437,6 +439,38 @@ def shared_seal(head: str, base: str, level: str) -> tuple[int, str]:
                f"(shared seal {where}; it is trusted as far as whoever can push to that branch is); not repeated.")
 
 
+# Branches a seal branch can never be: a push to them carries code.
+NEVER_SEAL_BRANCHES = {"main", "master", "release"}
+
+
+def seal_branch_only(remote: str, refs: str) -> bool:
+    """True when the push (git's pre-push stdin: "<local ref> <local sha> <remote ref> <remote sha>" per
+    line) goes to `remote` and updates nothing but the [verify] shared_seals branch there: Harbor's
+    logbook, which holds seals and no code, so there's nothing to verify. Anything else, an empty push
+    or a commit with a file outside the seals' folder included, is False: the hook runs the verify."""
+    try:
+        state = tomllib.loads((ROOT / ".keelokit/state.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    spec = state.get("verify", {}).get("shared_seals") if isinstance(state.get("verify"), dict) else None
+    m = SHARED.fullmatch(spec) if isinstance(spec, str) else None
+    if not m or m["remote"] != remote or ".." in m["branch"] or m["branch"] in NEVER_SEAL_BRANCHES:
+        return False
+    folder = m["path"].split("/", 1)[0] + "/" if "/" in m["path"] else None
+    lines = [l.split() for l in refs.splitlines() if l.strip()]
+    if not folder or not lines or not all(len(l) == 4 and l[2] == f"refs/heads/{m['branch']}" for l in lines):
+        return False
+    # "No code" is checked, not assumed: every commit pushed holds only files under the seals' folder
+    # (harbor/ for harbor/seals/{head}.toml). A deletion (all zeros) pushes no files.
+    for _, sha, _, _ in lines:
+        if set(sha) == {"0"}:
+            continue
+        files = subprocess.run(["git", "ls-tree", "-r", "--name-only", sha], cwd=ROOT, capture_output=True, text=True)
+        if files.returncode or any(not f.startswith(folder) for f in files.stdout.splitlines()):
+            return False
+    return True
+
+
 def cmd_shared_seal(args: list[str]) -> int:
     code, message = shared_seal(option(args, "--head"), option(args, "--base"), option(args, "--level", "changed"))
     if message:
@@ -463,6 +497,8 @@ def main() -> int:
         return cmd_rerun(a[1:])
     if a[0] == "covers":
         return cmd_covers(a[1:])
+    if a[0] == "seal-branch-only" and len(a) == 2:
+        return 0 if seal_branch_only(a[1], sys.stdin.read()) else 1
     if a[0] == "shared-seal":
         return cmd_shared_seal(a[1:])
     print(__doc__, file=sys.stderr)

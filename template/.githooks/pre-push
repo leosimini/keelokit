@@ -1,3 +1,11 @@
 #!/usr/bin/env sh
 # Nothing reaches the remote without passing the same gates as CI. Never bypass with --no-verify.
+# One exception: a push of nothing but the [verify] shared_seals branch of .keelokit/state.toml
+# (Harbor's logbook), whose commits hold only files under the seals' folder, has nothing to verify
+# (verify_tools.py seal-branch-only checks both).
+refs=$(cat)
+if [ -n "$refs" ] && printf '%s\n' "$refs" | python3 .keelokit/bin/verify_tools.py seal-branch-only "$1" 2>/dev/null; then
+  echo 'pre-push: only the shared-seals branch, which holds no code: nothing to verify.'
+  exit 0
+fi
 exec pnpm verify --use-seal

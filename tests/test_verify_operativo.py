@@ -637,5 +637,76 @@ class SharedSealTest(VerifyFixture):
         self.assertTrue(any("run test" in c for c in self.called()))
 
 
+class PrePushTest(VerifyFixture):
+    """HARN-010: the pre-push hook verifies every push but one that updates nothing but the [verify]
+    shared_seals branch with commits holding only seal files: Harbor's logbook, no code. Real pushes to
+    the fixture's origin, with the template's hook on."""
+
+    SPEC = "origin/harbor/log:harbor/seals/{head}.toml"
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / ".githooks").mkdir()
+        shutil.copy(T / ".githooks/pre-push", self.repo / ".githooks/pre-push")
+        (self.repo / ".githooks/pre-push").chmod(0o755)
+        self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n')
+        sh(self.repo, "git", "config", "core.hooksPath", ".githooks")
+
+    def state(self, text):
+        (self.repo / ".keelokit/state.toml").write_text(text)
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", "state")
+
+    def logbook(self, *files):
+        """A commit on the harbor/log branch holding `files` (paths), as Harbor writes its logbook."""
+        sh(self.repo, "git", "checkout", "-q", "--orphan", "harbor/log")
+        sh(self.repo, "git", "rm", "-rqf", ".")
+        for rel in files:
+            (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / rel).write_text("x\n")
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", "logbook")
+        sh(self.repo, "git", "checkout", "-q", "-f", "main")
+
+    def push(self, *refs):
+        self.calls.write_text("")
+        return subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.repo, capture_output=True, text=True,
+                              env=self.env(), timeout=60)
+
+    def verified(self):
+        return any(c.startswith("pnpm verify") for c in self.called())
+
+    def test_HARN_010_S1_a_push_of_only_the_seal_branch_is_not_verified(self):
+        self.logbook("harbor/seals/abc.toml")
+        r = self.push("harbor/log")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.verified(), self.called())
+        self.assertIn("nothing to verify", r.stdout + r.stderr)
+        self.assertTrue(sh(self.repo, "git", "ls-remote", "origin", "refs/heads/harbor/log"))
+
+    def test_HARN_010_S2_the_seal_branch_with_any_other_ref_is_verified(self):
+        self.logbook("harbor/seals/abc.toml")
+        self.commit_change()
+        r = self.push("harbor/log", "main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("pnpm verify --use-seal", self.called())
+        self.push("main")
+        self.assertTrue(self.verified(), "a push of main alone is verified as before")
+
+    def test_HARN_010_S3_code_on_the_seal_branch_is_verified(self):
+        self.logbook("harbor/seals/abc.toml", "apps/web/src/b.ts")
+        self.push("harbor/log")
+        self.assertTrue(self.verified(), "a commit with a file outside harbor/ is code")
+
+    def test_HARN_010_S4_without_the_key_or_with_main_as_the_seal_branch_everything_is_verified(self):
+        self.logbook("harbor/seals/abc.toml")
+        self.state("[gates]\n")
+        self.push("harbor/log")
+        self.assertTrue(self.verified())
+        self.state('[verify]\nshared_seals = "origin/main:harbor/seals/{head}.toml"\n')
+        self.push("main")
+        self.assertTrue(self.verified(), "main can't be the seal branch")
+
+
 if __name__ == "__main__":
     unittest.main()

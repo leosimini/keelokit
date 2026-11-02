@@ -153,6 +153,8 @@ class DoctorLandingTest(DoctorFixture):
         self.write(".keelokit/state.toml", '[landing]\npolicy = "convoy"\n')
         self.write(".githooks/pre-push", "#!/usr/bin/env sh\npython3 .keelokit/bin/verify_tools.py seal-branch-only \"$1\"\n")
         self.assertNotIn(NOTE, self.doctor())
+        self.write(".githooks/pre-push", PRE_PUSH.read_text())  # the template's own hook (HARN-010)
+        self.assertNotIn(NOTE, self.doctor())
         (self.root / ".githooks/pre-push").unlink()
         self.assertNotIn(NOTE, self.doctor())
 
@@ -167,7 +169,8 @@ class DoctorSharedSealsTest(DoctorFixture):
     def test_HARN_008_S5_the_doctor_checks_the_shared_seals_key(self):
         self.write(".keelokit/state.toml", '[verify]\nshared_seals = "origin/harbor/log:harbor/seals/{head}.toml"\n')
         self.assertNotIn("shared_seals", self.doctor())
-        for bad in ('"harbor/seals/{head}.toml"', '"origin/harbor/log:seals.toml"', '"origin/../x:{head}"', "3"):
+        for bad in ('"harbor/seals/{head}.toml"', '"origin/harbor/log:seals.toml"', '"origin/../x:{head}"', "3",
+                    '"origin/main:harbor/seals/{head}.toml"', '"origin/harbor/log:{head}.toml"'):
             with self.subTest(bad=bad):
                 self.write(".keelokit/state.toml", f"[verify]\nshared_seals = {bad}\n")
                 self.assertRegex(self.doctor(), r"(?m)^  ERROR \.keelokit/state\.toml: \[verify\] shared_seals is ")

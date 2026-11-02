@@ -5,6 +5,10 @@
 - **The first commit of a new product goes through.** The template's CI had `continue-on-error` set to true in the
   `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
   it. The line is gone: downloading timings that no job uploaded already succeeds.
+- **Writing Harbor's logbook doesn't run a verify.** The pre-push hook skips a push whose refs all go to the
+  `[verify] shared_seals` branch, when every commit pushed holds only files under the seals' folder; any other ref or
+  file, and it verifies as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The
+  seal branch can't be `main`, `master` or `release` (the doctor checks).
 - **The doctor's convoy note says what the pre-push hook does.** It said the hook protected only main; the hook verifies
   every push. The note now appears only for a hook that also verifies Harbor's logbook writes, and says how to update it.
 

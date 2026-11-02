@@ -81,7 +81,12 @@ level = "changed"   # or "all"
 
 It is accepted only when `head` is this exact commit, `base` is `origin/main` now, `exit` is 0, the
 level covers the request (`all` for `--all`), the tree is clean and the partial-run flags are absent;
-otherwise verify says which condition failed and runs. `KEELOKIT_NO_SEAL=1` turns it off. **Trusting
+otherwise verify says which condition failed and runs. `KEELOKIT_NO_SEAL=1` turns it off.
+
+Writing a seal is a push to that branch, and it holds no code: the pre-push hook doesn't verify a push
+whose refs all go to the `shared_seals` branch of the configured remote, as long as every commit pushed
+holds only files under the seals' folder (`harbor/` above). Any other ref in the same push, or any
+other file, and the hook verifies as usual. The branch can't be `main`, `master` or `release`. **Trusting
 that branch is trusting everyone who can push to it**: whoever can write a file there can let a commit
 skip the local gate, so protect it like `main`. The doctor checks the key's shape.
 
@@ -91,7 +96,8 @@ skip the local gate, so protect it like `main`. The doctor checks the key's shap
 `pnpm verify` and pushes main; the pre-push hook is the last gate. `convoy`: a session never pushes
 main; it pushes its branch with `pnpm verify --since origin/main` green on that exact hash, and
 Harbor (`/harbor:*`) verifies the convoy branch once before it lands. The pre-push hook verifies
-every push, a session's branch as much as main.
+every push, a session's branch as much as main, except a push of nothing but the `[verify]
+shared_seals` branch (below).
 
 ## What a change calls for (routing)
 
