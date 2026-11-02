@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased — what a grown monorepo taught the verify
+
+A monorepo built with Keelokit logged every red of its verify, and why. This version brings the mechanisms that
+came out of it, in a generic form: fewer reds that aren't bugs, a red integration step that doesn't cost the whole
+suite again, date code tested at the clocks that break it, and a safe way to hand unfinished work over.
+
+### Fewer reds that aren't bugs
+- **A bigger heap by default.** `pnpm verify` gives Node 4 GB unless `NODE_OPTIONS` already sets a size: a worker out
+  of memory was the most common red that wasn't a bug.
+- **Six more known causes** after a red: a test worker stopped, a hook or test out of time, two specs sharing rows, an
+  unbuilt workspace package, an error thrown after every test passed, a reused throwaway database name.
+- **Integration files run one at a time** (`fileParallelism: false` in the API's integration config), so specs on one
+  database never see each other's rows.
+- **Tests that stay green.** The verifier writes them by seven rules (own data, a lock for global tables, no sleeps, a
+  fixed clock, wait for the final state, nothing outliving teardown, every consumer of a changed contract).
+
+### Narrower reruns
+- **A red integration step reruns only what the fix reaches.** Its failed spec files are kept in the history; after a
+  fix in the API's own sources or specs, `--rerun-failed` runs every other step again and the integration step only on
+  the failed specs, the specs the fix changed and those `vitest related` finds for it. A fix in what every spec starts
+  from (Prisma, test setup, seeds, a shared package, config) runs the whole suite. A narrowed green still completes the
+  red run into a composite seal.
+
+### Date code
+- **Changed unit tests run at awkward clocks** (new step `zones`): late on a month's and a year's last day west of UTC,
+  a leap day, the hour a DST change skips and the one it repeats, just after midnight east of UTC. The clocks live in
+  `.keelokit/verify-clock.toml`, which the project owns: add your users' zones. It needs libfaketime, like the
+  date-bomb rerun; without it the step is a note.
+
+### The push gate
+- **A commit that already passed can reach a branch from another checkout.** For a branch other than `main`, `master`
+  or `release`, the pre-push hook accepts a commit that isn't checked out when that exact commit has a clean, full,
+  green verify here against `origin/main` as it is now. `main` keeps refusing.
+- **`wip/` branches for unfinished work** (opt-in, rule WIP-1). With `[verify] wip_branches = "wip/"` on `origin/main`,
+  a push to `wip/<topic>` runs no verify and says it can't land; any other push is refused while it holds a `wip/` tip
+  that `origin/main` lacks and no green verify proved, also after the branch was deleted. The doctor checks the key.
+
+### Upgrading from 0.12.x
+`/keelokit:harness-upgrade` brings the new `verify.sh`, `verify_tools.py`, pre-push hook, doctor, rules, agent brief,
+`docs/verify.md` and the API's integration config, and adds `.keelokit/verify-clock.toml` (yours from then on). Nothing
+to do by hand; what changes behaviour:
+
+1. **Integration specs run one file at a time.** A suite that relied on running files in parallel against one database
+   gets slower, and stops being flaky. If yours gives each worker its own database, set `fileParallelism` back.
+2. **The integration step passes Vitest options** (`--reporter=default --reporter=json --outputFile.json=…`) to
+   `apps/api`'s `test:integration` script. If you changed that script away from `vitest run`, keep it accepting them.
+3. **Pushing a proven commit that isn't checked out to a branch now works**; to `main` it is still refused.
+4. **Optional:** add your users' zones to `.keelokit/verify-clock.toml`, install libfaketime where `pnpm verify` runs,
+   and set `[verify] wip_branches = "wip/"` if sessions hand work over.
+
 ## 0.12.0 — 2026-11-02 — a gate that checks what it lets through
 
 Running Harbor (the companion plugin, still in development) against a project generated with 0.11.0 showed where the
