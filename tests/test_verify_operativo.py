@@ -714,11 +714,17 @@ class PrePushTest(VerifyFixture):
 
     def push(self, *refs):
         self.calls.write_text("")
-        return subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.repo, capture_output=True, text=True,
-                              env=self.env(), timeout=60)
+        self.last = subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.repo, capture_output=True,
+                                   text=True, env=self.env(), timeout=60)
+        return self.last
 
     def verified(self):
         return any(c.startswith("pnpm verify") for c in self.called())
+
+    def gated(self):
+        """The push went through the gate: verified, or refused because it isn't the checked-out commit
+        (HARN-013). Anything but the shared-seals exception ends in one of the two."""
+        return self.verified() or (self.last.returncode != 0 and "pre-push: refused" in self.last.stderr)
 
     def test_HARN_010_S1_a_push_of_only_the_seal_branch_is_not_verified(self):
         self.logbook("harbor/seals/abc.toml")
@@ -731,17 +737,17 @@ class PrePushTest(VerifyFixture):
     def test_HARN_010_S2_the_seal_branch_with_any_other_ref_is_verified(self):
         self.logbook("harbor/seals/abc.toml")
         self.commit_change()
-        r = self.push("harbor/log", "main")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("pnpm verify --use-seal", self.called())
+        self.push("harbor/log", "main")
+        self.assertTrue(self.gated(), "the exception covers only a push of nothing but the seal branch")
         self.commit_change(text="export const a = 3\n")  # something new, or git sends no ref and the check proves nothing
-        self.push("main")
-        self.assertTrue(self.verified(), "a push of main alone is verified as before")
+        r = self.push("main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.verified(), "a push of main (the checked-out commit) alone is verified as before")
 
     def test_HARN_010_S3_code_on_the_seal_branch_is_verified(self):
         self.logbook("harbor/seals/abc.toml", "apps/web/src/b.ts")
         self.push("harbor/log")
-        self.assertTrue(self.verified(), "a commit with a file outside harbor/ is code")
+        self.assertTrue(self.gated(), "a commit with a file outside harbor/ is code")
 
     def test_HARN_010_S3_code_in_a_parent_of_the_logbook_commit_is_verified(self):
         """The tip holds only harbor/, but the commit under it brings code: every new commit counts."""
@@ -754,7 +760,7 @@ class PrePushTest(VerifyFixture):
         sh(self.repo, "git", "commit", "-qm", "only harbor/ at the tip")
         sh(self.repo, "git", "checkout", "-q", "-f", "main")
         self.push("sneak:harbor/log")
-        self.assertTrue(self.verified())
+        self.assertTrue(self.gated())
 
     def test_HARN_010_S5_a_seal_for_a_commit_that_never_passed_here_is_verified(self):
         head = sh(self.repo, "git", "rev-parse", "HEAD")
@@ -763,7 +769,7 @@ class PrePushTest(VerifyFixture):
         text = {seal: f'head = "{head}"\nbase = "{base}"\nexit = 0\nlevel = "changed"\n'}
         self.logbook(seal, contents=text)
         self.push("harbor/log")
-        self.assertTrue(self.verified(), "no green run of that commit in this clone: the seal is not taken on trust")
+        self.assertTrue(self.gated(), "no green run of that commit in this clone: the seal is not taken on trust")
         self.assertEqual(self.verify().returncode, 0)  # now it passes here
         sh(self.repo, "git", "checkout", "-q", "harbor/log")  # the next logbook write, on top of the last one
         (self.repo / seal).write_text(text[seal] + "# written again after the green run\n")
@@ -778,7 +784,7 @@ class PrePushTest(VerifyFixture):
         sh(self.repo, "git", "commit", "-qam", "logbook")
         sh(self.repo, "git", "checkout", "-q", "-f", "main")
         self.push("harbor/log")
-        self.assertTrue(self.verified())
+        self.assertTrue(self.gated())
 
     def seal_on_logbook(self, head, base, how):
         """Append, on top of the pushed logbook, a seal for `head`, the way `how` says."""
@@ -807,39 +813,116 @@ class PrePushTest(VerifyFixture):
         red = sh(self.repo, "git", "rev-parse", "HEAD")
         self.seal_on_logbook(red, base, "merge")
         self.push("harbor/log")
-        self.assertTrue(self.verified(), "a merge's seal is checked like any other")
+        self.assertTrue(self.gated(), "a merge's seal is checked like any other")
         # passes that prove less than a verify don't back a seal: --since, or an uncommitted change
         self.assertEqual(self.verify("--since", "HEAD").returncode, 0)
         (self.repo / "docs/notes.md").write_text("# edited\n")
         self.assertEqual(self.verify().returncode, 0)
         sh(self.repo, "git", "checkout", "--", "docs/notes.md")
         self.push("harbor/log")
-        self.assertTrue(self.verified())
+        self.assertTrue(self.gated())
         self.seal_on_logbook(red, base, "symlink")
         self.push("harbor/log")
-        self.assertTrue(self.verified(), "a symlink is not a seal")
+        self.assertTrue(self.gated(), "a symlink is not a seal")
 
     def test_HARN_010_S4_without_the_key_or_with_main_as_the_seal_branch_everything_is_verified(self):
         self.logbook("harbor/seals/abc.toml")
         self.state("[gates]\n")
         self.push("harbor/log")
-        self.assertTrue(self.verified())
+        self.assertTrue(self.gated())
         # an uncommitted (or unpushed) edit doesn't count: the key is read from origin/main
         self.append_logbook("edited\n")
         (self.repo / ".keelokit/state.toml").write_text(f'[verify]\nshared_seals = "{self.SPEC}"\n')
         self.push("harbor/log")
-        self.assertTrue(self.verified())
+        self.assertTrue(self.gated())
         sh(self.repo, "git", "checkout", "-q", "--", ".keelokit/state.toml")
         # nor does a remote-tracking ref moved by hand: the hook fetches main before reading the key
         self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n', push=False)
         sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
         self.append_logbook("moved by hand\n")
         self.push("harbor/log")
-        self.assertTrue(self.verified())
+        self.assertTrue(self.gated())
         self.state('[verify]\nshared_seals = "origin/main:harbor/seals/{head}.toml"\n')
         self.commit_change(text="export const a = 4\n")
         self.push("main")
-        self.assertTrue(self.verified(), "main can't be the seal branch")
+        self.assertTrue(self.gated(), "main can't be the seal branch")
+
+
+class PushWhatIsCheckedOutTest(VerifyFixture):
+    """HARN-013: the template's pre-push hook verifies what it pushes. Real pushes to the bare origin through
+    the hook; `pnpm verify` runs the real verify.sh, and a step goes red when the tree holds a file RED."""
+
+    PNPM_VERIFY = """#!/bin/sh
+printf '%s\\n' "pnpm $*" >> "$CALLS"
+case "$1" in verify) shift; exec bash scripts/verify.sh "$@" ;; esac
+case "$*" in *"ls --depth"*) exit 0 ;; esac
+[ ! -f RED ] || { echo "RED is red"; exit 1; }
+exit 0
+"""
+
+    def setUp(self):
+        super().setUp()
+        (self.shims / "pnpm").write_text(self.PNPM_VERIFY)
+        hooks = self.tmp / "hooks"
+        hooks.mkdir()
+        shutil.copy(T / ".githooks/pre-push", hooks / "pre-push")
+        sh(self.repo, "git", "config", "core.hooksPath", str(hooks))
+        self.commit_change()
+        self.assertEqual(self.verify().returncode, 0)  # HEAD is green and sealed
+        self.green = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "switch", "-qc", "red")
+        self.commit_change("RED", "red\n")
+        self.red = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "switch", "-q", "main")
+        self.calls.write_text("")
+
+    def push(self, *args):
+        return subprocess.run(["git", "push", "origin", *args], cwd=self.repo, capture_output=True, text=True,
+                              env=self.env(), timeout=60)
+
+    def remote(self, ref="main"):
+        r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{ref}"], cwd=self.origin,
+                           capture_output=True, text=True)
+        return r.stdout.strip() or None
+
+    def test_HARN_013_S1_a_commit_other_than_head_is_refused(self):
+        before = self.remote()
+        for args in [(f"{self.red}:main",), ("red:main",), ("red",), ("HEAD:main", "red")]:
+            with self.subTest(push=args):
+                r = self.push(*args)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn(f"would get {self.red[:7]}", r.stderr)
+                self.assertIn("check it out and push from there", r.stderr)
+                self.assertEqual(self.remote(), before)
+                self.assertIsNone(self.remote("red"))
+                self.assertEqual(self.called(), [])  # refused before any verify, even HEAD's sealed one
+
+    def test_HARN_013_S2_a_push_of_head_runs_the_verify_as_before(self):
+        r = self.push("HEAD:main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already passed", r.stdout)  # the seal skips the repeat
+        self.assertEqual(self.called(), ["pnpm verify --use-seal"])
+        self.assertEqual(self.remote(), self.green)
+        sh(self.repo, "git", "tag", "-a", "-m", "v1", "v1")  # an annotated tag on HEAD pushes HEAD
+        self.assertEqual(self.push("v1").returncode, 0)
+        # Checked out, the red commit gets its verify, which stops it.
+        sh(self.repo, "git", "switch", "-q", "red")
+        self.calls.write_text("")
+        r = self.push("HEAD:main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("RED is red", r.stdout + r.stderr)
+        self.assertNotIn("already passed", r.stdout)
+        self.assertGreater(len(self.called()), 1)  # the verify ran its steps
+        self.assertEqual(self.remote(), self.green)
+
+    def test_HARN_013_S3_a_deletion_pushes_nothing_to_verify(self):
+        self.assertEqual(self.push("HEAD:refs/heads/old").returncode, 0)
+        (self.repo / "RED").write_text("red\n")  # a verify now would be red
+        self.calls.write_text("")
+        r = self.push(":old")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.remote("old"))
+        self.assertEqual(self.called(), [])
 
 
 if __name__ == "__main__":

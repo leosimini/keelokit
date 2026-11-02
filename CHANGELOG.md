@@ -15,6 +15,10 @@
   so pushing the branch doesn't run it again (the agent brief and `build-story`).
 - **The doctor's convoy note says what the pre-push hook does.** It said the hook protected only main; the hook verifies
   every push. The note now appears only for a hook that also verifies Harbor's logbook writes, and says how to update it.
+- **The pre-push hook verifies what it pushes.** It ran `pnpm verify --use-seal` on HEAD whatever was pushed, so with a
+  green HEAD `git push origin <red sha>:main`, or pushing another branch, reached the remote unverified. It now reads the
+  pushed refs and refuses a commit other than HEAD ("check it out and push from there"); a push of only deletions
+  verifies nothing; pushing HEAD runs exactly as before. `/keelokit:harness-upgrade` brings the new hook.
 
 ## 0.11.0 — 2026-11-01 — a verify you can trust
 
