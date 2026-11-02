@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — what a grown monorepo taught the verify
+## 0.13.0 — 2026-11-02 — what a grown monorepo taught the verify
 
 A monorepo built with Keelokit logged every red of its verify, and why. This version brings the mechanisms that
 came out of it, in a generic form: fewer reds that aren't bugs, a red integration step that doesn't cost the whole
