@@ -228,12 +228,15 @@ def relative(path: str) -> str:
 API = "apps/api/"  # the template's API, whose integration specs verify.sh runs
 
 
-def integration_failures(reports: str, red: bool) -> dict:
+def integration_failures(reports: str, red: bool, log: str = "") -> dict:
     """For a red integration step: the spec files that failed (repo-relative), from the Vitest JSON reports
-    the step wrote, and whether every report was there to read (`int_complete`). Nothing when it was green."""
+    the step wrote, and whether they account for the red (`int_complete`): every report there to read, and
+    no error thrown outside a test, which Vitest reports against no spec (a timer or promise of a spec it
+    lists as passed). Nothing when it was green."""
     if not red:
         return {}
-    failed, complete = set(), bool(reports.split())
+    failed = set()
+    complete = bool(reports.split()) and "unhandled" not in {cid for cid, _ in causes_in(log)}
     for path in reports.split():
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -331,7 +334,8 @@ def cmd_record(args: list[str]) -> int:
         "planned": env("VERIFY_PLANNED", "").split(),
         "passed": [n for n in env("VERIFY_PASSED", "").split() if n not in env("VERIFY_FAILED_STEPS", "").split()],
         "failed_steps": env("VERIFY_FAILED_STEPS", "").split(),
-        **integration_failures(env("VERIFY_INT_REPORT", ""), "integration" in env("VERIFY_FAILED_STEPS", "").split()),
+        **integration_failures(env("VERIFY_INT_REPORT", ""), "integration" in env("VERIFY_FAILED_STEPS", "").split(), text),
+        "narrowed": env("VERIFY_NARROWED") == "true",
         "packages": packages,
         "step_packages": step_packages,
         "causes": [cid for cid, _ in causes_in(text)] if result != "pass" else [],
@@ -536,10 +540,11 @@ def seal_branch_only(remote: str, refs: str) -> bool:
       and with the seal's base: the exception carries seals, it can't mint one for a commit that never
       passed here.
     Anything else, an empty push included, is False: the hook runs the verify."""
-    # The remote's main as it is now, not a tracking ref a local edit could have moved (verify.sh does the same).
-    subprocess.run(["git", "fetch", "--quiet", remote, "main"], cwd=ROOT, capture_output=True)
-    shown = subprocess.run(["git", "show", f"refs/remotes/{remote}/main:.keelokit/state.toml"], cwd=ROOT,
-                           capture_output=True, text=True)
+    # The remote's main as it is now, not a tracking ref a local edit could have moved.
+    main_now = fresh_main(remote)
+    if main_now is None:
+        return False
+    shown = subprocess.run(["git", "show", f"{main_now}:.keelokit/state.toml"], cwd=ROOT, capture_output=True, text=True)
     try:
         state = tomllib.loads(shown.stdout) if shown.returncode == 0 else {}
     except ValueError:
@@ -553,7 +558,7 @@ def seal_branch_only(remote: str, refs: str) -> bool:
     if not folder or not lines or not all(len(l) == 4 and l[2] == f"refs/heads/{m['branch']}" for l in lines):
         return False
     seal_file = re.compile(re.escape(m["path"]).replace(re.escape("{head}"), "([0-9a-f]{40}|[0-9a-f]{64})") + r"\Z")
-    main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
+    main = [main_now]
     green = green_runs()
     for _, sha, _, remote_sha in lines:
         if set(sha) == {"0"}:  # a deletion pushes no commits
@@ -642,9 +647,20 @@ def clock_plan(base: str) -> list[tuple[str, str, list[str]]]:
 def proven(remote: str, sha: str) -> bool:
     """`sha` has a clean, full, green verify in this clone's history (green_runs) against `remote`'s main
     as it is after a fetch: the same proof a seal needs, for a commit that isn't checked out."""
-    subprocess.run(["git", "fetch", "--quiet", remote, "main"], cwd=ROOT, capture_output=True)
+    main = fresh_main(remote)
+    return main is not None and any(head == sha and base == main for head, base, _ in green_runs())
+
+
+def fresh_main(remote: str) -> str | None:
+    """`remote`'s main as it is now: fetched with an explicit refspec, so the tracking ref is overwritten
+    even when the remote has no fetch refspec or the ref was moved by hand. None when the fetch fails:
+    every exception to the push gate that reads it then stays closed."""
+    fetched = subprocess.run(["git", "fetch", "--quiet", remote, f"+refs/heads/main:refs/remotes/{remote}/main"],
+                             cwd=ROOT, capture_output=True)
+    if fetched.returncode:
+        return None
     main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
-    return bool(main) and any(head == sha and base == main[0] for head, base, _ in green_runs())
+    return main[0] if main else None
 
 
 WIP_PREFIX = re.compile(r"[a-z0-9][\w.-]*/")
@@ -653,9 +669,10 @@ WIP_PREFIX = re.compile(r"[a-z0-9][\w.-]*/")
 def remote_state(remote: str) -> dict:
     """.keelokit/state.toml as `remote`'s main holds it after a fetch: settings that loosen the push gate
     are read from there, never from an uncommitted or unpushed edit."""
-    subprocess.run(["git", "fetch", "--quiet", remote, "main"], cwd=ROOT, capture_output=True)
-    shown = subprocess.run(["git", "show", f"refs/remotes/{remote}/main:.keelokit/state.toml"], cwd=ROOT,
-                           capture_output=True, text=True)
+    main = fresh_main(remote)
+    if main is None:
+        return {}
+    shown = subprocess.run(["git", "show", f"{main}:.keelokit/state.toml"], cwd=ROOT, capture_output=True, text=True)
     try:
         return tomllib.loads(shown.stdout) if shown.returncode == 0 else {}
     except ValueError:
@@ -685,10 +702,13 @@ def wip_inside(remote: str, sha: str) -> str | None:
     main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
     tips = git_lines("for-each-ref", "--format=%(objectname)", f"refs/remotes/{remote}/{prefix}")
     try:
-        tips += [l.strip() for l in wip_tips_file().read_text().splitlines() if l.strip()]
+        tips += [l.strip() for l in wip_tips_file().read_text(errors="replace").splitlines()
+                 if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", l.strip())]
     except OSError:
         pass
     proven_here = {head for head, base, _ in green_runs() if main and base == main[0]}
+    if sha in proven_here:  # the pushed commit itself passed: the wip work in it was verified with it
+        return None
     for tip in dict.fromkeys(tips):
         if tip in proven_here or (main and is_ancestor(tip, main[0])):
             continue
@@ -712,7 +732,8 @@ def tree(commit: str) -> dict[str, tuple[str, str]] | None:
 
 def green_runs() -> set[tuple[str, str, str]]:
     """(commit, base, level) of every clean, full, green verify against origin/main in this clone's
-    history: no --steps/--packages/--rerun-failed narrowing (partial), no --since, no uncommitted change.
+    history: no --steps/--packages/--rerun-failed narrowing (partial), no --since, no uncommitted change,
+    and no integration step cut down to the specs a fix reaches (narrowed): what another checkout trusts.
     An "all" pass covers "changed" too."""
     common = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     try:
@@ -726,7 +747,7 @@ def green_runs() -> set[tuple[str, str, str]]:
         except ValueError:
             continue
         if (isinstance(e, dict) and e.get("result") == "pass" and e.get("partial") is False and e.get("clean") is True
-                and e.get("since") is False and isinstance(e.get("head"), str) and isinstance(e.get("base"), str)):
+                and e.get("since") is False and e.get("narrowed") is not True and isinstance(e.get("head"), str) and isinstance(e.get("base"), str)):
             for level in ({"all", "changed"} if e.get("level") == "all" else {"changed"}):
                 green.add((e["head"], e["base"], level))
     return green

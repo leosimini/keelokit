@@ -23,6 +23,17 @@ fi
 head=$(git rev-parse --verify --quiet HEAD) || head=
 wip=$(python3 .keelokit/bin/verify_tools.py wip-prefix "$1" </dev/null) || wip=
 pushed=0 refused=0 lines=0 heads=0
+# Every wip tip of this push is remembered before any other line is checked: a main listed first can't
+# carry wip work the same push is only now putting on the remote.
+if [ -n "$wip" ]; then
+  while read -r local_ref local_sha remote_ref remote_sha; do
+    case $remote_ref in "refs/heads/$wip"*) ;; *) continue ;; esac
+    case $local_sha in *[!0]*) ;; *) continue ;; esac
+    python3 .keelokit/bin/verify_tools.py wip-record "$(git rev-parse --verify --quiet "$local_sha^{commit}" || echo "$local_sha")" </dev/null || true
+  done <<EOF_WIP
+$refs
+EOF_WIP
+fi
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$local_sha" ] || continue
   lines=$((lines + 1))
@@ -33,14 +44,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [ -n "$wip" ]; then
     case $remote_ref in
       "refs/heads/$wip"*)
-        echo "pre-push: $remote_ref is ${wip%/} work: not verified, and it can't land until a verified branch redoes it."
-        python3 .keelokit/bin/verify_tools.py wip-record "$commit" </dev/null || true
+        echo "pre-push: $remote_ref is ${wip%/} work: not verified, and it can't land until a commit that holds it passes a verify."
         continue
         ;;
     esac
     if tip=$(python3 .keelokit/bin/verify_tools.py wip-inside "$1" "$commit" </dev/null); then
       refused=$((refused + 1))
-      echo "pre-push: $remote_ref would get unverified ${wip%/} work ($(printf %.7s "$tip"), not on origin/main): redo it on a branch from origin/main, or verify it first." >&2
+      echo "pre-push: $remote_ref would get unverified ${wip%/} work ($(printf %.7s "$tip"), not on origin/main): run pnpm verify on this commit (green and clean, it covers the wip work in it), then push again." >&2
       continue
     fi
   fi

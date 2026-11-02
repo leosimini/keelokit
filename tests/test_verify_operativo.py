@@ -794,6 +794,8 @@ if "ls" in args and "--depth" in args:
     print(os.environ.get("LS_OUT", "")); sys.exit(0)
 out = next((a.split("=", 1)[1] for a in args if a.startswith("--outputFile.json=")), None)
 fail = [f for f in os.environ.get("INT_FAIL", "").split(",") if f]
+if out and os.environ.get("INT_UNHANDLED"):
+    print("Vitest caught 1 unhandled error during the test run. Unhandled Errors")
 if out:
     ran = [a for a in args if a.endswith(".integration.spec.ts")] or ["src/a.integration.spec.ts", "src/b.integration.spec.ts"]
     api = os.path.join(os.getcwd(), "apps/api")
@@ -889,6 +891,16 @@ exit 0
         self.run_verify("--rerun-failed")
         self.assertTrue(any("test:integration" in c for c in self.integration_calls()), self.called())
 
+    def test_HARN_019_S4_an_error_outside_any_spec_makes_the_record_incomplete(self):
+        """Vitest lists the spec whose timer threw as passed: the failed specs don't account for the red."""
+        self.commit_change("apps/api/src/svc.ts", "export const svc = 2\n")
+        self.run_verify(INT_FAIL="src/a.integration.spec.ts", INT_UNHANDLED="1")
+        self.assertFalse(self.history()[-1]["int_complete"])
+        self.commit_change("apps/api/src/svc.ts", "export const svc = 3\n")
+        self.calls.write_text("")
+        self.run_verify("--rerun-failed")
+        self.assertTrue(any("test:integration" in c for c in self.integration_calls()), self.called())
+
     def test_HARN_019_S5_a_narrowed_green_completes_the_red_run_and_seals(self):
         self.red_at_integration()
         red = sh(self.repo, "git", "rev-parse", "HEAD")
@@ -897,6 +909,12 @@ exit 0
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         seal = dict(l.split("=", 1) for l in (self.git_dir / "keelokit-verify.seal").read_text().splitlines())
         self.assertEqual(seal["composite_of"], red)
+        # it seals this clone's push, but another checkout's proof needs a run that wasn't cut down
+        self.assertTrue(self.history()[-1]["narrowed"])
+        green = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, '.keelokit/bin'); "
+                                "import verify_tools; print(len(verify_tools.green_runs()))"],
+                               cwd=self.repo, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(green, "0")
 
     def history_text(self):
         return (self.git_dir / "keelokit-verify.history").read_text()
@@ -1131,6 +1149,28 @@ class WipBranchesTest(PrePushFixture):
         r = self.push("HEAD:main")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(self.verified())
+
+    def test_HARN_017_S3_a_verified_commit_that_holds_red_wip_work_goes_through(self):
+        self.unfinished()  # red: half.ts doesn't parse
+        self.push("HEAD:wip/topic")
+        self.commit_change("apps/web/src/half.ts", "export const half = 1\n")  # finished on top
+        self.assertNotEqual(self.push("HEAD:main").returncode, 0, "not verified yet")
+        self.assertIn("run pnpm verify on this commit", self.last.stderr)
+        self.assertEqual(self.verify().returncode, 0)
+        r = self.push("HEAD:main")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_HARN_017_S4_a_tracking_ref_moved_by_hand_opens_nothing(self):
+        """Even without a fetch refspec, the key is read from the remote's main as it is now."""
+        self.state("[gates]\n")
+        sh(self.repo, "git", "config", "--unset-all", "remote.origin.fetch")
+        (self.repo / ".keelokit/state.toml").write_text('[verify]\nwip_branches = "feat/"\n')
+        sh(self.repo, "git", "commit", "-qam", "a local key")
+        sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.unfinished()
+        r = self.push("HEAD:feat/x")
+        self.assertNotIn("not verified", r.stdout)
+        self.assertTrue(self.verified(), r.stdout + r.stderr)
 
     def test_HARN_017_S4_without_the_key_a_wip_branch_is_an_ordinary_branch(self):
         self.state("[gates]\n")

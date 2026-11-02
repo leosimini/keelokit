@@ -29,12 +29,12 @@ Scenario: [S2] A push holding wip work is refused, even after the branch is gone
   Then refused before any verify
 
 Scenario: [S3] Wip work that passed a verify here no longer blocks
-  Given the wip tip itself verified green and clean
+  Given the wip tip itself, or a finished commit that holds it, verified green and clean
   When it is pushed to main
   Then it goes through the usual verify
 
 Scenario: [S4] Without the key a wip branch is an ordinary branch
-  Given no wip_branches on origin/main (a local edit doesn't count)
+  Given no wip_branches on origin/main (a local edit, or a tracking ref moved by hand, doesn't count)
   When a push to wip/topic
   Then verified like any branch
 
