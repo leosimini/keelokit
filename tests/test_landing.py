@@ -15,7 +15,9 @@ REPO = Path(__file__).resolve().parents[1]
 STATUS = REPO / "template/.keelokit/bin/status.py"
 DOCTOR = REPO / "template/.keelokit/bin/doctor.py"
 PRE_PUSH = REPO / "template/.githooks/pre-push"
-NOTE = "Harbor adds the per-branch gate"
+NOTE = "verifies every push, Harbor's logbook writes included"
+# The pre-push hook of 0.11.0, before it skipped a push of only the shared-seals branch.
+OLD_PRE_PUSH = "#!/usr/bin/env sh\nexec pnpm verify --use-seal\n"
 NOT_FINISHED = "not finished (commits not on main): "
 DELIVERED = "delivered, waiting for a convoy: "
 
@@ -112,7 +114,7 @@ class DoctorFixture(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
         files = {".keelokit/bin/doctor.py": DOCTOR.read_text(), "README.md": "# r\n",
-                 ".githooks/pre-push": PRE_PUSH.read_text(),
+                 ".githooks/pre-push": OLD_PRE_PUSH,
                  "docs/context/gaps.md": "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n"}
         files |= {f"docs/context/{f}.md": f"# {f}\n" for f in ("product", "domain", "constraints", "environments")}
         for rel, text in files.items():
@@ -135,19 +137,21 @@ class DoctorLandingTest(DoctorFixture):
         self.write(".keelokit/state.toml", '[landing]\npolicy = "direct"\n')
         self.assertEqual((self.doctor(), self.doctor("--brief")), absent)
 
-    def test_convoy_notes_the_pre_push_hook_without_failing(self):
+    def test_HARN_012_S1_convoy_with_a_hook_that_verifies_every_push_says_so(self):
         before = self.doctor()
         self.write(".keelokit/state.toml", '[landing]\npolicy = "convoy"\n')
         out = self.doctor()
-        self.assertRegex(out, rf"(?m)^  warn  landing: .*{NOTE}$")
+        self.assertRegex(out, rf"(?m)^  warn  landing: policy is convoy, and .githooks/pre-push {NOTE} ")
         self.assertNotIn("ERROR", out)
         # The note is the only difference.
         self.assertEqual([l for l in out.splitlines() if NOTE not in l], before.splitlines())
-        self.assertEqual((self.root / ".githooks/pre-push").read_text(), PRE_PUSH.read_text())
+        self.assertIn("harness-upgrade", out)
+        self.assertNotIn("only what reaches main", out)
+        self.assertEqual((self.root / ".githooks/pre-push").read_text(), OLD_PRE_PUSH, "the doctor never edits the hook")
 
-    def test_no_note_when_the_hook_knows_harbor_or_is_missing(self):
+    def test_HARN_012_S2_no_note_when_the_hook_skips_the_seal_branch_or_is_missing(self):
         self.write(".keelokit/state.toml", '[landing]\npolicy = "convoy"\n')
-        self.write(".githooks/pre-push", "#!/usr/bin/env sh\nexec harbor gate\n")
+        self.write(".githooks/pre-push", "#!/usr/bin/env sh\npython3 .keelokit/bin/verify_tools.py seal-branch-only \"$1\"\n")
         self.assertNotIn(NOTE, self.doctor())
         (self.root / ".githooks/pre-push").unlink()
         self.assertNotIn(NOTE, self.doctor())

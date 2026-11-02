@@ -40,7 +40,8 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   stops; Harbor (a companion plugin, `/harbor:*`) merges a batch of delivered branches, from any
   session, account or machine, into `convoy/<n>`, verifies it once and lands it in one push. With
   `convoy` the brief's landing, `coordinate`, `status.py` ("delivered, waiting for a convoy") and
-  the doctor (a note that the pre-push hook only gates main) follow; nothing else changes.
+  the doctor (a note when the pre-push hook would also verify each write to Harbor's logbook) follow;
+  nothing else changes.
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
 
 The process rules that came from long parallel use (CI budget, local gate, sessions, migrations,

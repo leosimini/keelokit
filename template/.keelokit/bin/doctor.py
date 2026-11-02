@@ -1119,14 +1119,17 @@ def check_shared_seals() -> None:
 
 
 def check_landing() -> None:
-    """Convoy: sessions push branches, never main, so a pre-push hook is the gate of what lands on main only;
-    the per-branch gate (verify on each delivered hash) is Harbor's. A note, not a failure."""
+    """Convoy: the pre-push hook verifies every push, a session's branch included; the template's hook
+    skips only a push of nothing but the [verify] shared_seals branch (Harbor's logbook, no code). A hook
+    without that exception also verifies each logbook write, and a red HEAD makes the write fail: say
+    so, and where the current hook comes from. A note, not a failure."""
     if landing_policy() != "convoy":
         return
     text, _ = read_file(ROOT / ".githooks/pre-push", lenient=True)
-    if text is not None and "harbor" not in text.lower():
-        warnings.append("landing: policy is convoy and .githooks/pre-push protects only what reaches main; "
-                        "Harbor adds the per-branch gate")
+    if text is not None and "seal-branch-only" not in text:
+        warnings.append("landing: policy is convoy, and .githooks/pre-push verifies every push, Harbor's logbook "
+                        "writes included (a red HEAD fails them); /keelokit:harness-upgrade brings the hook that skips "
+                        "a push of only the [verify] shared_seals branch")
 
 
 def check_scope(sid: str) -> int:

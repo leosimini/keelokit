@@ -5,6 +5,8 @@
 - **The first commit of a new product goes through.** The template's CI had `continue-on-error` set to true in the
   `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
   it. The line is gone: downloading timings that no job uploaded already succeeds.
+- **The doctor's convoy note says what the pre-push hook does.** It said the hook protected only main; the hook verifies
+  every push. The note now appears only for a hook that also verifies Harbor's logbook writes, and says how to update it.
 
 ## 0.11.0 — 2026-11-01 — a verify you can trust
 
