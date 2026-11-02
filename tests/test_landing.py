@@ -193,7 +193,8 @@ class TextsTest(unittest.TestCase):
 3. `git push origin HEAD:main` (or the repo's way). If main moved, go back to 1.
 4. `git log origin/main --oneline -1` shows your commit. That hash is the report.""")
         convoy = re.search(r"(?s)## Landing — `convoy`\n\n(.*?)\n\n## ", brief).group(1)
-        for needle in ("never pushes to main", "pnpm verify --since origin/main", "branch + full hash + tier + verify result"):
+        for needle in ("never pushes to main", "`pnpm verify` green on the final commit", "it seals",
+                       "branch + full hash + tier + verify result"):
             self.assertIn(needle, convoy)
         self.assertIn("absent = `direct`", brief)
         self.assertLessEqual(len(brief.splitlines()), 90, "the brief is one page")

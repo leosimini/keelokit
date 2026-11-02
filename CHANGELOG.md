@@ -9,6 +9,8 @@
   `[verify] shared_seals` branch, when every commit pushed holds only files under the seals' folder; any other ref or
   file, and it verifies as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The
   seal branch can't be `main`, `master` or `release` (the doctor checks).
+- **A convoy session verifies its branch with a plain `pnpm verify`.** Same scope as `--since origin/main`, but it seals,
+  so pushing the branch doesn't run it again (the agent brief and `build-story`).
 - **The doctor's convoy note says what the pre-push hook does.** It said the hook protected only main; the hook verifies
   every push. The note now appears only for a hook that also verifies Harbor's logbook writes, and says how to update it.
 

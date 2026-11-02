@@ -32,7 +32,8 @@ Harbor (`/harbor:*`) merges delivered branches into `convoy/<n>`, verifies them 
 main. The session **never pushes to main**:
 
 1. Rebase on `origin/main` as in step 1 above.
-2. `pnpm verify --since origin/main` green on the final commit. A commit after it means verify again.
+2. `pnpm verify` green on the final commit: the same scope as `--since origin/main`, but it seals,
+   so the push in step 3 doesn't run it again. A commit after it means verify again.
 3. `git push origin HEAD:<branch>`; `git ls-remote origin <branch>` shows the verified hash.
 4. The report is branch + full hash + tier + verify result. Not pushed, or green on another hash:
    not delivered.

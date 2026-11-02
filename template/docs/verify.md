@@ -94,7 +94,8 @@ skip the local gate, so protect it like `main`. The doctor checks the key's shap
 
 `[landing] policy` in `.keelokit/state.toml` (absent = `direct`). `direct`: a session runs
 `pnpm verify` and pushes main; the pre-push hook is the last gate. `convoy`: a session never pushes
-main; it pushes its branch with `pnpm verify --since origin/main` green on that exact hash, and
+main; it pushes its branch with a plain `pnpm verify` green on that exact hash (the scope of
+`--since origin/main`, but sealed, so the push doesn't repeat it), and
 Harbor (`/harbor:*`) verifies the convoy branch once before it lands. The pre-push hook verifies
 every push, a session's branch as much as main, except a push of nothing but the `[verify]
 shared_seals` branch (below).

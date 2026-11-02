@@ -637,6 +637,39 @@ class SharedSealTest(VerifyFixture):
         self.assertTrue(any("run test" in c for c in self.called()))
 
 
+class ConvoyBranchVerifyTest(VerifyFixture):
+    """HARN-011: under convoy a session verifies its branch with a plain `pnpm verify`, which covers what
+    `--since origin/main` does and seals, so the branch push (the hook's --use-seal) doesn't repeat it."""
+
+    def on_a_branch(self):
+        sh(self.repo, "git", "checkout", "-q", "-b", "auth-003")
+        self.commit_change()
+
+    def test_HARN_011_S1_a_plain_verify_has_the_scope_of_since_origin_main(self):
+        self.on_a_branch()
+        self.assertEqual(self.verify().returncode, 0)
+        plain = self.called()
+        self.calls.write_text("")
+        (self.git_dir / "keelokit-audit-ok").unlink(missing_ok=True)  # a green audit is reused for 24 h
+        self.assertEqual(self.verify("--since", "origin/main").returncode, 0)
+        self.assertEqual(plain, self.called())
+        self.assertTrue(any("...[origin/main]" in c for c in plain), plain)
+
+    def test_HARN_011_S2_the_branch_push_does_not_run_it_again(self):
+        self.on_a_branch()
+        self.assertEqual(self.verify().returncode, 0)
+        self.calls.write_text("")
+        r = self.verify("--use-seal")  # what the pre-push hook runs on `git push origin HEAD:auth-003`
+        self.assertIn("already passed", r.stdout)
+        self.assertEqual(self.called(), [])
+        # --since never seals: the push would run the whole verify again
+        (self.git_dir / "keelokit-verify.seal").unlink()
+        self.assertEqual(self.verify("--since", "origin/main").returncode, 0)
+        self.calls.write_text("")
+        self.assertNotIn("already passed", self.verify("--use-seal").stdout)
+        self.assertTrue(self.called())
+
+
 class PrePushTest(VerifyFixture):
     """HARN-010: the pre-push hook verifies every push but one that updates nothing but the [verify]
     shared_seals branch with commits holding only seal files: Harbor's logbook, no code. Real pushes to

@@ -36,7 +36,7 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `harness/agent-brief.md` — the one page every parallel session is told to read.
 - `[landing] policy` in `state.toml` — how finished work reaches main. `direct` (the default, and
   what an absent key means): each session rebases, verifies and pushes main itself. `convoy`: each
-  session pushes its own branch with `pnpm verify --since origin/main` green on that hash and
+  session pushes its own branch with a plain `pnpm verify` green (sealed) on that hash and
   stops; Harbor (a companion plugin, `/harbor:*`) merges a batch of delivered branches, from any
   session, account or machine, into `convoy/<n>`, verifies it once and lands it in one push. With
   `convoy` the brief's landing, `coordinate`, `status.py` ("delivered, waiting for a convoy") and
