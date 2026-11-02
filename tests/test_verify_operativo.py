@@ -705,6 +705,13 @@ class PrePushTest(VerifyFixture):
         sh(self.repo, "git", "commit", "-qm", "logbook")
         sh(self.repo, "git", "checkout", "-q", "-f", "main")
 
+    def append_logbook(self, text):
+        """A new logbook write on top of the last one, so a push has a ref to send."""
+        sh(self.repo, "git", "checkout", "-q", "harbor/log")
+        (self.repo / "harbor/seals/abc.toml").write_text(text)
+        sh(self.repo, "git", "commit", "-qam", "logbook")
+        sh(self.repo, "git", "checkout", "-q", "-f", "main")
+
     def push(self, *refs):
         self.calls.write_text("")
         return subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.repo, capture_output=True, text=True,
@@ -727,6 +734,7 @@ class PrePushTest(VerifyFixture):
         r = self.push("harbor/log", "main")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("pnpm verify --use-seal", self.called())
+        self.commit_change(text="export const a = 3\n")  # something new, or git sends no ref and the check proves nothing
         self.push("main")
         self.assertTrue(self.verified(), "a push of main alone is verified as before")
 
@@ -817,6 +825,7 @@ class PrePushTest(VerifyFixture):
         self.push("harbor/log")
         self.assertTrue(self.verified())
         # an uncommitted (or unpushed) edit doesn't count: the key is read from origin/main
+        self.append_logbook("edited\n")
         (self.repo / ".keelokit/state.toml").write_text(f'[verify]\nshared_seals = "{self.SPEC}"\n')
         self.push("harbor/log")
         self.assertTrue(self.verified())
@@ -824,9 +833,11 @@ class PrePushTest(VerifyFixture):
         # nor does a remote-tracking ref moved by hand: the hook fetches main before reading the key
         self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n', push=False)
         sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.append_logbook("moved by hand\n")
         self.push("harbor/log")
         self.assertTrue(self.verified())
         self.state('[verify]\nshared_seals = "origin/main:harbor/seals/{head}.toml"\n')
+        self.commit_change(text="export const a = 4\n")
         self.push("main")
         self.assertTrue(self.verified(), "main can't be the seal branch")
 
