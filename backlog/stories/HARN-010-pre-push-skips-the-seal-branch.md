@@ -29,14 +29,20 @@ Scenario: [S2] The seal branch with any other ref is verified
   Then it verifies, and main alone is verified as before
 
 Scenario: [S3] Code on the seal branch is verified
-  Given a logbook commit with a file outside the seals' folder
+  Given a logbook commit with a file outside the seals' folder, or a parent commit with code under it
   When it is pushed
   Then the hook verifies
 
 Scenario: [S4] Without the key, or with main as the seal branch, everything is verified
   Given no [verify] shared_seals, or one naming main
   When any push
-  Then the hook verifies; the doctor rejects main, master and release as the seal branch
+  Then the hook verifies; the doctor rejects main, master and release as the seal branch; an
+  uncommitted edit of the key doesn't count (it is read from origin/main)
+
+Scenario: [S5] A seal for a commit that never passed here is verified
+  Given a logbook commit adding a seal for a commit with no full green verify in this clone's history
+  When it is pushed
+  Then the hook verifies; after a green run of that commit (at the seal's level) it doesn't
 ```
 
 ## Testable units

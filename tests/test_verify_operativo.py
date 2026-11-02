@@ -672,8 +672,9 @@ class ConvoyBranchVerifyTest(VerifyFixture):
 
 class PrePushTest(VerifyFixture):
     """HARN-010: the pre-push hook verifies every push but one that updates nothing but the [verify]
-    shared_seals branch with commits holding only seal files: Harbor's logbook, no code. Real pushes to
-    the fixture's origin, with the template's hook on."""
+    shared_seals branch (as origin/main configures it) with commits holding only files under the seals'
+    folder, each seal naming a commit that passed a full verify here: Harbor's logbook, no code. Real
+    pushes to the fixture's origin, with the template's hook on."""
 
     SPEC = "origin/harbor/log:harbor/seals/{head}.toml"
 
@@ -685,18 +686,21 @@ class PrePushTest(VerifyFixture):
         self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n')
         sh(self.repo, "git", "config", "core.hooksPath", ".githooks")
 
-    def state(self, text):
+    def state(self, text, push=True):
+        """Commit state.toml and push main, where the hook reads the key from."""
         (self.repo / ".keelokit/state.toml").write_text(text)
         sh(self.repo, "git", "add", "-A")
         sh(self.repo, "git", "commit", "-qm", "state")
+        if push:
+            self.push("main")
 
-    def logbook(self, *files):
+    def logbook(self, *files, contents=None):
         """A commit on the harbor/log branch holding `files` (paths), as Harbor writes its logbook."""
         sh(self.repo, "git", "checkout", "-q", "--orphan", "harbor/log")
         sh(self.repo, "git", "rm", "-rqf", ".")
         for rel in files:
             (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
-            (self.repo / rel).write_text("x\n")
+            (self.repo / rel).write_text((contents or {}).get(rel, "x\n"))
         sh(self.repo, "git", "add", "-A")
         sh(self.repo, "git", "commit", "-qm", "logbook")
         sh(self.repo, "git", "checkout", "-q", "-f", "main")
@@ -731,11 +735,52 @@ class PrePushTest(VerifyFixture):
         self.push("harbor/log")
         self.assertTrue(self.verified(), "a commit with a file outside harbor/ is code")
 
+    def test_HARN_010_S3_code_in_a_parent_of_the_logbook_commit_is_verified(self):
+        """The tip holds only harbor/, but the commit under it brings code: every new commit counts."""
+        self.commit_change("apps/web/src/evil.ts", "export const evil = 1\n")
+        sh(self.repo, "git", "checkout", "-q", "-b", "sneak")
+        sh(self.repo, "git", "rm", "-rqf", ".")
+        (self.repo / "harbor/seals").mkdir(parents=True)
+        (self.repo / "harbor/seals/abc.toml").write_text("x\n")
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", "only harbor/ at the tip")
+        sh(self.repo, "git", "checkout", "-q", "-f", "main")
+        self.push("sneak:harbor/log")
+        self.assertTrue(self.verified())
+
+    def test_HARN_010_S5_a_seal_for_a_commit_that_never_passed_here_is_verified(self):
+        head = sh(self.repo, "git", "rev-parse", "HEAD")
+        seal = f"harbor/seals/{head}.toml"
+        text = {seal: f'head = "{head}"\nbase = "x"\nexit = 0\nlevel = "changed"\n'}
+        self.logbook(seal, contents=text)
+        self.push("harbor/log")
+        self.assertTrue(self.verified(), "no green run of that commit in this clone: the seal is not taken on trust")
+        self.assertEqual(self.verify().returncode, 0)  # now it passes here
+        sh(self.repo, "git", "checkout", "-q", "harbor/log")  # the next logbook write, on top of the last one
+        (self.repo / seal).write_text(text[seal] + "# written again after the green run\n")
+        sh(self.repo, "git", "commit", "-qam", "logbook")
+        sh(self.repo, "git", "checkout", "-q", "-f", "main")
+        r = self.push("harbor/log")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.verified(), self.called())
+        # and an "all" seal needs an --all pass, which this clone doesn't have
+        sh(self.repo, "git", "checkout", "-q", "harbor/log")
+        (self.repo / seal).write_text(text[seal].replace('"changed"', '"all"'))
+        sh(self.repo, "git", "commit", "-qam", "logbook")
+        sh(self.repo, "git", "checkout", "-q", "-f", "main")
+        self.push("harbor/log")
+        self.assertTrue(self.verified())
+
     def test_HARN_010_S4_without_the_key_or_with_main_as_the_seal_branch_everything_is_verified(self):
         self.logbook("harbor/seals/abc.toml")
         self.state("[gates]\n")
         self.push("harbor/log")
         self.assertTrue(self.verified())
+        # an uncommitted (or unpushed) edit doesn't count: the key is read from origin/main
+        (self.repo / ".keelokit/state.toml").write_text(f'[verify]\nshared_seals = "{self.SPEC}"\n')
+        self.push("harbor/log")
+        self.assertTrue(self.verified())
+        sh(self.repo, "git", "checkout", "-q", "--", ".keelokit/state.toml")
         self.state('[verify]\nshared_seals = "origin/main:harbor/seals/{head}.toml"\n')
         self.push("main")
         self.assertTrue(self.verified(), "main can't be the seal branch")

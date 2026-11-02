@@ -6,9 +6,11 @@
   `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
   it. The line is gone: downloading timings that no job uploaded already succeeds.
 - **Writing Harbor's logbook doesn't run a verify.** The pre-push hook skips a push whose refs all go to the
-  `[verify] shared_seals` branch, when every commit pushed holds only files under the seals' folder; any other ref or
-  file, and it verifies as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The
-  seal branch can't be `main`, `master` or `release` (the doctor checks).
+  `[verify] shared_seals` branch (as `origin/main` sets it), when every commit it brings holds only files under the
+  seals' folder and every seal it adds names a commit that passed a full verify in this clone; anything else, and it
+  verifies as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The seal path now
+  needs a folder (`harbor/seals/{head}.toml`, not `{head}.toml`), and the branch can't be `main`, `master` or `release`:
+  the doctor checks both.
 - **A convoy session verifies its branch with a plain `pnpm verify`.** Same scope as `--since origin/main`, but it seals,
   so pushing the branch doesn't run it again (the agent brief and `build-story`).
 - **The doctor's convoy note says what the pre-push hook does.** It said the hook protected only main; the hook verifies

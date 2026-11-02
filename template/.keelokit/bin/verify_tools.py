@@ -446,11 +446,17 @@ NEVER_SEAL_BRANCHES = {"main", "master", "release"}
 def seal_branch_only(remote: str, refs: str) -> bool:
     """True when the push (git's pre-push stdin: "<local ref> <local sha> <remote ref> <remote sha>" per
     line) goes to `remote` and updates nothing but the [verify] shared_seals branch there: Harbor's
-    logbook, which holds seals and no code, so there's nothing to verify. Anything else, an empty push
-    or a commit with a file outside the seals' folder included, is False: the hook runs the verify."""
+    logbook, which holds seals and no code, so there's nothing to verify. Checked, not assumed:
+    - the key is read from `<remote>/main`'s .keelokit/state.toml, never from an uncommitted edit;
+    - every commit the push brings (not only its tip) holds only files under the seals' folder;
+    - every seal it adds names a commit with a full green verify in this clone's history, at the seal's
+      level: the exception carries seals, it can't mint one for a commit that never passed here.
+    Anything else, an empty push included, is False: the hook runs the verify."""
+    shown = subprocess.run(["git", "show", f"refs/remotes/{remote}/main:.keelokit/state.toml"], cwd=ROOT,
+                           capture_output=True, text=True)
     try:
-        state = tomllib.loads((ROOT / ".keelokit/state.toml").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        state = tomllib.loads(shown.stdout) if shown.returncode == 0 else {}
+    except ValueError:
         return False
     spec = state.get("verify", {}).get("shared_seals") if isinstance(state.get("verify"), dict) else None
     m = SHARED.fullmatch(spec) if isinstance(spec, str) else None
@@ -460,15 +466,53 @@ def seal_branch_only(remote: str, refs: str) -> bool:
     lines = [l.split() for l in refs.splitlines() if l.strip()]
     if not folder or not lines or not all(len(l) == 4 and l[2] == f"refs/heads/{m['branch']}" for l in lines):
         return False
-    # "No code" is checked, not assumed: every commit pushed holds only files under the seals' folder
-    # (harbor/ for harbor/seals/{head}.toml). A deletion (all zeros) pushes no files.
+    seal_file = re.compile(re.escape(m["path"]).replace(re.escape("{head}"), "([0-9a-f]{40})") + r"\Z")
+    green = green_heads()
     for _, sha, _, _ in lines:
-        if set(sha) == {"0"}:
+        if set(sha) == {"0"}:  # a deletion pushes no commits
             continue
-        files = subprocess.run(["git", "ls-tree", "-r", "--name-only", sha], cwd=ROOT, capture_output=True, text=True)
-        if files.returncode or any(not f.startswith(folder) for f in files.stdout.splitlines()):
+        new = subprocess.run(["git", "rev-list", sha, "--not", f"--remotes={remote}"], cwd=ROOT,
+                             capture_output=True, text=True)
+        if new.returncode:
             return False
+        for commit in new.stdout.split():
+            files = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit], cwd=ROOT, capture_output=True, text=True)
+            if files.returncode or any(not f.startswith(folder) for f in files.stdout.splitlines()):
+                return False
+            added = subprocess.run(["git", "diff-tree", "--root", "--no-commit-id", "-r", "--name-only",
+                                    "--diff-filter=AM", commit], cwd=ROOT, capture_output=True, text=True)
+            if added.returncode:
+                return False
+            for f in added.stdout.splitlines():
+                if (hit := seal_file.match(f)) is None:
+                    continue
+                try:
+                    level = tomllib.loads(subprocess.run(["git", "show", f"{commit}:{f}"], cwd=ROOT,
+                                                         capture_output=True, text=True).stdout).get("level")
+                except ValueError:
+                    return False
+                if level not in green.get(hit[1], set()):
+                    return False
     return True
+
+
+def green_heads() -> dict[str, set[str]]:
+    """Commit → the levels it passed a full verify at (not a partial run), from this clone's history.
+    An "all" pass covers "changed" too."""
+    common = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    try:
+        lines = (ROOT / common / "keelokit-verify.history").read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return {}
+    green: dict[str, set[str]] = {}
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and e.get("result") == "pass" and e.get("partial") is False and isinstance(e.get("head"), str):
+            green.setdefault(e["head"], set()).update({"all", "changed"} if e.get("level") == "all" else {"changed"})
+    return green
 
 
 def cmd_shared_seal(args: list[str]) -> int:
