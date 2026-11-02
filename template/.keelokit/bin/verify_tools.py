@@ -660,9 +660,11 @@ def fresh_main(remote: str, url: str = "") -> str | None:
     exception to the push gate that reads it then stays closed."""
     source = url or remote
     # A url.*.insteadOf rule that matches the push URL would send this fetch elsewhere: stay closed.
-    rules = subprocess.run(["git", "config", "--get-regexp", r"^url\..*\.insteadof$"], cwd=ROOT,
-                           capture_output=True, text=True).stdout.splitlines()
-    if url and any(url.startswith(r.split(None, 1)[1]) for r in rules if len(r.split(None, 1)) == 2):
+    # -z: entries end in NUL, a key and its value are split by a newline, and a rule with no value (which
+    # git prepends to every URL) is the empty prefix: it matches, so it closes the exception too.
+    rules = subprocess.run(["git", "config", "-z", "--get-regexp", r"^url\..*\.insteadof$"], cwd=ROOT,
+                           capture_output=True, text=True).stdout.split("\0")
+    if url and any(url.startswith(r.partition("\n")[2]) for r in rules if r):
         return None
     ref = "refs/keelokit/push-main"
     fetched = subprocess.run(["git", "fetch", "--quiet", "--no-write-fetch-head", source, f"+refs/heads/main:{ref}"],

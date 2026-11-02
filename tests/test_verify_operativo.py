@@ -1213,6 +1213,15 @@ class WipBranchesTest(PrePushFixture):
         r = self.push("HEAD:feat/z")
         self.assertNotIn("not verified", r.stdout)
         self.assertTrue(self.gated(), r.stdout + r.stderr)
+        # an insteadOf with no value is a prefix git puts in front of every fetched URL: with the decoy where it
+        # points (<prefix><real path>), reading main through it would open the exception; it stays closed
+        sh(self.repo, "git", "config", "--unset", f"url.{decoy}.insteadOf")
+        prefix = str(self.tmp / "evil")
+        sh(self.tmp, "git", "clone", "-q", "--bare", str(decoy), prefix + str(self.origin))
+        sh(self.repo, "git", "config", f"url.{prefix}.insteadOf", "")
+        r = self.push("HEAD:feat/e")
+        self.assertNotIn("not verified", r.stdout)
+        self.assertTrue(self.gated(), r.stdout + r.stderr)
 
     def test_HARN_017_S4_without_the_key_a_wip_branch_is_an_ordinary_branch(self):
         self.state("[gates]\n")
