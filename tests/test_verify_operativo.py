@@ -1205,6 +1205,14 @@ class WipBranchesTest(PrePushFixture):
         r = self.push("HEAD:feat/y")
         self.assertNotIn("not verified", r.stdout)
         self.assertTrue(self.verified(), r.stdout + r.stderr)
+        # nor rewriting rules: pushInsteadOf sends the push to the real remote, insteadOf its fetch to the decoy
+        sh(self.repo, "git", "config", "--unset", "remote.origin.pushurl")
+        sh(self.repo, "git", "config", "remote.origin.url", "alias:real")
+        sh(self.repo, "git", "config", f"url.{self.origin}.pushInsteadOf", "alias:real")
+        sh(self.repo, "git", "config", f"url.{decoy}.insteadOf", str(self.origin))
+        r = self.push("HEAD:feat/z")
+        self.assertNotIn("not verified", r.stdout)
+        self.assertTrue(self.gated(), r.stdout + r.stderr)
 
     def test_HARN_017_S4_without_the_key_a_wip_branch_is_an_ordinary_branch(self):
         self.state("[gates]\n")
@@ -1330,6 +1338,22 @@ exit 0
         r = self.push("HEAD:main")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(any("run test" in c for c in self.called()), "the real main lacks the change: tests run")
+        # rewriting rules: the push goes to the real remote (pushInsteadOf turns the alias into it) while a
+        # fetch of that URL would be sent to the decoy (insteadOf): refused, never trusted
+        before = self.remote()
+        sh(self.repo, "git", "config", "--unset", "remote.origin.pushurl")
+        sh(self.repo, "git", "config", "remote.origin.url", "alias:real")
+        sh(self.repo, "git", "config", f"url.{self.origin}.pushInsteadOf", "alias:real")
+        sh(self.repo, "git", "config", f"url.{decoy}.insteadOf", str(self.origin))
+        self.commit_change("apps/web/src/new.ts", "export const n = 3\n")
+        sh(self.tmp, "git", "--git-dir", str(decoy), "fetch", "-q", str(self.repo), "+HEAD:refs/heads/main")
+        r = self.push("HEAD:main")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("insteadOf", r.stdout + r.stderr)
+        self.assertEqual(self.remote(), before)
+        for key in (f"url.{decoy}.insteadOf", f"url.{self.origin}.pushInsteadOf"):
+            sh(self.repo, "git", "config", "--unset", key)
+        sh(self.repo, "git", "config", "remote.origin.url", str(decoy))
         sh(self.repo, "git", "config", "remote.origin.pushurl", str(self.tmp / "nowhere.git"))
         self.commit_change("apps/web/src/new.ts", "export const n = 2\n")
         r = self.push("HEAD:main")

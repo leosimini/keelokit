@@ -115,7 +115,20 @@ EOF_FILTERS
 head_sha=$(git rev-parse HEAD 2>/dev/null || echo none)
 # origin/main, fetched from where the push goes: the pre-push hook passes the URL it pushes to
 # (KEELOKIT_PUSH_URL, pushurl included), so a fetch URL pointing elsewhere can't choose the base.
-fetch_main() { git fetch --quiet "${KEELOKIT_PUSH_URL:-origin}" +refs/heads/main:refs/remotes/origin/main; }
+# A url.*.insteadOf rule that would rewrite that URL for a fetch would read main somewhere else: refused.
+push_url_rewritten() {
+  [ -n "${KEELOKIT_PUSH_URL:-}" ] || return 1
+  git config --get-regexp '^url\..*\.insteadof$' 2>/dev/null | while read -r _ prefix; do
+    case $KEELOKIT_PUSH_URL in "$prefix"*) echo rewritten ;; esac
+  done | grep -q rewritten
+}
+fetch_main() {
+  if push_url_rewritten; then
+    echo "a url.*.insteadOf rule rewrites $KEELOKIT_PUSH_URL for fetches, so main can't be read where the push goes." >&2
+    return 1
+  fi
+  git fetch --quiet "${KEELOKIT_PUSH_URL:-origin}" +refs/heads/main:refs/remotes/origin/main
+}
 base_sha() { git rev-parse --verify --quiet "$base" 2>/dev/null || echo none; }
 tree_clean() { [ -z "$(git status --porcelain 2>/dev/null)" ]; }
 

@@ -659,6 +659,11 @@ def fresh_main(remote: str, url: str = "") -> str | None:
     hand nor a fetch URL that differs from the push URL can choose it. None when the fetch fails: every
     exception to the push gate that reads it then stays closed."""
     source = url or remote
+    # A url.*.insteadOf rule that matches the push URL would send this fetch elsewhere: stay closed.
+    rules = subprocess.run(["git", "config", "--get-regexp", r"^url\..*\.insteadof$"], cwd=ROOT,
+                           capture_output=True, text=True).stdout.splitlines()
+    if url and any(url.startswith(r.split(None, 1)[1]) for r in rules if len(r.split(None, 1)) == 2):
+        return None
     ref = "refs/keelokit/push-main"
     fetched = subprocess.run(["git", "fetch", "--quiet", "--no-write-fetch-head", source, f"+refs/heads/main:{ref}"],
                              cwd=ROOT, capture_output=True)
