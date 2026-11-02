@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — a gate that checks what it lets through
+## 0.12.0 — 2026-11-02 — a gate that checks what it lets through
 
 Running Harbor (the companion plugin, still in development) against a project generated with 0.11.0 showed where the
 push gate and the first steps of a new project still had gaps. This version closes them, and gives every session one
