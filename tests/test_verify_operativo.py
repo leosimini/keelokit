@@ -821,6 +821,11 @@ class PrePushTest(VerifyFixture):
         self.push("harbor/log")
         self.assertTrue(self.verified())
         sh(self.repo, "git", "checkout", "-q", "--", ".keelokit/state.toml")
+        # nor does a remote-tracking ref moved by hand: the hook fetches main before reading the key
+        self.state(f'[verify]\nshared_seals = "{self.SPEC}"\n', push=False)
+        sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.push("harbor/log")
+        self.assertTrue(self.verified())
         self.state('[verify]\nshared_seals = "origin/main:harbor/seals/{head}.toml"\n')
         self.push("main")
         self.assertTrue(self.verified(), "main can't be the seal branch")

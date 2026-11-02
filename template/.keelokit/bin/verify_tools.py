@@ -456,6 +456,8 @@ def seal_branch_only(remote: str, refs: str) -> bool:
       and with the seal's base: the exception carries seals, it can't mint one for a commit that never
       passed here.
     Anything else, an empty push included, is False: the hook runs the verify."""
+    # The remote's main as it is now, not a tracking ref a local edit could have moved (verify.sh does the same).
+    subprocess.run(["git", "fetch", "--quiet", remote, "main"], cwd=ROOT, capture_output=True)
     shown = subprocess.run(["git", "show", f"refs/remotes/{remote}/main:.keelokit/state.toml"], cwd=ROOT,
                            capture_output=True, text=True)
     try:

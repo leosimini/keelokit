@@ -93,10 +93,15 @@ class HooksWithoutPython(unittest.TestCase):
                             json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}))
                     self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
         subprocess.run(["git", "init", "-q", str(self.proj)], check=True)
+        # pre-push runs the verify after its python3 check: a pnpm that passes stands in for it here.
+        stub = Path(self.tmp) / "stub-bin"
+        stub.mkdir()
+        (stub / "pnpm").write_text("#!/bin/sh\nexit 0\n")
+        (stub / "pnpm").chmod(0o755)
         for hook in git_hooks():
             if "python3" in hook.read_text():
                 with self.subTest(hook=hook.name):
-                    r = run(["/bin/sh", str(hook)], self.proj, path)
+                    r = run(["/bin/sh", str(hook)], self.proj, f"{stub}{os.pathsep}{path}")
                     self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_DX_7_a_project_without_keelokit_is_left_alone(self):
