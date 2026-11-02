@@ -7,8 +7,8 @@
   it. The line is gone: downloading timings that no job uploaded already succeeds.
 - **Writing Harbor's logbook doesn't run a verify.** The pre-push hook skips a push whose refs all go to the
   `[verify] shared_seals` branch (as `origin/main` sets it), when every commit it brings holds only files under the
-  seals' folder and every seal it adds names a commit that passed a clean, full verify here; anything else, and it
-  verifies as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The seal path now
+  seals' folder and every seal it adds names a commit that passed a clean, full verify here; anything else goes
+  through the gate as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The seal path now
   needs a folder (`harbor/seals/{head}.toml`, not `{head}.toml`), and the branch can't be `main`, `master` or `release`:
   the doctor checks both.
 - **A convoy session verifies its branch with a plain `pnpm verify`.** Same scope as `--since origin/main`, but it seals,

@@ -83,16 +83,19 @@ It is accepted only when `head` is this exact commit, `base` is `origin/main` no
 level covers the request (`all` for `--all`), the tree is clean and the partial-run flags are absent;
 otherwise verify says which condition failed and runs. `KEELOKIT_NO_SEAL=1` turns it off.
 
+**Trusting that branch is trusting everyone who can push to it**: whoever can write a file there can
+let a commit skip the local gate, so protect it like `main`. The doctor checks the key's shape.
+
 Writing a seal is a push to that branch, and it holds no code: the pre-push hook doesn't verify a push
 whose refs all go to the `shared_seals` branch of the configured remote, as `origin/main`'s
-`state.toml` sets it, when every commit the push brings holds only files under the seals' folder
-(`harbor/` above), as regular files, merges included, and every seal file the remote doesn't already
-hold names a commit that passed a clean, full verify against `origin/main` in this clone (no `--since`,
-`--steps`, `--packages` or uncommitted change), at the seal's level and with the seal's base. Any other ref in the same push, any other file, or a seal for a commit that never
-passed here, and the hook verifies as usual. The branch can't be `main`, `master` or `release`, and
-the path needs a folder. **Trusting
-that branch is trusting everyone who can push to it**: whoever can write a file there can let a commit
-skip the local gate, so protect it like `main`. The doctor checks the key's shape.
+`state.toml` sets it, when every commit the push brings holds only regular files under the seals'
+folder (`harbor/` above), merges included, and every seal file the remote doesn't already hold names a
+commit that passed a clean, full verify against `origin/main` in this clone (no `--since`, `--steps`,
+`--packages` or uncommitted change), at the seal's level and with the seal's base. Any other ref in
+the same push, any other file, or a seal for a commit that never passed here, and the push goes
+through the gate as usual: verified if it pushes the checked-out commit, refused otherwise (see "The
+pre-push hook pushes only HEAD"). The branch can't be `main`, `master` or `release`, and the path
+needs a folder.
 
 ## Landing policy
 
