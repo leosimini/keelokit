@@ -1,30 +1,46 @@
 # Changelog
 
-## Unreleased
+## Unreleased — a gate that checks what it lets through
 
-- **Session titles.** `python3 .keelokit/bin/status.py title <ID>` prints the canonical title of the session that builds
-  a story, `<project> · wave <n> · <ID>` (`ola` when `[dashboard] lang` is Spanish), and `title --role coordinator`
-  the coordinator's, `<project> · coordinator`. A story it can't find, or one without a wave, is exit 2 with the reason.
-  The agent brief, `build-story` and `coordinate` title the sessions they start with it, rename their own when the tool
-  can, and start each Agent's description with `<ID> · <role>`. Harbor reads the same titles.
+Running Harbor (the companion plugin, still in development) against a project generated with 0.11.0 showed where the
+push gate and the first steps of a new project still had gaps. This version closes them, and gives every session one
+canonical title.
 
-- **The first commit of a new product goes through.** The template's CI had `continue-on-error` set to true in the
-  `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
-  it. The line is gone: downloading timings that no job uploaded already succeeds.
-- **Writing Harbor's logbook doesn't run a verify.** The pre-push hook skips a push whose refs all go to the
-  `[verify] shared_seals` branch (as `origin/main` sets it), when every commit it brings holds only files under the
-  seals' folder and every seal it adds names a commit that passed a clean, full verify here; anything else goes
-  through the gate as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it. The seal path now
-  needs a folder (`harbor/seals/{head}.toml`, not `{head}.toml`), and the branch can't be `main`, `master` or `release`:
-  the doctor checks both.
+### The push gate
+- **The pre-push hook verifies what it pushes.** It ran `pnpm verify --use-seal` on HEAD whatever was pushed, so with a
+  green HEAD `git push origin <red sha>:main`, or pushing another branch, reached the remote unverified. It now reads the
+  pushed refs and refuses a commit other than HEAD ("check it out and push from there"); a push of only deletions
+  verifies nothing; pushing HEAD runs exactly as before.
+- **Writing Harbor's logbook doesn't run a verify.** The hook skips a push whose refs all go to the `[verify]
+  shared_seals` branch (as `origin/main` sets it), when every commit it brings holds only regular files under the seals'
+  folder and every seal it adds names a commit that passed a clean, full verify in this clone; anything else goes
+  through the gate as before. Each logbook write used to verify the session's HEAD, and a red HEAD failed it.
 - **A convoy session verifies its branch with a plain `pnpm verify`.** Same scope as `--since origin/main`, but it seals,
   so pushing the branch doesn't run it again (the agent brief and `build-story`).
 - **The doctor's convoy note says what the pre-push hook does.** It said the hook protected only main; the hook verifies
   every push. The note now appears only for a hook that also verifies Harbor's logbook writes, and says how to update it.
-- **The pre-push hook verifies what it pushes.** It ran `pnpm verify --use-seal` on HEAD whatever was pushed, so with a
-  green HEAD `git push origin <red sha>:main`, or pushing another branch, reached the remote unverified. It now reads the
-  pushed refs and refuses a commit other than HEAD ("check it out and push from there"); a push of only deletions
-  verifies nothing; pushing HEAD runs exactly as before. `/keelokit:harness-upgrade` brings the new hook.
+
+### New projects
+- **The first commit of a new product goes through.** The template's CI had `continue-on-error` set to true in the
+  `ci-report` job, and project-new commits after `pnpm install` turns the git hooks on, so the guard (QA-4) blocked
+  it. The line is gone: downloading timings that no job uploaded already succeeds.
+
+### Session titles
+- **`python3 .keelokit/bin/status.py title <ID>`** prints the canonical title of the session that builds a story,
+  `<project> · wave <n> · <ID>` (`ola` when `[dashboard] lang` is Spanish), and `title --role coordinator` the
+  coordinator's, `<project> · coordinator`. A story it can't find, or one without a wave, is exit 2 with the reason.
+  The agent brief, `build-story` and `coordinate` title the sessions they start with it, rename their own when the tool
+  can, and start each Agent's description with `<ID> · <role>`. Branches stay the id in lowercase.
+
+### Upgrading from 0.11.x
+`/keelokit:harness-upgrade` brings the new pre-push hook, `verify_tools.py`, `status.py`, the doctor, the agent brief and
+`docs/verify.md`, and drops `continue-on-error` from the merged `ci.yml`. By hand, only if it applies:
+
+1. **A `[verify] shared_seals` path without a folder** (`"origin/harbor/log:{head}.toml"`) is now a doctor error: move
+   the seals into one (`"origin/harbor/log:harbor/seals/{head}.toml"`). The branch can't be `main`, `master` or
+   `release`.
+2. **Pushing a commit other than the checked-out one is refused.** Check it out and push from there; its seal skips the
+   verify if it already passed.
 
 ## 0.11.0 — 2026-11-01 — a verify you can trust
 
