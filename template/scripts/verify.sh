@@ -310,7 +310,8 @@ rerun_narrowed=false inherited='' rerun_from='' rerun_proven='' int_specs='' int
 if $rerun; then
   again=$(python3 "$tools" rerun "$history" --head "$head_sha" --base "$(base_sha)" --scope "$(printf '%s ' ${scope_explicit[@]+"${scope_explicit[@]}"})" --level "$($requested_all && echo all || echo changed)") || again=
   if [ -n "$again" ]; then
-    IFS='|' read -r only inherited rerun_from rerun_proven int_specs int_related <<<"$again"
+    IFS='|' read -r only inherited rerun_from rerun_proven int_specs int_related kept_narrowed <<<"$again"
+    [ -z "$kept_narrowed" ] || int_narrowed=true # it keeps an integration pass that ran only some specs
     rerun_narrowed=true
     say "Rerun of what failed or never ran: $only"
   elif [ -z "$packages$filters" ]; then

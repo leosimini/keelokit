@@ -901,6 +901,23 @@ exit 0
         self.run_verify("--rerun-failed")
         self.assertTrue(any("test:integration" in c for c in self.integration_calls()), self.called())
 
+    def test_HARN_019_S5_a_rerun_that_keeps_a_narrowed_integration_pass_stays_narrowed(self):
+        """R2 passed integration on some specs and failed e2e; R3 reruns e2e only and keeps R2's integration
+        pass: R3 must still be `narrowed`, or another checkout would trust it as a full run."""
+        head = sh(self.repo, "git", "rev-parse", "HEAD")
+        base = sh(self.repo, "git", "rev-parse", "origin/main")
+        names = ["secrets", "format", "lint", "typecheck", "doctor", "unit", "integration", "build", "e2e"]
+        entry = {"head": head, "base": base, "level": "changed", "result": "fail", "partial": True, "clean": True,
+                 "since": False, "scope": "", "narrowed": True, "planned": names, "inherited": [],
+                 "passed": [n for n in names if n != "e2e"], "failed_steps": ["e2e"], "packages": []}
+        (self.git_dir / "keelokit-verify.history").write_text(json.dumps(entry) + "\n")
+        out = subprocess.run([sys.executable, ".keelokit/bin/verify_tools.py", "rerun",
+                              str(self.git_dir / "keelokit-verify.history"), "--head", head, "--base", base,
+                              "--scope", "", "--level", "changed"], cwd=self.repo, capture_output=True, text=True)
+        fields = out.stdout.strip().split("|")
+        self.assertIn("integration", fields[1].split(), out.stderr)
+        self.assertEqual(fields[6], "1")
+
     def test_HARN_019_S5_a_narrowed_green_completes_the_red_run_and_seals(self):
         self.red_at_integration()
         red = sh(self.repo, "git", "rev-parse", "HEAD")
@@ -1169,6 +1186,23 @@ class WipBranchesTest(PrePushFixture):
         sh(self.repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
         self.unfinished()
         r = self.push("HEAD:feat/x")
+        self.assertNotIn("not verified", r.stdout)
+        self.assertTrue(self.verified(), r.stdout + r.stderr)
+
+    def test_HARN_017_S4_a_fetch_url_other_than_the_push_url_opens_nothing(self):
+        """The key is read from where the push goes (pushurl), not from wherever `url` points."""
+        self.state("[gates]\n")
+        decoy = self.tmp / "decoy.git"
+        sh(self.tmp, "git", "clone", "-q", "--bare", str(self.origin), str(decoy))
+        work = self.tmp / "decoy-work"
+        sh(self.tmp, "git", "clone", "-q", str(decoy), str(work))
+        (work / ".keelokit/state.toml").write_text('[verify]\nwip_branches = "feat/"\n')
+        sh(work, "git", "-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qam", "a key on the decoy")
+        sh(work, "git", "push", "-q", "origin", "HEAD:main")
+        sh(self.repo, "git", "config", "remote.origin.pushurl", str(self.origin))
+        sh(self.repo, "git", "config", "remote.origin.url", str(decoy))
+        self.unfinished()
+        r = self.push("HEAD:feat/y")
         self.assertNotIn("not verified", r.stdout)
         self.assertTrue(self.verified(), r.stdout + r.stderr)
 

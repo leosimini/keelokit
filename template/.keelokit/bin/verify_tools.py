@@ -434,7 +434,8 @@ def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> t
     kept = sorted(passed & set(NAMES) - todo)
     root = last.get("rerun_of") if isinstance(last.get("rerun_of"), str) and last.get("rerun_of") else last["head"]
     return [n for n in NAMES if n in todo], "", {"inherited": kept, "head": root, "packages": proven,
-                                                  "int": narrow if "integration" in todo else None}
+                                                  "int": narrow if "integration" in todo else None,
+                                                  "narrowed": last.get("narrowed") is True and "integration" in kept}
 
 
 def cmd_rerun(args: list[str]) -> int:
@@ -449,7 +450,8 @@ def cmd_rerun(args: list[str]) -> int:
     print("|".join([" ".join(steps), " ".join(base_on["inherited"]), base_on["head"],
                     "?" if packages is None else "@" + " ".join(packages),
                     "" if narrow is None else "@" + " ".join(narrow["specs"]),
-                    "" if narrow is None else " ".join(narrow["related"])]))
+                    "" if narrow is None else " ".join(narrow["related"]),
+                    "1" if base_on.get("narrowed") else ""]))
     return 0
 
 
@@ -528,7 +530,7 @@ def shared_seal(head: str, base: str, level: str) -> tuple[int, str]:
 NEVER_SEAL_BRANCHES = {"main", "master", "release"}
 
 
-def seal_branch_only(remote: str, refs: str) -> bool:
+def seal_branch_only(remote: str, refs: str, url: str = "") -> bool:
     """True when the push (git's pre-push stdin: "<local ref> <local sha> <remote ref> <remote sha>" per
     line) goes to `remote` and updates nothing but the [verify] shared_seals branch there: Harbor's
     logbook, which holds seals and no code, so there's nothing to verify. Checked, not assumed:
@@ -541,7 +543,7 @@ def seal_branch_only(remote: str, refs: str) -> bool:
       passed here.
     Anything else, an empty push included, is False: the hook runs the verify."""
     # The remote's main as it is now, not a tracking ref a local edit could have moved.
-    main_now = fresh_main(remote)
+    main_now = fresh_main(remote, url)
     if main_now is None:
         return False
     shown = subprocess.run(["git", "show", f"{main_now}:.keelokit/state.toml"], cwd=ROOT, capture_output=True, text=True)
@@ -644,32 +646,35 @@ def clock_plan(base: str) -> list[tuple[str, str, list[str]]]:
     return [(d, r, sorted(fs)) for d, (r, fs) in sorted(groups.items())]
 
 
-def proven(remote: str, sha: str) -> bool:
+def proven(remote: str, sha: str, url: str = "") -> bool:
     """`sha` has a clean, full, green verify in this clone's history (green_runs) against `remote`'s main
     as it is after a fetch: the same proof a seal needs, for a commit that isn't checked out."""
-    main = fresh_main(remote)
+    main = fresh_main(remote, url)
     return main is not None and any(head == sha and base == main for head, base, _ in green_runs())
 
 
-def fresh_main(remote: str) -> str | None:
-    """`remote`'s main as it is now: fetched with an explicit refspec, so the tracking ref is overwritten
-    even when the remote has no fetch refspec or the ref was moved by hand. None when the fetch fails:
-    every exception to the push gate that reads it then stays closed."""
-    fetched = subprocess.run(["git", "fetch", "--quiet", remote, f"+refs/heads/main:refs/remotes/{remote}/main"],
+def fresh_main(remote: str, url: str = "") -> str | None:
+    """Main as it is now where the push goes: fetched from `url` (the pre-push hook's $2, the URL git pushes
+    to, pushurl included) or else from `remote`, into a private ref, so neither a tracking ref moved by
+    hand nor a fetch URL that differs from the push URL can choose it. None when the fetch fails: every
+    exception to the push gate that reads it then stays closed."""
+    source = url or remote
+    ref = "refs/keelokit/push-main"
+    fetched = subprocess.run(["git", "fetch", "--quiet", "--no-write-fetch-head", source, f"+refs/heads/main:{ref}"],
                              cwd=ROOT, capture_output=True)
     if fetched.returncode:
         return None
-    main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
+    main = git_lines("rev-parse", "--verify", "--quiet", ref)
     return main[0] if main else None
 
 
 WIP_PREFIX = re.compile(r"[a-z0-9][\w.-]*/")
 
 
-def remote_state(remote: str) -> dict:
+def remote_state(remote: str, url: str = "") -> dict:
     """.keelokit/state.toml as `remote`'s main holds it after a fetch: settings that loosen the push gate
     are read from there, never from an uncommitted or unpushed edit."""
-    main = fresh_main(remote)
+    main = fresh_main(remote, url)
     if main is None:
         return {}
     shown = subprocess.run(["git", "show", f"{main}:.keelokit/state.toml"], cwd=ROOT, capture_output=True, text=True)
@@ -679,10 +684,10 @@ def remote_state(remote: str) -> dict:
         return {}
 
 
-def wip_prefix(remote: str) -> str | None:
+def wip_prefix(remote: str, url: str = "") -> str | None:
     """[verify] wip_branches ("wip/"): branches under it carry unfinished work between sessions, run no
     verify and never land. None when the key is absent or not a branch-name prefix ending in "/"."""
-    verify = remote_state(remote).get("verify")
+    verify = remote_state(remote, url).get("verify")
     prefix = verify.get("wip_branches") if isinstance(verify, dict) else None
     return prefix if isinstance(prefix, str) and WIP_PREFIX.fullmatch(prefix) else None
 
@@ -692,15 +697,21 @@ def wip_tips_file() -> Path:
     return ROOT / common / "keelokit-wip-tips"
 
 
-def wip_inside(remote: str, sha: str) -> str | None:
+def wip_inside(remote: str, sha: str, url: str = "") -> str | None:
     """The first wip tip (a <remote>/<prefix>* branch, or a tip this clone pushed and remembers, so
     deleting the branch doesn't hide it) that `sha` holds, `remote`'s main lacks, and no clean, full,
     green verify here proved. None when there's none, or wip branches are off."""
-    prefix = wip_prefix(remote)
+    prefix = wip_prefix(remote, url)
     if prefix is None:
         return None
-    main = git_lines("rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/main")
-    tips = git_lines("for-each-ref", "--format=%(objectname)", f"refs/remotes/{remote}/{prefix}")
+    main = git_lines("rev-parse", "--verify", "--quiet", "refs/keelokit/push-main")  # wip_prefix just fetched it
+    # The wip branches the remote has now (not tracking refs a local edit could delete), plus the tips
+    # this clone pushed.
+    listed = subprocess.run(["git", "ls-remote", "--heads", url or remote, f"refs/heads/{prefix}*"], cwd=ROOT,
+                            capture_output=True, text=True)
+    if listed.returncode:
+        return "the remote's wip branches (it can't be listed)"
+    tips = [l.split()[0] for l in listed.stdout.splitlines() if l.split()]
     try:
         tips += [l.strip() for l in wip_tips_file().read_text(errors="replace").splitlines()
                  if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", l.strip())]
@@ -779,8 +790,8 @@ def main() -> int:
         return cmd_rerun(a[1:])
     if a[0] == "covers":
         return cmd_covers(a[1:])
-    if a[0] == "wip-prefix" and len(a) == 2:
-        prefix = wip_prefix(a[1])
+    if a[0] == "wip-prefix" and len(a) in (2, 3):
+        prefix = wip_prefix(a[1], a[2] if len(a) == 3 else "")
         if prefix:
             print(prefix)
         return 0 if prefix else 1
@@ -788,8 +799,8 @@ def main() -> int:
         with open(wip_tips_file(), "a", encoding="utf-8") as f:
             f.write(a[1] + "\n")
         return 0
-    if a[0] == "wip-inside" and len(a) == 3:
-        tip = wip_inside(a[1], a[2])
+    if a[0] == "wip-inside" and len(a) in (3, 4):
+        tip = wip_inside(a[1], a[2], a[3] if len(a) == 4 else "")
         if tip:
             print(tip)
         return 0 if tip else 1
@@ -801,10 +812,10 @@ def main() -> int:
         for name, zone, at in clock_scenarios():
             print(f"{name}\t{zone}\t{at}")
         return 0
-    if a[0] == "proven" and len(a) == 3:
-        return 0 if proven(a[1], a[2]) else 1
-    if a[0] == "seal-branch-only" and len(a) == 2:
-        return 0 if seal_branch_only(a[1], sys.stdin.read()) else 1
+    if a[0] == "proven" and len(a) in (3, 4):
+        return 0 if proven(a[1], a[2], a[3] if len(a) == 4 else "") else 1
+    if a[0] == "seal-branch-only" and len(a) in (2, 3):
+        return 0 if seal_branch_only(a[1], sys.stdin.read(), a[2] if len(a) == 3 else "") else 1
     if a[0] == "shared-seal":
         return cmd_shared_seal(a[1:])
     print(__doc__, file=sys.stderr)
