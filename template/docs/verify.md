@@ -37,6 +37,14 @@ after a file inside a package, so does every step that runs per package (`typech
 `integration`, `build`, `e2e`, `e2e-stack`, `mutation`) — a locale file routes to the unit tests alone,
 but the end-to-end journeys assert its texts.
 
+**A red integration step reruns only what the fix reaches.** Every integration run leaves a Vitest JSON
+report, and when the step goes red the history keeps the spec files that failed (`failed_specs`,
+`int_complete`). After a fix in the API's own sources or specs, `--rerun-failed` runs every other step
+again, and the integration step only on the specs that failed, the specs the fix changed and those
+`vitest related` finds for the sources it changed. A fix in what every spec starts from (the API's
+config, Prisma schema or migrations, test setup, seeds or fixtures, a shared package, a root manifest),
+or a red run without a complete report, runs the whole suite.
+
 **The composite seal.** When a narrowed rerun passes on a clean tree without `--since`, `--packages` or
 `--filter`, and the steps it ran plus the passes it kept from the red run are every step of this diff's
 plan, on packages the red run covered, it writes the seal at the red run's level and records the line

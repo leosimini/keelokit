@@ -225,6 +225,54 @@ def relative(path: str) -> str:
         return path
 
 
+API = "apps/api/"  # the template's API, whose integration specs verify.sh runs
+
+
+def integration_failures(reports: str, red: bool) -> dict:
+    """For a red integration step: the spec files that failed (repo-relative), from the Vitest JSON reports
+    the step wrote, and whether every report was there to read (`int_complete`). Nothing when it was green."""
+    if not red:
+        return {}
+    failed, complete = set(), bool(reports.split())
+    for path in reports.split():
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            results = data["testResults"]
+        except (OSError, ValueError, KeyError, TypeError):
+            complete = False
+            continue
+        for t in results if isinstance(results, list) else []:
+            if not isinstance(t, dict):
+                continue
+            bad = t.get("status") == "failed" or any(isinstance(a, dict) and a.get("status") == "failed"
+                                                     for a in t.get("assertionResults") or [])
+            name = str(t.get("name", "")).replace("\\", "/")
+            if bad and API in name:
+                failed.add(API + name.rsplit(API, 1)[1])
+    return {"failed_specs": sorted(failed), "int_complete": complete and bool(failed)}
+
+
+def integration_narrowing(last: dict, files: list[str]) -> dict | None:
+    """When the last run's integration step went red with every failed spec on record, and the files changed
+    since are ones `vitest related` can follow (the API's own sources and specs, docs, other apps), the
+    integration step reruns only: the specs that failed, the specs the fix changed, and those related to the
+    sources it changed. None (the whole suite) for anything that reaches every spec: the API's config,
+    Prisma schema and migrations, its test setup, seeds and fixtures, shared packages, root manifests."""
+    if ("integration" not in last.get("failed_steps", []) or last.get("int_complete") is not True
+            or not isinstance(last.get("failed_specs"), list) or not last["failed_specs"]):
+        return None
+    specs, sources = set(last["failed_specs"]), set()
+    for f in files:
+        if f.startswith(API):
+            inner = f[len(API):]
+            if not inner.startswith("src/") or re.search(r"(^|/)(test|tests|testing|setup|seeds?|fixtures?)(/|[.-])", inner):
+                return None
+            (specs if f.endswith(".integration.spec.ts") else sources).add(f)
+        elif f.startswith("packages/") or not (f.startswith("apps/") or f.endswith(".md") or f.startswith(("docs/", "backlog/"))):
+            return None
+    return {"specs": sorted(s[len(API):] for s in specs), "related": sorted(s[len(API):] for s in sources)}
+
+
 def proven_packages(packages: list[str], kept_from: str) -> list[str] | None:
     """Where every step this run counts as passed holds. A run's own steps hold on its packages; a rerun's
     kept passes hold where the red run proved them: `kept_from` is "" for a run that kept nothing, "?" when
@@ -283,6 +331,7 @@ def cmd_record(args: list[str]) -> int:
         "planned": env("VERIFY_PLANNED", "").split(),
         "passed": [n for n in env("VERIFY_PASSED", "").split() if n not in env("VERIFY_FAILED_STEPS", "").split()],
         "failed_steps": env("VERIFY_FAILED_STEPS", "").split(),
+        **integration_failures(env("VERIFY_INT_REPORT", ""), "integration" in env("VERIFY_FAILED_STEPS", "").split()),
         "packages": packages,
         "step_packages": step_packages,
         "causes": [cid for cid, _ in causes_in(text)] if result != "pass" else [],
@@ -359,9 +408,13 @@ def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> t
     if files is None:
         return [], f"{last['head'][:7]} is not in this clone", {}
     steps, unknown = plan_for(files, load_routes())
+    narrow = integration_narrowing(last, files)
     if "all" in steps:
-        return [], (f"{len(unknown)} file(s) changed since then match no route" if unknown
-                    else "the files changed since then call for every step"), {}
+        if unknown or narrow is None:
+            return [], (f"{len(unknown)} file(s) changed since then match no route" if unknown
+                        else "the files changed since then call for every step"), {}
+        # Code changed: every step runs again, but the red integration step only on what the fix reaches.
+        steps = [s for s in last["planned"] if s in NAMES]
     todo |= set(steps)
     if files:  # a new file reaches the steps the routing doesn't decide, and those that read the whole repo
         todo |= {s for s in UNROUTED | WHOLE_REPO if s in last["planned"]}
@@ -376,7 +429,8 @@ def rerun_steps(history: str, head: str, base: str, scope: str, level: str) -> t
         proven = last.get("packages") if isinstance(last.get("packages"), list) else None
     kept = sorted(passed & set(NAMES) - todo)
     root = last.get("rerun_of") if isinstance(last.get("rerun_of"), str) and last.get("rerun_of") else last["head"]
-    return [n for n in NAMES if n in todo], "", {"inherited": kept, "head": root, "packages": proven}
+    return [n for n in NAMES if n in todo], "", {"inherited": kept, "head": root, "packages": proven,
+                                                  "int": narrow if "integration" in todo else None}
 
 
 def cmd_rerun(args: list[str]) -> int:
@@ -387,8 +441,11 @@ def cmd_rerun(args: list[str]) -> int:
         print("")
         return 0
     packages = base_on["packages"]
+    narrow = base_on.get("int")
     print("|".join([" ".join(steps), " ".join(base_on["inherited"]), base_on["head"],
-                    "?" if packages is None else "@" + " ".join(packages)]))
+                    "?" if packages is None else "@" + " ".join(packages),
+                    "" if narrow is None else "@" + " ".join(narrow["specs"]),
+                    "" if narrow is None else " ".join(narrow["related"])]))
     return 0
 
 

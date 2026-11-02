@@ -781,6 +781,127 @@ exec "$@"
         self.assertFalse((self.git_dir / "keelokit-verify.seal").exists())
 
 
+class IntegrationResumeTest(VerifyFixture):
+    """HARN-019: a red integration step reruns only the specs that failed and what the fix reaches."""
+
+    # pnpm: logs its call; an integration run (whole or narrowed) writes the Vitest JSON report it was
+    # asked for, with the specs named in INT_FAIL (relative to apps/api) failed, and then fails.
+    PNPM = """#!{python}
+import json, os, re, sys
+args = sys.argv[1:]
+open(os.environ["CALLS"], "a").write("pnpm " + " ".join(args) + "\\n")
+if "ls" in args and "--depth" in args:
+    print(os.environ.get("LS_OUT", "")); sys.exit(0)
+out = next((a.split("=", 1)[1] for a in args if a.startswith("--outputFile.json=")), None)
+fail = [f for f in os.environ.get("INT_FAIL", "").split(",") if f]
+if out:
+    ran = [a for a in args if a.endswith(".integration.spec.ts")] or ["src/a.integration.spec.ts", "src/b.integration.spec.ts"]
+    api = os.path.join(os.getcwd(), "apps/api")
+    results = [{{"name": os.path.join(api, f), "status": "failed" if f in fail else "passed"}} for f in ran]
+    json.dump({{"testResults": results}}, open(out, "w"))
+    sys.exit(1 if any(r["status"] == "failed" for r in results) else 0)
+sys.exit(0)
+"""
+    DOCKER = """#!/bin/sh
+case "$1" in
+  run) echo cid ;;
+  port) echo 127.0.0.1:55432 ;;
+esac
+exit 0
+"""
+
+    def setUp(self):
+        super().setUp()
+        files = {"apps/api/package.json": '{"name":"api","scripts":{"test:integration":"vitest run --config vitest.integration.config.ts"}}\n',
+                 "apps/api/src/svc.ts": "export const svc = 1\n",
+                 "apps/api/src/a.integration.spec.ts": "it('a', () => {})\n",
+                 "apps/api/src/b.integration.spec.ts": "it('b', () => {})\n",
+                 "docker-compose.yml": "services:\n  postgres:\n    image: postgres:16\n"}
+        for rel, text in files.items():
+            (self.repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / rel).write_text(text)
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", "an API")
+        sh(self.repo, "git", "push", "-q", "origin", "HEAD:main")
+        sh(self.repo, "git", "fetch", "-q", "origin")
+        (self.shims / "pnpm").write_text(self.PNPM.format(python=sys.executable))
+        (self.shims / "docker").write_text(self.DOCKER)
+        for f in ("pnpm", "docker"):
+            (self.shims / f).chmod(0o755)
+
+    def run_verify(self, *flags, **extra):
+        return self.verify(*flags, LS_OUT=str(self.repo / "apps/api"), **extra)
+
+    def integration_calls(self):
+        return [c for c in self.called() if "integration" in c and ("vitest" in c or "test:integration" in c)]
+
+    def red_at_integration(self):
+        self.reds = getattr(self, "reds", 0) + 1
+        self.commit_change("apps/api/src/svc.ts", f"export const svc = {self.reds + 100}\n")
+        r = self.run_verify(INT_FAIL="src/a.integration.spec.ts")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        entry = self.history()[-1]
+        self.assertEqual(entry["failed_steps"], ["integration"])
+        self.assertEqual(entry["failed_specs"], ["apps/api/src/a.integration.spec.ts"])
+        self.assertTrue(entry["int_complete"])
+
+    def test_HARN_019_S1_the_fix_reruns_the_failed_specs_and_what_it_reaches(self):
+        self.red_at_integration()
+        self.commit_change("apps/api/src/svc.ts", "export const svc = 3\n")  # the fix, in the API's sources
+        self.calls.write_text("")
+        r = self.run_verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.integration_calls()
+        self.assertTrue(any("exec vitest run --config vitest.integration.config.ts" in c
+                            and c.endswith("src/a.integration.spec.ts") for c in calls), calls)
+        self.assertTrue(any("exec vitest related --run" in c and c.endswith("src/svc.ts") for c in calls), calls)
+        self.assertFalse(any("test:integration" in c for c in calls), "not the whole suite")
+        self.assertTrue(any("run test" in c for c in self.called()), "code changed: every other step runs again")
+
+    def test_HARN_019_S2_a_spec_the_fix_changed_runs_too(self):
+        self.red_at_integration()
+        self.commit_change("apps/api/src/b.integration.spec.ts", "it('b2', () => {})\n")
+        self.calls.write_text("")
+        self.assertEqual(self.run_verify("--rerun-failed").returncode, 0)
+        narrowed = [c for c in self.integration_calls() if "exec vitest run" in c]
+        self.assertTrue(narrowed and narrowed[0].endswith("src/a.integration.spec.ts src/b.integration.spec.ts"), narrowed)
+
+    def test_HARN_019_S3_a_fix_that_reaches_every_spec_runs_the_whole_suite(self):
+        for rel in ("apps/api/prisma/schema.prisma", "apps/api/src/testing/setup.ts", "packages/shared/src/x.ts",
+                    "apps/api/vitest.integration.config.ts"):
+            with self.subTest(fix=rel):
+                self.red_at_integration()
+                self.commit_change(rel, f"// {rel}\n")
+                self.calls.write_text("")
+                r = self.run_verify("--rerun-failed")
+                self.assertIn("can't narrow the run", r.stderr)
+                self.assertTrue(any("test:integration" in c for c in self.integration_calls()), self.called())
+
+    def test_HARN_019_S4_without_a_complete_record_it_is_the_whole_suite(self):
+        self.commit_change("apps/api/src/svc.ts", "export const svc = 2\n")
+        self.run_verify(FAIL_ON="nothing")  # green: no failed specs on record
+        self.assertNotIn("failed_specs", self.history()[-1])
+        self.run_verify(INT_FAIL="src/a.integration.spec.ts")
+        (self.git_dir / "keelokit-verify.history").write_text(
+            self.history_text().replace('"int_complete": true', '"int_complete": false'))
+        self.commit_change("apps/api/src/svc.ts", "export const svc = 3\n")
+        self.calls.write_text("")
+        self.run_verify("--rerun-failed")
+        self.assertTrue(any("test:integration" in c for c in self.integration_calls()), self.called())
+
+    def test_HARN_019_S5_a_narrowed_green_completes_the_red_run_and_seals(self):
+        self.red_at_integration()
+        red = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.commit_change("apps/api/src/svc.ts", "export const svc = 3\n")
+        r = self.run_verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        seal = dict(l.split("=", 1) for l in (self.git_dir / "keelokit-verify.seal").read_text().splitlines())
+        self.assertEqual(seal["composite_of"], red)
+
+    def history_text(self):
+        return (self.git_dir / "keelokit-verify.history").read_text()
+
+
 class PrePushFixture(VerifyFixture):
     """The template's pre-push hook on, real pushes to the fixture's origin, a stub pnpm."""
 

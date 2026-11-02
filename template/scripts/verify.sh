@@ -221,7 +221,7 @@ finish() {
   if [ -n "$steps_log" ] && [ -f "$tools" ]; then
     printf '%s' "$steps_log" | python3 "$tools" table 2>/dev/null || true
     [ "$rc" -eq 0 ] || python3 "$tools" causes "$log" 2>/dev/null || true
-    $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_RERUN_OF=${rerun_from:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
+    $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_RERUN_OF=${rerun_from:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_INT_REPORT=${int_reports:-} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
       VERIFY_SCOPE=${explicit_scope_text:-} VERIFY_PACKAGES=${pkg_list:-} VERIFY_STEP_PACKAGES=${step_packages:-} \
       VERIFY_PARTIAL=$partial VERIFY_CLEAN=$clean_at_start VERIFY_SINCE=$since python3 "$tools" record "$history" "$([ "$rc" -eq 0 ] && echo pass || echo fail)" "$rc" "$head_sha" \
       "$($requested_all && echo all || echo changed)" "$steps_log" "$failed" "$log" 2>/dev/null || true
@@ -306,11 +306,11 @@ plan=$(python3 "$tools" plan $($requested_all && echo --all) --base "$base" || e
 [ -n "$plan" ] || plan=all # no answer (no python helper, an old checkout) means everything, as before routing existed
 # --rerun-failed: what the last red run of this commit (or an ancestor) did not pass, plus what the files
 # changed since then call for. When it can't tell, it says so and the plan above runs (unknown goes up).
-rerun_narrowed=false inherited='' rerun_from='' rerun_proven=''
+rerun_narrowed=false inherited='' rerun_from='' rerun_proven='' int_specs='' int_related='' int_reports=''
 if $rerun; then
   again=$(python3 "$tools" rerun "$history" --head "$head_sha" --base "$(base_sha)" --scope "$(printf '%s ' ${scope_explicit[@]+"${scope_explicit[@]}"})" --level "$($requested_all && echo all || echo changed)") || again=
   if [ -n "$again" ]; then
-    IFS='|' read -r only inherited rerun_from rerun_proven <<<"$again"
+    IFS='|' read -r only inherited rerun_from rerun_proven int_specs int_related <<<"$again"
     rerun_narrowed=true
     say "Rerun of what failed or never ran: $only"
   elif [ -z "$packages$filters" ]; then
@@ -521,7 +521,25 @@ fi
 if $db && want integration && affected apps/api; then
   step integration 'Integration tests (real PostgreSQL)'
   step_packages="${step_packages}integration=apps/api "
-  run pnpm --filter ./apps/api test:integration
+  # Each run leaves a Vitest JSON report: when it goes red, the history keeps the specs that failed, and
+  # --rerun-failed reruns only those, the specs the fix changed and the ones related to its sources.
+  int_specs_json="$common/keelokit-int-specs.json" int_related_json="$common/keelokit-int-related.json"
+  int_all_json="$common/keelokit-int-all.json"
+  rm -f "$int_specs_json" "$int_related_json" "$int_all_json"
+  if [ -n "$int_specs" ]; then
+    say "Integration: only the specs that failed${int_related:+, the ones the fix changed and those related to it} (--rerun-failed)."
+    int_reports=$int_specs_json
+    # shellcheck disable=SC2086 # one spec path per word
+    run pnpm --filter ./apps/api exec vitest run --config vitest.integration.config.ts --reporter=default --reporter=json "--outputFile.json=$int_specs_json" ${int_specs#@}
+    if [ -n "$int_related" ]; then
+      int_reports="$int_reports $int_related_json"
+      # shellcheck disable=SC2086
+      run pnpm --filter ./apps/api exec vitest related --run --config vitest.integration.config.ts --passWithNoTests --reporter=default --reporter=json "--outputFile.json=$int_related_json" $int_related
+    fi
+  else
+    int_reports=$int_all_json
+    run pnpm --filter ./apps/api test:integration --reporter=default --reporter=json "--outputFile.json=$int_all_json"
+  fi
 fi
 
 if want build; then
