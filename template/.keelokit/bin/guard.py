@@ -50,14 +50,17 @@ SECRETS = [
 ]
 # A password in a URL is a secret unless, as a whole, it is a reference to a variable (HARN-020):
 # `${NAME}`, `$NAME` or `${{ ctx.name }}`. A literal, alone or mixed with a reference, still is.
-URL_PASSWORD = r"(?P<pw>(?:\$\{\{[^}\n]*\}\}|[^/\s@])+)"
+# The three alternatives of a password's tokens start differently (`${{`, a `$` not followed by `{{`, a
+# character that is no `$`), so a failing match can't backtrack through two ways of reading one text.
+URL_PASSWORD = r"(?P<pw>(?:\$\{\{[^}\n]*\}\}|\$(?!\{\{)|[^/\s@$])+)"
 URL_SECRETS = [
     (rf"https?://[^/\s:@]+:{URL_PASSWORD}@github\.com", "credentials in a git URL"),
     # A DB URL with a password, unless it points at this machine (local/dev/CI values).
     (rf"\b(postgres(ql)?|mysql|mongodb(\+srv)?|redis)://[^/\s:@]+:{URL_PASSWORD}@(?!(localhost|127\.0\.0\.1|postgres|db)[:/])",
      "database URL with a password"),
 ]
-REFERENCE = re.compile(r"\$\{[A-Za-z_]\w*\}|\$[A-Za-z_]\w*"
+# A bare `$NAME` counts only in capitals (`$uperSecret1` is a password); in braces any identifier does.
+REFERENCE = re.compile(r"\$\{[A-Za-z_]\w*\}|\$[A-Z_][A-Z0-9_]*"
                        r"|\$\{\{\s*(?:secrets|env|vars|inputs|github|matrix|needs|steps|job|runner)\.[\w.-]+\s*\}\}")
 TAMPER = [
     (r"\b(it|test|describe)\.(skip|only|todo)\s*\(", "a skipped or focused test"),
@@ -83,7 +86,7 @@ GIT_NO_HOOKS = [
     # In -uno or -mn the n is a value, not -n.
     (rf"{GIT}commit\b{GIT_ARGS}\s-[aeiopqsvz]*n[aeinopqsvz]*([FmcCtSuU]\S*)?{BUNDLE_END}",
      "QA-2: `commit -n` skips the git hooks"),
-    (r"keelokit\.allowTamper", "QA-4: only a human may allow a skipped test or silenced check"),
+    (r"(?i)keelokit\.allowtamper", "QA-4: only a human may allow a skipped test or silenced check"),
     # Config names are case-insensitive: core.hookspath is core.hooksPath.
     (rf"(?i){GIT}(?:-c\s+|--config-env[=\s]\s*)core\.hookspath\b", "QA-2: don't override the hooks path"),
     (rf"(?i){GIT}config\b{GIT_ARGS}\bcore\.hookspath\b", "QA-2: the hooks path is set by the project's install step; ask a human to change it"),
@@ -144,7 +147,7 @@ def secret_in(text: str) -> str | None:
 # here and "end of the bounds"; change both together (a test compares them).
 REGISTRY = ".keelokit/guard-allow.toml"
 ALLOW_RULES = ("SEC-1", "SEC-2")
-WILDCARDS = "*?["
+WILDCARDS = "*?["  # a path has none of these; a glob has `*` and `?` only (no `[` or `]`)
 
 
 def _plain(value: object) -> bool:
@@ -177,9 +180,10 @@ def allow_problem(entry: object, today: dt.date | None = None) -> str | None:
             return "path is a file relative to the repo root: no leading / or ./, no .., no wildcards, no trailing /"
     else:
         parts = _components(glob) if _plain(glob) else None
-        if parts is None or len(parts) < 2 or "**" in glob or any(c in WILDCARDS for d in parts[:-1] for c in d):
-            return "glob is directory/pattern: a literal directory, wildcards only in the file name, no **, no .."
-        if len(re.sub(r"\[[^\]]*\]|[*?]", "", parts[-1])) < 2:
+        if parts is None or len(parts) < 2 or "**" in glob or any(c in "[]" for c in glob) \
+                or any(c in WILDCARDS for d in parts[:-1] for c in d):
+            return "glob is directory/pattern: a literal directory, only * and ? in the file name, no **, no .., no [ or ]"
+        if len(re.sub(r"[*?]", "", parts[-1])) < 2:
             return "glob's file name needs at least two literal characters"
     expires = entry.get("expires")
     if expires is not None and expires != "permanent":
@@ -216,11 +220,11 @@ def active_allowed(text: str | bytes | None) -> list[dict]:
         return []
 
 
-def working_registry() -> list[dict]:
-    try:
-        return active_allowed((ROOT / REGISTRY).read_bytes())
-    except Exception:
-        return []
+def committed_registry() -> list[dict]:
+    """The registry as of the last commit: what the Claude hook honours, so a write an agent slips past
+    the shell check exempts nothing until a human commits it. No registry there means no entries."""
+    out = subprocess.run(["git", "show", f"HEAD:{REGISTRY}"], cwd=ROOT, capture_output=True)
+    return active_allowed(out.stdout) if out.returncode == 0 else []
 
 
 def staged_registry() -> list[dict]:
@@ -264,19 +268,6 @@ def gitleaks_path_regex(entry: dict) -> str:
             out += "[^/]*"
         elif c == "?":
             out += "[^/]"
-        elif c == "[":
-            j = i + (name[i:i + 1] == "!")
-            j += name[j:j + 1] == "]"
-            while j < len(name) and name[j] != "]":
-                j += 1
-            if j >= len(name):
-                out += r"\["
-            else:
-                body = name[i:j]
-                neg = body.startswith("!")
-                body = body[1:] if neg else body
-                out += "[" + ("^/" if neg else "") + body.replace("\\", "\\\\").replace("]", "\\]").replace("^", "\\^") + "]"
-                i = j + 1
         else:
             out += re.escape(c)
     return "^" + re.escape(directory) + "/" + out + "$"
@@ -293,9 +284,53 @@ REGISTRY_WHY = (f"QA-4: {REGISTRY} lists what SEC-1 and SEC-2 let through and is
                 "they edit it and commit with `git -c keelokit.allowTamper=true commit`")
 
 
+# A command word that moves the shell: after it a relative path is not relative to the repo root.
+CHDIR = re.compile(r"(?:^|[;&|(){\n])\s*(?:cd|pushd|popd)\b")
+ENV_WHY = "SEC-2: don't write .env files from the shell; edit .env.example, real values go in the secret store"
+ENV_OWN_WHY = "SEC-2: .env files are the human's: don't delete, create or link them from the shell; ask in chat"
+
+
+def segments(cmd: str) -> list[str]:
+    """The command split at `&&`, `||`, `;`, `|` and newlines that are outside quotes."""
+    out, cur, quote, i = [], "", "", 0
+    while i < len(cmd):
+        c = cmd[i]
+        if c == "\\" and quote != "'" and i + 1 < len(cmd):
+            cur += cmd[i:i + 2]
+            i += 2
+            continue
+        if quote:
+            quote = "" if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c in ";|\n" or cmd.startswith("&&", i):
+            out.append(cur)
+            cur = ""
+            i += 2 if cmd.startswith(("&&", "||"), i) else 1
+            continue
+        cur += c
+        i += 1
+    return [*out, cur]
+
+
+def write_targets(segment: str) -> list[str]:
+    """The words of a write command that can name a file, quoted ones included."""
+    try:
+        words = shlex.split(segment, posix=True)
+    except ValueError:
+        words = segment.split()
+    return [t for w in words if not any(c.isspace() for c in w) for x in w.split(">") if (t := x.strip("(){}"))]
+
+
 def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
-    allow = working_registry() if allow is None else allow
+    allow = committed_registry() if allow is None else allow
     bare = unquoted(cmd)
+    if CHDIR.search(bare):
+        allow = []  # no registered path is let through once the shell may be elsewhere
+    for pattern in (rf"(?i){GIT}(?:-c\s+|--config-env[=\s]\s*)['\"]?keelokit\.allowtamper",
+                    rf"(?i){GIT}config\b{GIT_ARGS}['\"]?keelokit\.allowtamper"):
+        if re.search(pattern, cmd):  # quoted spellings, which `bare` has emptied
+            return "QA-4: only a human may allow a skipped test or silenced check"
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why
@@ -324,6 +359,15 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                 return "SEC-2: don't write .env files from the shell; edit .env.example, real values go in the secret store"
             if any(applied_migration(t) for t in targets if "prisma/migrations/" in t):
                 return "DB-1: that migration is already on origin/main; create a new one"
+    # The same targets, read from the command as typed: a quoted one is a target too.
+    for segment in segments(cmd):
+        if not WRITE_CMD.search(unquoted(segment)) or re.match(r"\s*cp\s+(-\w+\s+)*\S+\.example\s+\S+\s*$", segment):
+            continue
+        targets = write_targets(segment)
+        if any(is_registry(t) or Path(t).name == Path(REGISTRY).name for t in targets):
+            return REGISTRY_WHY
+        if any(is_env_file(t) and not allowed(allow, "SEC-2", t) for t in targets):
+            return ENV_OWN_WHY if re.match(r"\s*(rm|touch|ln)\b", segment) and ">" not in segment else ENV_WHY
     if secret_in(cmd):
         return f"SEC-1: the command contains a {secret_in(cmd)}"
     return None
@@ -338,7 +382,7 @@ def edit_payload(tool: str, args: dict) -> tuple[str, list[str]]:
 
 
 def tool_problem(tool: str, args: dict) -> str | None:
-    allow = working_registry()
+    allow = committed_registry()
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
@@ -384,14 +428,14 @@ def claude() -> int:
 
 def gitleaks(allow: list[dict]) -> int:
     """gitleaks on the staged changes; with active SEC-1 entries, with a config that extends the project's
-    own (or the defaults) and allows those paths and the registry itself."""
+    own (or the defaults) and allows those paths."""
     cmd = ["gitleaks", "git", "--pre-commit", "--staged", "--redact", "--no-banner"]
     entries = [e for e in allow if e["rule"] == "SEC-1"]
     if not entries:
         return subprocess.run(cmd, cwd=ROOT).returncode
     own = ROOT / ".gitleaks.toml"
     extend = f"path = {toml_str(str(own))}" if own.is_file() else "useDefault = true"
-    paths = [gitleaks_path_regex({"path": REGISTRY}), *(gitleaks_path_regex(e) for e in entries)]
+    paths = [gitleaks_path_regex(e) for e in entries]
     config = f"[extend]\n{extend}\n\n[allowlist]\npaths = [{', '.join(toml_str(p) for p in paths)}]\n"
     fd, name = tempfile.mkstemp(suffix=".toml")
     try:
@@ -433,7 +477,7 @@ def git_pre_commit() -> int:
     # commits is still whole here.
     for line in staged:
         status, _, path = line.partition("\t")
-        if status == "D" or path == REGISTRY or allowed(allow, "SEC-1", path):
+        if status == "D" or allowed(allow, "SEC-1", path):
             continue
         blob = subprocess.run(["git", "show", f":{path}"], cwd=ROOT, capture_output=True).stdout
         if label := secret_in(blob.decode("utf-8", "replace")):

@@ -554,9 +554,10 @@ def allow_problem(entry: dict, today: dt.date) -> str | None:
             return "path is a file relative to the repo root: no leading / or ./, no .., no wildcards, no trailing /"
     else:
         parts = allow_parts(glob) if allow_text(glob) else None
-        if parts is None or len(parts) < 2 or "**" in glob or any(c in ALLOW_WILDCARDS for d in parts[:-1] for c in d):
-            return "glob is directory/pattern: a literal directory, wildcards only in the file name, no **, no .."
-        if len(re.sub(r"\[[^\]]*\]|[*?]", "", parts[-1])) < 2:
+        if parts is None or len(parts) < 2 or "**" in glob or any(c in "[]" for c in glob) \
+                or any(c in ALLOW_WILDCARDS for d in parts[:-1] for c in d):
+            return "glob is directory/pattern: a literal directory, only * and ? in the file name, no **, no .., no [ or ]"
+        if len(re.sub(r"[*?]", "", parts[-1])) < 2:
             return "glob's file name needs at least two literal characters"
     expires = entry.get("expires")
     if expires is not None and expires != "permanent":

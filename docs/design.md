@@ -49,10 +49,12 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   expiry. Product-owned like `exceptions.toml`, but not in it: an exception excepts a whole rule from
   the doctor's enforcer check, and an allowed path must not (a registered path is not an exception).
   It is the human's: the Claude hook blocks every write to it (QA-4), a commit that changes it needs
-  `keelokit.allowTamper`, and the pre-commit hook reads it as staged, so an unstaged edit exempts
-  nothing. A secret in a shell command line stays blocked whatever the registry says. The doctor
+  `keelokit.allowTamper`, the Claude hook reads it as of the last commit and the pre-commit hook as
+  staged, so an edit exempts nothing until a human commits it. Globs take only `*` and `?`; the file is
+  scanned for secrets like any other. The template's CI gitleaks job is not told about it: a project
+  whose CI runs gitleaks needs its own `.gitleaks.toml` allowlist for the files it registers. A secret in a shell command line stays blocked whatever the registry says. The doctor
   validates the bounds and lists every active entry. Separately, the guard reads a variable reference
-  (`${VAR}`, `$VAR`, `${{ secrets.X }}`) where a URL's password goes as no secret; a literal still is.
+  (`${VAR}`, `$VAR` in capitals, `${{ secrets.X }}`) where a URL's password goes as no secret; a literal still is.
 
 The process rules that came from long parallel use (CI budget, local gate, sessions, migrations,
 flaky tests, formatting, debt) are listed with their reason and check in [process-rules.md](process-rules.md).

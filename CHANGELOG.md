@@ -9,7 +9,11 @@
   `[[allow]]` entries: a public key such as `google-services.json` (SEC-1) or `.env` templates (SEC-2), by path or a
   bounded glob, with reason, approver and optional expiry. Agents can't edit it; a human commits it with
   `git -c keelokit.allowTamper=true commit`. The doctor validates and lists the entries. An adopted project runs
-  `/keelokit:harness-upgrade`, then registers its files in `.keelokit/guard-allow.toml` by hand.
+  `/keelokit:harness-upgrade`, then registers its files in `.keelokit/guard-allow.toml` by hand. The Claude hook reads
+  the registry as of the last commit, the pre-commit hook as staged; globs take only `*` and `?`; the registry is
+  scanned for secrets like any file. The template's CI gitleaks job is not told about it: a project whose CI runs
+  gitleaks needs its own `.gitleaks.toml` allowlist for the files it registers.
+  A bare `$NAME` in a URL's password counts as a reference only in capitals (`${name}` in braces, any identifier).
 - **The doctor no longer fails a repo that has no `.gitattributes`.** A missing file was reported twice: as the FMT-1
   warning it is, and as an error (`.gitattributes: can't be read`) that no exception could cover, so an adopted repo
   without one could never get a green doctor. Now it is only the warning.
