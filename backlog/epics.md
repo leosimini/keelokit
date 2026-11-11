@@ -23,4 +23,10 @@
 |---|---|---|---|
 | HARN-004 | Opening a repo doesn't run its own copy of the guard and the doctor unchecked | — | hooks/hooks.json, template/.keelokit/bin/guard.py, .keelokit/bin/guard.py, template/.keelokit/bin/doctor.py, .keelokit/bin/doctor.py, tests/test_guard.py, tests/test_doctor.py |
 
+## Wave 4
+
+| Story | Title | Depends on | Touches |
+|---|---|---|---|
+| HARN-020 | The guard reads a variable reference as no secret, and a product can register paths SEC-1 and SEC-2 let through | — | template/.keelokit/bin/guard.py, template/.keelokit/bin/doctor.py, template/.keelokit/guard-allow.toml, copier.yml, tests/ |
+
 Collisions resolved: HARN-002 moved to wave 2 and HARN-004 to wave 3 because they touch the doctor and its tests, as HARN-003 does.
