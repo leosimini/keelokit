@@ -491,6 +491,7 @@ class GuardRegistryTest(unittest.TestCase):
 
     setUp = GuardTest.setUp
     tearDown = GuardTest.tearDown
+    module = GuardTest.module
 
     def env(self, fake_gitleaks: Path | None = None) -> dict:
         """The environment with no real gitleaks on PATH (so a test sees only the guard), or a fake first."""
@@ -815,12 +816,25 @@ exit {code}
             finally:
                 sh(self.repo, "git", "config", "--unset", "keelokit.allowTamper")
 
-    def test_HARN_020_S6_the_registry_is_not_blocked_by_its_own_content(self):
+    def test_HARN_020_S6_a_key_in_the_registry_is_blocked_like_anywhere_else(self):
+        """Design amendment 6: the registry is no longer exempt from SEC-1 (nor from gitleaks' allowlist),
+        so a key pasted into a reason doesn't ride in on the human's allowTamper commit."""
         self.install_hook()
-        text = allow(reason=f'"was leaked as {GOOGLE_KEY} via postgres://u:p4ss@db.example.com/x; rotated"')
-        self.stage(REGISTRY, text)
-        run = self.git_commit("keelokit.allowTamper=true")
-        self.assertEqual(run.returncode, 0, run.stderr)
+        for reason in [f"was leaked as {GOOGLE_KEY}; rotated", "was postgres://u:p4ss@db.example.com/x; rotated"]:
+            with self.subTest(reason=reason[:20]):
+                self.stage(REGISTRY, allow(reason=json.dumps(reason)))
+                run = self.git_commit("keelokit.allowTamper=true")
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn("SEC-1", run.stderr)
+                sh(self.repo, "git", "reset", "-q")
+        with self.subTest("a plain reason passes"):
+            self.stage(REGISTRY, allow(reason='"Firebase client key, public by design"'))
+            self.assertEqual(self.git_commit("keelokit.allowTamper=true").returncode, 0)
+        with self.subTest("the shipped template holds nothing key-shaped"):
+            shipped = (GUARD.parents[1] / "guard-allow.toml").read_text()
+            self.stage(REGISTRY, shipped)
+            self.assertEqual(self.git_commit("keelokit.allowTamper=true").returncode, 0)
+            self.assertIsNone(self.module().secret_in(shipped))
 
     # gitleaks at pre-commit (S3: both hooks let a registered path through)
 
@@ -835,6 +849,8 @@ exit {code}
         self.assertIn("allowlist", config)
         self.assertIn("google", config)
         self.assertIn("json", config)
+        # Design amendment 6: the registry itself is scanned like any file.
+        self.assertNotRegex(config, r"guard\W*-?\W*allow")
         with self.subTest("gitleaks finds something: still refused"):
             bin_dir, _ = self.fake_gitleaks(1)
             self.assertEqual(self.staged_verdict("README.md", "# hi\n", bin_dir), 1)
