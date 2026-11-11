@@ -4,7 +4,7 @@ epic = "HARN"
 title = "The guard reads a variable reference as no secret, and a product can register paths SEC-1 and SEC-2 let through"
 wave = 4
 depends_on = []
-touches = ["template/.keelokit/bin/guard.py", ".keelokit/bin/guard.py", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "template/.keelokit/guard-allow.toml", ".keelokit/guard-allow.toml", "copier.yml", "tests/test_guard.py", "tests/test_doctor.py", "tests/test_copier.py", "docs/design.md", "skills/check-health/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/guard.py", ".keelokit/bin/guard.py", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "template/.keelokit/guard-allow.toml", ".keelokit/guard-allow.toml", "copier.yml", "tests/test_guard.py", "tests/test_doctor.py", "tests/test_copier.py", "docs/design.md", "skills/check-health/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "docs/escapes.md", "CHANGELOG.md"]
 dimensions = ["logic", "security", "dx", "integrity"]
 invariants = ["INV-002"]
 +++
