@@ -339,6 +339,17 @@ class DoctorTest(unittest.TestCase):
                 self.assertTrue(self.registry_errors(out), out)
                 self.assertNotRegex(out, r"(?m)^  warn  .*Firebase key, public by design.*Leo|^  warn  .*Leo.*Firebase key")
 
+    def test_HARN_020_S4_the_doctor_refuses_a_glob_with_a_bracket(self):
+        """Breaker: `[!]x][!]x]*` passed the two-literal bound; only `*` and `?` are glob wildcards."""
+        self.registry_fixture()
+        for glob in ["apps/mobile/[!]x][!]x]*", "apps/mobile/google-[a-z]*.json", "apps/mobile/[g]oogle-services.json",
+                     "apps/mobile/*.[j]son", "apps/mobile/google-services.json]"]:
+            with self.subTest(glob=glob):
+                self.write(".keelokit/guard-allow.toml", self.allow(path=None, glob=json.dumps(glob)))
+                out = self.doctor("--ci")
+                self.assertTrue(self.registry_errors(out), out)
+                self.assertNotRegex(out, r"(?m)^  warn  .*Firebase key, public by design")
+
     def test_HARN_020_S5_the_doctor_lists_every_active_entry(self):
         self.registry_fixture()
         self.write(".keelokit/guard-allow.toml",

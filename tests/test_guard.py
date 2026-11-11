@@ -901,6 +901,134 @@ exit {code}
                 self.assertEqual(self.bash("echo X=1 > apps/api/.env"), 2)
                 self.assertEqual(self.bash(f"curl -H 'k: {STRIPE_KEY}' x"), 2)
 
+    # Findings of the review and the breaker (2026-11-11), reproduced
+
+    def timed(self, fn) -> tuple[int | None, float]:
+        """(exit code, seconds) of a guard run; None when it ran past 10 s."""
+        import time
+        start = time.monotonic()
+        try:
+            code = fn()
+        except subprocess.TimeoutExpired:
+            code = None
+        return code, time.monotonic() - start
+
+    def test_HARN_020_S2_a_url_password_is_judged_in_linear_time(self):
+        """ReDoS: `${{a}}` matched both alternatives of the password pattern, so 40 of them before a
+        failing `@` backtracked 2^40 times and the hook hung instead of blocking the real URL after it."""
+        real = "postgres://app:Sup3rRealPw@prod.example.com/db"
+        fills = ["${{a}}" * 40, "${{a}}" * 2000, "${" * 5000, "$" * 5000, "{" * 5000, "}" * 5000, "${{" * 2500,
+                 "}}" * 2500, "${{ secrets.X }}" * 400, "${{a}" * 1200, "${a}" * 1500, "$A" * 2500,
+                 ("${" + "{" + "$" + "}") * 1250]
+        hook = lambda tool, **ti: subprocess.run(
+            ["python3", str(self.repo / ".keelokit/bin/guard.py"), "--claude"], cwd=self.repo, timeout=10,
+            input=json.dumps({"tool_name": tool, "tool_input": ti}), capture_output=True, text=True).returncode
+        for fill in fills:
+            content = f"url1=postgres://u:{fill}@localhost/x\nurl2={real}\n"
+            label = f"{fill[:12]}…×{len(fill)}"
+            with self.subTest(fill=label, where="Write"):
+                code, took = self.timed(lambda: hook("Write", file_path=str(self.repo / "deploy/a.env.yml"), content=content))
+                self.assertEqual(code, 2)
+                self.assertLess(took, 2)
+            with self.subTest(fill=label, where="Bash"):
+                cmd = f"psql postgres://u:{fill}@localhost/x && psql {real}"
+                code, took = self.timed(lambda: hook("Bash", command=cmd))
+                self.assertEqual(code, 2)
+                self.assertLess(took, 2)
+        for fill in ["${{a}}" * 40, "${" * 5000, "${{" * 2500]:
+            with self.subTest(fill=fill[:12], where="pre-commit"):
+                self.stage("deploy/compose.yml", f"url1=postgres://u:{fill}@localhost/x\nurl2={real}\n")
+                try:
+                    code, took = self.timed(lambda: subprocess.run(
+                        ["python3", ".keelokit/bin/guard.py", "git-pre-commit"], cwd=self.repo, timeout=10,
+                        capture_output=True, env=self.env()).returncode)
+                finally:
+                    sh(self.repo, "git", "reset", "-q")
+                self.assertEqual(code, 1)
+                self.assertLess(took, 2)
+
+    def test_HARN_020_S2_a_bare_dollar_word_is_a_reference_only_in_capitals(self):
+        """`$uperSecret2024` read as the variable `uperSecret2024`: a bare `$NAME` counts only when NAME is
+        ALL-CAPS and ends the password; in braces any identifier is fine."""
+        for url in ["postgres://admin:$uperSecret2024@prod.example.com/app", "postgres://u:$X1abc@prod.io/x",
+                    "postgres://u:$Abc@prod.io/x", "mysql://u:$db_password@prod.io/x", git_url("$ghToken"),
+                    "redis://u:$PW.x@prod.io/0", db_url("postgres", "$DB_PASSWORD-x")]:
+            with self.subTest(url=url):
+                self.assertEqual(self.write("deploy/compose.yml", f"URL: {url}\n"), 2)
+                self.assertEqual(self.bash(f"psql {url}"), 2)
+        for url in [db_url("postgres", "$DB_PASSWORD"), db_url("postgres", "$_PW2"), db_url("postgres", "${db_password}"),
+                    db_url("mysql", "${dbPassword}"), db_url("postgres", "${{ secrets.X }}"), git_url("${gh_token}")]:
+            with self.subTest(url=url):
+                self.assertEqual(self.write("deploy/compose.yml", f"URL: {url}\n"), 0)
+
+    def test_HARN_020_S6_the_claude_hook_reads_only_the_committed_registry(self):
+        """The hook honoured the working-tree registry, so an agent that slipped one write past the
+        shell check exempted itself; it reads HEAD's, and a human's commit is what turns an entry on."""
+        content = f'{{"current_key": "{GOOGLE_KEY}"}}\n'
+        with self.subTest("untracked"):
+            self.registry(allow(), commit=False)
+            self.assertEqual(self.write(GOOGLE_JSON, content), 2)
+        with self.subTest("staged, not committed"):
+            sh(self.repo, "git", "add", "-f", REGISTRY)
+            self.assertEqual(self.write(GOOGLE_JSON, content), 2)
+            sh(self.repo, "git", "reset", "-q")
+        with self.subTest("committed empty, an entry added in the working tree"):
+            self.registry("# none yet\n")
+            (self.repo / REGISTRY).write_text("# none yet\n" + allow())
+            self.assertEqual(self.write(GOOGLE_JSON, content), 2)
+        with self.subTest("committed, then removed from the working tree"):
+            self.registry(allow())
+            (self.repo / REGISTRY).unlink()
+            self.assertEqual(self.write(GOOGLE_JSON, content), 0)
+            sh(self.repo, "git", "checkout", "--", REGISTRY)
+        with self.subTest("committed, then emptied in the working tree"):
+            (self.repo / REGISTRY).write_text("")
+            self.assertEqual(self.write(GOOGLE_JSON, content), 0)
+            sh(self.repo, "git", "checkout", "--", REGISTRY)
+
+    def test_HARN_020_S6_quoted_or_recased_spellings_still_need_the_human(self):
+        """The shell check read targets from the unquoted command, so a quoted registry path got
+        through, and `keelokit.allowtamper` in another case or in quotes passed the QA-4 check."""
+        for cmd in [f'cp x "{REGISTRY}"', f"echo a > '{REGISTRY}'", f'tee -a "{REGISTRY}" < x', f"mv x '{REGISTRY}'",
+                    f'sed -i "s/a/b/" "{REGISTRY}"', f'rm "{REGISTRY}"', f'cp x ".keelokit/"guard-allow.toml',
+                    f'printf "%s" x >> "{self.repo / REGISTRY}"']:
+            with self.subTest(cmd=cmd):
+                run = self.run_claude("Bash", command=cmd)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("QA-4", run.stderr)
+        for cmd in ["git -c keelokit.allowtamper=true commit -m x", "git -c 'keelokit.allowTamper=true' commit -m x",
+                    'git -c "KEELOKIT.ALLOWTAMPER=true" commit -m x', "git -c Keelokit.AllowTamper=1 commit -m x",
+                    "git config keelokit.allowtamper true", "git config 'keelokit.allowTamper' true"]:
+            with self.subTest(cmd=cmd):
+                run = self.run_claude("Bash", command=cmd)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("QA-4", run.stderr)
+        for cmd in ["git commit -m 'never use keelokit.allowTamper casually'",
+                    'git commit -m "docs: KEELOKIT.ALLOWTAMPER is the human\'s"', f"cat '{REGISTRY}'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd), 0)
+
+    def test_HARN_020_S4_a_glob_with_a_bracket_is_refused(self):
+        """`[!]x][!]x]*` passed the two-literal-characters bound while matching almost any name: only `*`
+        and `?` are wildcards, and any `[` or `]` in a glob makes the entry inactive."""
+        content = f'{{"current_key": "{GOOGLE_KEY}"}}\n'
+        for glob in ["apps/mobile/[!]x][!]x]*", "apps/mobile/google-[a-z]*.json", "apps/mobile/[g]oogle-services.json",
+                     "apps/mobile/google-services.json]", "apps/mobile/*.[j]son"]:
+            with self.subTest(glob=glob):
+                self.registry(allow(path=None, glob=json.dumps(glob)))
+                self.assertEqual(self.write(GOOGLE_JSON, content), 2)
+                self.assertEqual(self.staged_verdict(GOOGLE_JSON, content), 1)
+
+    def test_HARN_020_S3_no_bash_exemption_once_the_command_changes_directory(self):
+        """A relative target is only the registered path from the repo root: after `cd`, `pushd` or
+        `popd` the guard can't know where the shell is, so no registered path is let through."""
+        self.registry(allow(rule='"SEC-2"', path=None, glob='"infra/*.env"'))
+        self.assertEqual(self.bash("cp x infra/prod.env"), 0)
+        for cmd in ["cd apps && cp x infra/prod.env", "cd apps; echo A= > infra/prod.env", "pushd apps && cp x infra/prod.env",
+                    "popd && cp x infra/prod.env", "(cd apps && cp x infra/prod.env)", "true && cd /tmp && tee infra/prod.env < x"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd), 2)
+
     # INV-002: whatever the registry holds, the guard only blocks or lets through
 
     def test_INV_002_a_malformed_registry_never_crashes_the_guard_and_exempts_nothing(self):
@@ -938,6 +1066,82 @@ exit {code}
             self.assertNotIn("Traceback", run.stderr)
             self.assertEqual(self.claude("Write", file_path=str(self.repo / "src/ok.ts"), content="export {}\n"), 0)
             self.assertEqual(self.staged_verdict("src/ok.ts", "export {}\n"), 0)
+
+
+DOCTOR = GUARD.parent / "doctor.py"
+# (fields as TOML literals, active?) — None: either verdict, as long as guard and doctor agree.
+V = {"rule": '"SEC-1"', "path": f'"{GOOGLE_JSON}"', "reason": '"r"', "approver": '"Leo"'}
+G = {**V, "path": None, "glob": '"apps/mobile/*.json"'}
+ENTRIES = [
+    (V, True), ({**V, "rule": '"SEC-2"', "path": '"apps/api/.env.production"'}, True),
+    ({**G, "rule": '"SEC-2"', "glob": '"infra/03-env-templates/*.env"'}, True), (G, True),
+    ({**G, "glob": '"apps/mobile/google-*.json"'}, True), ({**G, "glob": '"apps/mobile/?oogle-services.json"'}, True),
+    ({**V, "expires": '"permanent"'}, True), ({**V, "expires": '"2999-12-31"'}, True), ({**V, "reason": '"razón"'}, True),
+    ({**V, "expires": "2999-12-31"}, None),
+    ({**V, "rule": '"sec-1"'}, False), ({**V, "rule": '"Sec-2"'}, False), ({**V, "rule": '"SEC-3"'}, False),
+    ({**V, "rule": '"QA-4"'}, False), ({**V, "rule": None}, False), ({**V, "rule": "7"}, False),
+    ({**V, "reason": None}, False), ({**V, "reason": '""'}, False), ({**V, "reason": '"  "'}, False),
+    ({**V, "approver": None}, False), ({**V, "approver": '""'}, False), ({**V, "reason": "[]"}, False),
+    ({**V, "glob": '"apps/mobile/*.json"'}, False), ({**V, "path": None}, False),
+    ({**V, "path": f'"/{GOOGLE_JSON}"'}, False), ({**V, "path": f'"./{GOOGLE_JSON}"'}, False),
+    ({**V, "path": '"apps/../apps/mobile/google-services.json"'}, False), ({**V, "path": '"apps//mobile/google-services.json"'}, False),
+    ({**V, "path": '"apps/mobile/"'}, False), ({**V, "path": '"apps/mobile/google-*.json"'}, False),
+    ({**V, "path": '"apps/mobile/google-services.jso?"'}, False), ({**V, "path": '"apps/mobile/[g]oogle-services.json"'}, False),
+    ({**V, "path": json.dumps("apps\\mobile\\google-services.json")}, False), ({**V, "path": f'["{GOOGLE_JSON}"]'}, False),
+    ({**V, "path": "7"}, False),
+    ({**G, "glob": '"**/*.json"'}, False), ({**G, "glob": '"apps/**/*.json"'}, False),
+    ({**G, "glob": '"apps/*/google-services.json"'}, False), ({**G, "glob": '"*.json"'}, False),
+    ({**G, "glob": '"apps/mobile/*"'}, False), ({**G, "glob": '"apps/mobile/*.*"'}, False), ({**G, "glob": '"apps/mobile/?"'}, False),
+    ({**G, "glob": '"apps/mobile/*n"'}, False), ({**G, "glob": '"/apps/mobile/*.json"'}, False),
+    ({**G, "glob": '"apps/../apps/mobile/*.json"'}, False), ({**G, "glob": '"apps/mobile/[!]x][!]x]*"'}, False),
+    ({**G, "glob": '"apps/mobile/google-[a-z]*.json"'}, False), ({**G, "glob": '"apps/mobile/*.json]"'}, False),
+    ({**V, "expires": '"2000-01-01"'}, False), ({**V, "expires": "2000-01-01"}, False), ({**V, "expires": '"soon"'}, False),
+    ({**V, "expires": '"2026-13-01"'}, False), ({**V, "expires": "7"}, False), ({**V, "expires": "2999-01-01T00:00:00Z"}, False),
+]
+
+
+class GuardDoctorAgreementTest(unittest.TestCase):
+    """HARN-020: the guard and the doctor each keep the registry's bounds; the reviewer found them able to
+    drift. One table, both verdicts: an entry the guard honours is one the doctor lists, and back."""
+
+    def test_HARN_020_S4_guard_and_doctor_agree_on_every_entry(self):
+        import contextlib
+        import io
+        import sys
+        self.assertGreaterEqual(len(ENTRIES), 40)
+        spec = importlib.util.spec_from_file_location("guard_eq", GUARD)
+        guard = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guard)
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        for rel in [GOOGLE_JSON, "apps/mobile/other.json", "apps/api/.env.production", "infra/03-env-templates/prod.env",
+                    ".keelokit/harness/rules.toml"]:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text("\n")
+        for f in ("product", "domain", "constraints", "environments", "gaps"):
+            (root / f"docs/context/{f}.md").parent.mkdir(parents=True, exist_ok=True)
+            (root / f"docs/context/{f}.md").write_text(f"# {f}\n")
+        (root / ".keelokit/bin").mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+        code = compile(DOCTOR.read_text(), str(DOCTOR), "exec")
+        for fields, expected in ENTRIES:
+            text = allow(**{**{k: None for k in V}, **fields})  # exactly these fields
+            with self.subTest(entry=text.replace("\n", " ")):
+                guard_active = bool(guard.active_allowed(text))
+                (root / ".keelokit/guard-allow.toml").write_text(text)
+                out, argv = io.StringIO(), sys.argv
+                sys.argv = ["doctor.py"]
+                try:
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                        exec(code, {"__name__": "__main__", "__file__": str(root / ".keelokit/bin/doctor.py")})
+                except SystemExit:
+                    pass
+                finally:
+                    sys.argv = argv
+                doctor_active = not re.search(r"(?m)^  ERROR .*guard-allow\.toml", out.getvalue())
+                self.assertEqual(guard_active, doctor_active, out.getvalue())
+                if expected is not None:
+                    self.assertEqual(guard_active, expected)
 
 
 if __name__ == "__main__":
