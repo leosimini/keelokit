@@ -178,6 +178,7 @@ class ProcessTest(unittest.TestCase):
         self.write(".prettierrc", "{}")
         out = self.doctor()
         self.assertIn("warn  FMT-1: no `* text=auto eol=lf`", out)
+        self.assertNotIn(".gitattributes: can't be read", out)  # a missing file is the warning, not a second error
         self.assertIn("ERROR FMT-1: package.json has no `format:check`", out)
         self.write(".gitattributes", "* text=auto eol=lf\n")
         self.write("package.json", '{"scripts": {"format:check": "prettier --check ."}}')

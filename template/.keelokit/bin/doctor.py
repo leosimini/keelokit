@@ -962,7 +962,10 @@ def check_formatting(excepted: set[str]) -> None:
     pkg = ROOT / "package.json"
     if not pkg.exists() or not (ROOT / ".prettierrc").exists():
         return
-    attrs = read(ROOT / ".gitattributes") or ""
+    # No .gitattributes pins nothing: that is the warning below, not a file that can't be read (an
+    # adopted repo without one could never get a green doctor).
+    gitattributes = ROOT / ".gitattributes"
+    attrs = (read(gitattributes) or "") if gitattributes.exists() else ""
     if not re.search(r"(?m)^\*\s.*\beol=lf\b", attrs):
         warnings.append("FMT-1: no `* text=auto eol=lf` in .gitattributes — a checkout with other line endings makes the "
                         "formatter rewrite files locally and in CI differently (one commit reformatted 56 files)")

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **The doctor no longer fails a repo that has no `.gitattributes`.** A missing file was reported twice: as the FMT-1
+  warning it is, and as an error (`.gitattributes: can't be read`) that no exception could cover, so an adopted repo
+  without one could never get a green doctor. Now it is only the warning.
+
 ## 0.13.0 — 2026-11-02 — what a grown monorepo taught the verify
 
 A monorepo built with Keelokit logged every red of its verify, and why. This version brings the mechanisms that
