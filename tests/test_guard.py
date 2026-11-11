@@ -947,6 +947,15 @@ exit {code}
                 self.assertEqual(code, 1)
                 self.assertLess(took, 2)
 
+    def test_HARN_020_S2_an_unclosed_expression_in_a_password_is_a_literal(self):
+        """The linear-time rewrite stopped matching a URL whose password holds an unclosed `${{`."""
+        for url in ["postgres://u:${{pw@prod.example.com/db", "postgres://u:pa${{ss@prod.example.com/db",
+                    "https://u:${{x@github.com/o/r"]:
+            with self.subTest(url=url):
+                self.assertEqual(self.write("deploy/compose.yml", f"URL: {url}\n"), 2)
+                self.assertEqual(self.bash(f"psql {url}"), 2)
+                self.assertEqual(self.staged_verdict("deploy/compose.yml", f"URL: {url}\n"), 1)
+
     def test_HARN_020_S2_a_bare_dollar_word_is_a_reference_only_in_capitals(self):
         """`$uperSecret2024` read as the variable `uperSecret2024`: a bare `$NAME` counts only when NAME is
         ALL-CAPS and ends the password; in braces any identifier is fine."""
