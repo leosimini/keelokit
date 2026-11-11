@@ -50,9 +50,9 @@ SECRETS = [
 ]
 # A password in a URL is a secret unless, as a whole, it is a reference to a variable (HARN-020):
 # `${NAME}`, `$NAME` or `${{ ctx.name }}`. A literal, alone or mixed with a reference, still is.
-# The three alternatives of a password's tokens start differently (`${{`, a `$` not followed by `{{`, a
-# character that is no `$`), so a failing match can't backtrack through two ways of reading one text.
-URL_PASSWORD = r"(?P<pw>(?:\$\{\{[^}\n]*\}\}|\$(?!\{\{)|[^/\s@$])+)"
+# The alternatives of a password's tokens are disjoint (a closed `${{ … }}`, an unclosed `${{` taken as text,
+# a `$` not followed by `{{`, a character that is no `$`), so a failing match can't backtrack through two ways of reading one text.
+URL_PASSWORD = r"(?P<pw>(?:\$\{\{[^}\n]*\}\}|\$\{\{(?![^}\n]*\}\})|\$(?!\{\{)|[^/\s@$])+)"
 URL_SECRETS = [
     (rf"https?://[^/\s:@]+:{URL_PASSWORD}@github\.com", "credentials in a git URL"),
     # A DB URL with a password, unless it points at this machine (local/dev/CI values).
