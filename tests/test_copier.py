@@ -197,6 +197,23 @@ class OwnershipTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn(f"`{Path(path).name}`", skill)
 
+    def test_HARN_020_S8_the_guard_registry_is_product_owned_and_ships_commented(self):
+        """HARN-020: .keelokit/guard-allow.toml is the product's (an update never rewrites it, INV-003),
+        and the template ships it as comments only: it documents the format and allows nothing."""
+        import tomllib
+        text = (ROOT / "copier.yml").read_text()
+        skip = text[text.index("_skip_if_exists:"):]
+        self.assertIn(".keelokit/guard-allow.toml", re.findall(r"^\s*- (\.keelokit/[^\s#]+)", skip, re.M))
+        shipped = (ROOT / "template/.keelokit/guard-allow.toml").read_text()
+        self.assertEqual(tomllib.loads(shipped), {})
+        for line in shipped.splitlines():
+            with self.subTest(line=line):
+                self.assertTrue(not line.strip() or line.lstrip().startswith("#"), "only comments")
+        for word in ["[[allow]]", "rule", "path", "glob", "reason", "approver", "expires", "SEC-1", "SEC-2",
+                     "apps/mobile/google-services.json", "*.env"]:
+            with self.subTest(word=word):
+                self.assertIn(word, shipped)
+
 
 if __name__ == "__main__":
     unittest.main()

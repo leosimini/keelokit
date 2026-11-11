@@ -289,6 +289,100 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("warn  rule R-HOOK", out)
         self.assertIn("harness healthy", out)
 
+    # HARN-020: .keelokit/guard-allow.toml, the paths SEC-1 and SEC-2 let through
+
+    @staticmethod
+    def allow(**fields) -> str:
+        entry = {"rule": '"SEC-1"', "path": '"apps/mobile/google-services.json"', "reason": '"Firebase key, public by design"',
+                 "approver": '"Leo"', **fields}
+        return "[[allow]]\n" + "".join(f"{k} = {v}\n" for k, v in entry.items() if v is not None)
+
+    def registry_fixture(self) -> None:
+        self.rules()
+        self.write("apps/mobile/google-services.json", "{}\n")
+        self.write("infra/03-env-templates/prod.env", "A=\n")
+
+    def registry_errors(self, out: str) -> list[str]:
+        return re.findall(r"(?m)^  ERROR .*guard-allow\.toml.*$", out)
+
+    def test_HARN_020_S4_the_doctor_reports_an_invalid_or_unbounded_entry(self):
+        self.registry_fixture()
+        allow = self.allow
+        cases = {
+            "another rule": allow(rule='"QA-4"'), "no rule": allow(rule=None),
+            "no reason": allow(reason=None), "empty reason": allow(reason='""'),
+            "no approver": allow(approver=None), "empty approver": allow(approver='""'),
+            "path and glob": allow(glob='"apps/mobile/*.json"'), "neither path nor glob": allow(path=None),
+            "absolute path": allow(path='"/apps/mobile/google-services.json"'),
+            "./ path": allow(path='"./apps/mobile/google-services.json"'),
+            ".. in a path": allow(path='"apps/../apps/mobile/google-services.json"'),
+            "wildcard in a path": allow(path='"apps/mobile/google-*.json"'),
+            "trailing slash": allow(path='"apps/mobile/"'),
+            "glob with **": allow(path=None, glob='"**/*.json"'),
+            "glob with ** in the middle": allow(path=None, glob='"apps/**/*.json"'),
+            "wildcard directory": allow(path=None, glob='"apps/*/google-services.json"'),
+            "no literal directory": allow(path=None, glob='"*.json"'),
+            "bare *": allow(path=None, glob='"apps/mobile/*"'), "*.*": allow(path=None, glob='"apps/mobile/*.*"'),
+            "bare ?": allow(path=None, glob='"apps/mobile/?"'),
+            "expires is no date": allow(expires='"soon"'), "expired": allow(expires='"2000-01-01"'),
+            "expired as a TOML date": allow(expires="2000-01-01"),
+            "a path that doesn't exist": allow(path='"apps/mobile/missing.json"'),
+            "a glob that matches no file": allow(path=None, glob='"apps/mobile/*.plist"'),
+            "a glob whose files are in a subdirectory": allow(path=None, glob='"apps/*.json"'),
+            "rule is a number": allow(rule="7"), "path is a list": allow(path='["apps/mobile/google-services.json"]'),
+            "allow is text": "allow = 'x'\n", "invalid TOML": "[[allow]\nrule =\n",
+        }
+        for why, text in cases.items():
+            with self.subTest(why):
+                self.write(".keelokit/guard-allow.toml", text)
+                out = self.doctor("--ci")
+                self.assertTrue(self.registry_errors(out), out)
+                self.assertNotRegex(out, r"(?m)^  warn  .*Firebase key, public by design.*Leo|^  warn  .*Leo.*Firebase key")
+
+    def test_HARN_020_S5_the_doctor_lists_every_active_entry(self):
+        self.registry_fixture()
+        self.write(".keelokit/guard-allow.toml",
+                   self.allow(expires='"permanent"')
+                   + self.allow(rule='"SEC-2"', path=None, glob='"infra/03-env-templates/*.env"',
+                                reason='"placeholders the deploy guide names"', approver='"Ana"', expires='"2999-12-31"'))
+        out = self.doctor("--ci")
+        self.assertEqual(self.registry_errors(out), [], out)
+        warns = re.findall(r"(?m)^  warn  .*$", out)
+        for parts in [("SEC-1", "apps/mobile/google-services.json", "Firebase key, public by design", "Leo"),
+                      ("SEC-2", "infra/03-env-templates/*.env", "placeholders the deploy guide names", "Ana")]:
+            with self.subTest(rule=parts[0]):
+                self.assertTrue(any(all(p in w for p in parts) for w in warns), "\n".join(warns))
+
+    def test_HARN_020_S5_a_missing_or_commented_registry_is_fine(self):
+        self.registry_fixture()
+        for why, text in [("missing", None), ("comments only", "# [[allow]]\n# rule = \"SEC-1\"\n"), ("empty", "")]:
+            with self.subTest(why):
+                if text is not None:
+                    self.write(".keelokit/guard-allow.toml", text)
+                out = self.doctor("--ci")
+                self.assertEqual(self.registry_errors(out), [], out)
+                self.assertNotRegex(out, r"(?m)^  warn  .*guard-allow")
+
+    def test_HARN_020_S5_an_allowed_path_is_not_an_exception_for_its_rule(self):
+        self.registry_fixture()
+        self.rules(self.rule("SEC-1", "git-hook:pre-commit"), self.rule("SEC-2", "git-hook:pre-commit"))
+        rule_lines = lambda out: sorted(re.findall(r"(?m)^  (?:ERROR|warn ) +rule SEC-[12]\b.*$", out))
+        before = self.doctor("--ci")
+        self.assertTrue(any(line.startswith("  ERROR rule SEC-1") for line in rule_lines(before)), before)
+        self.write(".keelokit/guard-allow.toml", self.allow() + self.allow(rule='"SEC-2"', path='"infra/03-env-templates/prod.env"'))
+        after = self.doctor("--ci")
+        self.assertEqual(self.registry_errors(after), [], after)
+        self.assertEqual(rule_lines(after), rule_lines(before))
+        self.assertNotIn("(excepted)", after)
+
+    def test_HARN_020_S8_the_doctor_passes_the_shipped_registry(self):
+        self.rules()
+        shipped = DOCTOR.parents[1] / "guard-allow.toml"
+        self.write(".keelokit/guard-allow.toml", shipped.read_text())
+        out = self.doctor("--ci")
+        self.assertEqual(self.registry_errors(out), [], out)
+        self.assertIn("harness healthy", out)
+
     def test_status_comes_only_from_story_trailers_on_main(self):
         self.rules()
         self.write("backlog/stories/AUTH-001-a.md", STORY.format(id="AUTH-001", wave=1, touches='"apps/api/"'))
@@ -1002,6 +1096,9 @@ HEALTHY = {
     ".keelokit/rules.local.toml": ({}, {"rule": [{"id": '"L-1"', "level": '"MUST"', "rule": '"r"', "why": '"w"',
                                                    "enforced_by": '["file:README.md"]', "when": '["README.md"]', "needs": "[]"}]}),
     ".keelokit/exceptions.toml": ({}, {"exception": [{"rule": '"R-1"', "reason": '"r"', "approver": '"Leo"', "expires": '"permanent"'}]}),
+    # HARN-020: the paths SEC-1 and SEC-2 let through.
+    ".keelokit/guard-allow.toml": ({}, {"allow": [{"rule": '"SEC-1"', "path": '"src/pay/a.ts"', "reason": '"r"',
+                                                   "approver": '"Leo"', "expires": '"permanent"'}]}),
     ".keelokit/profile.toml": ({"kind": '"plugin"', "traits": '["developer-facing"]'}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "70"}, {"area": [{"name": '"money"', "why": '"w"', "paths": '["src/pay"]'}]}),
     ".keelokit/state.toml": ({"gates": '{intake = "2026-09-27"}'}, {}),
@@ -1058,6 +1155,7 @@ class DoctorInputContractTest(unittest.TestCase):
             ".keelokit/harness/rules.toml": ["template/.keelokit/harness/rules.toml"],
             ".keelokit/rules.local.toml": ["template/.keelokit/rules.local.toml"],
             ".keelokit/exceptions.toml": ["template/.keelokit/exceptions.toml"],
+            ".keelokit/guard-allow.toml": ["template/.keelokit/guard-allow.toml"],
             ".keelokit/profile.toml": ["template/.keelokit/profile.toml.jinja"],
             ".keelokit/critical.toml": ["template/.keelokit/critical.toml.jinja"],
             ".keelokit/verify-map.toml": ["template/.keelokit/verify-map.toml"],
