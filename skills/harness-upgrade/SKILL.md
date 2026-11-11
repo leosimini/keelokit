@@ -12,7 +12,7 @@ project, on a branch, and never rewrites their product.
 
 The template owns infrastructure (CI, lint/format/ts base configs, `scripts/verify.sh`, git
 hooks, `.keelokit/` except the project's own choices: `rules.local.toml`, `exceptions.toml`,
-`critical.toml`, `profile.toml`, `verify-routing.toml`, `red-causes.toml` and `verify-clock.toml`).
+`guard-allow.toml`, `critical.toml`, `profile.toml`, `verify-routing.toml`, `red-causes.toml` and `verify-clock.toml`).
 The product owns its code (apps' `src/`, e2e, prisma schema
 and migrations, locale files, packages' `src/`) and its knowledge (`docs/context/`, `docs/prd.md`,
 `docs/escapes.md`, `backlog/`, `README.md`, `CHANGELOG.md`) — Copier never overwrites those once

@@ -44,6 +44,15 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   the doctor (a note when the pre-push hook would also verify each write to Harbor's logbook) follow;
   nothing else changes.
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
+- `guard-allow.toml` — the few paths the guard lets through: `[[allow]]` entries for SEC-1 (a key in
+  the file) or SEC-2 (a `.env` file) with a path or a bounded glob, reason, approver and optional
+  expiry. Product-owned like `exceptions.toml`, but not in it: an exception excepts a whole rule from
+  the doctor's enforcer check, and an allowed path must not (a registered path is not an exception).
+  It is the human's: the Claude hook blocks every write to it (QA-4), a commit that changes it needs
+  `keelokit.allowTamper`, and the pre-commit hook reads it as staged, so an unstaged edit exempts
+  nothing. A secret in a shell command line stays blocked whatever the registry says. The doctor
+  validates the bounds and lists every active entry. Separately, the guard reads a variable reference
+  (`${VAR}`, `$VAR`, `${{ secrets.X }}`) where a URL's password goes as no secret; a literal still is.
 
 The process rules that came from long parallel use (CI budget, local gate, sessions, migrations,
 flaky tests, formatting, debt) are listed with their reason and check in [process-rules.md](process-rules.md).

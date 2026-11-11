@@ -1,0 +1,34 @@
+# Paths the guard lets through, on purpose. The guard (bin/guard.py: your agents' Claude hook and
+# the git pre-commit hook) blocks a secret in a file (SEC-1) and a real .env file (SEC-2); register
+# here the few files that are public by design or placeholders. Nothing is allowed until you add an entry.
+#
+# Each entry is a [[allow]] table:
+#   rule      "SEC-1" (a key in the file is let through) or "SEC-2" (the .env file is let through); only these
+#   path      one file, relative to the repo root: no leading / or ./, no .., no wildcards
+#   glob      or files directly in one directory: "dir/pattern", wildcards (* ? [) only in the file name,
+#             at least two literal characters in it, no ** (use path or glob, never both)
+#   reason    why this is safe
+#   approver  who decided
+#   expires   optional: "YYYY-MM-DD" or "permanent"; a past date turns the entry off
+#
+# An entry exempts its own rule at its own path only: a SEC-1 entry does not let a .env file through,
+# and a secret typed in a shell command stays blocked. The doctor checks the entries and lists each one.
+#
+# Examples (remove the leading # to use one):
+#
+# [[allow]]
+# rule = "SEC-1"
+# path = "apps/mobile/google-services.json"
+# reason = "Firebase client key, public by design"
+# approver = "Leo"
+# expires = "permanent"
+#
+# [[allow]]
+# rule = "SEC-2"
+# glob = "infra/03-env-templates/*.env"
+# reason = "placeholders that the deploy guide names"
+# approver = "Ana"
+# expires = "2027-06-30"
+#
+# A change here needs a human: the guard blocks agents from editing this file (QA-4). Edit it yourself
+# and commit with `git -c keelokit.allowTamper=true commit`, saying why in the message.

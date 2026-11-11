@@ -119,6 +119,12 @@ repo's pre-commit hook, and a `doctor` step in CI. Each is a code change → ask
 git hook exists, rules enforced by `git-hook:pre-commit` show as not enforced for humans — that
 is accurate, not a bug: map them to what the repo has, or except them with a date.
 
+If the guard rejects files the repo legitimately has (a public key like `google-services.json`, `.env`
+templates with placeholders), don't propose renaming them: offer `.keelokit/guard-allow.toml` (SEC-1 or
+SEC-2, per path, with reason and approver). The user adds the entry themselves and commits it with
+`git -c keelokit.allowTamper=true commit`; the guard blocks agents from editing it. A URL whose password is
+a variable (`${DB_PASSWORD}`) is already no secret.
+
 ## 5. Diagnose and seed the backlog
 
 Write `docs/diagnosis.md`: what the code verifiably does today (with `file:line` evidence), the

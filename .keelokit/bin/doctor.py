@@ -125,6 +125,9 @@ SHAPES = {
     ".keelokit/rules.local.toml": ({"rule": "tables"}, {"rule": RULE_SHAPE}),
     ".keelokit/exceptions.toml": ({"exception": "tables"},
                                   {"exception": {"rule": "text", "reason": "text", "approver": "text", "expires": "text|date"}}),
+    ".keelokit/guard-allow.toml": ({"allow": "tables"},
+                                   {"allow": {"rule": "text", "path": "text", "glob": "text", "reason": "text",
+                                              "approver": "text", "expires": "text|date"}}),
     ".keelokit/profile.toml": ({"kind": "text", "traits": "texts"}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
@@ -518,6 +521,82 @@ def check_exceptions(rule_ids: set[str]) -> set[str]:
         active.add(rid)
         warnings.append(f"exception for {rid} until {expires}: {e['reason']}")
     return active
+
+
+# --- The bounds of .keelokit/guard-allow.toml entries (HARN-020) ---------------------------------
+# bin/guard.py keeps its own copy of everything between here and "end of the bounds" (allow_problem and
+# allow_matches there): change both together (a test compares them).
+ALLOW_RULES = ("SEC-1", "SEC-2")
+ALLOW_WILDCARDS = "*?["
+
+
+def allow_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def allow_parts(value: str) -> list[str] | None:
+    parts = value.split("/")
+    return None if "\\" in value or any(p in ("", ".", "..") for p in parts) else parts
+
+
+def allow_problem(entry: dict, today: dt.date) -> str | None:
+    """Why an [[allow]] entry is not active (invalid, unbounded or expired), or None when it is."""
+    if entry.get("rule") not in ALLOW_RULES:
+        return "rule is SEC-1 or SEC-2"
+    if not allow_text(entry.get("reason")) or not allow_text(entry.get("approver")):
+        return "needs a reason and an approver"
+    path, glob = entry.get("path"), entry.get("glob")
+    if (path is None) == (glob is None):
+        return "needs exactly one of path or glob"
+    if path is not None:
+        parts = allow_parts(path) if allow_text(path) else None
+        if parts is None or any(c in path for c in ALLOW_WILDCARDS):
+            return "path is a file relative to the repo root: no leading / or ./, no .., no wildcards, no trailing /"
+    else:
+        parts = allow_parts(glob) if allow_text(glob) else None
+        if parts is None or len(parts) < 2 or "**" in glob or any(c in ALLOW_WILDCARDS for d in parts[:-1] for c in d):
+            return "glob is directory/pattern: a literal directory, wildcards only in the file name, no **, no .."
+        if len(re.sub(r"\[[^\]]*\]|[*?]", "", parts[-1])) < 2:
+            return "glob's file name needs at least two literal characters"
+    expires = entry.get("expires")
+    if expires is not None and expires != "permanent":
+        if isinstance(expires, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", expires):
+            try:
+                expires = dt.date.fromisoformat(expires)
+            except ValueError:
+                return "expires is a date (YYYY-MM-DD) or permanent"
+        if not isinstance(expires, dt.date) or isinstance(expires, dt.datetime):
+            return "expires is a date (YYYY-MM-DD) or permanent"
+        if expires < today:
+            return f"expired on {expires}"
+    return None
+# --- end of the bounds -----------------------------------------------------------------------------
+
+
+def check_guard_allow() -> None:
+    """.keelokit/guard-allow.toml: every entry valid and bounded, pointing at a file that exists; each active
+    one is listed. Not an exception: an allowed path never excepts a rule from the enforcer checks."""
+    name = ".keelokit/guard-allow.toml"
+    today = dt.date.today()
+    for i, e in enumerate(load_toml(ROOT / name, "allow"), 1):
+        what = f"{name}: [[allow]] #{i}"
+        if why := allow_problem(e, today):
+            errors.append(f"{what}: {why}")
+            continue
+        target = e.get("path") or e["glob"]
+        if "path" in e:
+            found = (ROOT / target).is_file()
+        else:
+            files, why = repo_glob(target)
+            found = bool(files)
+            if why:
+                errors.append(f"{what}: glob {why}")
+                continue
+        if not found:
+            errors.append(f"{what}: {target} matches no file in the repo")
+            continue
+        warnings.append(f"guard allows {e['rule']} at {target} until {e.get('expires', 'permanent')}: "
+                        f"{e['reason']} (approved by {e['approver']})")
 
 
 def drift_text(trait: str, seen: str | None) -> str:
@@ -940,6 +1019,7 @@ def main() -> int:
     rules = load_rules()
     profile = load_profile()
     check_rules(rules, check_exceptions(set(rules)), profile)
+    check_guard_allow()
     gaps, blocking = check_context()
     invariants = check_invariants()
     areas, _ = load_critical()

@@ -57,6 +57,14 @@ the way `/keelokit:project-adopt` does.
 5. If the lesson applies to every product, tell the user it should move to the house rules in
    Keelokit.
 
+## Files the guard rejects
+
+A file the guard blocks but the repo legitimately has (a public key such as `google-services.json`, a
+`.env` template with placeholders) is not an exception: it goes in `.keelokit/guard-allow.toml`, per
+path, for SEC-1 or SEC-2 only. That file is the human's: the guard blocks agents from editing it, so
+tell the user which entry to add (rule, path or glob, reason, approver) and they commit it with
+`git -c keelokit.allowTamper=true commit`. The doctor lists every active entry.
+
 ## Registering an exception
 
 Only with the user's explicit approval in chat. Add to `.keelokit/exceptions.toml`: `rule`,

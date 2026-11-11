@@ -15,6 +15,7 @@ _skip_if_exists:
   - docs/prd.md
   - .keelokit/rules.local.toml
   - .keelokit/exceptions.toml
+  - .keelokit/guard-allow.toml
   - .keelokit/critical.toml
   - .keelokit/profile.toml
   - .keelokit/verify-routing.toml
