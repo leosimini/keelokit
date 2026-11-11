@@ -77,3 +77,18 @@ The guard still only blocks or lets a call through (INV-002).
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, `Story: HARN-020`
 trailer on the completing commit, addendum if the result differs.
+
+## Addendum — 2026-11-11
+What differs from the story as first written, all found by the review and the breaker (escapes ESC-044..052):
+- The Claude hook reads the registry from the last commit (`git show HEAD:…`), pre-commit from the index. An edit
+  in the working tree exempts nothing until a human commits it with `keelokit.allowTamper`.
+- Globs take only `*` and `?`; `[` and `]` are refused (a class starting with `]` faked the literal-character bound).
+- A bare `$NAME` is a reference only in capitals and when it ends the password (`$uperSecret2024` is a literal);
+  `${name}` and `${{ ctx.name }}` are references. The password match is linear-time (the first version could be
+  made to run past the hook's timeout, which Claude Code does not block on). An unclosed `${{` is a literal.
+- The registry is scanned for secrets like any file; a newly added registry with no active entry passes (a
+  project's first commit). Bash-target exemptions are off when the command changes directory.
+- The doctor keeps its own copy of the bounds (its fixtures have no guard.py beside it); a test runs 54 entries
+  through both and requires the same verdict.
+- Not covered: the template's CI gitleaks job (a project whose CI runs gitleaks needs its own `.gitleaks.toml`
+  allowlist), case-insensitive file systems, the shell's working directory in the Claude hook.
