@@ -9,7 +9,7 @@ from pathlib import Path
 
 GATE = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/ux_gate.py"
 DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
-CRITIQUE = "# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n"
+CRITIQUE = "# Journey\nok\n# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n"
 
 
 def sh(cwd, *cmd):
@@ -147,6 +147,23 @@ class UxGateTest(unittest.TestCase):
         self.commit("feat")
         code, out = self.gate()
         self.assertEqual(code, 0, out)  # the space in the path and the capitals in the config are fine
+
+    def test_before_captures_do_not_fill_the_matrix(self):
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.evidence(capture=False)
+        self.write("docs/design/captures/home/before/desktop-1280-light-default.png", "x")
+        self.commit("feat")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("no capture desktop-1280-light", out)
+
+    def test_critique_needs_the_journey(self):
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.evidence(critique="# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n")
+        self.commit("feat")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn('lacks the section "Journey"', out)
 
     def test_doctor_turns_a_failure_into_an_error(self):
         self.write(".keelokit/bin/doctor.py", DOCTOR.read_text())

@@ -6,42 +6,59 @@ can answer by looking at the piece; "mostly" is no.
 
 ## 1. Every screen (UX-1)
 
+Before building, write the **person's journey**: what they come to do, where they arrive from, where
+they go when they finish, and what happens if something they need is missing. The screen is built
+from that, not the other way round. Before it lands, whoever built it looks at it running and goes
+through these lists; each point that fails is fixed, or noted in the handoff with its reason.
+
 | # | Criterion | Yes when |
 |---|---|---|
-| S1 | One purpose | The screen's one job fits in a sentence, and the main action is the most prominent thing on it |
-| S2 | Hierarchy | What to read first, second and last is clear in a second; one primary action per view |
-| S3 | System | Only components and tokens from the theme; no raw colour, size or spacing value in a screen |
-| S4 | Text | Plain words for the person's goal, no internal terms; labels say what happens; errors say what went wrong and what to do |
-| S5 | Accessibility | Contrast meets WCAG AA in every theme; touch targets ≥ 44 pt; every control reachable and named for a screen reader and the keyboard; nothing carried by colour alone |
-| S6 | Adaptation | Right at the narrowest and widest configured width; long text, large type and a slow network don't break it |
+| S1 | One purpose | One goal per screen, the main action the most prominent thing on it; on a first use only the essentials, the advanced folded away or kept for editing |
+| S2 | Every block earns its place | Each block answers what the person came to do on this screen, or it goes; nothing duplicated on the screen, nothing repeated that is already one tap away |
+| S3 | Hierarchy | What to read first, second and last is clear in a second; one primary action per view |
+| S4 | Title and instruction | A title says what the screen is, and one line says what to do |
+| S5 | System | Only components and tokens from the theme; no raw colour, size or spacing value; air between blocks from the spacing tokens; cards of the same kind identical (height, structure, text) |
+| S6 | Text | Plain words for the person's goal, no internal terms; labels say what happens; follows the project's style guide |
+| S7 | Nothing unusable | No option that can't be used yet: if it depends on something that doesn't exist, the screen explains and offers to create it, or doesn't show it |
+| S8 | Every way out explained | No link or button without saying where it leads |
+| S9 | Order follows dependencies | The steps come in the order the person needs them (what one step needs is done before it) |
+| S10 | Accessibility | Contrast meets WCAG AA in every theme; touch targets ≥ 44 pt; every control reachable and named for a screen reader and the keyboard; nothing carried by colour alone |
+| S11 | Adaptation | Nothing cut at the narrowest configured width or with large type; on large phones the height is used (look at it at about 412 wide and on a tall phone, not only the smallest); right at the widest desktop width; long text and a slow network don't break it |
 
-## 2. Every state (UX-3)
+## 2. Every state and every ending (UX-3)
 
 | # | State | Yes when |
 |---|---|---|
 | T1 | Empty | Says why it is empty and offers the next step |
 | T2 | Loading | Shows progress in the shape of what is coming; no layout jump when it arrives |
-| T3 | Error | Says what failed in words, what to do, and offers the way out (retry, back, contact) |
-| T4 | Success | Confirms what happened and offers the next step |
+| T3 | Error | Appears where the person is looking, says what failed in words, what to do, and offers the way out (retry, back, contact) |
+| T4 | Success / ending | Saving or finishing leads to a place that confirms what was done and offers the next step; never back to the same screen without a notice |
 | T5 | No dead ends | Every screen has a visible way out; none leaves a person with nothing to press |
 
 ## 3. Consistency and coherence (UX-3)
 
 - **System.** The same pattern for the same thing; spacing from the scale, uniform within a screen and across screens.
-- **Vocabulary.** One word for one thing on every surface (app, web, email, notices). A glossary entry in `docs/context/product.md` settles each disputed term.
+- **Vocabulary.** One word for one thing on every surface (app, web, email, notices), and the same one in a card and in its detail. A glossary entry in `docs/context/product.md` settles each disputed term.
 - **Journeys.** For each journey: where the person comes from and where they go next; going back loses nothing they entered; the same task works the same way on every surface.
 - **Real device.** What a web preview can't show (notches and safe areas, keyboard covering a field, native gestures, permissions, OS back) is read in code, listed in the critique, and checked on a device when the story changes it.
 
 ## 4. The critique (UX-1)
 
-Before a piece lands, a design specialist critiques it from its captures, not its description: the
-session runs the design skills the environment has (`design:design-critique`, `design:ux-copy`,
-`design:accessibility-review`, and `impeccable` for interface polish) or, with none installed, the
-`reviewer` takes the criteria above one by one. The result is `CRITIQUE.md` in the piece's folder
-with three sections, `Design critique` (each criterion S1–S6 and T1–T5: ok / fixed / open, with
-the capture it was judged on), `Consistency and coherence` (system, vocabulary, journeys) and
-`Real device` (what was read in code and what still needs a device). Findings are fixed before the
-piece lands; an open one is a decision with a recommendation, never "later" (DEBT-1).
+Every new or changed screen or journey is critiqued **before** the adversarial review and before it
+is handed over, from its captures, not its description, and through the lens of its surface (mobile
+app or desktop web). The session runs the design skills the environment has (`design:design-critique`,
+`design:ux-copy`, `design:accessibility-review`, and `impeccable` for interface polish) or, with none
+installed, the `reviewer` takes the criteria above one by one. If the piece's session lacks the skills,
+it pushes the captures and asks whoever coordinates for the critique.
+
+Every P1 and P2 finding is fixed. The result is `CRITIQUE.md` in the piece's folder, with four
+sections: `Journey` (the person's journey as written before building), `Design critique` (each
+criterion S1–S11 and T1–T5 as ok / fixed / open, with the capture it was judged on, what was
+flagged, what was fixed, what remains and why), `Consistency and coherence` (system, vocabulary,
+journeys) and `Real device` (what was read in code and what still needs a device). Captures from
+before the fix go in the piece's `before/` folder, next to the after ones. An open finding is a
+decision with a recommendation, never "later" (DEBT-1). The test: would the screen be defended in front
+of a product designer? If not, it is not finished.
 
 ## 5. The captures (UX-2)
 

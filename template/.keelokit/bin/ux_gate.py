@@ -33,7 +33,7 @@ DEFAULTS = {
     "widths": {"mobile": [360, 390], "desktop": [1280, 1440]},
     "themes": ["light", "dark"],
     "critique_file": "CRITIQUE.md",
-    "critique_sections": ["Design critique", "Consistency and coherence", "Real device"],
+    "critique_sections": ["Journey", "Design critique", "Consistency and coherence", "Real device"],
     "capture_ext": ["png"],
 }
 MARKER = re.compile(r"(?mi)^ux-gate:\s*n/a\s*[—–-]+\s*(\S.*)$")
@@ -92,7 +92,8 @@ def expected_captures(cfg: dict) -> list[str]:
 def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
     """What a piece's folder lacks. `files` are the piece's files on disk, relative to its folder."""
     problems = []
-    names = [Path(f).name.lower() for f in files]
+    # `before/` holds the captures from before a fix: they show the change, they don't fill the matrix.
+    names = [Path(f).name.lower() for f in files if not f.startswith("before/")]
     exts = "|".join(re.escape(e) for e in cfg["capture_ext"])
     for want in (w.lower() for w in expected_captures(cfg)):
         if not any(re.fullmatch(rf"{re.escape(want)}-[a-z0-9][a-z0-9_-]*\.(?:{exts})", n) for n in names):

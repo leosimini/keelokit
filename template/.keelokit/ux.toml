@@ -14,7 +14,7 @@ surfaces = ["mobile", "desktop"]
 # `themes = []` for a product with one theme (the name then has no theme part).
 themes = ["light", "dark"]
 critique_file = "CRITIQUE.md"
-critique_sections = ["Design critique", "Consistency and coherence", "Real device"]
+critique_sections = ["Journey", "Design critique", "Consistency and coherence", "Real device"]
 
 [gate.widths]
 mobile = [360, 390]

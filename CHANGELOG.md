@@ -8,7 +8,7 @@
   specialist skills, and a release walk-through (P0 and P1 stop production).
   **A mechanical gate (UX-2):** the doctor runs `.keelokit/bin/ux_gate.py`; a branch that changes interface files
   without captures (`docs/design/captures/<piece>/<surface>-<width>-<theme>-<state>.png`) and a `CRITIQUE.md` with
-  its three sections fails `pnpm verify`, the pre-push hook and CI, unless a commit says `ux-gate: n/a — <reason>`
+  its four sections fails `pnpm verify`, the pre-push hook and CI, unless a commit says `ux-gate: n/a — <reason>`
   (it passes and the doctor reports it). `.keelokit/ux.toml` (product-owned) sets what is interface, the surfaces
   (mobile, desktop or both), widths, themes and where the evidence lives; with no `ui` trait and no file the gate
   stays out. `build-story` gets a design step, the `reviewer` a product-design check, `coordinate` the integrator's
