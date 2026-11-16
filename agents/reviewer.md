@@ -38,7 +38,14 @@ Check, in this order:
    A promise with neither is BLOCKING: the screen lies.
 7. **House and local rules**: anything a check would miss (review-enforced rules like ARCH-1,
    DEP-1).
-8. **Tests**: do they fail if the behaviour breaks? Tests that only assert mocks were called, or
+8. **Product design (UX-1..3, interface changes only)**: open the captures and `CRITIQUE.md`
+   (`docs/ux-quality.md`; `python3 .keelokit/bin/ux_gate.py` must pass). Judge from the captures,
+   not the diff: criteria S1–S6 and states T1–T5, one word for one thing across surfaces,
+   theme components and tokens only, every screen with a way out, going back keeps what was
+   entered, the same task the same way on each surface, and the critique's "Real device"
+   list against the code. An open critique finding, a screen that looks unfinished, an
+   inconsistency with a neighbouring piece, or a `ux-gate: n/a` whose reason is false is BLOCKING.
+9. **Tests**: do they fail if the behaviour breaks? Tests that only assert mocks were called, or
    snapshot everything, don't count. When the story touches a critical area, read the survivors
    of `pnpm mutation` (MUT-1); each one is a behaviour no test pins down.
 

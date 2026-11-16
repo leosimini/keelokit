@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Product quality is part of the harness: the interface and the journeys (UX-1..UX-4).** A project with the `ui`
+  trait inherits four rules and `docs/ux-quality.md`, the standard behind them: criteria for every screen and state,
+  a consistency-and-coherence section (system, vocabulary, journeys, real device), the design critique with the
+  specialist skills, and a release walk-through (P0 and P1 stop production).
+  **A mechanical gate (UX-2):** the doctor runs `.keelokit/bin/ux_gate.py`; a branch that changes interface files
+  without captures (`docs/design/captures/<piece>/<surface>-<width>-<theme>-<state>.png`) and a `CRITIQUE.md` with
+  its three sections fails `pnpm verify`, the pre-push hook and CI, unless a commit says `ux-gate: n/a — <reason>`
+  (it passes and the doctor reports it). `.keelokit/ux.toml` (product-owned) sets what is interface, the surfaces
+  (mobile, desktop or both), widths, themes and where the evidence lives; with no `ui` trait and no file the gate
+  stays out. `build-story` gets a design step, the `reviewer` a product-design check, `coordinate` the integrator's
+  check and `ship-release` the walk-through. An adopted project runs `/keelokit:harness-upgrade`, then checks
+  `ui_paths` in `.keelokit/ux.toml`.
 - **The guard tells a variable from a password.** `postgresql://user:${DB_PASSWORD}@host/db`, `$DB_PASSWORD` and
   `${{ secrets.X }}` where a URL's password goes are no longer read as secrets (workflows, `compose.*.yml`); a literal
   there, alone or mixed with a reference, still is.

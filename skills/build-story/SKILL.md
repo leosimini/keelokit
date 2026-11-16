@@ -119,11 +119,23 @@ within `touches`; keep critical rules in pure functions the API wraps in a trans
 `pnpm verify` green. For an `integrity` story, `pnpm mutation` too: read its survivors and add
 the tests that kill them (MUT-1).
 
+### 4b. Design — only when the story changes the interface (profile trait `ui`, UX-1..3)
+
+Read `docs/ux-quality.md` and `.keelokit/ux.toml`. Before the review, the verifier (mode B's
+screenshots start here) saves the captures the matrix asks for under
+`<evidence_dir>/<ID>/` and a design specialist writes `CRITIQUE.md` there: run
+`design:design-critique`, `design:ux-copy` and `design:accessibility-review` (and `impeccable`
+when installed) on the captures, or, with none installed, have the `reviewer` apply the criteria
+one by one. Fix what it finds, recapture, repeat until nothing is open. A change nobody can see
+goes with a commit line `ux-gate: n/a — <reason>` instead. `doctor` (UX-2) fails the branch
+otherwise.
+
 ## 5. Review and attack — before landing
 
 1. `git fetch && git rebase origin/main`, then record the base: `git rev-parse origin/main`.
 2. `python3 .keelokit/bin/doctor.py --scope <ID>` must pass: no files outside `touches`, no
-   undeclared critical area, no acceptance test edited by the builder.
+   undeclared critical area, no acceptance test edited by the builder. With interface changes,
+   `python3 .keelokit/bin/ux_gate.py` passes too (captures and critique, UX-2).
 3. In parallel: `reviewer` (always), and `breaker` in mode A (full mode). Each gets the story, the
    contract and the recorded base.
 4. Every BLOCKING or BROKEN item: the verifier reproduces it as a failing test first (mode A),

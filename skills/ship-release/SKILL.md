@@ -24,6 +24,10 @@ environment: the release is the tag, the notes and publishing the package where 
   nothing under "Needs the owner" is still `needed`. A "known issue" is not a decision (DEBT-1).
 - Nothing half-done: every story merged since the last tag has its `Story:` trailer; a wave that
   is only partly done is fine — say which stories are in and which wait.
+- With a UI (profile trait `ui`): the release walk-through is done (UX-4, `docs/ux-quality.md` §6) —
+  the candidate on staging, every journey, every surface and theme, before the owner is told it is
+  ready. Any P0 or P1 stops the release until fixed or the owner decides; list what it found
+  under the release notes' "For the team".
 - A bug bash since the last release is recommended (`docs/bugbash/`); if there is none, say so
   and offer `/keelokit:check-bugbash` first. Blocking findings or pending decisions stop the
   release until the user decides.

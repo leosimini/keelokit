@@ -367,3 +367,37 @@ level = "MUST"
 rule = "Unfinished work moves between sessions only on wip/ branches ([verify] wip_branches): they run no verify and never land; a push holding a wip tip that origin/main lacks and no green verify proved is refused."
 why = "A session cut off mid-work had no safe way to hand its work over: a red branch can't be pushed, and --no-verify is forbidden."
 enforced_by = ["git-hook:pre-push", "script:.keelokit/bin/verify_tools.py"]
+
+# ── Product quality: the interface and the journeys (docs/ux-quality.md) ────────────────────────
+
+[[rule]]
+id = "UX-1"
+level = "MUST"
+rule = "Design every screen and every journey against the criteria in docs/ux-quality.md and have a design specialist critique it (design-critique, ux-copy, accessibility-review, impeccable when installed) before it lands; fix what the critique finds."
+why = "Screens that each looked fine shipped as a product whose pieces disagreed on words, spacing and what happens next."
+enforced_by = ["review:reviewer", "review:verifier"]
+needs = ["ui"]
+
+[[rule]]
+id = "UX-2"
+level = "MUST"
+rule = "A branch that changes the interface carries captures (every surface, width, theme and state in .keelokit/ux.toml) and a CRITIQUE.md under docs/design/captures/<piece>/, or a commit line `ux-gate: n/a — <reason>`."
+why = "Review by description let screens through that nobody had looked at on a phone, in the dark theme, or in their error state."
+enforced_by = ["script:.keelokit/bin/ux_gate.py", "script:.keelokit/bin/doctor.py", "review:reviewer"]
+needs = ["ui"]
+
+[[rule]]
+id = "UX-3"
+level = "MUST"
+rule = "Keep the product consistent and coherent: theme components and tokens only, one word for one thing on every surface, every state (empty, loading, error, success) with a way out, and the same task done the same way everywhere."
+why = "Each piece was right alone; together they spoke in two vocabularies and left people on screens with no next step."
+enforced_by = ["lint:no-restricted-syntax", "review:reviewer", "review:breaker"]
+needs = ["ui"]
+
+[[rule]]
+id = "UX-4"
+level = "SHOULD"
+rule = "Before telling the owner a release candidate is ready, walk it end to end on staging as a person would, on every surface; a P0 or P1 finding stops production."
+why = "Pieces that each passed review still failed as a journey, and the owner found it first."
+enforced_by = ["review:verifier"]
+needs = ["ui"]

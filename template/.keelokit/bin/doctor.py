@@ -1226,6 +1226,21 @@ def check_landing() -> None:
                         "a push of only the [verify] shared_seals branch")
 
 
+def check_ux() -> None:
+    """UX-2: a branch that changes the interface carries captures and a critique (bin/ux_gate.py)."""
+    gate = ROOT / ".keelokit/bin/ux_gate.py"
+    if not gate.exists():
+        return
+    out = subprocess.run([sys.executable, str(gate)], cwd=ROOT, capture_output=True, text=True)
+    text = (out.stdout + out.stderr).strip()
+    if out.returncode == 1:
+        errors.append("UX-2: " + text)
+    elif out.returncode == 2:
+        warnings.append("UX-2: " + text)
+    elif "n/a —" in text:
+        warnings.append("UX-2: " + text)
+
+
 def check_scope(sid: str) -> int:
     """Files this branch changed outside the story's `touches` (scope creep or a missing path)."""
     stories = {m.get("id"): m for p in sorted((ROOT / "backlog/stories").glob("*.md"))
@@ -1335,6 +1350,7 @@ def main() -> int:
     check_landing()
     check_shared_seals()
     check_wip_branches()
+    check_ux()
     gates = gate_state()
     answers = ROOT / ".keelokit/answers.yml"
     layout = "harness" if answers.exists() and re.search(r"(?m)^mode: harness$", read(answers) or "") else "project"

@@ -35,6 +35,12 @@ the rest of this skill is for `direct`.
    .keelokit/bin/ci.py jobs` says which job and step; fix that first.
 4. Wait with one `until` loop on one condition, never with repeated polling.
 
+## Integrating interface work
+
+Before accepting a branch that changes interface files, run `python3 .keelokit/bin/ux_gate.py`:
+no captures or critique means back to its session (UX-2). When several pieces touch one journey,
+walk that journey across them once they are all in (`docs/ux-quality.md` §6, UX-3).
+
 ## Report to the user
 
 Two lines per session at most: story, hash on main (or "not landed" and why), then what needs the

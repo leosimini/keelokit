@@ -43,6 +43,9 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   `convoy` the brief's landing, `coordinate`, `status.py` ("delivered, waiting for a convoy") and
   the doctor (a note when the pre-push hook would also verify each write to Harbor's logbook) follow;
   nothing else changes.
+- `ux.toml` + `bin/ux_gate.py` — product quality (UX-1..4, `docs/ux-quality.md`): which paths are interface,
+  which surfaces, widths and themes need captures, where they live. The doctor runs the gate against main: an interface
+  change without captures and a `CRITIQUE.md` fails, `ux-gate: n/a — <reason>` in a commit passes and is reported.
 - `rules.local.toml`, `exceptions.toml` — the project's own rules, and dated deviations.
 - `guard-allow.toml` — the few paths the guard lets through: `[[allow]]` entries for SEC-1 (a key in
   the file) or SEC-2 (a `.env` file) with a path or a bounded glob, reason, approver and optional
