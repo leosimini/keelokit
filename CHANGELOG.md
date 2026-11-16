@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 — 2026-11-16
 
 - **Product quality is part of the harness: the interface and the journeys (UX-2..UX-5).** A project with the `ui`
   trait inherits four rules and `docs/ux-quality.md`, the standard behind them: criteria for every screen and state,
