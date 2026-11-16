@@ -1,4 +1,4 @@
-"""UX-2: the gate that wants captures and a critique with every interface change.
+"""UX-3: the gate that wants captures and a critique with every interface change.
 Run: python3 -m unittest discover -s tests"""
 import shutil
 import subprocess
@@ -170,7 +170,7 @@ class UxGateTest(unittest.TestCase):
         self.write("apps/web/src/home.tsx", "export const a = 1\n")
         self.commit("feat: home")
         out = sh(self.root, "python3", ".keelokit/bin/doctor.py").stdout
-        self.assertIn("UX-2: ux-gate:", out)
+        self.assertIn("UX-3: ux-gate:", out)
         self.assertIn("ERROR", out)
 
 

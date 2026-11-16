@@ -1,10 +1,10 @@
 # UX quality: screens, journeys, and the proof
 
 The product ships with design quality that was checked, not hoped for. This page is the standard
-behind rules UX-1 to UX-4 (`.keelokit/harness/rules.toml`). Each line is a yes or no a reviewer
+behind rules UX-2 to UX-5 (`.keelokit/harness/rules.toml`). Each line is a yes or no a reviewer
 can answer by looking at the piece; "mostly" is no.
 
-## 1. Every screen (UX-1)
+## 1. Every screen (UX-2)
 
 Before building, write the **person's journey**: what they come to do, where they arrive from, where
 they go when they finish, and what happens if something they need is missing. The screen is built
@@ -25,7 +25,7 @@ through these lists; each point that fails is fixed, or noted in the handoff wit
 | S10 | Accessibility | Contrast meets WCAG AA in every theme; touch targets ≥ 44 pt; every control reachable and named for a screen reader and the keyboard; nothing carried by colour alone |
 | S11 | Adaptation | Nothing cut at the narrowest configured width or with large type; on large phones the height is used (look at it at about 412 wide and on a tall phone, not only the smallest); right at the widest desktop width; long text and a slow network don't break it |
 
-## 2. Every state and every ending (UX-3)
+## 2. Every state and every ending (UX-4)
 
 | # | State | Yes when |
 |---|---|---|
@@ -35,14 +35,14 @@ through these lists; each point that fails is fixed, or noted in the handoff wit
 | T4 | Success / ending | Saving or finishing leads to a place that confirms what was done and offers the next step; never back to the same screen without a notice |
 | T5 | No dead ends | Every screen has a visible way out; none leaves a person with nothing to press |
 
-## 3. Consistency and coherence (UX-3)
+## 3. Consistency and coherence (UX-4)
 
 - **System.** The same pattern for the same thing; spacing from the scale, uniform within a screen and across screens.
 - **Vocabulary.** One word for one thing on every surface (app, web, email, notices), and the same one in a card and in its detail. A glossary entry in `docs/context/product.md` settles each disputed term.
 - **Journeys.** For each journey: where the person comes from and where they go next; going back loses nothing they entered; the same task works the same way on every surface.
 - **Real device.** What a web preview can't show (notches and safe areas, keyboard covering a field, native gestures, permissions, OS back) is read in code, listed in the critique, and checked on a device when the story changes it.
 
-## 4. The critique (UX-1)
+## 4. The critique (UX-2)
 
 Every new or changed screen or journey is critiqued **before** the adversarial review and before it
 is handed over, from its captures, not its description, and through the lens of its surface (mobile
@@ -60,7 +60,7 @@ before the fix go in the piece's `before/` folder, next to the after ones. An op
 decision with a recommendation, never "later" (DEBT-1). The test: would the screen be defended in front
 of a product designer? If not, it is not finished.
 
-## 5. The captures (UX-2)
+## 5. The captures (UX-3)
 
 `docs/design/captures/<piece>/<surface>-<width>-<theme>-<state>.png`, for every surface, width and
 theme in `.keelokit/ux.toml` (defaults: mobile 360 and 390, desktop 1280 and 1440, light and dark),
@@ -75,7 +75,7 @@ No evidence is needed when the change cannot be seen: put `ux-gate: n/a — <rea
 commit message (a refactor with no visual change, a rename). The gate passes and the doctor says so; the
 reviewer judges the reason, and a reason that is false is BLOCKING.
 
-## 6. Integration and releases (UX-3, UX-4)
+## 6. Integration and releases (UX-4, UX-5)
 
 - **Integrating pieces.** Whoever lands pieces (`coordinate`, or a convoy's integrator) rejects an
   interface piece without evidence and reviews the journeys that cross pieces: each one end to end,

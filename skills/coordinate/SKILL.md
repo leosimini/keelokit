@@ -38,8 +38,8 @@ the rest of this skill is for `direct`.
 ## Integrating interface work
 
 Before accepting a branch that changes interface files, run `python3 .keelokit/bin/ux_gate.py`:
-no captures or critique means back to its session (UX-2). When several pieces touch one journey,
-walk that journey across them once they are all in (`docs/ux-quality.md` §6, UX-3).
+no captures or critique means back to its session (UX-3). When several pieces touch one journey,
+walk that journey across them once they are all in (`docs/ux-quality.md` §6, UX-4).
 
 ## Report to the user
 

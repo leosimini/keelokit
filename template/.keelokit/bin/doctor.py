@@ -1227,18 +1227,18 @@ def check_landing() -> None:
 
 
 def check_ux() -> None:
-    """UX-2: a branch that changes the interface carries captures and a critique (bin/ux_gate.py)."""
+    """UX-3: a branch that changes the interface carries captures and a critique (bin/ux_gate.py)."""
     gate = ROOT / ".keelokit/bin/ux_gate.py"
     if not gate.exists():
         return
     out = subprocess.run([sys.executable, str(gate)], cwd=ROOT, capture_output=True, text=True)
     text = (out.stdout + out.stderr).strip()
     if out.returncode == 1:
-        errors.append("UX-2: " + text)
+        errors.append("UX-3: " + text)
     elif out.returncode == 2:
-        warnings.append("UX-2: " + text)
+        warnings.append("UX-3: " + text)
     elif "n/a —" in text or "switched off" in text or "ui_paths" in text:
-        warnings.append("UX-2: " + text)
+        warnings.append("UX-3: " + text)
 
 
 def check_scope(sid: str) -> int:

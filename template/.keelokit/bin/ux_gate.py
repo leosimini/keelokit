@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UX-2: a branch that changes the interface carries its captures and its critique.
+"""UX-3: a branch that changes the interface carries its captures and its critique.
 
     python3 .keelokit/bin/ux_gate.py            check this branch against main
     python3 .keelokit/bin/ux_gate.py --config   print the settings in force

@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- **Product quality is part of the harness: the interface and the journeys (UX-1..UX-4).** A project with the `ui`
+- **Product quality is part of the harness: the interface and the journeys (UX-2..UX-5).** A project with the `ui`
   trait inherits four rules and `docs/ux-quality.md`, the standard behind them: criteria for every screen and state,
   a consistency-and-coherence section (system, vocabulary, journeys, real device), the design critique with the
   specialist skills, and a release walk-through (P0 and P1 stop production).
-  **A mechanical gate (UX-2):** the doctor runs `.keelokit/bin/ux_gate.py`; a branch that changes interface files
+  **A mechanical gate (UX-3):** the doctor runs `.keelokit/bin/ux_gate.py`; a branch that changes interface files
   without captures (`docs/design/captures/<piece>/<surface>-<width>-<theme>-<state>.png`) and a `CRITIQUE.md` with
   its four sections fails `pnpm verify`, the pre-push hook and CI, unless a commit says `ux-gate: n/a — <reason>`
   (it passes and the doctor reports it). `.keelokit/ux.toml` (product-owned) sets what is interface, the surfaces

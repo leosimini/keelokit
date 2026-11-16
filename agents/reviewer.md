@@ -38,7 +38,7 @@ Check, in this order:
    A promise with neither is BLOCKING: the screen lies.
 7. **House and local rules**: anything a check would miss (review-enforced rules like ARCH-1,
    DEP-1).
-8. **Product design (UX-1..3, interface changes only)**: open the captures and `CRITIQUE.md`
+8. **Product design (UX-2..4, interface changes only)**: open the captures and `CRITIQUE.md`
    (`docs/ux-quality.md`; `python3 .keelokit/bin/ux_gate.py` must pass). Judge from the captures,
    not the diff: criteria S1–S6 and states T1–T5, one word for one thing across surfaces,
    theme components and tokens only, every screen with a way out, going back keeps what was
