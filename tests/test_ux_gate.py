@@ -130,6 +130,24 @@ class UxGateTest(unittest.TestCase):
             self.assertIn(f"no capture {want}-<state>", out)
         self.assertNotIn("no capture mobile-360-light", out)
 
+    def test_evidence_must_be_committed(self):
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.commit("feat: home")
+        self.evidence()  # on disk, not committed: CI would not see it
+        self.write("docs/design/captures/home/x.txt", "x")
+        sh(self.root, "git", "add", "docs/design/captures/home/x.txt")
+        sh(self.root, "git", "commit", "-qm", "docs: notes")  # only the staged file
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+
+    def test_names_with_spaces_and_uppercase_config(self):
+        self.write(".keelokit/ux.toml", '[gate]\nsurfaces = ["Desktop"]\nthemes = ["Light"]\n[gate.widths]\nDesktop = [1280]\n')
+        self.write("apps/web/src/my page.tsx", "export {}\n")
+        self.evidence()
+        self.commit("feat")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)  # the space in the path and the capitals in the config are fine
+
     def test_doctor_turns_a_failure_into_an_error(self):
         self.write(".keelokit/bin/doctor.py", DOCTOR.read_text())
         self.write("apps/web/src/home.tsx", "export const a = 1\n")

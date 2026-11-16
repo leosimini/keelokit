@@ -1237,7 +1237,7 @@ def check_ux() -> None:
         errors.append("UX-2: " + text)
     elif out.returncode == 2:
         warnings.append("UX-2: " + text)
-    elif "n/a —" in text:
+    elif "n/a —" in text or "switched off" in text or "ui_paths" in text:
         warnings.append("UX-2: " + text)
 
 

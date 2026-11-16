@@ -1,6 +1,6 @@
 # UX-2 — what counts as interface, and what evidence a change to it brings (bin/ux_gate.py).
 # Product-owned: `copier update` leaves it alone. Every key is optional; these are the defaults.
-# Set `enabled = false` only with an entry in exceptions.toml saying why.
+# `enabled = false` switches the gate off (and the doctor says so); say why in a comment here.
 [gate]
 enabled = true
 # Files that are interface. Add the folders of your apps and design-system package.

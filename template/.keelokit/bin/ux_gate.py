@@ -9,8 +9,8 @@ profile lists the `ui` trait, and nothing applies to one without). The doctor ru
 verify`, the pre-push hook and CI all stop a branch that fails.
 
 A branch "changes the interface" when it touches a file matching `ui_paths` that no `exempt_paths`
-glob excuses. It then needs, for at least one piece under `<evidence_dir>/<piece>/` touched on the
-branch: a capture `<surface>-<width>-<theme>-<state>.png` for every configured surface, width and
+glob excuses. It then needs, for every piece under `<evidence_dir>/<piece>/` touched on the
+branch (and at least one): a capture `<surface>-<width>-<theme>-<state>.png` for every configured surface, width and
 theme, and a non-empty `CRITIQUE.md` holding every required section. Or a commit message line
 `ux-gate: n/a — <reason>` (reason mandatory); the gate then passes and says so.
 Exit 0 pass or not applicable, 1 fail, 2 cannot tell (no main to compare with)."""
@@ -94,11 +94,10 @@ def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
     problems = []
     names = [Path(f).name.lower() for f in files]
     exts = "|".join(re.escape(e) for e in cfg["capture_ext"])
-    for want in expected_captures(cfg):
+    for want in (w.lower() for w in expected_captures(cfg)):
         if not any(re.fullmatch(rf"{re.escape(want)}-[a-z0-9][a-z0-9_-]*\.(?:{exts})", n) for n in names):
             problems.append(f"{piece}: no capture {want}-<state>.{cfg['capture_ext'][0]}")
-    crit = piece_dir(cfg, piece) / cfg["critique_file"]
-    text = crit.read_text() if crit.is_file() else ""
+    text = git("show", f"HEAD:{cfg['evidence_dir'].rstrip('/')}/{piece}/{cfg['critique_file']}")
     if not text.strip():
         problems.append(f"{piece}: {cfg['critique_file']} missing or empty")
     else:
@@ -106,10 +105,6 @@ def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
             if not re.search(rf"(?mi)^#+\s*{re.escape(sec)}\b", text):
                 problems.append(f"{piece}: {cfg['critique_file']} lacks the section \"{sec}\"")
     return problems
-
-
-def piece_dir(cfg: dict, piece: str) -> Path:
-    return ROOT / cfg["evidence_dir"] / piece
 
 
 def check() -> int:
@@ -128,7 +123,11 @@ def check() -> int:
     if not base:
         print("ux-gate: no main or origin/main to compare with; fetch it (CI: fetch-depth: 0)")
         return 2
-    changed = git("diff", "--name-only", base, "HEAD").split()
+    changed = [f for f in git("diff", "-z", "--name-only", base, "HEAD").split("\0") if f]
+    tracked = [f for f in git("ls-tree", "-r", "-z", "--name-only", "HEAD").split("\0") if f]
+    if not any(matches(f, cfg["ui_paths"]) for f in tracked):
+        print("ux-gate: no tracked file matches `ui_paths` in .keelokit/ux.toml, so nothing is ever treated as interface; "
+              "set it to your apps' folders")
     ui = [f for f in changed if matches(f, cfg["ui_paths"]) and not matches(f, cfg["exempt_paths"])]
     if not ui:
         print("ux-gate: no interface files changed")
@@ -146,8 +145,8 @@ def check() -> int:
         return 1
     problems = []
     for piece in pieces:
-        d = piece_dir(cfg, piece)
-        files = [p.relative_to(d).as_posix() for p in d.rglob("*") if p.is_file()] if d.is_dir() else []
+        pre = f"{ev}{piece}/"
+        files = [f[len(pre):] for f in tracked if f.startswith(pre)]  # committed files only: what CI will see
         problems += piece_problems(piece, files, cfg)
     if problems:
         print("ux-gate: the evidence is incomplete:\n  " + "\n  ".join(problems))

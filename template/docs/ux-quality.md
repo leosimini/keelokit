@@ -52,6 +52,8 @@ a screen; name the folder after it. `python3 .keelokit/bin/ux_gate.py` checks th
 critique's sections; the doctor runs it, so `pnpm verify`, the pre-push hook and CI refuse a branch
 that changes interface files (`ui_paths`) without them.
 
+The gate checks that the evidence exists, is committed and is complete for every piece the branch touches; it can't tell that the captures show *this* change, which is the reviewer's check. If no tracked file matches `ui_paths`, the gate says so (set `ui_paths` to your apps' folders).
+
 No evidence is needed when the change cannot be seen: put `ux-gate: n/a — <reason>` on its own line in a
 commit message (a refactor with no visual change, a rename). The gate passes and the doctor says so; the
 reviewer judges the reason, and a reason that is false is BLOCKING.
