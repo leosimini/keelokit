@@ -181,3 +181,6 @@ is the `mobile` lens of the bug bash, on a real device.
 Things that might come if they prove useful in real projects: measuring whether agents follow
 the skills (evals), deploying web and sites from CI, per-package caching, a Maestro job for
 native mobile journeys, and Stryker's per-test runner once it supports Vitest 5.
+
+Designed and planned, not built: the ledger, one derived record of what is being done and what was
+done, for every session ([ledger.md](ledger.md), epic `LEDGER`).
