@@ -6,7 +6,7 @@ wave = 14
 depends_on = ["LEDGER-009"]
 touches = ["template/.githooks/pre-push", ".githooks/pre-push", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", ".github/workflows/ci.yml", "tests/test_ledger.py", "tests/test_verify.py", "tests/test_ci.py", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "ops"]
-invariants = ["INV-005"]
+invariants = ["INV-005", "INV-007"]
 origin = "docs/ledger.md — Mechanisms (pre-push and CI); JOUNA's squashed trains"
 +++
 ## Context
@@ -26,7 +26,7 @@ the trunk since `[ledger] since`. For each unattributed commit it prints the exa
 command. The step goes in the job that already runs the doctor with `fetch-depth: 0`. All three follow
 `enforce`: with `warn` they print, with `block` they fail.
 
-**Decision needed:** INV-007 (docs/ledger.md, "Decisions", 2).
+**Decided:** INV-007 (docs/ledger.md, "Decisions", 2), already in `docs/context/domain.md`.
 
 Does NOT do: write the snapshot (LEDGER-011); check pushes to branches that are not the trunk.
 

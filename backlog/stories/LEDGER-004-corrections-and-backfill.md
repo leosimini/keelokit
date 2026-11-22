@@ -6,7 +6,7 @@ wave = 8
 depends_on = ["LEDGER-003"]
 touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/backlog/ledger-corrections.toml", "copier.yml", "template/.gitignore", "template/.keelokit/bin/guard.py", ".keelokit/bin/guard.py", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "hooks/hooks.json", "tests/test_ledger.py", "tests/test_guard.py", "tests/test_doctor.py", "tests/test_copier.py", "docs/design.md", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "security", "data", "dx"]
-invariants = ["INV-002", "INV-003", "INV-005"]
+invariants = ["INV-002", "INV-003", "INV-005", "INV-008"]
 origin = "docs/ledger.md — Contracts (Corrections file); premortem failures 1 and 2"
 +++
 ## Context
@@ -31,8 +31,8 @@ that changes it needs `keelokit.allowTamper`, and a PreToolUse hook of the plugi
 --accept` to agents (as Harbor denies `convoy approve`). The guard still only blocks or lets a call
 through (INV-002). `copier.yml` lists the file under `_skip_if_exists` (INV-003).
 
-**Decisions needed before building (docs/ledger.md, "Decisions", 1, 2 and 4):** INV-005's new wording
-(an approved correction counts), INV-008 (append-only), and that only a person accepts.
+**Decided (docs/ledger.md, "Decisions", 1, 2 and 4):** an approved correction counts for INV-005; the file
+is append-only (INV-008, already in `docs/context/domain.md`); only a person accepts.
 
 Does NOT do: rewrite history; accept rows by itself; read Harbor's logbook beyond the imported board file.
 

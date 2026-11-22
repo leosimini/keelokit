@@ -241,34 +241,36 @@ the submission notes.
 - Going back: `enforce = "warn"`; a dated LEDGER-1 exception in `exceptions.toml`; `snapshot = ""`; Harbor
   and Swarm detect the ledger. A wrong correction row is cancelled with a `retract` row.
 
-## Decisions for Leo before building
+## Decisions (taken by Leo on 2026-11-22)
 
-These change existing rules or invariants, so a person decides them (execution protocol: new invariants
-and product rules wait for the human). Each story that depends on one says so.
+These change existing rules or invariants, so a person decided them (execution protocol: new invariants
+and product rules wait for the human). All five were accepted as proposed. INV-007 and INV-008 are in
+`docs/context/domain.md`; INV-005's new wording lands with LEDGER-003.
 
 1. **INV-005 changes.** Today: a story is done iff a commit reachable from `main` carries its `Story:`
    trailer. Proposed: *a story is on the trunk iff a commit reachable from the trunk carries its `Story:`
    trailer, or an approved correction names it, and no revert of that commit is on the trunk.*
-   (LEDGER-003, LEDGER-004)
+   (LEDGER-003, LEDGER-004) **Accepted.**
 2. **New invariants**, proposed for `docs/context/domain.md`:
    - *INV-007: every commit that reaches the trunk after `[ledger] since` is attributed, by its own
      trailers or by a merge that brings it — class: consistency.* (LEDGER-009, LEDGER-010)
    - *INV-008: no row of `backlog/ledger-corrections.toml` already on the trunk changes or disappears —
-     class: consistency.* (LEDGER-004)
+     class: consistency.* (LEDGER-004) **Both accepted.**
 3. **The SessionStart hook activates `core.hooksPath`.** Today the doctor says "a human runs
    `git config core.hooksPath .githooks`". Every cloud session is a fresh clone, so without this the git
    hooks never run there. Alternative: keep it human and rely on the pre-push and the CI. (LEDGER-009)
+   **Accepted: the hook turns them on.**
 4. **Corrections are accepted only by a person in their terminal** (like `guard-allow.toml` and Harbor's
-   `convoy approve`). (LEDGER-004)
-5. **TRACE-1 and INV-1 skip reconstructed stories**, which predate those rules. (LEDGER-006)
+   `convoy approve`). (LEDGER-004) **Accepted.**
+5. **TRACE-1 and INV-1 skip reconstructed stories**, which predate those rules. (LEDGER-006) **Accepted.**
 
 ## How to launch
 
 Order: phase 0 → gate → phase 1 → gate → release 0.15.0 → phase 2 → gate → release 0.16.0 → phase 3.
 Swarm's SWM-1..3 can start any time; Harbor's HRB-1 waits for Keelokit 0.16.0.
 
-**Keelokit (this repo).** One session per story, in order, after the decisions above that the story
-names. The prompt, and nothing more about process:
+**Keelokit (this repo).** One session per story, in order (the decisions above are taken). The prompt,
+and nothing more about process:
 
 ```
 Read .keelokit/harness/agent-brief.md and docs/ledger.md, then /keelokit:build-story LEDGER-001.

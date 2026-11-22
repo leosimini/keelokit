@@ -4,9 +4,9 @@ epic = "LEDGER"
 title = "prepare-commit-msg writes Part-of:, commit-msg checks the trailers"
 wave = 13
 depends_on = ["LEDGER-008"]
-touches = ["template/.githooks/prepare-commit-msg", "template/.githooks/commit-msg", ".githooks/prepare-commit-msg", ".githooks/commit-msg", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "hooks/hooks.json", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "skills/ship-release/SKILL.md", "skills/check-bugbash/SKILL.md", "tests/test_hooks.py", "tests/test_first_commit.py", "tests/test_copier.py", "CHANGELOG.md"]
+touches = ["template/.githooks/prepare-commit-msg", "template/.githooks/commit-msg", ".githooks/prepare-commit-msg", ".githooks/commit-msg", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "hooks/hooks.json", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "skills/ship-release/SKILL.md", "skills/check-bugbash/SKILL.md", "tests/test_hooks.py", "tests/test_first_commit.py", "tests/test_copier.py", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "dx"]
-invariants = ["INV-005"]
+invariants = ["INV-005", "INV-007"]
 origin = "docs/ledger.md — Contracts (Trailers); premortem failures 5 and 10"
 +++
 ## Context
@@ -23,15 +23,15 @@ it when it is missing. Both are three-line shell wrappers; the logic is `ledger.
   `enforce = "warn"` it prints what is wrong and what to add, and lets the commit through; with `block` it
   refuses.
 - The plugin's SessionStart sets `core.hooksPath = .githooks` when the repo has `.githooks/` and the key is
-  unset, and says so in one line. **Decision 3 in docs/ledger.md:** today the doctor says a human runs this;
-  every cloud session is a fresh clone, so without it the git hooks never run there. If Leo decides to keep
-  it human, S7 becomes "the hook says how to turn them on" and the pre-push and CI (LEDGER-010) carry the
-  guarantee.
+  unset, and says so in one line (decision 3 in docs/ledger.md, accepted: every cloud session is a fresh
+  clone, so without it the git hooks never run there). The doctor's message for a hook that is not
+  installed stops saying "a human runs `git config core.hooksPath`" and says the SessionStart hook turns
+  them on (or gives the command, for a clone used without the plugin).
 - The commits Keelokit's own skills make carry a trailer: `project-new`, `project-adopt` and
   `harness-upgrade` → `No-story: harness`; `ship-release` → `No-story: release`; `check-bugbash` fixes →
   `Finding: <ID>` (plus `Story:` when they close one).
 
-**Decision needed:** INV-007 (docs/ledger.md, "Decisions", 2).
+**Decided:** INV-007 (docs/ledger.md, "Decisions", 2), already in `docs/context/domain.md`.
 
 Does NOT do: check pushes (LEDGER-010); change what counts as done.
 

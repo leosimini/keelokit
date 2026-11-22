@@ -15,6 +15,8 @@
 - [INV-004] [MUST] `project-adopt` writes only inside `.keelokit/` until the user says yes to a code change — class: isolation (S2)
 - [INV-005] [MUST] A story is done if and only if a commit reachable from `main` carries its `Story:` trailer — class: consistency (S2)
 - [INV-006] [MUST] `doctor --ci` exits non-zero whenever it reports an error — class: consistency (S4)
+- [INV-007] [MUST] Every commit that reaches the trunk after `[ledger] since` is attributed, by its own `Story:`, `Part-of:` or `No-story:` trailer or by a merge commit that brings it — class: consistency (S2)
+- [INV-008] [MUST] No row of `backlog/ledger-corrections.toml` that is already on the trunk changes or disappears — class: consistency (S2)
 
 ## Events
 | Event | Triggers |

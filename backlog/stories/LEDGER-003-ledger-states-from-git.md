@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "ledger.py computes every story's state from git"
 wave = 7
 depends_on = ["LEDGER-002"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "docs/context/domain.md", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "data", "dx", "nfr"]
 invariants = ["INV-005"]
 origin = "docs/ledger.md — Contracts (Configuration, States, --json)"
@@ -28,9 +28,10 @@ Facts read, each with a fixed number of git calls:
 It prints a summary of at most 10 lines, or `--json` (schema 1). It fails closed: with an incomplete
 history every state that depends on it is `unknown`, with the reason.
 
-**Decision needed before building (docs/ledger.md, "Decisions", 1):** INV-005's new wording, which this
-story starts to implement (reverts). Until Leo decides, the story keeps INV-005 as written and treats a
-reverted story as `on-trunk` with the `reverted` signal.
+**Decided (docs/ledger.md, "Decisions", 1):** INV-005 becomes *a story is on the trunk iff a commit
+reachable from the trunk carries its `Story:` trailer, or an approved correction names it, and no revert of
+that commit is on the trunk.* This story rewrites INV-005 in `docs/context/domain.md` and implements the
+revert part; LEDGER-004 implements the corrections part.
 
 `project-new` writes `[ledger] since` = the first commit; `project-adopt` writes it = the adoption commit.
 
@@ -57,7 +58,7 @@ Scenario: [S3] Work in progress on any branch
 
 Scenario: [S4] A revert
   Given a revert of AUTH-001's Story: commit on the trunk
-  Then AUTH-001 is ready, marked reverted (or on-trunk with the reverted signal until INV-005's wording is decided)
+  Then AUTH-001 is ready, marked reverted
 
 Scenario: [S5] Dependencies
   Given AUTH-003 depends on AUTH-004

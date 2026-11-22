@@ -15,8 +15,8 @@ Today at least four places read `Story:` trailers on their own: the doctor, the 
 story makes Keelokit's own readers ask `ledger.py` (Harbor follows in its own plan).
 
 - The doctor takes done stories from the ledger, corrections included. TRACE-1 and INV-1 skip
-  reconstructed stories, which predate those rules, and the doctor lists them apart (**decision 5** in
-  docs/ledger.md).
+  reconstructed stories, which predate those rules, and the doctor lists them apart (decision 5 in
+  docs/ledger.md, accepted).
 - The dashboard takes states, version and in-progress from `ledger.py --json`, and shows unknown when the
   ledger does.
 - `status.py` adds what is in progress on other machines (from the ledger), next to the local worktrees.
