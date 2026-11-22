@@ -2,7 +2,7 @@
 id = "LEDGER-014"
 epic = "LEDGER"
 title = "The ledger sees the swarm's deliveries"
-wave = 18
+wave = 19
 depends_on = ["LEDGER-013"]
 touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "CHANGELOG.md"]
 dimensions = ["logic", "dx"]

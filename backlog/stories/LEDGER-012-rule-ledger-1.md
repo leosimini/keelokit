@@ -2,7 +2,7 @@
 id = "LEDGER-012"
 epic = "LEDGER"
 title = "Rule LEDGER-1, and the doctor checks that its enforcers are alive"
-wave = 16
+wave = 17
 depends_on = ["LEDGER-011"]
 touches = ["template/.keelokit/harness/rules.toml", ".keelokit/harness/rules.toml", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "docs/process-rules.md", "docs/design.md", "tests/test_doctor.py", "CHANGELOG.md"]
 dimensions = ["logic", "dx", "docs"]

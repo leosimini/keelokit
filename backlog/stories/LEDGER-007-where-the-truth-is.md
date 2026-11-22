@@ -2,7 +2,7 @@
 id = "LEDGER-007"
 epic = "LEDGER"
 title = "A new session knows where the truth is"
-wave = 11
+wave = 12
 depends_on = ["LEDGER-006"]
 touches = ["hooks/hooks.json", "template/AGENTS.md.jinja", "template/.keelokit/harness/agent-brief.md", "template/.keelokit/harness/execution-protocol.md", "AGENTS.md", "README.md", "README.es.md", "backlog/next.md", "tests/test_hooks.py", "tests/test_copier.py", "CHANGELOG.md"]
 dimensions = ["dx", "docs"]

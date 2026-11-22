@@ -24,7 +24,9 @@ treats an active row as the fact that the story is `on-trunk`, shown as *reconst
   sheets, a `BOARD.md`, Harbor's `harbor/imported/board.toml`, as lines of id → commit or train.
 - `ledger.py correct <commit> --story <ID> --evidence "…"` proposes one late row.
 - `ledger.py backfill --accept` moves the rows a person kept into the file, with `approver` from
-  `git config user.name` and today's date.
+  `git config user.name` and today's date. This is the `human` approval mode, the default; LEDGER-015
+  adds `delegated` and `mixed`, where agents with an adversarial review may approve when the person
+  enables it in `[ledger.approval]`.
 
 The file is the human's, like `guard-allow.toml` (QA-4): the Claude hook blocks writes to it, a commit
 that changes it needs `keelokit.allowTamper`, and a PreToolUse hook of the plugin denies `backfill
@@ -32,7 +34,8 @@ that changes it needs `keelokit.allowTamper`, and a PreToolUse hook of the plugi
 through (INV-002). `copier.yml` lists the file under `_skip_if_exists` (INV-003).
 
 **Decided (docs/ledger.md, "Decisions", 1, 2 and 4):** an approved correction counts for INV-005; the file
-is append-only (INV-008, already in `docs/context/domain.md`); only a person accepts.
+is append-only (INV-008, already in `docs/context/domain.md`); a person accepts, or agents with an
+adversarial review when the person delegates it (LEDGER-015).
 
 Does NOT do: rewrite history; accept rows by itself; read Harbor's logbook beyond the imported board file.
 

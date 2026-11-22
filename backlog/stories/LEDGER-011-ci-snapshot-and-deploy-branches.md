@@ -2,7 +2,7 @@
 id = "LEDGER-011"
 epic = "LEDGER"
 title = "The CI snapshot, the time each commit reached the trunk, and the deploy branches"
-wave = 15
+wave = 16
 depends_on = ["LEDGER-010"]
 touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", "template/.github/workflows/release.yml.jinja", "skills/ship-setup/SKILL.md", "tests/test_ledger.py", "tests/test_ci.py", "scripts/test-template.sh", "docs/design.md", "CHANGELOG.md"]
 dimensions = ["logic", "ops", "data", "nfr"]

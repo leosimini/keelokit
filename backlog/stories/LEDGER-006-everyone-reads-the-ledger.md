@@ -2,7 +2,7 @@
 id = "LEDGER-006"
 epic = "LEDGER"
 title = "The doctor, the dashboard and the skills read the ledger"
-wave = 10
+wave = 11
 depends_on = ["LEDGER-005"]
 touches = ["template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "skills/project-dashboard/scripts/dashboard.py", "template/.keelokit/bin/status.py", "skills/coordinate/SKILL.md", "skills/ship-release/SKILL.md", "skills/build-story/SKILL.md", "skills/plan-backlog/SKILL.md", "skills/keelokit/SKILL.md", "skills/check-health/SKILL.md", "skills/project-report/SKILL.md", "tests/test_doctor.py", "tests/test_dashboard.py", "tests/test_process.py", "docs/design.md", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "dx", "docs"]

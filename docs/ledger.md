@@ -118,6 +118,7 @@ A story has one state: the most advanced one the facts prove. From lowest to hig
 | `ledger.py history --ensure` | Completes the trunk's history (SessionStart) |
 | `ledger.py backfill --propose [--from FILE…]` / `backfill --accept` | Proposes correction rows / accepts them (a person only) |
 | `ledger.py correct <commit> --story <ID> --evidence "…"` | Proposes a late attribution |
+| `ledger.py review --filter` / `backfill --accept --delegated <run>` / `review --reject-sample <run>` | The delegated review's mechanical filter / writing its approved rows / sending a run back (a person) |
 | `ledger.py attribution <a>..<b> [--json]` | Whether every commit of a range is attributed (Harbor's `convoy add` calls it) |
 | `ledger.py hook prepare\|msg`, `ledger.py prepush` | The git hooks' logic |
 | `ledger.py snapshot` | Writes the snapshot branch (the CI only) |
@@ -146,7 +147,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `UNKNOWN_STORY`, `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS` | error | `hook msg`, `prepush`, `check` |
 | `CORRECTION_INVALID`, `CORRECTION_EDITED` | error | `check`, the doctor |
 | `HISTORY_INCOMPLETE` | error in CI, warning in a session | every reader |
-| `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE` | warning | `check` |
+| `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
 
@@ -165,7 +166,33 @@ date = "2026-11-25"
 Append-only: no row already on the trunk may change or disappear (`CORRECTION_EDITED`). Protected like
 `guard-allow.toml`: the Claude hook blocks writing it, a commit that changes it needs
 `keelokit.allowTamper`, and `ledger.py backfill --accept` is denied to agents by a PreToolUse hook (as
-Harbor denies `convoy approve`).
+Harbor denies `convoy approve`), except in a delegated approval (below).
+
+### Approval modes
+
+Who approves correction rows is the person's choice, made once per project (LEDGER-015):
+
+```toml
+[ledger.approval]
+mode = "mixed"                     # human (default) | delegated | mixed
+human_for = ["critical", "disagreement", "low-confidence"]   # mixed only
+sample = 0.05                      # share of delegated approvals shown to the person for a spot check
+```
+
+| Mode | Who approves | The person's work |
+|---|---|---|
+| `human` | The person, row by row | Review everything |
+| `delegated` | Agents, with an adversarial review | Nothing required; the sample if they want |
+| `mixed` | Agents for the clear rows; the person for critical stories, low confidence and disagreements | Only the queue of exceptions |
+
+A delegated review (`workflows/ledger-review-flow.js`): a mechanical filter with no model drops every row
+it can prove wrong; two independent judges read the story's criteria, the diff and the evidence; a skeptic
+tries to refute a row both approved. A row is approved only when both judges say yes and the skeptic
+fails; otherwise it goes to the person (`mixed`) or stays pending (`PENDING_REVIEW`, `delegated`). Stories
+in a critical area go to the person in `mixed`. A delegated row has `approver = "delegated:<run id>"` and
+its verdicts are committed in `.keelokit/ledger-reviews/<run id>.json`; the ledger shows *reconstructed
+(delegated)* or *(person)*. The `[ledger.approval]` table is protected like the corrections file, so no
+agent authorizes itself. The proposer never approves its own rows.
 
 ### Performance and trust
 
@@ -184,7 +211,7 @@ Harbor denies `convoy approve`).
 | `prepare-commit-msg` | each commit | `Part-of:` from `keelokit.story`, whatever the branch is called | LEDGER-009 |
 | `commit-msg` | each commit | the trailer grammar; warns or blocks per `enforce` | LEDGER-009 |
 | pre-push and CI | each push to the trunk, each PR | nothing unattributed reaches the trunk; a squash keeps its branch's trailers; a merge attributes what it brings | LEDGER-010 |
-| Corrections | once for old history, and when something slipped through | the old history and late attributions, approved by a person | LEDGER-004 |
+| Corrections | once for old history, and when something slipped through | the old history and late attributions, approved by a person or, when the person delegates it, by agents with an adversarial review | LEDGER-004, LEDGER-015 |
 | CI snapshot | each push to the trunk and each tag | a cheap read for short sessions; the exact time each commit reached the trunk | LEDGER-011 |
 | Deploy branches | each successful deploy | `in-staging`, `in-production` | LEDGER-011 |
 | LEDGER-1 | each doctor run | every enforcer above is alive | LEDGER-012 |
@@ -210,18 +237,18 @@ today without it.
 | Phase | Stories | Gate | Release |
 |---|---|---|---|
 | 0 — read well | LEDGER-001, LEDGER-002 | On a `--depth 30` clone of this repo the doctor says 16/20 after the hook, or that it cannot; never 3/20. The hook's time is measured on a fresh clone of a large project | (with phase 1) |
-| 1 — the ledger, read-only | LEDGER-003 to LEDGER-007 | This repo's backfill accepted by Leo, `ledger.py check` with no error, and a fresh session answers "is HARN-020 done, and why did it end up that way?" by citing `ledger.py show` | Keelokit 0.15.0 |
+| 1 — the ledger, read-only | LEDGER-003, 004, 015, 005, 006, 007 | This repo's backfill accepted (by Leo, or in `mixed` mode with Leo's queue), `ledger.py check` with no error, and a fresh session answers "is HARN-020 done, and why did it end up that way?" by citing `ledger.py show` | Keelokit 0.15.0 |
 | 2 — the fact always exists | LEDGER-008 to LEDGER-012 | `scripts/test-template.sh` walks a generated project from `take` to `in-production` against a local remote, with nobody writing a state | Keelokit 0.16.0 |
 | 3 — Harbor and Swarm | HRB-1..3 (Harbor), SWM-1..3 (Swarm, can run alongside phase 2), LEDGER-013, LEDGER-014 | In a test project with Harbor and a swarm, a convoy carrying a swarm delivery lands and `ledger.py show` says each piece's story, who made it and which convoy sailed it | Keelokit 0.17.0, Harbor 0.6.0 |
 
 Keelokit's stories are built one at a time (`[run] build = "serial"` here, and almost all of them touch
-`ledger.py` or the doctor); their waves are 5 to 18 so no two share one.
+`ledger.py` or the doctor); their waves are 5 to 19 so no two share one (LEDGER-015 is wave 9).
 
 ### Versions and compatibility
 
 | Version | Brings | Needs | On upgrade |
 |---|---|---|---|
-| Keelokit 0.15.0 | LEDGER-001..007 | — | `harness-upgrade`; write `[ledger] since`; `ledger.py backfill --propose`, review, a person accepts |
+| Keelokit 0.15.0 | LEDGER-001..007, LEDGER-015 | — | `harness-upgrade`; write `[ledger] since`; choose `[ledger.approval] mode`; `ledger.py backfill --propose`, then the review |
 | Keelokit 0.16.0 | LEDGER-008..012 | 0.15.0 | `harness-upgrade` brings the hooks, the CI step and job, the deploy jobs; `enforce = "warn"`; CHANGELOG *Upgrading from 0.15.x* |
 | Harbor 0.6.0 | HRB-1..3 | Keelokit 0.16.0 for the new parts; with an older one it behaves as 0.5 | `claude plugin update`; the logbook stays `schema = 1` (`story` on workers is an optional key) |
 | Swarm: protocol v3, section 27 | SWM-1..3 | — unless SWM-1 finds that an unknown task field breaks older tools: then a new protocol version and `migrate` | update each swarm repo's template |
@@ -261,7 +288,9 @@ and product rules wait for the human). All five were accepted as proposed. INV-0
    hooks never run there. Alternative: keep it human and rely on the pre-push and the CI. (LEDGER-009)
    **Accepted: the hook turns them on.**
 4. **Corrections are accepted only by a person in their terminal** (like `guard-allow.toml` and Harbor's
-   `convoy approve`). (LEDGER-004) **Accepted.**
+   `convoy approve`). (LEDGER-004) **Accepted, then widened the same day:** the person may delegate the
+   approval to agents with an adversarial review (`delegated` or `mixed`; LEDGER-015). `mixed` is the
+   recommended mode for projects with critical areas.
 5. **TRACE-1 and INV-1 skip reconstructed stories**, which predate those rules. (LEDGER-006) **Accepted.**
 
 ## How to launch

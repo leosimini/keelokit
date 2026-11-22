@@ -2,7 +2,7 @@
 id = "LEDGER-009"
 epic = "LEDGER"
 title = "prepare-commit-msg writes Part-of:, commit-msg checks the trailers"
-wave = 13
+wave = 14
 depends_on = ["LEDGER-008"]
 touches = ["template/.githooks/prepare-commit-msg", "template/.githooks/commit-msg", ".githooks/prepare-commit-msg", ".githooks/commit-msg", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "hooks/hooks.json", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "skills/ship-release/SKILL.md", "skills/check-bugbash/SKILL.md", "tests/test_hooks.py", "tests/test_first_commit.py", "tests/test_copier.py", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "dx"]

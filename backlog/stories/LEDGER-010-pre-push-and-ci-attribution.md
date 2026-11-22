@@ -2,7 +2,7 @@
 id = "LEDGER-010"
 epic = "LEDGER"
 title = "Pre-push and CI: nothing unattributed reaches the trunk"
-wave = 14
+wave = 15
 depends_on = ["LEDGER-009"]
 touches = ["template/.githooks/pre-push", ".githooks/pre-push", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", ".github/workflows/ci.yml", "tests/test_ledger.py", "tests/test_verify.py", "tests/test_ci.py", "CHANGELOG.md"]
 dimensions = ["logic", "integrity", "ops"]

@@ -2,8 +2,8 @@
 id = "LEDGER-005"
 epic = "LEDGER"
 title = "ledger.py show, next and check, with the why of every story"
-wave = 9
-depends_on = ["LEDGER-004"]
+wave = 10
+depends_on = ["LEDGER-015"]
 touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "CHANGELOG.md"]
 dimensions = ["logic", "dx", "docs"]
 invariants = []

@@ -2,7 +2,7 @@
 id = "LEDGER-008"
 epic = "LEDGER"
 title = "ledger.py take and drop: the story a worktree works on, and abandoned attempts"
-wave = 12
+wave = 13
 depends_on = ["LEDGER-007"]
 touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.keelokit/bin/verify_tools.py", "template/.githooks/pre-push", "skills/build-story/SKILL.md", "template/.keelokit/harness/agent-brief.md", "tests/test_ledger.py", "tests/test_landing.py", "CHANGELOG.md"]
 dimensions = ["logic", "dx"]
