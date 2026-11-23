@@ -959,7 +959,7 @@ def read_all(state: dict) -> dict:
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
     delegation = {"reviews": reviews, "stories": {s["id"]: s for s in stories if not s.get("unreadable")},
-                  "areas": critical_areas(extra["critical"])}
+                  "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"])}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
@@ -1152,6 +1152,8 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
             result["diffs"].append({"level": "error", "code": "CORRECTION_INVALID", "detail": f"{CORRECTIONS}: {why}"})
         else:
             tip_rows = rows
+            if reviews and any(isinstance(r, dict) and is_delegated(r.get("approver")) for r in rows):
+                reviews = {**reviews, "arrival": arrival_facts(rows, versions, contents, reviews)}
             result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS,
                                                            reviews=with_touched(reviews, rows, reachable))
     tip_keys = [row_key(row) for row in tip_rows]
@@ -1186,6 +1188,60 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
                                 "detail": f"{unchecked} earlier version(s) of {CORRECTIONS} are not in this partial "
                                           "clone, so append-only is not checked here (a full clone, as in CI, checks it)"})
     return result
+
+
+def cat_specs(specs: list[str]) -> dict[str, bytes | None]:
+    """Contents of `<commit>:<path>` objects in one `cat-file --batch`; None for one that is missing."""
+    unique = sorted(set(specs))
+    if not unique:
+        return {}
+    out = git_read(["cat-file", "--batch"], "".join(f"{s}\n" for s in unique).encode())
+    found, pos = {}, 0
+    for spec in unique:
+        end = out.find(b"\n", pos)
+        head = out[pos:end].split() if end >= 0 else []
+        if len(head) < 3 or head[1] != b"blob":  # missing, ambiguous or not a file
+            found[spec], pos = None, end + 1
+            continue
+        size = int(head[2])
+        found[spec], pos = out[end + 1:end + 1 + size], end + 1 + size + 1
+    return found
+
+
+def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) -> dict:
+    """(story, commit, kind) of each delegated row -> {"areas", "story"}: the critical areas and the story's touches
+    and dimensions as the trunk had them at the first-parent commit where the row first appeared, so a later area or
+    edit of the story never turns an approved row invalid. Rows not found there keep the tip's view."""
+    wanted = {}
+    for row in rows:
+        if isinstance(row, dict) and is_delegated(row.get("approver")):
+            wanted[row_key(row)] = (plain_value(row.get("story")), plain_value(row.get("commit")),
+                                    plain_value(row.get("kind")))
+    first: dict[str, str] = {}
+    for commit, blob in reversed(versions):  # oldest first
+        if blob is None or contents.get(blob) is None:
+            continue
+        parsed, why = parse_rows(contents[blob])
+        for row in parsed or []:
+            key = row_key(row)
+            if key in wanted and key not in first:
+                first[key] = commit
+    stories = delegation.get("stories", {})
+    specs = []
+    for key, commit in first.items():
+        story = stories.get(wanted[key][0])
+        specs += [f"{commit}:{CRITICAL_FILE}"] + ([f"{commit}:{story['path']}"] if story else [])
+    blobs = cat_specs(specs)
+    facts = {}
+    for key, commit in first.items():
+        sid = wanted[key][0]
+        story = stories.get(sid)
+        meta = front_matter(blobs[f"{commit}:{story['path']}"].decode("utf-8", errors="replace"))[0] \
+            if story and blobs.get(f"{commit}:{story['path']}") is not None else None
+        facts[wanted[key]] = {"areas": critical_areas(blobs.get(f"{commit}:{CRITICAL_FILE}")),
+                              "story": {"touches": text_list(meta.get("touches")),
+                                        "dimensions": text_list(meta.get("dimensions"))} if meta is not None else story}
+    return facts
 
 
 # ── proposing and accepting corrections ──
@@ -1640,12 +1696,17 @@ def delegated_problem(values: dict, delegation: dict) -> str | None:
     approval = review_approval(review)
     if approval["mode"] not in ("delegated", "mixed"):
         return f"{REVIEWS}/{run}.json does not record a delegated or mixed approval mode"
-    story = delegation.get("stories", {}).get(values["story"])
-    critical = True if story is None else is_critical(story, delegation.get("areas"))
+    at = delegation.get("arrival", {}).get((values["story"], values["commit"], values["kind"]))
+    story = at["story"] if at else delegation.get("stories", {}).get(values["story"])
+    critical = True if story is None else is_critical(story, at["areas"] if at else delegation.get("areas"))
     same = [r for r in review["rows"] if isinstance(r, dict)
             and (r.get("story"), r.get("commit"), r.get("kind")) == (values["story"], values["commit"], values["kind"])]
+    # Under the recorded approval, and under the trunk's when it is mixed: a review cannot record a looser mode
+    # than the one the person keeps (mixed sends critical stories to the person).
+    current = delegation.get("approval") or {"mode": "human"}
+    rules = [approval] + ([current] if current["mode"] == "mixed" else [])
     if not any(r.get("decision") == "approved" and judges_approve(r)
-               and decide({**r, "critical": critical}, approval) == "approved" for r in same):
+               and all(decide({**r, "critical": critical}, a) == "approved" for a in rules) for r in same):
         return f"run {run} does not approve this row ({REVIEWS}/{run}.json: both judges yes, the skeptic's " \
                "refutation failed, and not left to the person by the mode)"
     touches = story["touches"] if story else []

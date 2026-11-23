@@ -324,7 +324,9 @@ def named_write(cmd: str, name: str) -> bool:
             return True
         if head in WRITE_LAST and plain and names_it(plain[-1]):
             return True
-        if head == "ln" and any(names_it(a) for a in args):  # an alias of the file is a way to write it
+        aliasing = head in ("ln", "link") or (head == "cp" and any(
+            a in ("--link", "--symbolic-link") or re.fullmatch(r"-[a-zA-Z]*[ls][a-zA-Z]*", a) for a in args))
+        if aliasing and any(names_it(a) for a in args):  # an alias (link, cp -l/-s) of the file is a way to write it
             return True
         if head == "dd" and any(a.startswith("of=") and names_it(a) for a in args):
             return True
@@ -443,19 +445,14 @@ def git_bytes(*args: str) -> bytes | None:
     return out.stdout if out.returncode == 0 else None
 
 
-def trunk_approval():
+def trunk_approval(trunk: str | None = None):
     """The [ledger.approval] table of the trunk's committed state.toml (origin/<trunk>, else the local branch), the
-    one ledger.py honours; the trunk is [ledger] trunk, else [harbor] trunk, else main."""
-    try:
-        state = tomllib.loads((ROOT / STATE).read_text(encoding="utf-8"))
-    except Exception:
-        state = {}
-    trunk = "main"
-    for table in ("ledger", "harbor"):
-        t = state.get(table)
-        if isinstance(t, dict) and isinstance(t.get("trunk"), str) and t["trunk"].strip():
-            trunk = t["trunk"].strip()
-            break
+    one ledger.py honours; the trunk is [ledger] trunk, else [harbor] trunk, else main (or the one given)."""
+    if trunk is None:
+        try:
+            trunk = trunk_of((ROOT / STATE).read_bytes())
+        except OSError:
+            trunk = "main"
     if trunk.startswith("-") or git_bytes("check-ref-format", f"refs/heads/{trunk}") is None:
         return None
     for ref in (f"refs/remotes/origin/{trunk}", f"refs/heads/{trunk}"):
@@ -561,14 +558,24 @@ def trunk_of(text: str | bytes | None) -> str:
     return "main"
 
 
-def approval_changed(tool: str, args: dict, rel: str) -> bool:
+TRUNK_WHY = ("QA-4: that edit of .keelokit/state.toml moves the trunk from {old} to {new}, whose committed "
+             "[ledger.approval] differs, and who approves the ledger's corrections is the person's call: ask in chat")
+
+
+def state_problem(tool: str, args: dict, rel: str) -> str | None:
+    """Why this edit of state.toml is the person's: it changes [ledger.approval], or moves the trunk to a branch whose
+    committed table differs (the approval is read from the trunk's committed file); None for any other edit."""
     try:
         current = (ROOT / rel).read_text(encoding="utf-8")
     except OSError:
         current = None
     after = state_after(tool, args, rel)
-    # The trunk too: the approval is read from the trunk's committed file, so moving the trunk moves the approval.
-    return after is None or approval_of(after) != approval_of(current) or trunk_of(after) != trunk_of(current)
+    if after is None or approval_of(after) != approval_of(current):
+        return APPROVAL_WHY
+    old, new = trunk_of(current), trunk_of(after)
+    if old != new and trunk_approval(old) != trunk_approval(new):
+        return TRUNK_WHY.format(old=old, new=new)
+    return None
 
 
 def toml_str(value: str) -> str:
@@ -708,9 +715,15 @@ def edit_payload(tool: str, args: dict) -> tuple[str, list[str]]:
 
 
 def real_rel(path: str) -> str | None:
-    """The repo-relative POSIX path a tool really writes: symlinks resolved, a relative path taken from the root."""
+    """The repo-relative POSIX path a tool really writes: symlinks resolved, a relative path taken from the root,
+    and a hard link to a protected file read as that file (the same inode)."""
     try:
         real = ((ROOT / path) if not Path(path).is_absolute() else Path(path)).resolve()
+        if real.is_file():
+            for protected in (STATE, CORRECTIONS, REGISTRY):
+                target = ROOT / protected
+                if target.is_file() and os.path.samefile(real, target):
+                    return protected
         norm = real.relative_to(ROOT.resolve()).as_posix()
     except (OSError, ValueError, RuntimeError):
         return None
@@ -727,8 +740,8 @@ def tool_problem(tool: str, args: dict) -> str | None:
         return REGISTRY_WHY
     if CORRECTIONS in {n.lower() for n in names}:
         return CORRECTIONS_WHY
-    if STATE in {n.lower() for n in names} and approval_changed(tool, args, STATE):
-        return APPROVAL_WHY
+    if STATE in {n.lower() for n in names} and (why := state_problem(tool, args, STATE)):
+        return why
     if path and is_env_file(path) and not allowed(allow, "SEC-2", path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"
     if path and applied_migration(path):
