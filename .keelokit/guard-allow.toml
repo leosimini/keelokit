@@ -1,5 +1,0 @@
-[[allow]]
-rule = "SEC-2"
-reason = "Firebase key, public by design"
-approver = "Leo"
-glob = "infra/*.env"
