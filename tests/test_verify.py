@@ -573,5 +573,29 @@ class MemoryAwareVerifyTest(VerifyFixture):
         self.assertEqual([f.exists() for f in files[live]], [True, True], "a live run's files are kept")
 
 
+    def test_FLEET_001_S2_planned_unit_workers_run_one_package_at_a_time(self):
+        """FLEET-001.S2: --maxWorkers is per runner, and pnpm runs up to 4 packages at once: a planned unit step also
+        gets --workspace-concurrency=1 (packages one after another, N workers each); with no plan, neither flag."""
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(**self.memory(2400 * 1024))  # fits one 2.3 GB worker
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        for c in calls:
+            words = c.split()
+            self.assertIn("--workspace-concurrency=1", words)
+            self.assertIn("--maxWorkers=1", words)
+            # pnpm's own option goes before `run`; after the script name it would be handed to the test runner
+            self.assertLess(words.index("--workspace-concurrency=1"), words.index("run"), c)
+        (self.git_dir / "keelokit-verify.history").unlink()
+        self.calls.write_text("")
+        r = self.verify(**self.memory(2400 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        self.assertFalse(any("--workspace-concurrency" in c or "--maxWorkers" in c for c in calls), calls)
+
+
 if __name__ == "__main__":
     unittest.main()
