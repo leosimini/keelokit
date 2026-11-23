@@ -295,6 +295,14 @@ if ! $preflight; then
   pwd >"$lock/where"
 fi
 : >"$log"
+# A run killed hard (SIGKILL) never reaches finish: clear the peak files of runs that are gone.
+for f in "$common"/keelokit-verify.peaks.*; do
+  [ -e "$f" ] || continue
+  dead_pid=${f##*keelokit-verify.peaks.}
+  dead_pid=${dead_pid%.started}
+  case $dead_pid in '' | *[!0-9]*) continue ;; esac
+  kill -0 "$dead_pid" 2>/dev/null || rm -f "$f"
+done
 : >"$peaks"
 trap finish EXIT
 trap 'on_signal TERM 143' TERM
