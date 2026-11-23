@@ -3418,19 +3418,19 @@ class LedgerDelegatedRejectSampleTest(LedgerCase):
 class LedgerDelegatedRowValidityTest(LedgerCase):
     """ESC-114 (F5): a delegated row counts only when its review recorded delegated or mixed, its kind is backfill or
     late, ledger.py re-decides it approved (recorded mode, human_for, confidence and models, with `critical`
-    recomputed from the trunk now) and its commit touches the story's paths. A hand-written "approved" is not enough."""
+    recomputed from the trunk now) and its commit touches the story's paths. A hand-written "approved" is not enough.
+    The valid control (a critical row judged by Opus while the trunk delegates) is LedgerDelegatedTrunkModeTest's: this
+    class's trunk is mixed, where such a review is G2's forgery (ESC-120)."""
 
     @classmethod
     def setUpClass(cls):
         repo, c = cls.repo, cls.c = build_delegated(cls.class_tmp(), approval("mixed"))
-        opus = {"model": "claude-opus-4"}
         reviews = {
             "rcrit": (review_text("rcrit", [review_row("UXC-303", c["UXC-303"])], mode="mixed")),
             "rout": (review_text("rout", [review_row("UXC-301", c["UXC-302"])])),
             "rnomode": (review_text("rnomode", [review_row("UXC-305", c["UXC-305"])], mode=None)),
             "rhuman": (review_text("rhuman", [review_row("UXC-306", c["UXC-306"])], mode="human")),
             "rret": (review_text("rret", [{**review_row("UXC-302", c["UXC-302"]), "kind": "retract"}])),
-            "rok": (review_text("rok", [review_row("UXC-304", c["UXC-304"], **opus)])),
         }
         files = {f"{REVIEWS}/{run}.json": text for run, text in reviews.items()}
         files[CORR] = corrections(
@@ -3439,8 +3439,7 @@ class LedgerDelegatedRowValidityTest(LedgerCase):
             delegated_row("UXC-305", c["UXC-305"], "rnomode"),
             delegated_row("UXC-306", c["UXC-306"], "rhuman"),
             toml_row(story="UXC-302", commit=c["UXC-302"]),
-            toml_row(story="UXC-302", commit=c["UXC-302"], kind="retract", approver="delegated:rret"),
-            delegated_row("UXC-304", c["UXC-304"], "rok"))
+            toml_row(story="UXC-302", commit=c["UXC-302"], kind="retract", approver="delegated:rret"))
         commit_harness(repo, "chore: corrections\n\nNo-story: ledger", files)
         repo.publish()
 
@@ -3469,10 +3468,6 @@ class LedgerDelegatedRowValidityTest(LedgerCase):
         self.assertEqual(sum("rret" in d for d in self.invalid()), 1, self.invalid())
         self.assertIs(self.stories(self.repo)["UXC-302"]["reconstructed"], True, "the person's row stays active")
 
-    def test_LEDGER_015_D6_ESC_114_a_critical_row_judged_by_opus_in_delegated_still_counts(self):
-        self.assertFalse(any("rok" in d for d in self.invalid()), self.invalid())
-        s = self.stories(self.repo)["UXC-304"]
-        self.assertEqual((s["reconstructed"], s["reconstructed_by"]), (True, "delegated"))
 
 
 class LedgerDelegatedHumanReviewTest(LedgerCase):
