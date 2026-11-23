@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A money story is attacked on its failure paths (FLEET-005).** For an `integrity` story or a project with the
+  `payments` trait, the breaker's report has one line for each of six failure paths (a retry still running, a
+  response lost after the money moved, a connection or credential removed mid-flight, a double submit, a close or
+  delete with operations pending, a manual instruction shown while an automatic one runs), each with its test or the
+  reason it cannot happen. `build-story` lists them in the contract before any test, `invariants.md` keeps the list
+  under `once` with two real examples, and the reviewer's COPY-1 asks of every text near money whether it can lead
+  someone to move money twice, or not at all.
 - **`ledger.py` says where every story stands, from git alone.** `python3 .keelokit/bin/ledger.py` prints a
   summary of at most ten lines and `ledger.py --json` the whole ledger (schema 1): each story `defined`, `ready`,
   `in-progress` (with its branch, and `stale` after `[ledger] stale_days`), `on-trunk` (with the commit and an
