@@ -262,15 +262,40 @@ ACCEPT_WHY = ("QA-4: `ledger.py backfill --accept` approves ledger corrections a
 
 
 def protected_why(target: str) -> str | None:
-    """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's."""
+    """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's.
+    The corrections file's name counts in any case: a case-insensitive disk writes the same file."""
     if not target:
         return None
     name = Path(target).name
     if is_registry(target) or name == Path(REGISTRY).name:
         return REGISTRY_WHY
-    if rel_posix(target) == CORRECTIONS or name == Path(CORRECTIONS).name:
+    if (rel_posix(target) or "").lower() == CORRECTIONS or name.lower() == Path(CORRECTIONS).name:
         return CORRECTIONS_WHY
     return None
+
+
+# Commands that only read: a segment naming the corrections file is let through only when it is one of these.
+READERS = {"cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "diff", "file", "stat", "ls"}
+GIT_READERS = {"diff", "log", "show", "blame", "status", "grep", "ls-files"}
+
+
+def names_corrections(cmd: str) -> bool:
+    """True when a segment that is not a plain read names the corrections file (any case), by any command:
+    `git checkout … -- <file>`, `install`, `python3 -c "open(…)"` write it without a redirect."""
+    for segment in segments(cmd):
+        if Path(CORRECTIONS).name not in segment.lower():
+            continue
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        if not words or not any(Path(CORRECTIONS).name in w.lower() for w in words):
+            continue
+        sub = next((w for w in words[1:] if not w.startswith("-")), "") if words[0] == "git" else ""
+        reads = words[0] in READERS or (words[0] == "git" and sub in GIT_READERS and not re.search(r"[<>]", segment))
+        if not reads or (words[0] in READERS and ">" in segment):
+            return True
+    return False
 
 
 def runs_accept(cmd: str, depth: int = 0) -> bool:
@@ -286,6 +311,10 @@ def runs_accept(cmd: str, depth: int = 0) -> bool:
             if Path(w).name == "ledger.py" and "backfill" in words[i + 1:] \
                     and any(x.startswith("--accept") for x in words[i + 1:]):
                 return True
+        # A wrapper that runs it from a string (script -c, tmux, xargs, `| sh`): the words as one text, unless the
+        # segment is git's (a commit message that names the command).
+        if words and words[0] != "git" and re.search(r"ledger\.py\b.*\bbackfill\b.*--accept", " ".join(words), re.S):
+            return True
         shell = next((i for i, w in enumerate(words) if Path(w).name in SHELLS), None)
         scripts = [words[i + 1] for i in range(len(words) - 1)
                    if shell is not None and i > shell and re.fullmatch(r"-[a-z]*c[a-z]*", words[i])]
@@ -380,6 +409,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
             return why
     if runs_accept(cmd):
         return ACCEPT_WHY
+    if names_corrections(cmd):
+        return CORRECTIONS_WHY
     for segment in re.split(r"&&|\|\||;|\|", bare):
         words = segment.split()
         if not words:
@@ -432,7 +463,7 @@ def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
-    if path and (rel_posix(path) in (REGISTRY, CORRECTIONS)):
+    if path and (rel_posix(path) == REGISTRY or (rel_posix(path) or "").lower() == CORRECTIONS):
         return protected_why(path)
     if path and is_env_file(path) and not allowed(allow, "SEC-2", path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"

@@ -168,7 +168,9 @@ approver = "Leo"
 date = "2026-11-25"
 ```
 
-Append-only: no row already on the trunk may change or disappear (`CORRECTION_EDITED`). Protected like
+Append-only: no row already on the trunk may change, move or disappear (`CORRECTION_EDITED`); the versions read
+are the first-parent ones and those each parent of a first-parent merge had. A bad edit is undone by putting the
+rows back as they were (reverting the edit does it), then cancelling a wrong row with a `retract`. Protected like
 `guard-allow.toml`: the Claude hook blocks writing it, a commit that changes it needs
 `keelokit.allowTamper`, and `ledger.py backfill --accept` is denied to agents by a PreToolUse hook (as
 Harbor denies `convoy approve`), except in a delegated approval (below).
