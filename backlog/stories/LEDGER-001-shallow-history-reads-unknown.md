@@ -64,3 +64,17 @@ Scenario: [S5] TRACE-1 and INV-1 are not run against an unknown done set
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, `skills/check-health`
 lists the shallow case in its table of problems, a CHANGELOG line under `## Unreleased`, `Story:
 LEDGER-001` trailer on the completing commit, addendum if the result differs.
+
+## Addendum — 2026-11-23
+- "Incomplete" means more than `--is-shallow-repository`: a commit in the shallow list is reachable
+  from main and has a parent main's history doesn't walk (or `git cat-file` can't read it). A clone as
+  deep as main, or one whose boundary is a merged side commit whose parent main reaches, counts as
+  complete (ESC-053).
+- A shallow clone is an error only when `CI` is set; elsewhere it is a warning, so the pre-push verify in
+  a cloud session isn't blocked. `--brief` drops "Next ready stories" while the count is unknown.
+- Checks that would blame a story for looking not done (critical area without `integrity`, wave clashes,
+  MIG-1 migration waves) become warnings while the done state is unknown, never false errors.
+- The dashboard gives such stories the status `unknown` with a localized reason (ESC-054), the progress
+  figures read unknown, and the next step is `git fetch --unshallow origin main`.
+- Left out: a damaged repository where `git rev-list` fails still reads as complete (the readers'
+  `git()` helper returns "" on failure); it needs a corrupt object store, not a shallow clone.
