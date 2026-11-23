@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "Approved corrections and a backfill for the history that has no trailers"
 wave = 8
 depends_on = ["LEDGER-003"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/backlog/ledger-corrections.toml", "copier.yml", "template/.gitignore", "template/.keelokit/bin/guard.py", ".keelokit/bin/guard.py", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "hooks/hooks.json", "tests/test_ledger.py", "tests/test_guard.py", "tests/test_doctor.py", "tests/test_copier.py", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/backlog/ledger-corrections.toml", "copier.yml", "template/.gitignore", "template/.keelokit/bin/guard.py", ".keelokit/bin/guard.py", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "hooks/hooks.json", "tests/test_ledger.py", "tests/test_guard.py", "tests/test_guard_corrections.py", "tests/test_doctor.py", "tests/test_copier.py", "docs/design.md", "CHANGELOG.md", ".gitignore"]
 dimensions = ["logic", "integrity", "security", "data", "dx"]
 invariants = ["INV-002", "INV-003", "INV-005", "INV-008"]
 origin = "docs/ledger.md — Contracts (Corrections file); premortem failures 1 and 2"
@@ -96,3 +96,42 @@ Scenario: [S8] A project receives the file
 tests, `docs/design.md` mentions the file next to `guard-allow.toml`, a CHANGELOG line, `Story:
 LEDGER-004` trailer, addendum if the result differs. Then (gate of phase 1) Leo runs the backfill on
 this repo.
+
+## Addendum — 2026-11-23
+
+Decided (smallest option consistent with docs/ledger.md; the coordinator's delegation, decision 7):
+- The corrections file is read from the trunk's tree, like the stories: a row counts once it is committed to the
+  trunk. A row is invalid (`CORRECTION_INVALID`, ignored) when a field is missing or not text, the kind is not
+  `backfill`/`late`/`retract`, the commit is not a full sha reachable from the trunk, the story does not exist, the
+  approver is empty or `delegated:…` (only LEDGER-015's modes allow that), the date is not YYYY-MM-DD, or a retract
+  has no earlier active row of the same story and commit. An unquoted TOML date is read as its text. Invalid TOML is
+  one diff and no row counts.
+- An active row whose commit is not reverted makes a story with no live `Story:` commit `on-trunk` (or higher, from
+  that commit's tags and deploys), `reconstructed: true`, with the new per-story key `correction` (kind, commit,
+  evidence, approver, date). A live `Story:` commit wins over rows. Several active rows: the oldest by arrival.
+- Append-only (INV-008) compares every version of the file on the trunk's first-parent chain with the tip: a row of
+  an earlier version (as a whole table) missing from the tip is `CORRECTION_EDITED`, named where it first was;
+  removing the file counts. Two git calls whatever the number of versions. Reading never fetches: in a partial clone
+  (what `history --ensure` leaves) earlier versions are often absent, so the check says `CORRECTION_UNCHECKED`
+  (warning, new code added to docs/ledger.md) and the CI's full clone checks it.
+- `ledger.py check [--json]` exists in a first form: the diffs, exit 1 on an error-level one, 0 on warnings only.
+  LEDGER-005 adds `--ci` and its other codes. The doctor runs it and reports the `CORRECTION_*` diffs (errors stay
+  errors); a ledger that cannot answer is a doctor warning.
+- `backfill --propose` writes one row per story not yet on the trunk, the best candidate (confidence, then the newest
+  arrival), its evidence naming up to three others. Confidence: a sha in an evidence file `high`; the subject naming
+  the id, a merge of a branch named with it, or a train with exactly one commit `medium`; the body only, or a train
+  with several commits `low`. Left out: commits with `No-story:`, reverted commits, the commit's own `Story:` ids
+  and the commit that added the story's file. Trains are found by a `Convoy: N` trailer, `train|tren|convoy N` in
+  the subject, or a merge of `convoy/N`, `train/N`, `train-N`; in an evidence file by those words, `T<N>`, or a
+  Markdown table row whose first cell is the number (BOARD.md, and the rows Harbor keeps in its imported board).
+- `backfill --accept` needs a terminal on stdin and stdout and a `y` to the question, so an agent's shell cannot run
+  it even past the guard; it refuses everything when one proposed row is invalid, skips a row already active, ignores
+  any approver or date in the proposed file (the approver is `git config user.name`, the date today), appends
+  without rewriting a byte, and removes the proposed file. `correct` appends a `late` row to the proposed file.
+- The plugin's PreToolUse hook that denies `backfill --accept` is the guard (`hooks/hooks.json` already sends every
+  Bash call to it), so `hooks/hooks.json` is unchanged. The pre-commit hook lets the template's comments-only file be
+  added without `keelokit.allowTamper`, as it does for `guard-allow.toml`.
+- `.gitignore` (this repo's) joined the touches: Leo runs the backfill here, and the proposed file must stay out.
+
+Measured on this repo (480 commits, 41 stories): `backfill --propose` proposes 8 rows, all `low` (bodies of docs
+commits that mention stories not built yet: for the person to delete), none from the junk commits of ESC-090.

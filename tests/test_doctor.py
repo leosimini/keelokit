@@ -1274,6 +1274,99 @@ class DoctorTest(unittest.TestCase):
                       self.ledger_doctor(full, "--brief").stdout.splitlines())
 
 
+
+# ── LEDGER-004: the doctor reports the ledger's CORRECTION_* differences (S5, S6) ──
+LEDGER = DOCTOR.with_name("ledger.py")
+CORRECTIONS = "backlog/ledger-corrections.toml"
+
+
+def correction_row(commit: str, story: str = "UXC-113", evidence: str = "train sheet 18") -> str:
+    return (f'\n[[row]]\nstory = "{story}"\ncommit = "{commit}"\nkind = "backfill"\nevidence = "{evidence}"\n'
+            'approver = "Leo"\ndate = "2026-11-25"\n')
+
+
+class DoctorCorrectionsTest(unittest.TestCase):
+    """With .keelokit/bin/ledger.py present, the doctor runs `ledger.py check --json`: a CORRECTION_* error
+    is a doctor ERROR prefixed with its code, so `--ci` exits 1 (S5 append-only, INV-008; S6 invalid rows)."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith("GIT_") and k not in ("CI", "GITHUB_ACTIONS")}
+        self.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        files = {".keelokit/bin/doctor.py": DOCTOR.read_text(), ".keelokit/bin/ledger.py": LEDGER.read_text(),
+                 ".keelokit/harness/rules.toml": "", ".github/workflows/ci.yml": CI,
+                 "docs/context/gaps.md": "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n",
+                 "backlog/stories/UXC-113-a.md": STORY.format(id="UXC-113", wave=1, touches='"apps/api/a/"')}
+        files |= {f"docs/context/{f}.md": f"# {f}\n" for f in ("product", "domain", "constraints", "environments")}
+        for rel, text in files.items():
+            self.write(rel, text)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "t@example.com")
+        self.git("config", "user.name", "T")
+        self.git("config", "commit.gpgsign", "false")
+        self.commit("docs: plan\n\nNo-story: docs")
+        self.write("apps/api/a/x.ts", "export {}\n")
+        self.login = self.commit("feat: the login form")
+
+    def write(self, rel: str, text: str) -> None:
+        (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / rel).write_text(text)
+
+    def git(self, *args: str) -> str:
+        r = subprocess.run(["git", *args], cwd=self.root, env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, f"fixture: git {' '.join(args)}\n{r.stderr}")
+        return r.stdout
+
+    def commit(self, message: str) -> str:
+        self.git("add", "-A")
+        self.git("commit", "-q", "--allow-empty", "-m", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def doctor_ci(self) -> subprocess.CompletedProcess:
+        r = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--ci"], cwd=self.root, env=self.env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        return r
+
+    def corrections(self, *rows: str) -> None:
+        self.write(CORRECTIONS, "# Ledger corrections (append-only).\n" + "".join(rows))
+        self.commit("chore: corrections\n\nNo-story: ledger")
+
+    def test_LEDGER_004_S5_INV_008_the_doctor_reports_an_edited_row(self):
+        self.corrections(correction_row(self.login))
+        self.assertNotIn("CORRECTION_", self.doctor_ci().stdout, "a valid row is no difference")
+        self.corrections(correction_row(self.login, evidence="something else"))
+        r = self.doctor_ci()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^\s*ERROR\b.*CORRECTION_EDITED")
+
+    def test_LEDGER_004_S5_INV_008_the_doctor_reports_a_removed_row(self):
+        self.corrections(correction_row(self.login))
+        self.corrections()
+        r = self.doctor_ci()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^\s*ERROR\b.*CORRECTION_EDITED")
+
+    def test_LEDGER_004_S6_the_doctor_reports_an_invalid_row(self):
+        for why, row in {"unknown story": correction_row(self.login, story="NOPE-9"),
+                         "unreachable commit": correction_row("b" * 40),
+                         "no approver": correction_row(self.login).replace('approver = "Leo"\n', "")}.items():
+            with self.subTest(why):
+                self.git("reset", "-q", "--hard", self.login)
+                self.corrections(row)
+                r = self.doctor_ci()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertRegex(r.stdout, r"(?m)^\s*ERROR\b.*CORRECTION_INVALID")
+
+    def test_LEDGER_004_dx_without_ledger_py_the_doctor_checks_no_corrections(self):
+        (self.root / ".keelokit/bin/ledger.py").unlink()
+        self.commit("chore: no ledger\n\nNo-story: docs")
+        self.corrections(correction_row(self.login, story="NOPE-9"))
+        self.assertNotIn("CORRECTION_", self.doctor_ci().stdout)
+
+
 # pnpm 10's own commands (`pnpm help --all`), minus start and test, which run the package script.
 PNPM_COMMANDS = {
     "add", "dedupe", "fetch", "import", "i", "install", "it", "install-test", "ln", "link", "prune", "rb", "rebuild",
