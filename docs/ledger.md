@@ -1,7 +1,9 @@
-# The ledger — design and plan (not built yet)
+# The ledger — design and plan (being built)
 
-This is the design of the ledger and the plan to build it. Nothing here exists yet: until a story of
-the `LEDGER` epic lands, [design.md](design.md) describes Keelokit as it is. Each story in
+This is the design of the ledger and the plan to build it. Built so far: completing the trunk's history
+(LEDGER-001, LEDGER-002) and `ledger.py`'s states from git, its summary and `--json` (LEDGER-003; the
+decisions it took are in that story's addendum). The rest does not exist yet: [design.md](design.md)
+describes Keelokit as it is. Each story in
 `backlog/stories/LEDGER-*.md` cites the section of this file it implements; a story that needs
 something this file does not say adds it here first.
 

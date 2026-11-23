@@ -13,7 +13,7 @@
 - [INV-002] [MUST] The guard only blocks or lets a call through; it never approves one — class: consistency (S3)
 - [INV-003] [MUST] `harness-upgrade` never rewrites a product-owned file (`_skip_if_exists` in copier.yml) — class: isolation (S2)
 - [INV-004] [MUST] `project-adopt` writes only inside `.keelokit/` until the user says yes to a code change — class: isolation (S2)
-- [INV-005] [MUST] A story is done if and only if a commit reachable from `main` carries its `Story:` trailer — class: consistency (S2)
+- [INV-005] [MUST] A story is on the trunk if and only if a commit reachable from the trunk carries its `Story:` trailer, or an approved correction names it, and no revert of that commit is on the trunk — class: consistency (S2)
 - [INV-006] [MUST] `doctor --ci` exits non-zero whenever it reports an error — class: consistency (S4)
 - [INV-007] [MUST] Every commit that reaches the trunk after `[ledger] since` is attributed, by its own `Story:`, `Part-of:` or `No-story:` trailer or by a merge commit that brings it — class: consistency (S2)
 - [INV-008] [MUST] No row of `backlog/ledger-corrections.toml` that is already on the trunk changes or disappears — class: consistency (S2)
