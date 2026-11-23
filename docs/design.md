@@ -21,6 +21,9 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `bin/doctor.py` — harness health (below).
 - `critical.toml` — the project's critical areas and the mutation score they must keep (the
   product owns it; the template ships one example area).
+- `bin/ledger.py` — `ledger.py history --ensure` completes the trunk's history: commits only (`--filter=blob:none`),
+  a plain `--unshallow` when the server can't filter, capped by `[ledger] history_seconds` (default 20, at most 20
+  under the hook's 30 s timeout). The SessionStart hook runs it before `doctor.py --brief`; it never blocks the session.
 - `bin/guard.py` — one guard, two callers: Claude Code's PreToolUse hook and git's pre-commit.
   Without python3 every Claude hook turns off and says so, and pre-commit stops the commit
   with the reason (`tests/test_hooks.py` runs each hook without it).
@@ -182,6 +185,6 @@ Things that might come if they prove useful in real projects: measuring whether 
 the skills (evals), deploying web and sites from CI, per-package caching, a Maestro job for
 native mobile journeys, and Stryker's per-test runner once it supports Vitest 5.
 
-Designed and planned, not built: the ledger, one derived record of what is being done and what was
+Designed and planned, first piece built (`ledger.py history`): the ledger, one derived record of what is being done and what was
 done, for every session ([ledger.md](ledger.md), epic `LEDGER`). What the JOUNA fleet learned in November 2026, and where it
 lands: [fleet-lessons.md](fleet-lessons.md), epic `FLEET`.
