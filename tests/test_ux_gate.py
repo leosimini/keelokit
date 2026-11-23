@@ -370,6 +370,28 @@ class UxGateTest(unittest.TestCase):
             self.assertIn("critique_skills must be a list of skill ids", r.stdout + r.stderr)
             self.assertNotIn("Traceback", r.stdout + r.stderr)
 
+    def test_fleet_004_s4_natural_layouts_pass(self):
+        """FLEET-004.S4 (review round 2): a table with the fix in its last cell, a note on a sub-bullet
+        under a fixed item, a count table of severities, a plain item that opens with a severity word
+        and a bold date are not findings left open."""
+        findings = {"design:design-critique": ["| Priority | Finding | Fix |", "|---|---|---|",
+                                               "| P1 | Refund not shown | fixed in a1b2c3d |",
+                                               "| P2 | Two tab bars | decided: one bar |"],
+                    "design:accessibility-review": ["| Critical | Major | Minor |", "|---|---|---|", "| 0 | 0 | 0 |",
+                                                    "Major flows checked: signup, close"],
+                    "design:ux-copy": ["P1 Refund not shown — fixed in a1b2c3d\n  - captures in before/close.png",
+                                       "Critical path covered by the journey above"]}
+        text = FOUR + skills_section(findings=findings).replace("- |", "|").replace("Ran: 2026-11-23", "Ran: **2026-11-23**", 1)
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 0, out)
+
+    def test_fleet_004_s3_inline_backticks_do_not_open_a_fence(self):
+        """FLEET-004.S3 (review round 2): an item opening with ```code``` is not a fence that hides what follows."""
+        findings = {"design:ux-copy": ["```Pay``` has no label — fixed in a1b2", "P1 Focus ring missing"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P1 Focus ring missing", out)
+
 
 if __name__ == "__main__":
     unittest.main()
