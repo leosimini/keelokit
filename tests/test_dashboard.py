@@ -44,6 +44,11 @@ def sh(cwd: Path, *cmd: str) -> str:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True).stdout
 
 
+def visible_text(html: str) -> str:
+    """What a reader sees: tags, the stylesheet and scripts stripped (a CSS class name is not text)."""
+    return html_lib.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)))
+
+
 def dead_links(html: str) -> list[str]:
     """UX-1, the class: every in-page link (the next step, each waiting item, the stage strip, the
     decisions card, the sections' own links) must land on an element the same page renders."""
@@ -842,7 +847,7 @@ class DashboardTest(unittest.TestCase):
         self.assertIn("AUTH-004", s["done"])
         # The progress figures read unknown, with the reason, on both pages.
         for page in (self.ops_at(shallow), self.page_at(shallow)):
-            text = html_lib.unescape(re.sub(r"<[^>]+>", " ", page))
+            text = visible_text(page)
             self.assertNotRegex(text, r"\b\d+ of 6 stor", "no progress count read from a cut history")
             self.assertRegex(text.lower(), r"unknown", "the figure says unknown")
             self.assertRegex(text.lower(), r"shallow", "and why")
@@ -884,7 +889,7 @@ class DashboardTest(unittest.TestCase):
         for args in ([], ["--report"]):
             out = sh(shallow, "python3", str(DASHBOARD), "--root", str(shallow), "--lang", "es", *args).strip()
             page = Path(out).read_text()
-            text = html_lib.unescape(re.sub(r"<[^>]+>", " ", page))
+            text = visible_text(page)
             self.assertNotRegex(text, r"\b\d+ de 6 historias", "no progress count read from a cut history")
             self.assertRegex(text.lower(), r"desconocid", "the figure says unknown, in Spanish")
             self.assertRegex(text.lower(), r"shallow|superficial", "and why")
@@ -901,7 +906,7 @@ class DashboardTest(unittest.TestCase):
         want, got = self.ledger_state(full), self.ledger_state(deep)
         self.assertEqual({x["id"]: x["status"] for x in got["stories"]}, {x["id"]: x["status"] for x in want["stories"]})
         self.assertEqual(sorted(got["done"]), ["AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"])
-        text = html_lib.unescape(re.sub(r"<[^>]+>", " ", self.page_at(deep)))
+        text = visible_text(self.page_at(deep))
         self.assertIn("4 of 6 stories done", text)
         self.assertNotRegex(text.lower(), r"shallow|unknown")
 
