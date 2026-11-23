@@ -7,6 +7,14 @@
     python3 .keelokit/bin/ledger.py history            report: is the trunk's history complete?
                                                        (exit 0 complete, 1 incomplete, 2 not a git repo)
     python3 .keelokit/bin/ledger.py history --ensure   complete it (SessionStart hook); always exit 0
+    python3 .keelokit/bin/ledger.py check [--json]     every difference (exit 1 on an error-level one)
+    python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
+                                                       candidate correction rows, for review, written to
+                                                       .keelokit/ledger-corrections.proposed.toml
+    python3 .keelokit/bin/ledger.py correct <commit> --story <ID> --evidence "..."
+                                                       propose one late attribution (the same file)
+    python3 .keelokit/bin/ledger.py backfill --accept  a person, in their terminal: move the proposed rows
+                                                       into backlog/ledger-corrections.toml
 
 Any other command line prints the usage and exits 2.
 
@@ -16,7 +24,14 @@ trunk's tree (`[ledger] stories`, `id_from`), the trunk is origin/<trunk> else t
 HEAD). A fixed number of git calls whatever the number of stories, commits or tags: the parent graph
 comes from one `rev-list --parents` and arrivals, tags and deploys are walked in Python. Fail closed:
 a cut history makes every state unknown with the reason, and a failing git call exits 2 (no partial
-answer). `delivered` (Harbor) and corrections are not read here.
+answer). `delivered` (Harbor) is not read here.
+
+Corrections (docs/ledger.md, "Corrections file"): `backlog/ledger-corrections.toml`, read from the trunk's
+tree, holds approved rows (story, commit, kind, evidence, approver, date). An active row makes its story
+`on-trunk`, marked reconstructed; a `retract` row cancels the earlier rows of the same story and commit. An
+invalid row is ignored and reported (CORRECTION_INVALID); a row that was on the trunk's first-parent chain
+and is no longer in the file is CORRECTION_EDITED (append-only, INV-008). The file is the person's: only
+`backfill --accept`, which needs a terminal and asks, writes it, and the guard keeps agents off both.
 
 A shallow clone cuts the trunk's history and the doctor then reads the done state as unknown.
 `history --ensure` completes it: `git fetch --filter=blob:none --unshallow origin <trunk>` brings
@@ -232,6 +247,41 @@ HEX_SHA = re.compile(r"[0-9a-fA-F]{7,64}")
 DEFAULT_STORIES = "backlog/stories/*.md"
 DEFAULT_STALE_DAYS = 7
 FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
+CORRECTIONS = "backlog/ledger-corrections.toml"
+PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
+KINDS = ("backfill", "late", "retract")
+CONFIDENCE = {"high": 3, "medium": 2, "low": 1}
+FULL_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+ID_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]*-[0-9]+(?![0-9])")
+BRANCH_ID = re.compile(r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*-[0-9]+(?![0-9])")
+MERGE_BRANCH = re.compile(r"^Merge (?:pull request #[0-9]+ from [^/\s]+/(\S+)|(?:remote-tracking )?branch '([^']+)')")
+TRAIN_WORD = re.compile(r"(?i)\b(?:train|tren|convoy)\s*#?\s*([0-9]+)\b")
+TRAIN_T = re.compile(r"\bT([0-9]+)\b")
+TRAIN_CELL = re.compile(r"(?i)\W*(?:T|train\s*|tren\s*|convoy\s*)?#?([0-9]+)\W*")
+TRAIN_BRANCH = re.compile(r"(?i)^(?:origin/)?(?:convoy|train)[/-]([0-9]+)$")
+CONVOY_TRAILER = re.compile(r"(?m)^Convoy:\s*#?([0-9]+)\s*$")
+HEX_WORD = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,64}(?![0-9A-Za-z])")
+CORRECTIONS_HEADER = """\
+# Approved corrections to the ledger (docs/ledger.md, "Corrections file"): the history that has no trailers,
+# and commits that slipped through without one. An active row makes its story on-trunk, shown as
+# reconstructed. Rows are added by `python3 .keelokit/bin/ledger.py backfill --accept`, run by a person in
+# their terminal after reviewing what `backfill --propose` or `correct` put in
+# .keelokit/ledger-corrections.proposed.toml (git-ignored).
+#
+# Each row is a [[row]] table:
+#   story     the story id, e.g. "UXC-113"
+#   commit    the full sha of a commit reachable from the trunk
+#   kind      "backfill" (old history), "late" (a commit that slipped through) or "retract" (cancels an
+#             earlier row of the same story and commit)
+#   evidence  where the attribution comes from
+#   approver  who approved it
+#   date      "YYYY-MM-DD"
+#
+# Append-only: no row already on the trunk may change or disappear (INV-008); cancel a wrong row with a
+# retract row. A change here needs a human: the guard blocks agents from writing this file, and a commit
+# that changes it needs `git -c keelokit.allowTamper=true commit`, saying why in the message.
+"""
 STATE_NAMES = {
     "en": {s: s for s in (*STATES, "unknown")},
     "es": {"defined": "definida", "ready": "lista", "in-progress": "en curso", "on-trunk": "en trunk",
@@ -242,11 +292,11 @@ LABELS = {
     "en": {"complete": "history complete", "cut": "history INCOMPLETE: every state is unknown",
            "stories": "stories", "progress": "in progress", "ready": "ready", "reverted": "reverted",
            "unknown": "unknown", "stale": "stale", "more": "more", "none": "no stories found",
-           "unattributed": "unattributed commits since"},
+           "unattributed": "unattributed commits since", "reconstructed": "reconstructed"},
     "es": {"complete": "historia completa", "cut": "historia INCOMPLETA: todos los estados son desconocidos",
            "stories": "historias", "progress": "en curso", "ready": "listas", "reverted": "revertidas",
            "unknown": "desconocidas", "stale": "estancada", "more": "más", "none": "no hay historias",
-           "unattributed": "commits sin atribuir desde"},
+           "unattributed": "commits sin atribuir desde", "reconstructed": "reconstruidas"},
 }
 
 
@@ -424,20 +474,7 @@ def read_blobs(shas: list[str], trunk_sha: str) -> dict[str, bytes | None]:
     if not unique:
         return {}
     absent = missing_objects(trunk_sha) & set(unique) if is_partial_clone() else set()
-    present = [sha for sha in unique if sha not in absent]
-    out = git_read(["cat-file", "--batch"], "".join(f"{s}\n" for s in present).encode()) if present else b""
-    blobs, pos = dict.fromkeys(absent), 0
-    for sha in present:
-        end = out.find(b"\n", pos)
-        head = out[pos:end].split() if end >= 0 else []
-        if len(head) < 2:
-            raise LedgerError("git cat-file gave an unexpected answer")
-        if head[1] == b"missing":
-            blobs[sha], pos = None, end + 1
-            continue
-        size = int(head[2])
-        blobs[sha], pos = out[end + 1:end + 1 + size], end + 1 + size + 1
-    return blobs
+    return {**dict.fromkeys(absent), **cat_blobs([sha for sha in unique if sha not in absent])}
 
 
 def front_matter(text: str) -> tuple[dict | None, str]:
@@ -536,7 +573,7 @@ def read_trunk_log(trunk_sha: str) -> list[dict]:
     """Every trunk commit, children before parents: sha, parents, ct, trailers, the commits it reverts."""
     return [{"sha": sha, "parents": parents.split(), "ct": int(ct), "story": story_ids(story),
              "part_of": story_ids(part), "attributed": bool(story.strip() or part.strip() or nostory.strip()),
-             "reverts": REVERTS.findall(body)}
+             "no_story": bool(nostory.strip()), "reverts": REVERTS.findall(body), "message": body}
             for sha, parents, ct, story, part, nostory, body in read_log(["--topo-order", trunk_sha])]
 
 
@@ -697,9 +734,8 @@ def revert_status(log: list[dict], graph: dict) -> dict[str, bool]:
     return status
 
 
-def story_commits(log: list[dict], graph: dict, arrival: dict, order: dict) -> tuple[dict, set]:
+def story_commits(log: list[dict], reverted: dict, arrival: dict, order: dict) -> tuple[dict, set]:
     """({id: its oldest Story: commit not reverted}, {ids whose Story: commits are all reverted})."""
-    reverted = revert_status(log, graph)
     live: dict[str, tuple] = {}
     seen: set[str] = set()
     for c in log:
@@ -717,8 +753,8 @@ def new_story(story: dict) -> dict:
     return {"id": story["id"], "title": story["title"], "epic": story["epic"], "wave": story["wave"],
             "state": "defined", "since": None, "since_exact": False, "commit": None, "convoy": None,
             "version": None, "candidate": None, "environments": dict.fromkeys(ENVIRONMENTS),
-            "reconstructed": False, "reverted": False, "branches": [], "attempts": [], "swarm": [],
-            "signals": [], "reason": None, "path": story["path"]}
+            "reconstructed": False, "correction": None, "reverted": False, "branches": [], "attempts": [],
+            "swarm": [], "signals": [], "reason": None, "path": story["path"]}
 
 
 def mark_unknown(records: list[dict], reason: str) -> None:
@@ -783,18 +819,39 @@ def deploy_heads(graph: dict, refs: dict) -> dict:
 
 
 def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], graph: dict, refs: dict,
-                   arrivals_: tuple, branches: dict, stale_days: float, now: float) -> list[dict]:
-    """The record of every story, from the facts."""
+                   arrivals_: tuple, branches: dict, stale_days: float, now: float,
+                   corrections: dict | None = None) -> list[dict]:
+    """The record of every story, from the facts. `corrections`: the active rows and the reverted map
+    (corrections_facts); a story with no live Story: commit is reconstructed from its oldest active row whose
+    commit is not reverted (INV-005)."""
     arrival, order = arrivals_
     ct = {c["sha"]: c["ct"] for c in log}
     tags, deploys = tag_containment(graph, refs), deploy_heads(graph, refs)
-    commits, all_reverted = story_commits(log, graph, arrival, order)
+    reverted = revert_status(log, graph)
+    commits, all_reverted = story_commits(log, reverted, arrival, order)
+    corrections = corrections or {"active": [], "unreadable": None}
+    rows: dict[str, list[dict]] = {}
+    for row in corrections["active"]:
+        rows.setdefault(row["story"], []).append(row)
     records = {s["id"]: new_story(s) for s in stories}
     for sid, rec in records.items():
+        rec["reverted"] = sid in all_reverted
         if sid in commits:
             on_trunk_facts(rec, commits[sid], arrival, ct, tags, deploys)
-        rec["reverted"] = sid in all_reverted
+        elif sid in rows:
+            live = [r for r in rows[sid] if not reverted.get(r["commit"], False)]
+            if live:
+                row = min(live, key=lambda r: (order[arrival[r["commit"]]], ct[r["commit"]], r["commit"]))
+                on_trunk_facts(rec, row["commit"], arrival, ct, tags, deploys)
+                rec["reconstructed"], rec["reverted"] = True, False
+                rec["correction"] = {k: row[k] for k in ("kind", "commit", "evidence", "approver", "date")}
+            else:
+                rec["reverted"] = True
         rec["branches"] = sorted(branches[sid]["branches"]) if sid in branches else []
+    if corrections["unreadable"]:
+        for rec in records.values():
+            if not rec["commit"]:
+                mark_unknown([rec], corrections["unreadable"])
     settle_dependencies(stories, records, unreadable)
     for sid, rec in records.items():
         if sid in branches and rec["state"] in ("defined", "ready"):
@@ -822,6 +879,12 @@ def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict) -> d
 
 def ledger_facts(state: dict) -> dict:
     """Everything `--json` prints (schema 1): reads git, raises LedgerError when a fact cannot be read."""
+    return read_all(state)["facts"]
+
+
+def read_all(state: dict) -> dict:
+    """The facts and what they were computed from (for the commands that propose or accept corrections):
+    facts, and with a complete history also stories, log, graph, placed (arrivals), corrections, records."""
     cfg = read_config(state)
     trunk = trunk_name(state)
     shallow = git_read(["rev-parse", "--is-shallow-repository"]).decode().strip() == "true"
@@ -840,13 +903,530 @@ def ledger_facts(state: dict) -> dict:
         mark_unknown(facts["stories"], reason)
         level = "error" if os.environ.get("CI", "").lower() not in ("", "0", "false") else "warning"
         facts["diffs"].append({"level": level, "code": "HISTORY_INCOMPLETE", "detail": reason})
-        return facts
+        return {"facts": facts, "reason": reason}
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
+    corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
+                                    else None, set(placed[0]), graph)
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
-                                      cfg["stale_days"], time.time())
+                                      cfg["stale_days"], time.time(), corrections)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
-    return facts
+    facts["diffs"] += corrections["diffs"]
+    return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "stories": stories, "log": log,
+            "graph": graph, "placed": placed, "corrections": corrections,
+            "records": {r["id"]: r for r in facts["stories"]}}
+
+
+# ── corrections (docs/ledger.md, "Corrections file") ──
+
+def toml_str(value: str) -> str:
+    """A TOML basic string: JSON's escapes are TOML's, but DEL must be escaped too."""
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def parse_rows(content: bytes) -> tuple[list | None, str | None]:
+    """([[row]] tables of a corrections file, None) or (None, why it cannot be read)."""
+    try:
+        data = tomllib.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        return None, f"not valid TOML ({' '.join(str(e).split())[:120]})"
+    rows = data.get("row", [])
+    if not isinstance(rows, list):
+        return None, "`row` must be [[row]] tables"
+    return rows, None
+
+
+def plain_value(value):
+    """A row's value as text when TOML gave a date (a person may write date = 2026-11-25 unquoted)."""
+    return value.isoformat() if hasattr(value, "isoformat") and not isinstance(value, str) else value
+
+
+def row_key(row) -> str:
+    """A row compared as a whole table (INV-008)."""
+    if not isinstance(row, dict):
+        return json.dumps(row, default=str)
+    return json.dumps({k: plain_value(v) for k, v in row.items()}, sort_keys=True, default=str)
+
+
+def valid_date(text: str) -> bool:
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+def row_problem(row, story_ids: set | None, reachable: set) -> str | None:
+    """Why a row cannot count, or None. `story_ids` None: some story file is unreadable, so any id may exist."""
+    if not isinstance(row, dict):
+        return "not a table"
+    values = {k: plain_value(row.get(k)) for k in ("story", "commit", "kind", "evidence", "approver", "date")}
+    missing = [k for k, v in values.items() if not isinstance(v, str) or not v.strip()]
+    if missing:
+        return f"missing or empty: {', '.join(missing)}"
+    if values["kind"] not in KINDS:
+        return f"kind {values['kind']!r} is not one of {', '.join(KINDS)}"
+    if not FULL_SHA.fullmatch(values["commit"]):
+        return f"commit {values['commit']!r} is not a full sha"
+    if values["commit"] not in reachable:
+        return f"commit {values['commit'][:12]} is not reachable from the trunk"
+    if story_ids is not None and values["story"] not in story_ids:
+        return f"no story {values['story']}"
+    if values["approver"].strip().lower().startswith("delegated:"):
+        return "a delegated approver needs [ledger.approval] (LEDGER-015); this project approves by a person"
+    if not ISO_DATE.fullmatch(values["date"]) or not valid_date(values["date"]):
+        return f"date {values['date']!r} is not a YYYY-MM-DD date"
+    return None
+
+
+def apply_rows(rows: list, story_ids: set | None, reachable: set, where: str,
+               bad: list | None = None) -> tuple[list[dict], list[dict]]:
+    """(the active rows, normalized, in file order; one CORRECTION_INVALID diff per row that cannot count).
+    A retract deactivates the earlier active rows of the same story and commit; one with none is invalid."""
+    active, diffs = [], []
+    for i, row in enumerate(rows, 1):
+        problem = row_problem(row, story_ids, reachable)
+        norm = {k: plain_value(row.get(k)) for k in ("story", "commit", "kind", "evidence", "approver", "date")} \
+            if not problem else None
+        if norm and norm["kind"] == "retract":
+            same = [r for r in active if (r["story"], r["commit"]) == (norm["story"], norm["commit"])]
+            if same:
+                active = [r for r in active if r not in same]
+            else:
+                problem = "a retract with no earlier row of the same story and commit"
+        elif norm:
+            active.append(norm)
+        if problem:
+            if bad is not None:
+                bad.append(i)
+            label = f"{row.get('story')} {str(row.get('commit'))[:12]}" if isinstance(row, dict) else "?"
+            diffs.append({"level": "error", "code": "CORRECTION_INVALID",
+                          "detail": f"{where} row {i} ({label}): {problem}"})
+    return active, diffs
+
+
+def file_versions(trunk_sha: str) -> list[tuple[str, str | None]]:
+    """(first-parent trunk commit, the file's blob there or None when it was removed), newest first."""
+    out = git_read(["log", "--first-parent", "--format=%x00%H", "--raw", "--no-abbrev", "--no-renames", trunk_sha,
+                    "--", f":(literal){CORRECTIONS}"]).decode(errors="replace")
+    versions = []
+    for chunk in out.split("\0")[1:]:
+        lines = chunk.strip("\n").split("\n")
+        raw = [line for line in lines[1:] if line.startswith(":")]
+        if not raw:
+            continue
+        fields = raw[-1].split("\t")[0].split()
+        versions.append((lines[0].strip(), None if fields[4].startswith("D") else fields[3]))
+    return versions
+
+
+def merge_parent_versions(trunk_sha: str, merges: set[str]) -> list[tuple[str, str]]:
+    """(merge, blob) for the file as each parent of a merge reachable from the trunk had it, when the merge changed
+    it: a row on the trunk that a merge drops (a "foxtrot" merge, where the old trunk becomes a second parent, even
+    nested under another merge) is still seen. One log of every commit that touched the file, each merge against
+    each parent."""
+    if not merges:
+        return []
+    out = git_read(["log", "--full-history", "--diff-merges=separate", "--format=%x00%H", "--raw", "--no-abbrev",
+                    "--no-renames", trunk_sha, "--", f":(literal){CORRECTIONS}"]).decode(errors="replace")
+    found = []
+    for chunk in out.split("\0")[1:]:
+        lines = chunk.strip("\n").split("\n")
+        sha = lines[0].strip()
+        if sha not in merges:
+            continue
+        for line in lines[1:]:
+            fields = line.split("\t")[0].split() if line.startswith(":") else []
+            if len(fields) >= 5 and not fields[4].startswith("A") and set(fields[2]) != {"0"}:
+                found.append((sha, fields[2]))
+    return found
+
+
+def absent_versions(trunk_sha: str) -> set[str]:
+    """Blobs of the file's versions this partial clone lacks: one walk that prints `?<sha>` instead of fetching."""
+    out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", trunk_sha,
+                    "--", f":(literal){CORRECTIONS}"])
+    return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
+
+
+def cat_blobs(shas: list[str]) -> dict[str, bytes | None]:
+    """Contents of blobs the clone has, in one `cat-file --batch`; None for one git reports missing."""
+    unique = sorted(set(shas))
+    if not unique:
+        return {}
+    out = git_read(["cat-file", "--batch"], "".join(f"{s}\n" for s in unique).encode())
+    blobs, pos = {}, 0
+    for sha in unique:
+        end = out.find(b"\n", pos)
+        head = out[pos:end].split() if end >= 0 else []
+        if len(head) < 2:
+            raise LedgerError("git cat-file gave an unexpected answer")
+        if head[1] == b"missing":
+            blobs[sha], pos = None, end + 1
+            continue
+        size = int(head[2])
+        blobs[sha], pos = out[end + 1:end + 1 + size], end + 1 + size + 1
+    return blobs
+
+
+def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, graph: dict | None = None) -> dict:
+    """The corrections file as the trunk has it: active rows, diffs (CORRECTION_INVALID, CORRECTION_EDITED,
+    CORRECTION_UNCHECKED) and `unreadable` (a reason, when the tip's version is absent from a partial clone).
+    Two git calls (three in a partial clone) whatever the number of versions."""
+    result = {"active": [], "diffs": [], "unreadable": None}
+    versions = file_versions(trunk_sha)
+    extra = merge_parent_versions(trunk_sha, {c for c in reachable if len((graph or {}).get(c, ())) > 1})
+    if not versions and not extra:
+        return result
+    versions = versions or [(trunk_sha, None)]  # never on the first-parent chain: the tip has no file
+    blobs = [b for _, b in versions if b] + [b for _, b in extra]
+    absent = absent_versions(trunk_sha) & set(blobs) if is_partial_clone() else set()
+    contents = {**cat_blobs([b for b in blobs if b not in absent]), **dict.fromkeys(absent)}
+    tip_commit, tip_blob = versions[0]
+    tip_rows: list = []
+    if tip_blob is not None:
+        if contents.get(tip_blob) is None:
+            result["unreadable"] = f"{CORRECTIONS} cannot be read from the trunk's tree (a partial clone lacks it)"
+            return result
+        rows, why = parse_rows(contents[tip_blob])
+        if why:  # no row counts, and every earlier row is gone from what can be read
+            result["diffs"].append({"level": "error", "code": "CORRECTION_INVALID", "detail": f"{CORRECTIONS}: {why}"})
+        else:
+            tip_rows = rows
+            result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS)
+    tip_keys = [row_key(row) for row in tip_rows]
+    unchecked, reported = 0, set()
+    # Oldest first, so a row is named where it first was; then the versions merges' parents had.
+    for commit, blob in [*reversed(versions[1:]), *extra]:
+        if blob is None:
+            continue
+        if contents.get(blob) is None:
+            unchecked += 1
+            continue
+        rows, why = parse_rows(contents[blob])
+        if why:
+            continue
+        pos = 0  # each earlier row must still be there, in the same order (a subsequence of the tip)
+        for row in rows:
+            key = row_key(row)
+            nxt = next((j for j in range(pos, len(tip_keys)) if tip_keys[j] == key), None)
+            if nxt is not None:
+                pos = nxt + 1
+                continue
+            if key not in reported:
+                reported.add(key)
+                story, sha = (row.get("story"), str(row.get("commit"))[:12]) if isinstance(row, dict) else ("?", "?")
+                result["diffs"].append({
+                    "level": "error", "code": "CORRECTION_EDITED",
+                    "detail": f"{CORRECTIONS}: the row for {story} at {sha} was on the trunk in {commit[:7]} and "
+                              f"{'changed, moved or disappeared' if tip_blob else 'disappeared with the file'} "
+                              f"(append-only, INV-008: cancel a row with a retract row)"})
+    if unchecked:
+        result["diffs"].append({"level": "warning", "code": "CORRECTION_UNCHECKED",
+                                "detail": f"{unchecked} earlier version(s) of {CORRECTIONS} are not in this partial "
+                                          "clone, so append-only is not checked here (a full clone, as in CI, checks it)"})
+    return result
+
+
+# ── proposing and accepting corrections ──
+
+def need_history(ctx: dict) -> None:
+    if ctx["reason"]:
+        raise LedgerError(f"the trunk's history is incomplete, so nothing can be proposed or accepted: {ctx['reason']}")
+
+
+def story_file_adds(ctx: dict) -> dict[str, set[str]]:
+    """commit -> the story ids whose file it added (a plan commit names the id but does not deliver it)."""
+    paths = {s["path"]: s["id"] for s in ctx["stories"]}
+    if not paths:
+        return {}
+    out = git_read(["log", "--format=%x00%H", "--diff-filter=A", "--name-only", "--no-renames", ctx["trunk_sha"],
+                    "--", *(f":(literal){p}" for p in sorted(paths))]).decode(errors="replace")
+    adds: dict[str, set[str]] = {}
+    for chunk in out.split("\0")[1:]:
+        lines = [line for line in chunk.split("\n") if line.strip()]
+        if lines:
+            adds[lines[0].strip()] = {paths[p] for p in lines[1:] if p in paths}
+    return adds
+
+
+def merged_branch(subject: str) -> str | None:
+    m = MERGE_BRANCH.match(subject)
+    return (m.group(1) or m.group(2)) if m else None
+
+
+def train_commits(log: list[dict], reverted: dict) -> dict[int, list[str]]:
+    """train number -> trunk commits that carry it: a `Convoy: N` trailer, `train N` in the subject, or a merge of
+    convoy/N or train/N."""
+    trains: dict[int, list[str]] = {}
+    for c in log:
+        if reverted.get(c["sha"]) or c["reverts"]:
+            continue
+        subject = c["message"].split("\n", 1)[0]
+        numbers = {int(n) for n in CONVOY_TRAILER.findall(c["message"])} | {int(n) for n in TRAIN_WORD.findall(subject)}
+        branch = merged_branch(subject) if len(c["parents"]) > 1 else None
+        if branch and (m := TRAIN_BRANCH.match(branch)):
+            numbers.add(int(m.group(1)))
+        for n in numbers:
+            trains.setdefault(n, []).append(c["sha"])
+    return trains
+
+
+def evidence_candidates(path: str, ctx: dict, ids: set, reverted: dict) -> list[tuple[str, str, str, str]]:
+    """(story, commit, confidence, evidence) from a train sheet, a BOARD.md or Harbor's imported board: each line
+    that names ids and a commit, or ids and a train."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise LedgerError(f"cannot read the evidence file {path} ({e})") from e
+    reachable = ctx["placed"][0]
+    trains = train_commits(ctx["log"], reverted)
+    order, arrival = ctx["placed"][1], ctx["placed"][0]
+    ct = {c["sha"]: c["ct"] for c in ctx["log"]}
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        named = [i for i in dict.fromkeys(ID_TOKEN.findall(line)) if i in ids]
+        if not named:
+            continue
+        where = f"{path}:{n}: {' '.join(line.split())[:120]}"
+        commit, confidence = None, None
+        for word in HEX_WORD.findall(line):
+            found = [sha for sha in reachable if sha.startswith(word)] if len(word) < 40 else \
+                ([word] if word in reachable else [])
+            if len(found) == 1 and not reverted.get(found[0]):
+                commit, confidence = found[0], "high"
+                break
+        if commit is None:
+            number = TRAIN_WORD.search(line) or TRAIN_T.search(line)
+            cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
+            if number is None and cells and (cell := TRAIN_CELL.fullmatch(cells[0])):
+                number = cell
+            shas = trains.get(int(number.group(1)), []) if number else []
+            if shas:
+                commit = max(shas, key=lambda sha: (order[arrival[sha]], ct[sha], sha))
+                confidence = "medium" if len(shas) == 1 else "low"
+                where += f" (train {int(number.group(1))}: {len(shas)} commit(s))"
+        if commit:
+            out += [(sid, commit, confidence, where) for sid in named]
+    return out
+
+
+def proposals(ctx: dict, sources: list[str]) -> list[dict]:
+    """One candidate row per story that is not on the trunk yet: the best of its candidates (confidence, then
+    the newest arrival), its evidence naming the others."""
+    reverted = revert_status(ctx["log"], ctx["graph"])
+    open_ids = {sid for sid, rec in ctx["records"].items() if not rec["commit"]}
+    adds = story_file_adds(ctx)
+    found: dict[str, dict[str, tuple[str, str]]] = {}
+
+    def note(sid: str, sha: str, confidence: str, evidence: str) -> None:
+        old = found.setdefault(sid, {}).get(sha)
+        if old is None or CONFIDENCE[confidence] > CONFIDENCE[old[0]]:
+            found[sid][sha] = (confidence, evidence)
+
+    for c in ctx["log"]:
+        if c["no_story"] or c["reverts"] or reverted.get(c["sha"]):
+            continue
+        subject, _, body = c["message"].partition("\n")
+        skip = set(c["story"]) | set(c["part_of"]) | adds.get(c["sha"], set())
+        in_subject = set(ID_TOKEN.findall(subject))
+        for sid in (in_subject | set(ID_TOKEN.findall(body))) & open_ids - skip:
+            where = "subject" if sid in in_subject else "body"
+            note(sid, c["sha"], "medium" if sid in in_subject else "low",
+                 f"the {where} of {c['sha'][:7]} names {sid}: {' '.join(subject.split())[:100]}")
+        branch = merged_branch(subject) if len(c["parents"]) > 1 else None
+        for sid in {m.upper() for m in BRANCH_ID.findall(branch or "")} & open_ids - skip:
+            note(sid, c["sha"], "medium", f"{c['sha'][:7]} merges the branch {branch}")
+    for path in sources:
+        for sid, sha, confidence, evidence in evidence_candidates(path, ctx, open_ids, reverted):
+            note(sid, sha, confidence, evidence)
+    order, arrival = ctx["placed"][1], ctx["placed"][0]
+    ct = {c["sha"]: c["ct"] for c in ctx["log"]}
+    rows = []
+    for sid in sorted(found):
+        ranked = sorted(found[sid].items(), key=lambda kv: (CONFIDENCE[kv[1][0]], order[arrival[kv[0]]], ct[kv[0]], kv[0]),
+                        reverse=True)
+        sha, (confidence, evidence) = ranked[0]
+        others = [f"{s[:7]} ({c})" for s, (c, _) in ranked[1:4]]
+        if others:
+            evidence += f"; other candidates: {', '.join(others)}" + (f" and {len(ranked) - 4} more" if len(ranked) > 4 else "")
+        rows.append({"story": sid, "commit": sha, "kind": "backfill", "confidence": confidence, "evidence": evidence})
+    return rows
+
+
+def rows_toml(rows: list[dict], keys: tuple) -> str:
+    return "".join("\n[[row]]\n" + "".join(f"{k} = {toml_str(str(r[k]))}\n" for k in keys if r.get(k) is not None)
+                   for r in rows)
+
+
+PROPOSED_HEADER = (f"# Proposed corrections, for review: delete the rows that are wrong, keep the rest; then a person runs\n"
+                   f"# `python3 .keelokit/bin/ledger.py backfill --accept` in their terminal, which moves them into\n"
+                   f"# {CORRECTIONS}. Git-ignored; `backfill --propose` rewrites it.\n")
+
+
+def cmd_propose(state: dict, sources: list[str]) -> int:
+    ctx = read_all(state)
+    need_history(ctx)
+    rows = proposals(ctx, sources)
+    target = ROOT / PROPOSED
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(PROPOSED_HEADER + rows_toml(rows, ("story", "commit", "kind", "confidence", "evidence")),
+                      encoding="utf-8")
+    counts = ", ".join(f"{k} {sum(1 for r in rows if r['confidence'] == k)}" for k in CONFIDENCE)
+    print(f"Keelokit: {len(rows)} row(s) proposed in {PROPOSED} ({counts}). Review them, then a person runs "
+          "`python3 .keelokit/bin/ledger.py backfill --accept` in their terminal.")
+    return 0
+
+
+def cmd_correct(state: dict, commit: str, story: str, evidence: str) -> int:
+    ctx = read_all(state)
+    need_history(ctx)
+    sha = git_read(["rev-parse", "--verify", "-q", f"{commit}^{{commit}}"], ok=(0, 1, 128)) \
+        .decode().strip() if not commit.startswith("-") else ""
+    problems = []
+    if not sha:
+        problems.append(f"{commit!r} is not a commit")
+    elif sha not in ctx["placed"][0]:
+        problems.append(f"{sha[:12]} is not reachable from the trunk")
+    if story not in ctx["records"]:
+        problems.append(f"no story {story}")
+    if not evidence.strip():
+        problems.append("the evidence is empty")
+    if problems:
+        print(f"Keelokit: nothing proposed: {'; '.join(problems)}", file=sys.stderr)
+        return 1
+    target = ROOT / PROPOSED
+    target.parent.mkdir(parents=True, exist_ok=True)
+    old = target.read_text(encoding="utf-8") if target.exists() else PROPOSED_HEADER
+    row = {"story": story, "commit": sha, "kind": "late", "confidence": "high", "evidence": evidence.strip()}
+    target.write_text(old + ("" if old.endswith("\n") else "\n")
+                      + rows_toml([row], ("story", "commit", "kind", "confidence", "evidence")), encoding="utf-8")
+    print(f"Keelokit: a late row for {story} at {sha[:12]} is proposed in {PROPOSED}. A person accepts it with "
+          "`python3 .keelokit/bin/ledger.py backfill --accept` in their terminal.")
+    return 0
+
+
+def cmd_accept(state: dict) -> int:
+    """A person, in their terminal (the `human` approval mode): the proposed rows, shown and confirmed, are
+    appended to the corrections file with the person's name and today's date; nothing else is rewritten."""
+    if os.environ.get("CLAUDECODE") or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("Keelokit: `backfill --accept` is for a person in their own terminal (no terminal here, or Claude "
+              "Code's shell); "
+              "an agent proposes rows and never accepts them.", file=sys.stderr)
+        return 1
+    user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
+    if not user:
+        print("Keelokit: set your name first: `git config user.name \"Your Name\"` (it becomes the approver).",
+              file=sys.stderr)
+        return 1
+    source = ROOT / PROPOSED
+    try:
+        proposed, why = parse_rows(source.read_bytes())
+    except OSError:
+        proposed, why = None, "missing: run `ledger.py backfill --propose` or `ledger.py correct` first"
+    if why or not proposed:
+        print(f"Keelokit: nothing to accept: {PROPOSED} {why or 'has no rows'}", file=sys.stderr)
+        return 1
+    ctx = read_all(state)
+    need_history(ctx)
+    target = ROOT / CORRECTIONS
+    current_text = target.read_text(encoding="utf-8") if target.exists() else ""
+    current, why = parse_rows(current_text.encode()) if current_text else ([], None)
+    if why:
+        print(f"Keelokit: {CORRECTIONS} {why}; fix it first", file=sys.stderr)
+        return 1
+    today = datetime.now().date().isoformat()
+    new = [{**{k: v for k, v in r.items() if k in ("story", "commit", "kind", "evidence")}, "approver": user,
+            "date": today} if isinstance(r, dict) else r for r in proposed]
+    ids = {s["id"] for s in ctx["stories"] if not s.get("unreadable")}
+    known = None if any(s.get("unreadable") for s in ctx["stories"]) else ids
+    before, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS)
+    kept, skipped = [], []
+    for row in new:
+        if isinstance(row, dict) and row.get("kind") != "retract" and any(
+                (a["story"], a["commit"], a["kind"]) == (row.get("story"), row.get("commit"), row.get("kind")) for a in before):
+            skipped.append(row)
+        else:
+            kept.append(row)
+    rows_bad: list[int] = []
+    _, diffs = apply_rows(current + kept, known, ctx["placed"][0], PROPOSED, rows_bad)
+    bad = [d["detail"].replace(f" row {i} ", f" row {i - len(current)} ", 1)
+           for i, d in zip(rows_bad, diffs) if i > len(current)]
+    if bad:
+        print("Keelokit: nothing accepted; fix or delete these proposed rows:\n  " + "\n  ".join(bad), file=sys.stderr)
+        return 1
+    for row in skipped:
+        print(f"  already in {CORRECTIONS}: {row['kind']} {row['story']} {row['commit'][:12]}")
+    if not kept:
+        print("Keelokit: nothing new to accept.")
+        return 0
+    for row in kept:
+        print(f"  {row['kind']} {row['story']} {row['commit'][:12]} — {row['evidence']}")
+    try:
+        answer = input(f"Accept {len(kept)} row(s) as {user}? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("Keelokit: nothing accepted.")
+        return 1
+    text = current_text or CORRECTIONS_HEADER
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a" if current_text else "w", encoding="utf-8") as f:
+        if not current_text:
+            f.write(text)
+        elif not current_text.endswith("\n"):
+            f.write("\n")
+        f.write(rows_toml(kept, ("story", "commit", "kind", "evidence", "approver", "date")))
+    source.unlink()
+    print(f"Keelokit: {len(kept)} row(s) added to {CORRECTIONS}. Commit them yourself with "
+          "`git -c keelokit.allowTamper=true commit`, saying why in the message.")
+    return 0
+
+
+def cmd_check(state: dict, as_json: bool) -> int:
+    """Every difference: one line each, or `{"schema": 1, "diffs": [...]}`. Exit 1 on an error-level one."""
+    facts = ledger_facts(state)
+    if as_json:
+        print(json.dumps({"schema": 1, "diffs": facts["diffs"]}, indent=1))
+    else:
+        for d in facts["diffs"]:
+            print(f"{d['level']} {d['code']} {d['detail']}")
+    return 1 if any(d["level"] == "error" for d in facts["diffs"]) else 0
+
+
+def parse_command(argv: list[str]) -> tuple | None:
+    """(command, arguments) for the corrections commands and check, or None for any other spelling."""
+    if argv[:1] == ["check"] and argv[1:] in ([], ["--json"]):
+        return "check", bool(argv[1:])
+    if argv == ["backfill", "--accept"]:
+        return "accept", None
+    if argv[:2] == ["backfill", "--propose"]:
+        rest, sources = argv[2:], []
+        while rest:
+            if rest[0] != "--from" or len(rest) < 2 or not rest[1]:
+                return None
+            sources.append(rest[1])
+            rest = rest[2:]
+        return "propose", sources
+    if argv[:1] == ["correct"] and len(argv) == 6 and not argv[1].startswith("--"):
+        opts = dict(zip(argv[2::2], argv[3::2]))
+        if sorted(opts) == ["--evidence", "--story"] and STORY_ID.fullmatch(opts["--story"]):
+            return "correct", (argv[1], opts["--story"], opts["--evidence"])
+    return None
+
+
+def run_command(state: dict, command: str, args) -> int:
+    try:
+        if command == "check":
+            return cmd_check(state, args)
+        if command == "propose":
+            return cmd_propose(state, args)
+        if command == "correct":
+            return cmd_correct(state, *args)
+        return cmd_accept(state)
+    except LedgerError as e:
+        print(f"Keelokit: {e}", file=sys.stderr)
+        return 2
 
 
 # ── the summary ──
@@ -872,7 +1452,9 @@ def summary(facts: dict, lang: str) -> list[str]:
     ready = [r["id"] for r in stories if r["state"] == "ready"]
     reverted = [r["id"] for r in stories if r["reverted"]]
     unknown = [r["id"] for r in stories if r["state"] == "unknown"]
-    for label, items in (("progress", progress), ("ready", ready), ("reverted", reverted), ("unknown", unknown)):
+    rebuilt = [r["id"] for r in stories if r.get("reconstructed")]
+    for label, items in (("progress", progress), ("ready", ready), ("reverted", reverted), ("unknown", unknown),
+                         ("reconstructed", rebuilt)):
         if items:
             lines.append(f"{t[label]}: {listed(items, t['more'])}")
     loose = facts["unattributed"]
@@ -900,6 +1482,13 @@ def main(argv: list[str]) -> int:
     if argv in ([], ["--json"]):
         try:
             return show(state, bool(argv))
+        except Exception as e:  # noqa: BLE001 - a bug is an environment failure, never a lower answer
+            print(f"Keelokit: the ledger failed ({type(e).__name__}: {' '.join(str(e).split())[:120]})",
+                  file=sys.stderr)
+            return 2
+    if (parsed := parse_command(argv)) is not None:
+        try:
+            return run_command(state, *parsed)
         except Exception as e:  # noqa: BLE001 - a bug is an environment failure, never a lower answer
             print(f"Keelokit: the ledger failed ({type(e).__name__}: {' '.join(str(e).split())[:120]})",
                   file=sys.stderr)

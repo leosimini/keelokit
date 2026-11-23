@@ -1,8 +1,9 @@
 # The ledger — design and plan (being built)
 
 This is the design of the ledger and the plan to build it. Built so far: completing the trunk's history
-(LEDGER-001, LEDGER-002) and `ledger.py`'s states from git, its summary and `--json` (LEDGER-003; the
-decisions it took are in that story's addendum). The rest does not exist yet: [design.md](design.md)
+(LEDGER-001, LEDGER-002), `ledger.py`'s states from git, its summary and `--json` (LEDGER-003), and the
+corrections file with `backfill`, `correct`, a first `check` and the doctor's report of it (LEDGER-004); the
+decisions each took are in its story's addendum. The rest does not exist yet: [design.md](design.md)
 describes Keelokit as it is. Each story in
 `backlog/stories/LEDGER-*.md` cites the section of this file it implements; a story that needs
 something this file does not say adds it here first.
@@ -149,6 +150,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 |---|---|---|
 | `UNKNOWN_STORY`, `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS` | error | `hook msg`, `prepush`, `check` |
 | `CORRECTION_INVALID`, `CORRECTION_EDITED` | error | `check`, the doctor |
+| `CORRECTION_UNCHECKED` (a partial clone lacks earlier versions of the corrections file, so append-only is checked in CI only) | warning | `check`, the doctor |
 | `HISTORY_INCOMPLETE` | error in CI, warning in a session | every reader |
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
@@ -166,7 +168,9 @@ approver = "Leo"
 date = "2026-11-25"
 ```
 
-Append-only: no row already on the trunk may change or disappear (`CORRECTION_EDITED`). Protected like
+Append-only: no row already on the trunk may change, move or disappear (`CORRECTION_EDITED`); the versions read
+are the first-parent ones and those each parent of a first-parent merge had. A bad edit is undone by putting the
+rows back as they were (reverting the edit does it), then cancelling a wrong row with a `retract`. Protected like
 `guard-allow.toml`: the Claude hook blocks writing it, a commit that changes it needs
 `keelokit.allowTamper`, and `ledger.py backfill --accept` is denied to agents by a PreToolUse hook (as
 Harbor denies `convoy approve`), except in a delegated approval (below).

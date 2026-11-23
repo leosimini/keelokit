@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The ledger reconstructs the history that has no trailers, with evidence a person approves.**
+  `ledger.py backfill --propose [--from FILE…]` writes candidate rows, each with a confidence and its evidence
+  (commits and merged branches that name the story, train sheets, a `BOARD.md`, Harbor's imported board), to
+  `.keelokit/ledger-corrections.proposed.toml`; `ledger.py correct <commit> --story <ID> --evidence "…"` proposes
+  one late attribution. A person reviews them and runs `ledger.py backfill --accept` in their terminal, which
+  appends them to `backlog/ledger-corrections.toml` with their name and the date; an accepted row makes its story
+  `on-trunk`, marked reconstructed, and a `retract` row cancels one. The file is the person's: the guard blocks
+  agents from writing it or accepting, a commit that changes it needs `keelokit.allowTamper`, and it is
+  append-only. `ledger.py check` and the doctor report an invalid row (`CORRECTION_INVALID`) and a changed or
+  removed one (`CORRECTION_EDITED`). New projects get the file with its format in comments; `harness-upgrade`
+  adds it to existing ones.
 - **A money story is attacked on its failure paths (FLEET-005).** For a money story (the `integrity` dimension, or a
   story that moves money in a project with the `payments` trait), the breaker's report has one line for each of six
   failure paths (a retry still running, a response lost after the money moved, a connection or credential removed
