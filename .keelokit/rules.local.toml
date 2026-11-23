@@ -1,0 +1,3 @@
+[[rule]]
+id = "A"
+enforced_by = ["ci:test"]
