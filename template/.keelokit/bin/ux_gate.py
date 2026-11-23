@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +78,10 @@ def settings() -> tuple[dict, str | None]:
             cfg.update(tomllib.loads(path.read_text()).get("gate", {}))
         except (tomllib.TOMLDecodeError, OSError) as e:
             return cfg, f".keelokit/ux.toml: {e}"
+    skills = cfg["critique_skills"]
+    if not isinstance(skills, list) or not all(isinstance(s, str) and s.strip() for s in skills):
+        return cfg, (".keelokit/ux.toml: critique_skills must be a list of skill ids, like "
+                     '["design:design-critique", "design:ux-copy"] ([] for none), not ' + repr(skills))
     return cfg, None
 
 
@@ -93,16 +98,41 @@ def expected_captures(cfg: dict) -> list[str]:
     return [f"{s}-{w}" + (f"-{t}" if t else "") for s in cfg["surfaces"] for w in cfg["widths"].get(s, []) for t in themes]
 
 
-HEADING = re.compile(r"(?m)^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
-RAN = re.compile(r"(?mi)^[ \t]*(?:[-*+][ \t]+)?\**Ran:\**[ \t]*(\d{4}-\d{2}-\d{2})\b")
-FINDING = re.compile(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\**(P\d)\b\**(.*)$")
-# The item ends with a dash, then "fixed in <x>" or "decided: <reason>" (a reason may hold dashes).
-RESOLUTION = re.compile(r"(?i)(?:[—–]|(?:^|\s)-{1,2})\s*(?:fixed in\s+[^\s—–][^—–]*|decided:\s*\S.*)$")
+HEADING = re.compile(r"(?m)^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+FENCE = re.compile(r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?(`{3,}|~{3,})")
+RAN = re.compile(r"(?mi)^[ \t]*(?:[-*+][ \t]+)?[*_]*Ran[*_]*:[*_]*[ \t]*(\d{4}-\d{2}-\d{2})\b")
+ITEM = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+(.*)$")
+# What may come before a priority: a task box, emoji or other symbols, bold, a bracket.
+PRIORITY = re.compile(r"(?i)^(?:\[[ xX]\][ \t]*)?[^\w\[(]*[\[(]?(P\d)\b[\])]?[*_:]*(.*)$")
+# A skill's own severity, where a priority belongs: a table cell that is only that, or an item that starts with it.
+SEVERITY = re.compile(r"(?i)^[^\w]*(?:critical|major|moderate|serious|blocker)\b|^[^\w]*[🔴🟠🟡]")
+# The item ends with a dash, then "fixed in <x>" or "decided: <reason>" (a reason may hold dashes,
+# a "fixed in" may not: whatever follows another dash is not the end).
+RESOLUTION = re.compile(r"(?i)(?:[—–]|(?:^|\s)-{1,2})\s*(?:fixed in\s+(?:(?![—–]|\s-{1,2}\s).)*\S|decided:\s*\S.*)$")
+
+
+def unfenced(text: str) -> str:
+    """The text with fenced code blocks blanked, NFKC-normalized (a fullwidth digit is a digit, a
+    non-breaking space a space): a `# comment` in a code block is not a heading."""
+    out, fence = [], None
+    for line in unicodedata.normalize("NFKC", text).replace("\r\n", "\n").split("\n"):
+        m = FENCE.match(line)
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            out.append("")
+        elif m:
+            fence = m.group(1)
+            out.append("")
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def sections(text: str, name: str) -> list[tuple[int, str]]:
-    """(level, body) of every heading called `name`; a body runs to the next heading of its level or higher."""
-    heads = [(m.start(), m.end(), len(m.group(1)), m.group(2).strip().strip("`").strip()) for m in HEADING.finditer(text)]
+    """(level, body) of every heading called `name` (any case, backticks or bold around it allowed);
+    a body runs to the next heading of its level or higher."""
+    heads = [(m.start(), m.end(), len(m.group(1)), m.group(2).strip().strip("`*").strip()) for m in HEADING.finditer(text)]
     out = []
     for i, (_, end, level, title) in enumerate(heads):
         if title.lower() == name.lower():
@@ -113,39 +143,76 @@ def sections(text: str, name: str) -> list[tuple[int, str]]:
 
 def resolved(rest: str) -> bool:
     """A finding is resolved when it ends `— fixed in <x>` or `— decided: <reason>` (`-` or `–` will do)."""
-    return bool(RESOLUTION.search(rest))
+    return bool(RESOLUTION.search(rest.strip()))
+
+
+def findings(body: str) -> list[tuple[str | None, str, bool]]:
+    """(priority or None, text, resolved) of each finding in a subsection: a list item, joined with
+    the lines indented under it (a wrapped line, a sub-bullet holding the fix), or a table row."""
+    out, lines, i = [], body.split("\n"), 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if line.strip().startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if all(re.fullmatch(r":?-*:?", c) for c in cells):
+                continue
+            at = next((k for k, c in enumerate(cells) if PRIORITY.match(c) and PRIORITY.match(c).group(2).strip() == ""), None)
+            text = " | ".join(c for c in cells if c)
+            if at is not None:
+                out.append((PRIORITY.match(cells[at]).group(1).upper(), text,
+                            resolved(" — " + " ".join(c for c in cells[at + 1:] if c))))
+            elif any(SEVERITY.match(c) and len(c) <= 20 for c in cells):
+                out.append((None, text, False))
+            continue
+        m = ITEM.match(line)
+        if not m:
+            continue
+        indent, text = len(m.group(1).expandtabs()), m.group(2)
+        while i < len(lines) and lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) > indent:
+            sub = ITEM.match(lines[i])
+            if sub and PRIORITY.match(sub.group(2)):
+                break  # a finding of its own
+            text += " " + (sub.group(0).strip() if sub else lines[i].strip())
+            i += 1
+        p = PRIORITY.match(text)
+        if p:
+            out.append((p.group(1).upper(), f"{p.group(1).upper()}{p.group(2)}".strip(), resolved(p.group(2))))
+        elif SEVERITY.match(text):
+            out.append((None, text.strip(), False))
+    return out
 
 
 def skills_problems(text: str, skills: list[str], where: str) -> list[str]:
-    """What the critique's `## Skills` section lacks (FLEET-004): a subsection per skill, its date, and
-    a fix or a decision for every P0, P1 and P2 finding. Shape only: the reviewer judges the content."""
+    """What the critique's `## Skills` sections lack (FLEET-004): a subsection per skill, its date, and
+    a fix or a decision for every P0, P1 and P2 finding. Every Skills section and every subsection of a
+    skill is read, so a later run is checked like the first. Shape only: the reviewer judges the content."""
     if not skills:
         return []
-    found = sections(text, "Skills")
+    found = sections(unfenced(text), "Skills")
     if not found:
         return [f'{where} lacks the section "Skills" (one "### <skill id>" subsection per skill the critique ran: '
                 f'{", ".join(skills)}; see docs/ux-quality.md §4)']
-    level, body = found[0]
     problems = []
     for skill in skills:
-        subs = [b for lv, b in sections(body, skill) if lv > level]
+        subs = [b for level, body in found for lv, b in sections(body, skill) if lv > level]
         if not subs:
             problems.append(f'{where}, Skills: no "### {skill}" subsection (run the skill and record what it found)')
-            continue
-        sub = subs[0]
-        dates = RAN.findall(sub)
-        try:
-            ok = bool(dates) and bool(datetime.date.fromisoformat(dates[0]))
-        except ValueError:
-            ok = False
-        if not ok:
-            problems.append(f'{where}, {skill}: no "Ran: YYYY-MM-DD" line saying when the skill ran')
-        for prio, rest in FINDING.findall(sub):
-            if prio in ("P0", "P1", "P2") and not resolved(rest):
-                item = f"{prio}{rest}".strip()
+        for sub in subs:
+            dates = RAN.findall(sub)
+            try:
+                ok = bool(dates) and bool(datetime.date.fromisoformat(dates[0]))
+            except ValueError:
+                ok = False
+            if not ok:
+                problems.append(f'{where}, {skill}: no "Ran: YYYY-MM-DD" line saying when the skill ran')
+            for prio, item, done in findings(sub):
                 item = item if len(item) <= 90 else item[:87] + "…"
-                problems.append(f'{where}, {skill}: open finding "{item}" — end it with "— fixed in <commit or file>" '
-                                'or "— decided: <reason>"')
+                if prio is None:
+                    problems.append(f'{where}, {skill}: "{item}" has a severity but no priority; write it as P0, P1, P2 or P3')
+                elif prio in ("P0", "P1", "P2") and not done:
+                    problems.append(f'{where}, {skill}: open finding "{item}" — end it with "— fixed in <commit or file>" '
+                                    'or "— decided: <reason>"')
     return problems
 
 

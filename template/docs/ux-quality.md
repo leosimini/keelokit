@@ -57,9 +57,9 @@ If the piece's session lacks the skills, it pushes the captures and asks whoever
 coordinator runs a subagent with the skills on a `wip/` branch from the piece's branch that touches only
 the piece's `CRITIQUE.md`; the piece takes that section in (cherry-pick or merge) and answers its
 findings. With no design skills anywhere, set `critique_skills = []` in `ux.toml` with the reason in a
-comment, and the `reviewer` takes the criteria below one by one.
+comment, and the `reviewer` takes the criteria above one by one.
 
-Every P1 and P2 finding is fixed, or decided with a reason. The result is `CRITIQUE.md` in the piece's
+Every P0, P1 and P2 finding is fixed, or decided with a reason. The result is `CRITIQUE.md` in the piece's
 folder, with five sections: `Journey` (the person's journey as written before building), `Design
 critique` (each criterion S1–S11 and T1–T5 as ok / fixed / open, with the capture it was judged on, what
 was flagged, what was fixed, what remains and why), `Consistency and coherence` (system, navigation,
@@ -74,7 +74,11 @@ One subsection per skill in `critique_skills`, titled with the skill's id; in it
 skill ran, then its findings as list items, each starting with its priority (`P0` the journey breaks, `P1`
 a wrong or misleading result or an inaccessible control, `P2` rough but usable, `P3` polish). Every P0, P1
 and P2 item ends with what the piece did about it: `— fixed in <commit or file>` or `— decided: <reason>`.
-A P3 needs neither. A skill that found nothing has its date and no items.
+A P3 needs neither. A skill that found nothing has its date and no items. The skills grade by their own
+scale; give each finding its priority: Critical is P1 (P0 when the journey breaks), Moderate or Major is P2,
+Minor is P3. One item per finding, on one line or wrapped with the next lines indented under it; a table
+with a priority column works too. A skill run again on the same piece gets another `### <skill id>`
+subsection with its own date, read like the first.
 
 ```markdown
 ## Skills
@@ -97,13 +101,18 @@ A later critique of the same screen or journey says whether it **confirms or con
 one, naming it: two reviews that solve the same gap two ways leave the latest as the decision, and the
 record says so.
 
-What the gate reads (`.keelokit/bin/ux_gate.py`), and nothing more:
+What the gate reads (`.keelokit/bin/ux_gate.py`), and nothing more (fenced code blocks are skipped):
 
-- a heading `Skills` at any level; under it, a deeper heading whose text is exactly the skill id (backticks
-  allowed), for each skill in `critique_skills`; each runs to the next heading of its level or higher;
-- in each, a line `Ran: YYYY-MM-DD` with a real date (a leading `- ` or bold is fine);
-- each list item (`-`, `*`, `+` or `1.`) whose first word is `P0`, `P1` or `P2` ends with a dash (`—`, `–`
-  or `-`) and `fixed in <something>` or `decided: <reason>`; nothing but the reason may follow.
+- every heading `Skills`, at any level; under each, every deeper heading whose text is the skill id (any
+  case, backticks or bold allowed), for each skill in `critique_skills`; a heading's body runs to the next
+  heading of its level or higher;
+- in each of those subsections, a line `Ran: YYYY-MM-DD` with a real date (a leading `- ` or bold is fine);
+- each list item (`-`, `*`, `+`, `1.` or `1)`, with its indented continuation lines) whose first word is a
+  priority (`P1`, `**P1**`, `[P1]`, `- [ ] P1`…), and each table row with a cell that is only a priority:
+  when it is `P0`, `P1` or `P2`, it ends with a dash (`—`, `–` or `-`) and `fixed in <something>` or
+  `decided: <reason>`; nothing but the reason may follow (in a table, the cells after the priority hold it);
+- an item or a cell that starts with a severity (Critical, Major, Moderate, Serious, Blocker, 🔴🟠🟡) and
+  has no priority is refused: give it one.
 
 The gate's message names the missing skill or quotes the open finding. Like the rest of the gate it checks
 the shape, not that a skill truly ran or that a fix is real: the reviewer checks that (`agents/reviewer.md`).
