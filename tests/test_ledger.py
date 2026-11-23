@@ -129,13 +129,17 @@ class LedgerHistoryTest(unittest.TestCase):
 
     def wrapper(self, reject_filter: bool = False) -> tuple[str, Path]:
         """A `git` first on PATH that logs each argv as one line; with reject_filter, a fetch with
-        --filter fails the way a server without filter support makes it fail."""
+        --filter fails the way a server without filter support makes it fail, after writing the
+        promisor config first, as real git does before it contacts the server."""
         bindir = self.tmp / "wrap-bin"
         bindir.mkdir(exist_ok=True)
         log = self.tmp / "git-argv.log"
         log.touch()
         real = shutil.which("git", path=self.env["PATH"])
-        reject = ('case " $* " in *" --filter"*) echo "fatal: filtering not supported by server" >&2; exit 128;; esac\n'
+        reject = ('case " $* " in *" --filter"*)\n'
+                  f'  "{real}" config remote.origin.promisor true\n'
+                  f'  "{real}" config remote.origin.partialclonefilter blob:none\n'
+                  '  echo "fatal: filtering not supported by server" >&2; exit 128;;\nesac\n'
                   if reject_filter else "")
         script = bindir / "git"
         script.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\n{reject}exec "{real}" "$@"\n')
@@ -145,6 +149,23 @@ class LedgerHistoryTest(unittest.TestCase):
     @staticmethod
     def fetches(log: Path) -> list[str]:
         return [line for line in log.read_text().splitlines() if re.search(r"(^|\s)fetch(\s|$)", line)]
+
+    FILTER_KEYS = ("remote.origin.promisor", "remote.origin.partialclonefilter", "extensions.partialclone")
+
+    def filter_config(self, clone: Path) -> dict:
+        """The partial-clone config of the clone, key -> value, only the keys that are set."""
+        out = {}
+        for key in self.FILTER_KEYS:
+            value = self.git(clone, "config", "--local", "--get", key, check=False).strip()
+            if value:
+                out[key] = value
+        return out
+
+    def assert_filter_config_as_before(self, clone: Path, before: dict, when: str) -> None:
+        """The class check (ESC, LEDGER-002 round 2): after any --ensure that does not end as a
+        complete fetch whose filter the server honoured, the filter config is what it was before
+        the run: a failed, cut, ignored or rejected filter leaves nothing behind."""
+        self.assertEqual(self.filter_config(clone), before, f"filter config changed {when}")
 
     def ledger(self, clone: Path, *args: str, path: str | None = None, timeout: float = 45,
                extra_env: dict | None = None) -> tuple[subprocess.CompletedProcess, float]:
@@ -259,6 +280,7 @@ class LedgerHistoryTest(unittest.TestCase):
         self.assertTrue(plain, f"no plain fetch after the rejected filter: {fetches}")
         self.assertTrue(all(a in plain[-1] for a in ("--unshallow", "origin", "main")), fetches)
         self.assertFalse(self.shallow(clone))
+        self.assert_filter_config_as_before(clone, {}, "after the plain fallback")
         missing = [l for l in self.git(clone, "rev-list", "--objects", "--missing=print", "--all").splitlines()
                    if l.startswith("?")]
         self.assertEqual(missing, [])
@@ -495,6 +517,43 @@ class LedgerHistoryTest(unittest.TestCase):
                 self.assertNotIn("origin main", line, "the configured trunk is develop")
                 self.assertRegex(line, r"^Keelokit: history completed \(\d+ commits of develop\)")
                 self.assertFalse(self.shallow(clone))
+
+    def test_LEDGER_002_S2_a_failed_filtered_fetch_leaves_no_promisor_config(self):
+        """Breaker: git writes the promisor config before it contacts the server, so a filtered
+        fetch that fails (here: the trunk is not on origin) left it, and the user's later
+        `git fetch --unshallow origin` came back blob:none with blobs missing."""
+        for allow in ("true", "false"):
+            with self.subTest(allowFilter=allow):
+                self.git(self.origin, "config", "uploadpack.allowFilter", allow)
+                clone = self.clone(3, f"clone-{allow}")
+                self.state(clone, '[ledger]\ntrunk = "develop"\n')
+                before = self.filter_config(clone)
+                r, _ = self.ledger(clone, "history", "--ensure")
+                line = self.one_line(r)
+                self.assertIn("fetch failed: history incomplete", line)
+                self.assertTrue(self.shallow(clone))
+                self.assert_filter_config_as_before(clone, before, "after a failed fetch")
+
+    def test_LEDGER_002_S4_a_cut_leaves_no_promisor_config_and_the_rerun_does_not_keep_it(self):
+        """Breaker and review: a cut left the config; the next run that completed took it as the
+        user's own and kept it, so every later `git fetch origin` warned 'filtering not recognized'."""
+        self.git(self.origin, "config", "uploadpack.allowFilter", "false")
+        clone = self.clone(3)
+        before = self.filter_config(clone)
+        self.state(clone, "[ledger]\nhistory_seconds = 2\n")
+        self.slow_origin(clone, 30)
+        r, _ = self.ledger(clone, "history", "--ensure", timeout=25)
+        self.assertIn("cut at 2s", self.one_line(r))
+        self.assert_filter_config_as_before(clone, before, "after the cut")
+        self.git(clone, "config", "--unset", "remote.origin.uploadpack")
+        r, _ = self.ledger(clone, "history", "--ensure")
+        self.assertIn("history completed", self.one_line(r))
+        self.assertFalse(self.shallow(clone))
+        self.assert_filter_config_as_before(clone, before, "after the rerun that completed")
+        later = subprocess.run(["git", "fetch", "origin"], cwd=clone, env=self.env, capture_output=True,
+                               text=True, timeout=60)
+        self.assertEqual(later.returncode, 0, later.stderr)
+        self.assertNotIn("filtering not recognized", later.stderr)
 
     def test_LEDGER_002_nfr_the_two_copies_are_identical(self):
         self.assertTrue(LEDGER.exists(), "template/.keelokit/bin/ledger.py does not exist yet")
