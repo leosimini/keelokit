@@ -44,6 +44,9 @@ The SEC ones were decided on 2026-09-28 and are done.
 - [ ] **HARN-004** (wave 3): the hooks stop running the project's own `.keelokit/bin` code
   unchecked (SEC-3, options B or C).
 
+- [ ] **LEDGER-001..015** (waves 5–19): the ledger. Design, decisions for Leo and the launch
+  order in `docs/ledger.md`; build one story at a time, starting with LEDGER-001.
+
 ## Smaller things
 
 - [x] README screenshots (`docs/assets/dashboard-{en,es}.webp`) show Fleetly (2026-10-03).

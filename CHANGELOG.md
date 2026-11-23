@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Projects with an API pass the dependency audit again.** Prisma 7.10 pins `effect` 3.20.0, which carries a high
+  advisory (GHSA-7589-6fvf-x4pw, ReDoS in `Schema.TemplateLiteral`) fixed in 3.22.1; the template now overrides it
+  (`'@prisma/config>effect': ^3.22.1` in `pnpm-workspace.yaml`), like the other pinned fixes there, until Prisma ships
+  it. An existing project runs `/keelokit:harness-upgrade`, then `pnpm install`.
+
 ## 0.14.0 — 2026-11-16
 
 - **Product quality is part of the harness: the interface and the journeys (UX-2..UX-5).** A project with the `ui`

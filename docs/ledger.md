@@ -1,0 +1,342 @@
+# The ledger — design and plan (not built yet)
+
+This is the design of the ledger and the plan to build it. Nothing here exists yet: until a story of
+the `LEDGER` epic lands, [design.md](design.md) describes Keelokit as it is. Each story in
+`backlog/stories/LEDGER-*.md` cites the section of this file it implements; a story that needs
+something this file does not say adds it here first.
+
+The proposal and its premortem, in Spanish, are in the Claude doc *Registro de historias en Keelokit:
+propuesta* (two tabs: the proposal, and the implementation plan this file mirrors).
+
+## Why
+
+On 2026-11-22 a coordinator in a project built with agents reported six trains as never shipped; one
+had been on `main` since 2026-11-10. The facts were in git; the reading and the hand-kept board failed:
+
+1. **A shallow clone.** Keelokit has the same failure today, silently. On this repo, with `main` at
+   `a082db4`, `doctor.py --brief` says *16/20 done* with the full history (229 commits) and *3/20 done*
+   on a `--depth 30` clone, with no error or warning. Cloud sessions clone shallow: this repo's clone in
+   the session that measured it had 59 of 229 commits.
+2. **States written by hand.** A board, `backlog/next.md` ("Where things stand after 0.8.3" while the
+   repo is at 0.14.0): someone has to remember.
+3. **No state per story outside `main`.** "In progress" is only visible on one machine (`status.py` reads
+   worktrees); "delivered" is in Harbor's logbook; "in version 1.4" is rebuilt by hand in `ship-release`;
+   "in production since" is nowhere. And only 20 of this repo's 229 commits on `main` carry `Story:`.
+
+## The principle
+
+A story's state is derived from facts, never declared by an agent. Keelokit already does this for one
+state (INV-005: done iff a commit reachable from `main` carries `Story: <ID>`). The ledger extends it
+to every state, keeps the *why* next to the *what*, and gives every session one command to ask.
+
+`ledger.py` computes; it stores nothing a person or agent writes by hand. Hooks make sure the facts
+exist. Harbor and Swarm feed it facts they already own, read-only. No GitHub Issues, Projects or API:
+only git and the CI the project already has.
+
+## Contracts
+
+These are fixed before any story is built.
+
+### Files
+
+| File or ref | What it is | Owner |
+|---|---|---|
+| `.keelokit/bin/ledger.py` | The ledger. Python 3.11+, stdlib only. All hook logic lives here | Template (arrives with `harness-upgrade`) |
+| `.githooks/prepare-commit-msg`, `.githooks/commit-msg` | Three-line wrappers that call `ledger.py hook prepare` and `ledger.py hook msg` | Template |
+| `backlog/ledger-corrections.toml` | Approved corrections: old history and late attributions | Product (`_skip_if_exists` in `copier.yml`) |
+| `.keelokit/ledger-corrections.proposed.toml` | What the backfill proposes, for review | Local, git-ignored |
+| branch `keelokit/ledger` | The snapshot: `LEDGER.md`, `ledger.json`, `moves.toml` | The CI only |
+| branches `deploy/staging`, `deploy/production` | Point at the commit deployed to each environment | The deploy job only |
+
+### Configuration (`.keelokit/state.toml`; every key has a default)
+
+```toml
+[ledger]
+stories = "backlog/stories/*.md"   # an adopted repo: e.g. "5-Roadmap/stories/*.md"
+id_from = "front-matter"           # or "filename": the EPIC-NNN prefix of the file name
+trunk = "main"                     # default: [harbor] trunk when present
+since = "<sha>"                    # attribution is required from this commit on (the adoption commit)
+enforce = "warn"                   # warn | block: commit-msg, pre-push and CI follow it
+no_story = ["harness", "docs", "release", "deps", "ci"]
+stale_days = 7
+history_seconds = 20               # the SessionStart hook's cap to complete the history
+snapshot = "keelokit/ledger"       # "" turns the snapshot off
+```
+
+### Trailers
+
+In the last paragraph of the message, as `git interpret-trailers` reads them.
+
+| Trailer | Means | Written by |
+|---|---|---|
+| `Story: <ID>[, <ID>]` | Closes the story (as today). The commit has a body: what was decided and what was left out | The landing commit, in `build-story` |
+| `Part-of: <ID>[, <ID>]` | Work of the story that does not close it | `prepare-commit-msg`, from `git config keelokit.story` |
+| `No-story: <category>[ — <reason>]` | Work outside stories; the category is one of `[ledger] no_story` | Whoever commits; `commit-msg` requires one of the three |
+| `Finding: <ID>` | Fixes a bug-bash or review finding | Whoever fixes it |
+| `Convoy: <n>` | The merge commit of a Harbor convoy | `harbor.py convoy assemble` |
+| `Swarm-Task: <id>` | Made by a swarm helper | The helper prompt, or the swarm runner |
+| `Dropped: <ID>` | An abandoned attempt; the reason is the body | `ledger.py drop` |
+
+- `<ID>` matches `[A-Z][A-Z0-9]*-[0-9]+` and exists among the configured stories.
+- A `Story:` commit has a body: at least one line outside the subject and the trailers.
+- A merge commit's trailers cover the commits it brings in: those reachable from its second parent and not
+  from its first.
+- `Claude-Session:`, which cloud sessions already add, links a commit to the session that made it.
+
+### States
+
+A story has one state: the most advanced one the facts prove. From lowest to highest:
+
+| State | The fact that proves it | Source |
+|---|---|---|
+| `defined` | The story file is on the trunk | git |
+| `ready` | Every `depends_on` is `on-trunk` or later | git |
+| `in-progress` | Commits with `Part-of: <ID>` not on the trunk, on any `origin` branch whatever its name; or a Harbor worker holding the story | git, `harbor/log` |
+| `delivered` | A Harbor vessel sealed on its exact head, with its convoy and state | `harbor/log` |
+| `on-trunk` | A commit with `Story: <ID>` reachable from the trunk, or a correction row (shown as *reconstructed*) | git |
+| `in-version` | The first `v*` tag that contains that commit; an `-rc.N` tag is a candidate | git |
+| `in-staging`, `in-production` | `origin/deploy/staging` or `origin/deploy/production` contains the commit. A project without environments (library, plugin) stops at `in-version` | git |
+
+- A revert of the `Story:` commit on the trunk (`This reverts commit <sha>.`) turns `on-trunk` back into
+  `ready`, marked `reverted`.
+- A state that depends on missing history is `unknown`, with the reason; never a lower state.
+- `in-progress` with no new commit in `stale_days` carries the signal `stale` (a signal, not a state).
+- Displayed in the language of `[dashboard] lang`.
+
+### `ledger.py` commands
+
+| Command | Does |
+|---|---|
+| `ledger.py` | The summary in at most 10 lines |
+| `ledger.py show <ID> [--full]` | The story's card: state, date (exact or approximate), commits with subject and `Claude-Session:`, version, environments, branches, the file and its *Addendum* headings, and the why: bodies of its `Story:`/`Part-of:` commits, rows of `docs/escapes.md` and findings of `docs/bugbash/` that name it or arrive through `Finding:`, attempts (`Dropped:`), corrections, convoy events. At most 60 lines without `--full`; paths, not long contents |
+| `ledger.py next` | `ready` stories not `in-progress`, by wave and id |
+| `ledger.py take <ID>` / `take --clear` | Sets or clears `git config --worktree keelokit.story` (see LEDGER-008) |
+| `ledger.py drop <ID> --motivo "…"` | Records an abandoned attempt (see LEDGER-008) |
+| `ledger.py check [--ci] [--json]` | Every difference, with its code |
+| `ledger.py --json` | Everything, for the dashboard, the coordinator, Harbor and the CI |
+| `ledger.py --release vX.Y.Z` | The stories that entered that version |
+| `ledger.py history --ensure` | Completes the trunk's history (SessionStart) |
+| `ledger.py backfill --propose [--from FILE…]` / `backfill --accept` | Proposes correction rows / accepts them (a person only) |
+| `ledger.py correct <commit> --story <ID> --evidence "…"` | Proposes a late attribution |
+| `ledger.py review --filter` / `backfill --accept --delegated <run>` / `review --reject-sample <run>` | The delegated review's mechanical filter / writing its approved rows / sending a run back (a person) |
+| `ledger.py attribution <a>..<b> [--json]` | Whether every commit of a range is attributed (Harbor's `convoy add` calls it) |
+| `ledger.py hook prepare\|msg`, `ledger.py prepush` | The git hooks' logic |
+| `ledger.py snapshot` | Writes the snapshot branch (the CI only) |
+
+### `--json` (schema 1)
+
+```json
+{"schema": 1, "trunk": "main", "trunk_sha": "a082db4…", "history": "complete",
+ "stories": [{"id": "UXC-113", "title": "…", "epic": "UXC", "wave": 3, "state": "in-version",
+   "since": "2026-11-10T14:02:00Z", "since_exact": true, "commit": "a1b2c3d…", "convoy": 18,
+   "version": "v1.15.0", "environments": {"staging": "…", "production": null},
+   "reconstructed": false, "reverted": false, "branches": [], "attempts": [], "swarm": [], "signals": []}],
+ "unattributed": {"since": "…", "commits": 0, "ratio": 0.0},
+ "diffs": [{"level": "error", "code": "UNKNOWN_STORY", "detail": "…"}]}
+```
+
+`history` is `complete`, `snapshot:<sha>` or `incomplete`. New keys may be added; existing keys never
+change meaning within schema 1.
+
+### Exit codes and difference codes
+
+Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, no trunk).
+
+| Code | Level | Given by |
+|---|---|---|
+| `UNKNOWN_STORY`, `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS` | error | `hook msg`, `prepush`, `check` |
+| `CORRECTION_INVALID`, `CORRECTION_EDITED` | error | `check`, the doctor |
+| `HISTORY_INCOMPLETE` | error in CI, warning in a session | every reader |
+| `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
+| `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
+| `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
+
+### Corrections file
+
+```toml
+[[row]]
+story = "UXC-113"
+commit = "a1b2c3d4e5f6…"   # full sha, reachable from the trunk
+kind = "backfill"           # backfill | late | retract (cancels an earlier row: same story and commit)
+evidence = "train sheet 18; BOARD.md row T18"
+approver = "Leo"
+date = "2026-11-25"
+```
+
+Append-only: no row already on the trunk may change or disappear (`CORRECTION_EDITED`). Protected like
+`guard-allow.toml`: the Claude hook blocks writing it, a commit that changes it needs
+`keelokit.allowTamper`, and `ledger.py backfill --accept` is denied to agents by a PreToolUse hook (as
+Harbor denies `convoy approve`), except in a delegated approval (below).
+
+### Approval modes
+
+Who approves correction rows is the person's choice, made once per project (LEDGER-015):
+
+```toml
+[ledger.approval]
+mode = "mixed"                     # human (default) | delegated | mixed
+human_for = ["critical", "disagreement", "low-confidence"]   # mixed only
+sample = 0.05                      # share of delegated approvals shown to the person for a spot check
+```
+
+| Mode | Who approves | The person's work |
+|---|---|---|
+| `human` | The person, row by row | Review everything |
+| `delegated` | Agents, with an adversarial review | Nothing required; the sample if they want |
+| `mixed` | Agents for the clear rows; the person for critical stories, low confidence and disagreements | Only the queue of exceptions |
+
+A delegated review (`workflows/ledger-review-flow.js`): a mechanical filter with no model drops every row
+it can prove wrong; two independent judges read the story's criteria, the diff and the evidence; a skeptic
+tries to refute a row both approved. A row is approved only when both judges say yes and the skeptic
+fails; otherwise it goes to the person (`mixed`) or stays pending (`PENDING_REVIEW`, `delegated`). Stories
+in a critical area go to the person in `mixed`. A delegated row has `approver = "delegated:<run id>"` and
+its verdicts are committed in `.keelokit/ledger-reviews/<run id>.json`; the ledger shows *reconstructed
+(delegated)* or *(person)*. The `[ledger.approval]` table is protected like the corrections file, so no
+agent authorizes itself. The proposer never approves its own rows.
+
+### Performance and trust
+
+- A fixed number of git calls, never one per story. Budget: under 2 s on 10 000 commits and 700 stories,
+  measured by a test on a synthetic repo (as the doctor's NFR-1).
+- As today, the plugin runs the project's `.keelokit/bin/`. Whatever HARN-004 decides applies to
+  `ledger.py` too.
+
+## Mechanisms
+
+| Mechanism | When | Guarantees | Story |
+|---|---|---|---|
+| Fail-closed reading | every read | an incomplete history says `unknown`, never a low number | LEDGER-001 |
+| SessionStart hook | each session | completes the trunk's history (commits only, capped), activates the git hooks, prints the summary and where to look; falls back to the snapshot | LEDGER-002, 007, 009, 011 |
+| `take` / `drop` | starting / abandoning a story | the story the worktree works on; abandoned attempts stay readable | LEDGER-008 |
+| `prepare-commit-msg` | each commit | `Part-of:` from `keelokit.story`, whatever the branch is called | LEDGER-009 |
+| `commit-msg` | each commit | the trailer grammar; warns or blocks per `enforce` | LEDGER-009 |
+| pre-push and CI | each push to the trunk, each PR | nothing unattributed reaches the trunk; a squash keeps its branch's trailers; a merge attributes what it brings | LEDGER-010 |
+| Corrections | once for old history, and when something slipped through | the old history and late attributions, approved by a person or, when the person delegates it, by agents with an adversarial review | LEDGER-004, LEDGER-015 |
+| CI snapshot | each push to the trunk and each tag | a cheap read for short sessions; the exact time each commit reached the trunk | LEDGER-011 |
+| Deploy branches | each successful deploy | `in-staging`, `in-production` | LEDGER-011 |
+| LEDGER-1 | each doctor run | every enforcer above is alive | LEDGER-012 |
+| "Where the truth is" | each session reads it | state is asked of `ledger.py`, never of memory or a handoff file | LEDGER-007 |
+
+## Harbor and Swarm
+
+Each keeps its own state; the ledger reads it and never writes it. Both detect `ledger.py` and behave as
+today without it.
+
+- **Harbor** (plan: `docs/ledger-phase6.md` in `leosimini/keelokit-harbor`): `Convoy: <n>` on convoy
+  merges; `convoy add` refuses an unattributed vessel (`NO_STORY`); `harbor.py story take` is a lock in the
+  logbook (`STORY_TAKEN`); the harbormaster's round runs `ledger.py check --json` and the ok refuses a
+  convoy with a difference (`LEDGER_DIFF`). Keelokit's side: LEDGER-013.
+- **Swarm** (plan: `docs/ledger-refs.md` in `leosimini/enjambre`): an opaque `ref` on tasks; the helper
+  prompt sets the hooks and the story; the runner writes `Part-of:` and `Swarm-Task:` itself; `deliver`
+  refuses an unattributed delivery (`UNATTRIBUTED`); `swarm-ask` asks for `plugin:keelokit`. The ledger
+  never reads the swarm repo: it sees deliveries as `swarm/*` branches in the code repo. Keelokit's side:
+  LEDGER-014.
+
+## Plan
+
+| Phase | Stories | Gate | Release |
+|---|---|---|---|
+| 0 — read well | LEDGER-001, LEDGER-002 | On a `--depth 30` clone of this repo the doctor says 16/20 after the hook, or that it cannot; never 3/20. The hook's time is measured on a fresh clone of a large project | (with phase 1) |
+| 1 — the ledger, read-only | LEDGER-003, 004, 015, 005, 006, 007 | This repo's backfill accepted (by Leo, or in `mixed` mode with Leo's queue), `ledger.py check` with no error, and a fresh session answers "is HARN-020 done, and why did it end up that way?" by citing `ledger.py show` | Keelokit 0.15.0 |
+| 2 — the fact always exists | LEDGER-008 to LEDGER-012 | `scripts/test-template.sh` walks a generated project from `take` to `in-production` against a local remote, with nobody writing a state | Keelokit 0.16.0 |
+| 3 — Harbor and Swarm | HRB-1..3 (Harbor), SWM-1..3 (Swarm, can run alongside phase 2), LEDGER-013, LEDGER-014 | In a test project with Harbor and a swarm, a convoy carrying a swarm delivery lands and `ledger.py show` says each piece's story, who made it and which convoy sailed it | Keelokit 0.17.0, Harbor 0.6.0 |
+
+Keelokit's stories are built one at a time (`[run] build = "serial"` here, and almost all of them touch
+`ledger.py` or the doctor); their waves are 5 to 19 so no two share one (LEDGER-015 is wave 9).
+
+### Versions and compatibility
+
+| Version | Brings | Needs | On upgrade |
+|---|---|---|---|
+| Keelokit 0.15.0 | LEDGER-001..007, LEDGER-015 | — | `harness-upgrade`; write `[ledger] since`; choose `[ledger.approval] mode`; `ledger.py backfill --propose`, then the review |
+| Keelokit 0.16.0 | LEDGER-008..012 | 0.15.0 | `harness-upgrade` brings the hooks, the CI step and job, the deploy jobs; `enforce = "warn"`; CHANGELOG *Upgrading from 0.15.x* |
+| Harbor 0.6.0 | HRB-1..3 | Keelokit 0.16.0 for the new parts; with an older one it behaves as 0.5 | `claude plugin update`; the logbook stays `schema = 1` (`story` on workers is an optional key) |
+| Swarm: protocol v3, section 27 | SWM-1..3 | — unless SWM-1 finds that an unknown task field breaks older tools: then a new protocol version and `migrate` | update each swarm repo's template |
+| Keelokit 0.17.0 | LEDGER-013, 014 | Harbor 0.6.0, Swarm section 27 | `harness-upgrade` |
+
+Releases follow [releasing.md](releasing.md): a CHANGELOG line per story under `## Unreleased`,
+`scripts/release.sh X.Y.Z` only when Leo asks, the CI's "update from" row moved to the new tag. A scan
+finding from the plugin directory (the new hooks, the `core.hooksPath` change) gets a real fix or a line in
+the submission notes.
+
+### Measuring, switching to block, going back
+
+- Measured with `ledger.py check --json`: the share of unattributed commits on the trunk since `since`, the
+  error-level differences, and the hook's history time (it prints it).
+- `warn` → `block` after 14 days in a row with zero unattributed commits and zero error differences. The
+  doctor recommends it; a person decides, project by project.
+- Going back: `enforce = "warn"`; a dated LEDGER-1 exception in `exceptions.toml`; `snapshot = ""`; Harbor
+  and Swarm detect the ledger. A wrong correction row is cancelled with a `retract` row.
+
+## Decisions (taken by Leo on 2026-11-22)
+
+These change existing rules or invariants, so a person decided them (execution protocol: new invariants
+and product rules wait for the human). All five were accepted as proposed. INV-007 and INV-008 are in
+`docs/context/domain.md`; INV-005's new wording lands with LEDGER-003.
+
+1. **INV-005 changes.** Today: a story is done iff a commit reachable from `main` carries its `Story:`
+   trailer. Proposed: *a story is on the trunk iff a commit reachable from the trunk carries its `Story:`
+   trailer, or an approved correction names it, and no revert of that commit is on the trunk.*
+   (LEDGER-003, LEDGER-004) **Accepted.**
+2. **New invariants**, proposed for `docs/context/domain.md`:
+   - *INV-007: every commit that reaches the trunk after `[ledger] since` is attributed, by its own
+     trailers or by a merge that brings it — class: consistency.* (LEDGER-009, LEDGER-010)
+   - *INV-008: no row of `backlog/ledger-corrections.toml` already on the trunk changes or disappears —
+     class: consistency.* (LEDGER-004) **Both accepted.**
+3. **The SessionStart hook activates `core.hooksPath`.** Today the doctor says "a human runs
+   `git config core.hooksPath .githooks`". Every cloud session is a fresh clone, so without this the git
+   hooks never run there. Alternative: keep it human and rely on the pre-push and the CI. (LEDGER-009)
+   **Accepted: the hook turns them on.**
+4. **Corrections are accepted only by a person in their terminal** (like `guard-allow.toml` and Harbor's
+   `convoy approve`). (LEDGER-004) **Accepted, then widened the same day:** the person may delegate the
+   approval to agents with an adversarial review (`delegated` or `mixed`; LEDGER-015). `mixed` is the
+   recommended mode for projects with critical areas.
+5. **TRACE-1 and INV-1 skip reconstructed stories**, which predate those rules. (LEDGER-006) **Accepted.**
+
+## How to launch
+
+Order: phase 0 → gate → phase 1 → gate → release 0.15.0 → phase 2 → gate → release 0.16.0 → phase 3.
+Swarm's SWM-1..3 can start any time; Harbor's HRB-1 waits for Keelokit 0.16.0.
+
+**Keelokit (this repo).** One session per story, in order (the decisions above are taken). The prompt,
+and nothing more about process:
+
+```
+Read .keelokit/harness/agent-brief.md and docs/ledger.md, then /keelokit:build-story LEDGER-001.
+```
+
+Title it with `python3 .keelokit/bin/status.py title LEDGER-001`. `/keelokit` and `doctor.py --brief` say
+which story is ready next. `[run] mode = "step"` stops after each story for Leo's review.
+
+**Harbor.** A session in `leosimini/keelokit-harbor`:
+
+```
+Read docs/ledger-phase6.md and docs/design.md, then build HRB-1 (and only HRB-1): tests in tests/test_phase6.py first, then the code, then docs and CHANGELOG. Verify with python3 -m unittest discover -s tests and scripts/test-with-keelokit.sh.
+```
+
+**Swarm.** The project's own swarm builds it: in `leosimini/enjambre-dev`, a session publishes SWM-1, then
+SWM-2 and SWM-3, with the task texts in `docs/ledger-refs.md` of `leosimini/enjambre` (`swarm-ask`), or one
+session builds them in order following that file.
+
+**JOUNA, now and independent of Keelokit.** A session in that repo, in Spanish:
+
+```
+Lee el documento «Registro de historias y entregas de JOUNA» y hacé solo su fase 0: un hook de inicio que corra git fetch --unshallow antes de leer cualquier estado; que el tablero marque un tren como zarpado por el commit aplastado con la línea «Tren: N» en su mensaje; y cerrar las filas viejas T18, T23, T24, T26, T28 y T29. Medí además cuánto tarda en un clon nuevo `git fetch --filter=blob:none --unshallow origin main` y `git fetch --unshallow origin main`, y anotá los dos tiempos.
+```
+
+## Out of scope, on purpose
+
+- GitHub Issues, Projects and the deployments API: nothing the agents need. A mirror can be added later on
+  top of `ledger.py --json` without touching any of this.
+- Project-level hooks in `.claude/settings.json` or `.codex/hooks.json`: opening a repo would run its code
+  unchecked, against what HARN-004 is after. Accounts that work on a Keelokit project install the plugin;
+  Swarm asks for it with `requires`.
+- Reading the swarm repo from the ledger.
+- Rewriting `main`'s history: what is missing is fixed with new rows, never by editing commits.
+- Judging the quality of the why: the hooks make sure the body exists; whether it is useful is the
+  reviewer's call in `build-story`.
+- A lock without Harbor: without it, `in-progress` is a signal, and two sessions can take the same story
+  (`check` shows it).
+- The ledger in projects without Keelokit: a fleet that uses only Harbor's session layer has no stories.
+- Other CI systems: the template ships GitHub Actions; the job and its permissions for another CI are
+  written apart.
