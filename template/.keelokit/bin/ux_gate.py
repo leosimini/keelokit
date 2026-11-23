@@ -11,12 +11,15 @@ verify`, the pre-push hook and CI all stop a branch that fails.
 A branch "changes the interface" when it touches a file matching `ui_paths` that no `exempt_paths`
 glob excuses. It then needs, for every piece under `<evidence_dir>/<piece>/` touched on the
 branch (and at least one): a capture `<surface>-<width>-<theme>-<state>.png` for every configured surface, width and
-theme, and a non-empty `CRITIQUE.md` holding every required section. Or a commit message line
+theme, and a non-empty `CRITIQUE.md` holding every required section and, unless `critique_skills` is
+empty, a `## Skills` section with one `### <skill id>` subsection per listed skill, each with a line
+`Ran: YYYY-MM-DD` and every P0/P1/P2 finding (a list item starting `P1`…) ending `— fixed in <commit or
+file>` or `— decided: <reason>` (docs/ux-quality.md §4). Or a commit message line
 `ux-gate: n/a — <reason>` (reason mandatory); the gate then passes and says so.
 Exit 0 pass or not applicable, 1 fail, 2 cannot tell (no main to compare with)."""
 from __future__ import annotations
 
-import fnmatch
+import datetime
 import re
 import subprocess
 import sys
@@ -35,6 +38,7 @@ DEFAULTS = {
     "critique_file": "CRITIQUE.md",
     "critique_sections": ["Journey", "Design critique", "Consistency and coherence", "Real device"],
     "capture_ext": ["png"],
+    "critique_skills": ["design:design-critique", "design:ux-copy", "design:accessibility-review"],
 }
 MARKER = re.compile(r"(?mi)^ux-gate:\s*n/a\s*[—–-]+\s*(\S.*)$")
 
@@ -89,6 +93,62 @@ def expected_captures(cfg: dict) -> list[str]:
     return [f"{s}-{w}" + (f"-{t}" if t else "") for s in cfg["surfaces"] for w in cfg["widths"].get(s, []) for t in themes]
 
 
+HEADING = re.compile(r"(?m)^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
+RAN = re.compile(r"(?mi)^[ \t]*(?:[-*+][ \t]+)?\**Ran:\**[ \t]*(\d{4}-\d{2}-\d{2})\b")
+FINDING = re.compile(r"(?m)^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\**(P\d)\b\**(.*)$")
+# The item ends with a dash, then "fixed in <x>" or "decided: <reason>" (a reason may hold dashes).
+RESOLUTION = re.compile(r"(?i)(?:[—–]|(?:^|\s)-{1,2})\s*(?:fixed in\s+[^\s—–][^—–]*|decided:\s*\S.*)$")
+
+
+def sections(text: str, name: str) -> list[tuple[int, str]]:
+    """(level, body) of every heading called `name`; a body runs to the next heading of its level or higher."""
+    heads = [(m.start(), m.end(), len(m.group(1)), m.group(2).strip().strip("`").strip()) for m in HEADING.finditer(text)]
+    out = []
+    for i, (_, end, level, title) in enumerate(heads):
+        if title.lower() == name.lower():
+            stop = next((s for s, _, lv, _ in heads[i + 1:] if lv <= level), len(text))
+            out.append((level, text[end:stop]))
+    return out
+
+
+def resolved(rest: str) -> bool:
+    """A finding is resolved when it ends `— fixed in <x>` or `— decided: <reason>` (`-` or `–` will do)."""
+    return bool(RESOLUTION.search(rest))
+
+
+def skills_problems(text: str, skills: list[str], where: str) -> list[str]:
+    """What the critique's `## Skills` section lacks (FLEET-004): a subsection per skill, its date, and
+    a fix or a decision for every P0, P1 and P2 finding. Shape only: the reviewer judges the content."""
+    if not skills:
+        return []
+    found = sections(text, "Skills")
+    if not found:
+        return [f'{where} lacks the section "Skills" (one "### <skill id>" subsection per skill the critique ran: '
+                f'{", ".join(skills)}; see docs/ux-quality.md §4)']
+    level, body = found[0]
+    problems = []
+    for skill in skills:
+        subs = [b for lv, b in sections(body, skill) if lv > level]
+        if not subs:
+            problems.append(f'{where}, Skills: no "### {skill}" subsection (run the skill and record what it found)')
+            continue
+        sub = subs[0]
+        dates = RAN.findall(sub)
+        try:
+            ok = bool(dates) and bool(datetime.date.fromisoformat(dates[0]))
+        except ValueError:
+            ok = False
+        if not ok:
+            problems.append(f'{where}, {skill}: no "Ran: YYYY-MM-DD" line saying when the skill ran')
+        for prio, rest in FINDING.findall(sub):
+            if prio in ("P0", "P1", "P2") and not resolved(rest):
+                item = f"{prio}{rest}".strip()
+                item = item if len(item) <= 90 else item[:87] + "…"
+                problems.append(f'{where}, {skill}: open finding "{item}" — end it with "— fixed in <commit or file>" '
+                                'or "— decided: <reason>"')
+    return problems
+
+
 def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
     """What a piece's folder lacks. `files` are the piece's files on disk, relative to its folder."""
     problems = []
@@ -105,6 +165,7 @@ def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
         for sec in cfg["critique_sections"]:
             if not re.search(rf"(?mi)^#+\s*{re.escape(sec)}\b", text):
                 problems.append(f"{piece}: {cfg['critique_file']} lacks the section \"{sec}\"")
+        problems += skills_problems(text, cfg["critique_skills"], f"{piece}: {cfg['critique_file']}")
     return problems
 
 
