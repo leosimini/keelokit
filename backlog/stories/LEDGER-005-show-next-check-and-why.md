@@ -83,9 +83,10 @@ Decided (smallest option consistent with the story and docs/ledger.md; the coord
   (`HISTORY_INCOMPLETE`, `CORRECTION_*`, `PENDING_REVIEW`) and their exit codes: a stale branch does not turn the
   summary's exit into 1. `check` exits 1 on an error-level difference, 0 on warnings only (S6).
 - The attribution codes read the trunk commits after `[ledger] since` (not reachable from it): `UNATTRIBUTED` (no
-  `Story:`/`Part-of:`/`No-story:` of its own nor on the first-parent commit that brought it, as LEDGER-003's count),
+  `Story:`/`Part-of:`/`No-story:` of its own nor on the first-parent commit that brought it, as LEDGER-003's count;
+  a merge with none is attributed when every non-merge commit it brings in is, ESC-130..132),
   `SQUASH_LOST_TRAILERS` (such a commit whose message has `Story:`/`Part-of:` lines git does not read as trailers:
-  a squash's body; reported instead of `UNATTRIBUTED`), `BAD_CATEGORY` (a `No-story:` whose category, the text
+  a squash's body, or a line outside the last paragraph; reported instead of `UNATTRIBUTED`; ESC-133), `BAD_CATEGORY` (a `No-story:` whose category, the text
   before the first space, dash of any kind or colon, compared as written, is not in `[ledger] no_story`; an empty
   `No-story:` is only `UNATTRIBUTED`), `STORY_NO_BODY` (a `Story:` commit with no
   line outside its subject paragraph and its trailer paragraph; git's `(cherry picked from commit …)` line counts as a
