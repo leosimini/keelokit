@@ -1,5 +1,5 @@
 # Deploy
 
 ## staging
-- [x] Account
-- [ ] Domain
+- [x] Fly.io account
+- [ ] Domain and HTTPS

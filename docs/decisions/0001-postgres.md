@@ -1,3 +1,0 @@
-# Use Postgres
-
-Status: Accepted
