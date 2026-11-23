@@ -1418,6 +1418,24 @@ class LedgerBudgetTest(LedgerCase):
         self.assertNotIn("PERF-1000", r.stdout, "v1.0.0 already had it")
 
 
+    def test_LEDGER_005_nfr_ESC_122_the_read_does_not_grow_as_stories_times_commits(self):
+        """The 700-story read costs about what the 7-story read of the same 10 000 commits costs (a scan of the
+        trunk log per story made it five times slower)."""
+        def best(state: str) -> float:
+            self.repo.state(state)
+            try:
+                times = []
+                for _ in range(3):
+                    start = time.monotonic()
+                    r = self.repo.ledger("next")
+                    times.append(time.monotonic() - start)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                return min(times)
+            finally:
+                self.repo.state("")
+        few, many = best('[ledger]\nstories = "few/*.md"\n'), best("")
+        self.assertLess(many, 2.5 * few + 0.3, f"700 stories took {many:.2f}s, 7 stories {few:.2f}s")
+
 # ─────────────── LEDGER-003 round 1: review and breaker findings (ESC-063..065, 080, 081) ───────────────
 
 
@@ -4007,6 +4025,108 @@ class LedgerReleaseTest(LedgerCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("v9.9.9", r.stdout + r.stderr)
         self.assertNotIn("Traceback", r.stderr)
+
+
+
+class LedgerRound1Test(LedgerCase):
+    """LEDGER-005 round 1: the review's and the breaker's findings (ESC-121..127), each first as a failing test."""
+
+    def test_LEDGER_005_S8_ESC_121_a_value_with_newlines_does_not_escape_the_60_line_bound(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("UXC-113")
+        old = repo.commit("feat: the old export\n\nNo-story: docs")
+        repo.commit("chore: corrections\n\nNo-story: docs", {CORR: corrections(toml_row(commit=old, evidence="x\n" * 100))})
+        repo.publish()
+        lines = show(self, repo, "UXC-113").splitlines()
+        self.assertLessEqual(len(lines), 60, "\n".join(lines))
+
+    def test_LEDGER_005_S4_ESC_126_next_fails_closed_when_a_story_is_unknown(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1", "A-2")
+        repo.publish()
+        clone = self.tmp / "partial"
+        repo.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{repo.bare}", str(clone)], self.tmp)
+        part = GitRepo(self.tmp, existing=clone)
+        r = part.ledger("next")
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("A-1", r.stdout + r.stderr, "the unknown stories are named, never silently left out")
+
+    def test_LEDGER_005_S5_ESC_123_a_trailer_value_that_is_not_an_id_is_unknown_story(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        lower = repo.commit("x\n\nbody\n\nStory: a-1")
+        tbd = repo.commit("y\n\nbody\n\nPart-of: TBD")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        data = ledger_check(self, repo)
+        self.assertIn(lower[:7], details(data, "UNKNOWN_STORY"))
+        self.assertIn(tbd[:7], details(data, "UNKNOWN_STORY"))
+        self.assertIn("UNKNOWN_STORY", codes(data, "error"))
+
+    def test_LEDGER_005_S7_ESC_124_release_lists_a_story_that_entered_and_was_reverted_later(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        done = repo.commit("feat: A-1\n\nWhy.\n\nStory: A-1")
+        repo.tag("v1.0.0")
+        repo.revert(done)
+        repo.publish()
+        repo.git("push", "-q", "origin", "--tags")
+        r = repo.ledger("--release", "v1.0.0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("A-1", r.stdout)
+        self.assertIn("1 story", r.stdout, "singular")
+
+    def test_LEDGER_005_S5_ESC_125_a_squash_that_lost_its_story_line_behind_a_part_of_is_reported(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        squash = repo.commit("Add login (#12)\n\n* land login\n\ndecided X\n\nStory: A-1\n\n* fix typo\n\nPart-of: A-1")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        data = ledger_check(self, repo)
+        self.assertIn(squash[:7], details(data, "SQUASH_LOST_TRAILERS"))
+
+    def test_LEDGER_005_S1_ESC_127_show_prints_no_terminal_control_characters(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        repo.commit("evil \x1b]0;PWNED\x07 subj\n\nbody \x1b[2J here\n\nStory: A-1")
+        repo.publish()
+        out = show(self, repo, "A-1")
+        self.assertFalse(re.search(r"[\x00-\x08\x0b-\x1f\x7f]", out), repr(out))
+        self.assertIn("subj", out)
+
+    def test_LEDGER_005_logic_round_1_minor_findings(self):
+        """A plain hyphen ends a No-story category; an empty No-story is only UNATTRIBUTED; a multi-line subject and
+        git's own trailer-block lines are not a body."""
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1", "A-2")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        repo.commit("docs: typo\n\nNo-story: docs-typo")
+        empty = repo.commit("chore: x\n\nNo-story:")
+        picked = repo.commit("feat: A-1\n\nStory: A-1\n(cherry picked from commit " + "a" * 40 + ")")
+        two = repo.commit("feat: A-2\nsecond subject line\n\nStory: A-2")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error").count("BAD_CATEGORY"), 0, data["diffs"])
+        self.assertIn(empty[:7], details(data, "UNATTRIBUTED"))
+        self.assertIn(picked[:7], details(data, "STORY_NO_BODY"))
+        self.assertIn(two[:7], details(data, "STORY_NO_BODY"))
+
+    def test_LEDGER_005_dx_show_names_a_candidate_only_without_a_version(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        repo.commit("feat: A-1\n\nWhy.\n\nStory: A-1")
+        repo.tag("v1.0.0")
+        repo.commit("docs: x\n\nNo-story: docs")
+        repo.tag("v1.1.0-rc.1")
+        repo.publish()
+        repo.git("push", "-q", "origin", "--tags")
+        out = show(self, repo, "A-1")
+        self.assertIn("v1.0.0", out)
+        self.assertNotIn("v1.1.0-rc.1", out)
 
 
 if __name__ == "__main__":
