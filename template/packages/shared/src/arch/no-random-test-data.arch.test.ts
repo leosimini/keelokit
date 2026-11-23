@@ -69,4 +69,25 @@ describe('no-random-test-data on fixtures', () => {
     ]);
     expect(randomTestData(dir)).toEqual([]);
   });
+
+  it('FLEET-003.S3 every unseeded random source fails', () => {
+    put('src/sources.test.ts', [
+      'const a = uuidv4();',
+      'const b = nanoid();',
+      'const c = randomInt(100);',
+      "const d = randomBytes(8).toString('hex');",
+      'const e = crypto.getRandomValues(new Uint8Array(4));',
+    ]);
+    expect(randomTestData(dir)).toEqual([1, 2, 3, 4, 5].map((n) => `src/sources.test.ts:${n}`));
+  });
+
+  it('FLEET-003.S3 a localized faker needs its own seed, with a value, in code', () => {
+    const use = (gen: string) => `export const name = () => ${gen}.person.firstName();`;
+    put('src/de.test.ts', ["import { fakerDE } from '@faker-js/faker';", use('fakerDE')]);
+    put('src/no-arg.test.ts', ['faker.seed();', use('faker')]);
+    put('src/comment.test.ts', ['// faker.seed(1)', use('faker')]);
+    put('src/seeded-de.test.ts', ['fakerDE.seed(7);', use('fakerDE')]);
+    const files = randomTestData(dir).map((at) => at.split(':')[0]);
+    expect(files.sort()).toEqual(['src/comment.test.ts', 'src/de.test.ts', 'src/no-arg.test.ts']);
+  });
 });

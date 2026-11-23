@@ -243,6 +243,39 @@ class StableTestsTest(unittest.TestCase):
                 r = self.flaky(*args)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_FLEET_003_S5_counts_and_seeds_are_decimal_never_octal(self):
+        """FLEET-003.S5: bash reads 08 as octal and stops; -n 08, -n 010 and --seed 08 are 8, 10 and 8."""
+        r = self.flaky("-n", "3", "--seed", "08", "--", "false")
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        self.assertEqual([int(seed) for _, seed, *_ in self.FAILED.findall(out)], [8, 9, 10], out)
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "runs.log"
+            cmd = ["sh", "-c", f'echo "$FLAKY_RUN" >>"{log}"']
+            for count, runs in (("08", 8), ("010", 10)):
+                with self.subTest(n=count):
+                    log.unlink(missing_ok=True)
+                    r = self.flaky("-n", count, "--", *cmd)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertEqual(len(log.read_text().split()), runs)
+
+    @unittest.skipUnless(Path("/usr/share/zoneinfo/UTC").exists(), "no zoneinfo to check a zone against")
+    def test_FLEET_003_S5_an_unknown_zone_is_refused_before_any_run(self):
+        """FLEET-003.S5: a misspelled zone runs under UTC and passes without testing the edge, and
+        `*` must not be glob-expanded into file names (a file named UTC turns it into a real zone)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "ran"
+            (Path(tmp) / "UTC").write_text("")
+            cmd = ["sh", "-c", f'touch "{marker}"']
+            for zones, named in (("UTC Pacific/Aukland", "Pacific/Aukland"), ("*", "*")):
+                with self.subTest(tz=zones):
+                    r = subprocess.run(["bash", str(self.FLAKY), "-n", "1", "--tz", zones, "--", *cmd],
+                                       capture_output=True, text=True, env={**os.environ, "TZ": "UTC"},
+                                       cwd=tmp, stdin=subprocess.DEVNULL, timeout=60)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn(named, r.stderr)
+                    self.assertFalse(marker.exists(), f"--tz {zones!r}: a run started before refusing")
+
     def test_FLEET_003_S6_the_template_ships_the_arch_specs_byte_for_byte(self):
         """FLEET-003.S6: every file in references/arch-specs/ but README.md is in the template's
         packages/shared/src/arch/, identical, so a generated project's verify runs them."""
