@@ -108,7 +108,9 @@ a question to the user. Don't guess product rules. An invariant the story needs 
 
 Delegate to `verifier` (mode A). Its tests fail for the right reason before any code exists,
 cover every scenario and every invariant with the kind of test its class calls for, and are
-committed first on the story branch as `test(<ID>): acceptance tests`.
+committed first on the story branch as `test(<ID>): acceptance tests`. Point it, and any other
+agent that writes tests, at `${CLAUDE_PLUGIN_ROOT}/references/stable-tests.md`: the eleven rules
+that keep a test from failing one run in fifty.
 
 ## 4. Implement — builder
 
@@ -169,8 +171,9 @@ builder.
    the agent brief's convoy landing. Verify the branch with a plain `pnpm verify` (step 2: the scope
    of `--since origin/main`, but sealed, so the branch push doesn't repeat it); report the branch,
    the full hash, the tier (trivial/light/full) and the verify result.
-   A test that fails intermittently while you land is a race: find the cause (FLAKY-1), never a
-   longer timeout, a retry or a skip.
+   A test that fails intermittently while you land is a race: reproduce it with
+   `.keelokit/bin/flaky.sh` and find the cause (FLAKY-1, stable-tests rule 9), never a longer
+   timeout, a retry or a skip.
 6. `python3 .keelokit/bin/doctor.py` passes: TRACE-1 now checks this story's scenarios and INV-1
    its invariants.
 
