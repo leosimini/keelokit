@@ -86,9 +86,12 @@ Decided (smallest option consistent with the story and docs/ledger.md; the coord
   `Story:`/`Part-of:`/`No-story:` of its own nor on the first-parent commit that brought it, as LEDGER-003's count),
   `SQUASH_LOST_TRAILERS` (such a commit whose message has `Story:`/`Part-of:` lines git does not read as trailers:
   a squash's body; reported instead of `UNATTRIBUTED`), `BAD_CATEGORY` (a `No-story:` whose category, the text
-  before the first space, dash or colon, is not in `[ledger] no_story`), `STORY_NO_BODY` (a `Story:` commit with no
-  line outside its subject line and its trailer paragraph). `UNKNOWN_STORY` (a `Story:`/`Part-of:` id with no story
-  file on the trunk) reads the same range, or every trunk commit when there is no `since`; skipped while a story
+  before the first space, dash of any kind or colon, compared as written, is not in `[ledger] no_story`; an empty
+  `No-story:` is only `UNATTRIBUTED`), `STORY_NO_BODY` (a `Story:` commit with no
+  line outside its subject paragraph and its trailer paragraph; git's `(cherry picked from commit …)` line counts as a
+  trailer). A `Story:` line git did not read as a trailer is `SQUASH_LOST_TRAILERS` even when the commit is
+  attributed otherwise (ESC-125). `UNKNOWN_STORY` (a `Story:`/`Part-of:` id with no story file on the trunk, or a
+  value that is not an id at all, ESC-123) reads the same range, or every trunk commit when there is no `since`; skipped while a story
   file is unreadable. Errors under `enforce = "block"` (the default), warnings under `"warn"`.
 - `DONE_TWICE`: a known story whose live `Story:` commits arrived on the trunk through more than one first-parent
   commit (two commits of one merged branch are one delivery). `STALE_BRANCH`: once per in-progress story with the
@@ -104,20 +107,33 @@ Decided (smallest option consistent with the story and docs/ledger.md; the coord
   body (6 lines each unless `--full`), attempts, active correction rows, `docs/escapes.md` table rows and
   `docs/bugbash/**/*.md` lines that name the id, and bug-bash headings and escape rows that name a `Finding:` id of
   its commits. Without `--full` lines are cut at 200 characters and the card at 60 lines, the last one saying
-  `ledger.py show <ID> --full`. Exit 1 for an id that is not a story; with a cut history only the header and the
+  `ledger.py show <ID> --full`. A value with newlines prints as several lines inside the bound (ESC-121) and
+  terminal control characters are replaced by `?`, with `--full` too (ESC-127). A candidate is shown only for a
+  story with no version yet. Exit 1 for an id that is not a story; with a cut history only the header and the
   file (the facts are unknown). Convoy events wait for LEDGER-013.
 - Attempts: `Dropped: <ID>` commits off the trunk on origin branches, and on the trunk (named by the trunk), fill
   the story's `attempts` in `--json` (`commit`, `branches`, `date`, `reason`: the body, else the subject). A
   `Dropped:` commit does not end `in-progress` here: LEDGER-008 (`drop`) owns that.
 - `next`: the `ready` stories (in-progress already wins over ready), by wave (none last) then epic and number.
-  With a cut history it prints the reason and exits 1.
-- `--release vX.Y.Z`: the stories whose commit (`Story:`, or a correction's) is reachable from the tag and not from
+  With a cut history, or any story `unknown` (a partial clone lacking story blobs), it names them with the reason
+  and exits 1 (ESC-126).
+- `--release vX.Y.Z`: the stories with a commit (`Story:`, reverted later or not (ESC-124), or an active
+  correction's) reachable from the tag and not from
   the previous final version tag in version order (rc tags are never the previous one); the first version takes
   everything before it. An unknown or non-version tag exits 1.
 - The trunk log carries every trailer (`%(trailers:only,unfold)`) and the branch log the `Dropped:` trailer and the
   body: still one call each, so the S10 budget holds (`show` adds one `cat-file` for the story file, escapes and
   bug-bash files).
 - docs/ledger.md joined the touches for its "built so far" line.
+
+Left as they are, after review: `DONE_TWICE` also fires when one branch lands two `Story:` commits by a fast-forward
+or rebase (no merge commit to group them: this repo's HARN-009/017/019 follow-up fixes); a `since` that names no
+single commit turns the attribution codes off without a difference, as LEDGER-003's count; `check` in a shallow clone
+gives `HISTORY_INCOMPLETE` as a warning and exits 0 outside CI (the table's level; `--ci` and the CI make it an
+error); `show` does not say that escapes or bug-bash files are absent from a partial clone; a finding only in a
+report table (not a heading) is found by `Finding:` only if the row also names the story.
+
+Review and attack: a reviewer and a breaker, one round (ESC-121..127, each reproduced first as a failing test).
 
 On this repo (no `[ledger] since` yet) `check` reports `UNKNOWN_STORY` on the ESC-090 junk commits on main
 (`AUTH-001`, `A-001`, `PAY-001`, …) and `DONE_TWICE` for HARN-009, HARN-017 and HARN-019: writing `since` (the

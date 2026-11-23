@@ -270,8 +270,9 @@ SHOW_WIDTH = 200
 ESCAPES = "docs/escapes.md"
 BUGBASH = "docs/bugbash/"
 ADDENDUM_HEADING = re.compile(r"#{1,6}\s+Addendum\b")
-SQUASHED_TRAILER = re.compile(r"(?im)^[\s*-]*(?:Story|Part-of):\s*[A-Z][A-Z0-9]*-[0-9]+")
-TRAILER_LINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*:\s")
+SQUASHED_TRAILER = re.compile(r"(?m)^[ \t*-]*((?i:story|part-of)):[ \t]*([A-Z][A-Z0-9]*-[0-9]+)")
+TRAILER_LINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*:|\(cherry picked from commit ")
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
 CORRECTIONS = "backlog/ledger-corrections.toml"
 PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
@@ -670,8 +671,8 @@ def split_message(message: str, trailers: list) -> tuple[str, list[str]]:
     paragraphs = [p for p in re.split(r"\n[ \t]*\n", message.replace("\r\n", "\n").strip("\n")) if p.strip()]
     if not paragraphs:
         return "", []
-    first = paragraphs[0].split("\n")
-    body = first[1:]
+    subject = " ".join(line.strip() for line in paragraphs[0].split("\n") if line.strip())
+    body: list[str] = []
     rest = paragraphs[1:]
     last = rest.pop().split("\n") if trailers and rest else []
     for p in rest:
@@ -679,7 +680,7 @@ def split_message(message: str, trailers: list) -> tuple[str, list[str]]:
     body += [line for line in last if line.strip() and not TRAILER_LINE.match(line) and not line[:1].isspace()]
     while body and not body[0].strip():
         body.pop(0)
-    return first[0].strip(), [line.rstrip() for line in body]
+    return subject, [line.rstrip() for line in body]
 
 
 def read_branches(trunk_sha: str, refs: dict, graph: dict, on_trunk: set) -> dict[str, dict]:
@@ -955,6 +956,10 @@ def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], 
     for row in corrections["active"]:
         rows.setdefault(row["story"], []).append(row)
     records = {s["id"]: new_story(s) for s in stories}
+    trunk_dropped: dict[str, list[dict]] = {}  # built once: a scan of the log per story grows as stories x commits
+    for c in log:
+        for sid in set(trailer_ids(c["trailers"], "Dropped")):
+            trunk_dropped.setdefault(sid, []).append(c)
     for sid, rec in records.items():
         rec["reverted"] = sid in all_reverted
         if sid in commits:
@@ -970,7 +975,7 @@ def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], 
             else:
                 rec["reverted"] = True
         rec["branches"] = sorted(branches[sid]["branches"]) if sid in branches else []
-        rec["attempts"] = attempts_of(sid, branches.get(sid), log, trunk)
+        rec["attempts"] = attempts_of(sid, branches.get(sid), trunk_dropped, trunk)
     if corrections["unreadable"]:
         for rec in records.values():
             if not rec["commit"]:
@@ -984,11 +989,11 @@ def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], 
     return list(records.values())
 
 
-def attempts_of(sid: str, entry: dict | None, log: list[dict], trunk: str) -> list[dict]:
+def attempts_of(sid: str, entry: dict | None, trunk_dropped: dict, trunk: str) -> list[dict]:
     """The story's abandoned attempts: `Dropped: <ID>` commits on any origin branch (the trunk too), oldest first,
     with the branches that hold them and the reason (the commit's body, else its subject)."""
     found = [(c, held_by(c)) for c in (entry or {}).get("dropped", [])]
-    found += [(c, [trunk]) for c in log if sid in trailer_ids(c["trailers"], "Dropped")]
+    found += [(c, [trunk]) for c in trunk_dropped.get(sid, ())]
     attempts = []
     for c, held in sorted(found, key=lambda x: (x[0]["ct"], x[0]["sha"])):
         subject, body = split_message(c["message"], c["trailers"])
@@ -2104,8 +2109,8 @@ def since_range(cfg: dict, log: list[dict], graph: dict) -> list[dict] | None:
 
 
 def category(value: str) -> str:
-    """The category of a `No-story:` value: what comes before the first space, dash or colon."""
-    return re.split(r"[\s—–:,]", value.strip(), maxsplit=1)[0].strip()
+    """The category of a `No-story:` value: what comes before the first space, dash (any) or colon."""
+    return re.split(r"[\s—–:,-]", value.strip(), maxsplit=1)[0].strip()
 
 
 def attribution_diffs(ctx: dict) -> list[dict]:
@@ -2126,19 +2131,27 @@ def attribution_diffs(ctx: dict) -> list[dict]:
         if ctx["unreadable"]:
             break  # an unreadable story file may hold the id
         unknown = sorted({i for i in c["story"] + c["part_of"] if i not in known})
+        junk = sorted({p.strip() for key in ("Story", "Part-of") for v in trailer_values(c["trailers"], key)
+                       for p in v.split(",") if not STORY_ID.fullmatch(p.strip())})
         if unknown:
             add("UNKNOWN_STORY", c, f"names {', '.join(unknown)}, which no story file of the trunk has")
+        if junk:
+            add("UNKNOWN_STORY", c, f"Story:/Part-of: {', '.join(map(repr, junk))} is not an id (EPIC-NNN)")
     if in_range is None:
         return diffs
     by_sha, arrival = {c["sha"]: c for c in log}, ctx["placed"][0]
     for c in reversed(in_range):
+        lost = [i for key, i in SQUASHED_TRAILER.findall(c["message"]) if key.lower() == "story" and i not in c["story"]]
+        if lost and (c["attributed"] or by_sha[arrival[c["sha"]]]["attributed"]):
+            add("SQUASH_LOST_TRAILERS", c, f"its body has Story: {', '.join(sorted(set(lost)))}, which git does not "
+                "read as a trailer (a squash that lost its branch's trailers)")
         if not c["attributed"] and not by_sha[arrival[c["sha"]]]["attributed"]:
             if SQUASHED_TRAILER.search(c["message"]):
                 add("SQUASH_LOST_TRAILERS", c, "its body has Story:/Part-of: lines git does not read as trailers "
                     "(a squash that lost its branch's trailers)")
             else:
                 add("UNATTRIBUTED", c, "no Story:, Part-of: or No-story:, and no merge that brings it has one")
-        bad = [v for v in trailer_values(c["trailers"], "No-story") if category(v) not in cfg["no_story"]]
+        bad = [v for v in trailer_values(c["trailers"], "No-story") if v.strip() and category(v) not in cfg["no_story"]]
         if bad:
             add("BAD_CATEGORY", c, f"No-story: {bad[0]!r} is not one of [ledger] no_story ({', '.join(cfg['no_story'])})")
         if c["story"] and not split_message(c["message"], c["trailers"])[1]:
@@ -2220,16 +2233,17 @@ SHOW_LABELS = {
            "attempts": "attempts (Dropped:)", "corrections": "corrections", "escapes": "escapes", "findings": "findings",
            "none": "no commits yet", "more": "more lines: `ledger.py show {id} --full`", "on": "on",
            "body_more": "more lines: git show {sha}", "no_story": "no story {id} among the stories of the trunk",
-           "ready_none": "no story is ready", "wave": "wave", "release": "{tag} (after {prev}): {n} stories",
-           "release_first": "{tag} (from the start): {n} stories", "no_tag": "no version tag {tag}",
+           "ready_none": "no story is ready", "wave": "wave", "release": "{tag} (after {prev}): {n} {stories}",
+           "release_first": "{tag} (from the start): {n} {stories}", "story_one": "story", "story_many": "stories", "no_tag": "no version tag {tag}",
            "session": "session"},
     "es": {"state": "estado", "since": "desde", "approx": "aproximada", "exact": "exacta", "version": "versión",
            "candidate": "candidata", "branches": "ramas", "file": "archivo", "commits": "commits",
            "attempts": "intentos (Dropped:)", "corrections": "correcciones", "escapes": "escapes",
            "findings": "hallazgos", "none": "todavía sin commits", "more": "líneas más: `ledger.py show {id} --full`",
            "on": "en", "body_more": "líneas más: git show {sha}", "no_story": "no hay historia {id} en el trunk",
-           "ready_none": "ninguna historia está lista", "wave": "ola", "release": "{tag} (después de {prev}): {n} historias",
-           "release_first": "{tag} (desde el principio): {n} historias", "no_tag": "no hay tag de versión {tag}",
+           "ready_none": "ninguna historia está lista", "wave": "ola", "release": "{tag} (después de {prev}): {n} {stories}",
+           "release_first": "{tag} (desde el principio): {n} {stories}", "story_one": "historia",
+           "story_many": "historias", "no_tag": "no hay tag de versión {tag}",
            "session": "sesión"},
 }
 BODY_LINES = 6
@@ -2274,8 +2288,8 @@ def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
         lines.append(f"  {rec['reason']}")
     facts = []
     if rec["version"] or rec["candidate"]:
-        facts.append(f"{t['version']}: {rec['version'] or '—'}" + (f" ({t['candidate']} {rec['candidate']})"
-                                                                     if rec["candidate"] else ""))
+        facts.append(f"{t['version']}: {rec['version']}" if rec["version"]
+                     else f"{t['candidate']}: {rec['candidate']}")
     facts += [f"{env}: {short(head)}" for env, head in rec["environments"].items() if head]
     if facts:
         lines.append(" · ".join(facts))
@@ -2337,7 +2351,9 @@ def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
 
 
 def bounded(lines: list[str], sid: str, lang: str, full: bool) -> list[str]:
-    """At most SHOW_LINES lines of at most SHOW_WIDTH characters, the last saying how to see the rest."""
+    """At most SHOW_LINES lines of at most SHOW_WIDTH characters, the last saying how to see the rest. A value with
+    newlines becomes several lines and terminal control characters never reach the terminal (with --full too)."""
+    lines = [CONTROL.sub("?", part.replace("\t", " ")) for line in lines for part in line.replace("\r", "").split("\n")]
     if full:
         return lines
     lines = [line if len(line) <= SHOW_WIDTH else line[:SHOW_WIDTH - 1] + "…" for line in lines]
@@ -2370,6 +2386,11 @@ def cmd_next(state: dict) -> int:
     if ctx["reason"] is not None:
         print(f"Keelokit: {ctx['reason']}")
         return 1
+    unknown = [r for r in ctx["facts"]["stories"] if r["state"] == "unknown"]
+    if unknown:
+        print(f"Keelokit: {len(unknown)} stories are unknown, so what is ready cannot be said: "
+              f"{listed([r['id'] for r in unknown], 'more')} ({unknown[0]['reason']})")
+        return 1
     ready = sorted((r for r in ctx["facts"]["stories"] if r["state"] == "ready"),
                    key=lambda r: (r["wave"] is None, r["wave"] or 0, id_key(r["id"])))
     t = SHOW_LABELS[lang]
@@ -2398,9 +2419,14 @@ def cmd_release(state: dict, tag: str) -> int:
     previous = [(k, name, sha) for k, name, sha in tags if k[1] == 1 and k < key and name != tag]
     held = set(first_reach(ctx["graph"], [previous[-1][2]])) if previous else set()
     inside = set(first_reach(ctx["graph"], [refs[f"refs/tags/{tag}"]])) - held
-    stories = sorted((r for r in ctx["facts"]["stories"] if r["commit"] in inside), key=lambda r: id_key(r["id"]))
-    head = (t["release"].format(tag=tag, prev=previous[-1][1], n=len(stories)) if previous
-            else t["release_first"].format(tag=tag, n=len(stories)))
+    records = ctx["records"]
+    entered = {sid for c in ctx["log"] if c["sha"] in inside for sid in c["story"] if sid in records}
+    entered |= {r["story"] for r in ctx["corrections"]["active"] if r["commit"] in inside and r["story"] in records}
+    entered |= {sid for sid, r in records.items() if r["commit"] in inside}
+    stories = sorted((records[sid] for sid in entered), key=lambda r: id_key(r["id"]))
+    word = t["story_one"] if len(stories) == 1 else t["story_many"]
+    head = (t["release"].format(tag=tag, prev=previous[-1][1], n=len(stories), stories=word) if previous
+            else t["release_first"].format(tag=tag, n=len(stories), stories=word))
     print("\n".join([head, *(f"{r['id']}  {r['title']}" for r in stories)]))
     return 0
 
