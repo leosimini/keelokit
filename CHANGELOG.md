@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A session that starts in a shallow clone completes main's history before the doctor reads it.** The SessionStart
+  hook runs `ledger.py history --ensure` (commits only, 20 s at most); offline or slower than the cap it says so in one
+  line and goes on, with `git fetch --unshallow origin main` as the fix.
 - **A shallow clone no longer reports a low story count.** When the clone cuts main's history, the doctor and the
   dashboard say the done state is unknown (with the commits it has and `git fetch --unshallow origin main`) instead of
   counting fewer done stories; in CI the doctor fails with `fetch-depth: 0` as the fix.
