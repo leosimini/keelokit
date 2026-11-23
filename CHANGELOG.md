@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`ledger.py check` no longer flags GitHub's merge commits.** A merge with no trailer of its own ("Merge pull
+  request #N from …", a sync of the trunk into a branch) is attributed when every commit it brings in is; a merge
+  that brings an unattributed commit is still reported, with that commit. `SQUASH_LOST_TRAILERS` now says what is
+  wrong: the `Story:`/`Part-of:` line sits outside the message's last paragraph, the only one git reads trailers
+  from, and the fix is to put it in the same final paragraph as the other trailers.
+
 - **The design critique comes from the design skills, and the UX gate checks it (FLEET-004).** `CRITIQUE.md`
   gains a `## Skills` section: one `### <skill id>` subsection per skill in `critique_skills` (new in
   `.keelokit/ux.toml`; defaults `design:design-critique`, `design:ux-copy`, `design:accessibility-review`), each
@@ -14,6 +20,7 @@
   `critique_skills = [...]` under `[gate]` in `.keelokit/ux.toml` (`[]`, with the reason in a comment, when no
   design skills are available). A piece is checked when a branch that changes the interface touches it, so
   critiques already on main are not re-read until then.
+
 - **`ledger.py show`, `next`, `--release` and a complete `check` (LEDGER-005).** `ledger.py show <ID>` answers
   "where is this story and why did it end up that way" in at most 60 lines (`--full` for the rest): state and
   date, commits with subject, body and `Claude-Session:`, the story file's addendum headings, rows of
