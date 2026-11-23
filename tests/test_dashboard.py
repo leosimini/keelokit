@@ -885,6 +885,8 @@ class DashboardTest(unittest.TestCase):
         clone = where / "c"
         status = {x["id"]: x["status"] for x in self.ledger_state(clone)["stories"]}
         self.assertEqual(set(status.values()), {"unknown"}, status)
+        self.assertIn("ledger.py history --ensure", self.ledger_state(clone)["next"]["command"] + " ".join(
+            json.dumps(w) for w in self.ledger_state(clone)["waiting"]), "the ledger's fix, not a fetch of main")
         brief = sh(clone, "python3", ".keelokit/bin/doctor.py", "--brief")
         self.assertIn("Backlog: unknown, ", brief)
         out = self.status_py(clone)
@@ -899,6 +901,81 @@ class DashboardTest(unittest.TestCase):
         text = visible_text(self.ops("--lang", "en"))
         self.assertNotRegex(text, r"\b\d+ of 4 stor", "no count without the ledger")
         self.assertIn("ledger.py", text)
+
+    def test_LEDGER_006_S6_ESC_137_status_py_keeps_the_doctors_backlog_line_within_ten_lines(self):
+        self.ledger_fixture()
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where, True)
+        self.write("dirty.txt", "x")
+        for n in range(3):
+            sh(self.root, "git", "worktree", "add", "-q", str(where / f"w{n}"), "-b", f"w{n}")
+            (where / f"w{n}" / "dirty.txt").write_text("y")
+            sh(where / f"w{n}", "git", "commit", "-q", "--allow-empty", "-m", "wip")
+        lines = self.status_py().splitlines()
+        self.assertLessEqual(len(lines), 10, lines)
+        self.assertTrue(any("Backlog: 1/4 done" in l for l in lines), lines)
+        self.assertTrue(any(l.startswith("in progress elsewhere (ledger): AUTH-002") for l in lines), lines)
+
+    def test_LEDGER_006_S1_ESC_138_the_dashboard_reads_a_trunk_other_than_main(self):
+        self.ledger_fixture()
+        self.write(".keelokit/state.toml", (self.root / ".keelokit/state.toml").read_text() + '\n[ledger]\ntrunk = "develop"\n')
+        self.commit("chore: the trunk is develop\n\nNo-story: docs")
+        sh(self.root, "git", "branch", "-m", "main", "develop")
+        for ref in ("refs/remotes/origin/main",):
+            sh(self.root, "git", "update-ref", "-d", ref)
+        sh(self.root, "git", "update-ref", "refs/remotes/origin/develop", "develop")
+        s = self.state()
+        self.assertEqual({x["id"]: x["status"] for x in s["stories"]}["AUTH-001"], "done", s["stories"])
+        self.assertFalse(s["no_main"])
+
+    def test_LEDGER_006_S1_ESC_139_the_dashboard_matches_the_ledgers_ids_by_file(self):
+        self.ledger_fixture()
+        text = (self.root / "backlog/stories/AUTH-001-x.md").read_text().replace('id = "AUTH-001"', 'id = "AUTH-0001"')
+        (self.root / "backlog/stories/AUTH-001-x.md").write_text(text)
+        self.write(".keelokit/state.toml", (self.root / ".keelokit/state.toml").read_text() + '\n[ledger]\nid_from = "filename"\n')
+        self.commit("chore: ids from file names\n\nNo-story: docs")
+        sh(self.root, "git", "update-ref", "refs/remotes/origin/main", "main")
+        status = {x["id"]: x["status"] for x in self.state()["stories"]}
+        self.assertEqual(status["AUTH-0001"], "done", status)
+
+    def fake_ledger(self, facts: object) -> None:
+        self.write(".keelokit/bin/ledger.py", f"import sys\nsys.stdout.write({json.dumps(json.dumps(facts))})\n")
+
+    def test_LEDGER_006_S6_ESC_140_odd_ledger_json_is_unknown_never_a_crash(self):
+        self.ledger_fixture()
+        story = {"id": "AUTH-001", "state": "on-trunk", "branches": [], "version": None, "path": "backlog/stories/AUTH-001-x.md"}
+        cases = {
+            "diffs null": {"schema": 1, "history": "incomplete", "stories": [], "diffs": None},
+            "stories an object": {"schema": 1, "history": "complete", "stories": {}, "diffs": []},
+            "another schema": {"schema": 5, "history": "complete", "stories": [story], "diffs": []},
+            "a state it doesn't know": {"schema": 1, "history": "complete", "diffs": [], "stories": [{**story, "state": "frobbed"}]},
+        }
+        for why, facts in cases.items():
+            with self.subTest(why):
+                self.fake_ledger(facts)
+                self.assertEqual({x["status"] for x in self.state()["stories"]}, {"unknown"})
+                self.assertRegex(self.status_py(), r"in progress elsewhere \(ledger\): unknown")
+        # Odd values where a list or a text belongs: shown as nothing, never a crash.
+        self.fake_ledger({"schema": 1, "history": "complete", "diffs": None, "stories": [
+            {**story, "version": 5, "branches": 5},
+            {**story, "id": "AUTH-002", "path": "backlog/stories/AUTH-002-x.md", "state": "in-progress", "branches": "auth-002"},
+            {**story, "id": "AUTH-004", "path": "backlog/stories/AUTH-004-x.md", "state": "delivered"}]})
+        status = {x["id"]: x["status"] for x in self.state()["stories"]}
+        self.assertEqual((status["AUTH-001"], status["AUTH-002"], status["AUTH-004"]), ("done", "progress", "progress"))
+        self.assertIn("In progress", visible_text(self.ops("--lang", "en")))
+        self.page("--lang", "en")
+        out = self.status_py()
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn("a, u, t, h", out.replace("-", ", "))
+
+    def test_LEDGER_006_ESC_136_the_readers_parse_on_python_3_11(self):
+        """The scripts say 3.11+: a 3.12-only f-string (the same quote nested) is a SyntaxError there."""
+        py311 = shutil.which("python3.11")
+        for path in (DASHBOARD, DOCTOR, STATUS, DOCTOR.parents[3] / ".keelokit/bin/doctor.py"):
+            if py311:
+                r = subprocess.run([py311, "-c", "import ast, sys; ast.parse(open(sys.argv[1]).read())", str(path)],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, f"{path}: {r.stderr}")
 
     def test_LEDGER_001_S4_a_shallow_clone_shows_no_story_as_pending_for_lack_of_history(self):
         """main: plan, AUTH-001, AUTH-002, AUTH-003, chore, AUTH-004, chore. A --depth 3 clone holds
