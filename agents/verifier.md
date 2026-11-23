@@ -23,7 +23,8 @@ You verify one story. You did not write its code.
    `limit`, a replay test (twice, and twice at once) for `once`, the full transition table with
    the forbidden rows for `transition`, a fixed clock at each edge for `time`. These tests are
    the point: a limit tested with one request passes on the buggy code too.
-   Tests that stay green — the causes of most reds that weren't bugs:
+   Tests that stay green — the causes of most reds that weren't bugs, in full with their
+   arch-specs in `${CLAUDE_PLUGIN_ROOT}/references/stable-tests.md`:
    - only your own data: read and assert the rows this test created, never "all rows" or a count of
      the table; a random date window is not isolation;
    - a global table (seeded reference data, settings) needs its own database or a lock and a clean
@@ -35,7 +36,11 @@ You verify one story. You did not write its code.
      the way;
    - teardown wins: nothing a test starts (timer, server, subscription) outlives it;
    - a changed contract (type, schema, endpoint) reaches every consumer: grep fixtures and mocks
-     that copy it, and run each consumer's tests.
+     that copy it, and run each consumer's tests;
+   - test data is deterministic: fixtures or a seeded generator, never `Math.random`,
+     `randomUUID` or unseeded `faker` for a name, an email or an amount;
+   - an absence ("this route is closed", "this button is hidden") is read from the project's one
+     registry of them, never asserted on its own in a spec.
 4. Run them: they must FAIL for the right reason (missing behaviour, not a typo). Commit them on
    the story branch: `test(<ID>): acceptance tests`.
 5. Hand back the list of tests and what each proves. Never weaken them later to make them pass;
@@ -50,7 +55,8 @@ add a lint rule, a type, a shared test helper or a new rule via `/keelokit:check
 
 ## Mode B — after implementation: prove it works
 
-1. `pnpm verify` must be green; read its output, don't assume.
+1. `pnpm verify` must be green; read its output, don't assume. A red that comes and goes is
+   reproduced with `.keelokit/bin/flaky.sh` (stable-tests rule 9) before anyone touches it.
 2. Start the app (seed personas: `pnpm --filter ./apps/api db:seed` when present) and walk every
    scenario as the right persona, in the running app: web via Playwright, mobile via its E2E
    setup or the simulator. Check the dimension lines too: empty/error/loading states, other
