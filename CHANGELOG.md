@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Corrections can be approved by agents, when the person delegates it (LEDGER-015).** `[ledger.approval]` in
+  `.keelokit/state.toml` (`mode = "human"`, the default, `"delegated"` or `"mixed"`) says who approves the rows a
+  backfill proposes. With delegation, `/keelokit:ledger-review-flow` runs `ledger.py review --filter` (a mechanical
+  filter that drops rows whose commit is off the trunk or whose diff touches none of the story's paths), two
+  independent judges per row and a skeptic that tries to refute what both approved; `ledger.py backfill --accept
+  --delegated <run>` decides from those verdicts, writes the approved rows as `approver = "delegated:<run>"` and
+  keeps every verdict in `.keelokit/ledger-reviews/<run>.json`. In `mixed`, critical stories, low confidence and
+  disagreements go to the person; in `delegated` a doubtful row stays pending (`PENDING_REVIEW`). `ledger.py`
+  shows *reconstructed (person)* or *(delegated)*, a delegated row counts only while its review file shows it
+  approved, and `ledger.py review --reject-sample <run>` lets the person send a whole run back. The table is the
+  person's: the guard blocks agents from changing it and a commit that does needs `keelokit.allowTamper`.
 - **The ledger reconstructs the history that has no trailers, with evidence a person approves.**
   `ledger.py backfill --propose [--from FILE…]` writes candidate rows, each with a confidence and its evidence
   (commits and merged branches that name the story, train sheets, a `BOARD.md`, Harbor's imported board), to

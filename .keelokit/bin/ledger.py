@@ -15,6 +15,11 @@
                                                        propose one late attribution (the same file)
     python3 .keelokit/bin/ledger.py backfill --accept  a person, in their terminal: move the proposed rows
                                                        into backlog/ledger-corrections.toml
+    python3 .keelokit/bin/ledger.py review --filter    the delegated review's mechanical filter (JSON)
+    python3 .keelokit/bin/ledger.py backfill --accept --delegated <run>
+                                                       write the rows a delegated review approved
+    python3 .keelokit/bin/ledger.py review --reject-sample <run>
+                                                       a person, in their terminal: send a run back to review
 
 Any other command line prints the usage and exits 2.
 
@@ -32,6 +37,13 @@ tree, holds approved rows (story, commit, kind, evidence, approver, date). An ac
 invalid row is ignored and reported (CORRECTION_INVALID); a row that was on the trunk's first-parent chain
 and is no longer in the file is CORRECTION_EDITED (append-only, INV-008). The file is the person's: only
 `backfill --accept`, which needs a terminal and asks, writes it, and the guard keeps agents off both.
+
+Approval modes (docs/ledger.md, "Approval modes"): `[ledger.approval]` in the trunk's committed
+.keelokit/state.toml (never the work tree's) may delegate the approval to agents (`delegated` or `mixed`; absent
+or unreadable: `human`). A delegated review judges each row twice and tries to refute it; `backfill --accept
+--delegated <run>` decides from those verdicts (ledger.py decides, the review file only holds them), writes the
+approved rows with approver `delegated:<run>`, and keeps the verdicts in .keelokit/ledger-reviews/<run>.json. A
+delegated row counts only while that file, on the trunk, shows it approved.
 
 A shallow clone cuts the trunk's history and the doctor then reads the done state as unknown.
 `history --ensure` completes it: `git fetch --filter=blob:none --unshallow origin <trunk>` brings
@@ -56,6 +68,7 @@ if sys.version_info < (3, 11):
     print(f"Keelokit needs Python 3.11+ (found {sys.version.split()[0]}); the ledger is off.")
     sys.exit(0)
 
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
@@ -250,6 +263,14 @@ FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
 CORRECTIONS = "backlog/ledger-corrections.toml"
 PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
 KINDS = ("backfill", "late", "retract")
+REVIEWS = ".keelokit/ledger-reviews"
+STATE_FILE = ".keelokit/state.toml"
+CRITICAL_FILE = ".keelokit/critical.toml"
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+MODES = ("human", "delegated", "mixed")
+HUMAN_FOR = ("critical", "disagreement", "low-confidence")
+DEFAULT_SAMPLE = 0.05
+DELEGATED = "delegated:"
 CONFIDENCE = {"high": 3, "medium": 2, "low": 1}
 FULL_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -292,11 +313,13 @@ LABELS = {
     "en": {"complete": "history complete", "cut": "history INCOMPLETE: every state is unknown",
            "stories": "stories", "progress": "in progress", "ready": "ready", "reverted": "reverted",
            "unknown": "unknown", "stale": "stale", "more": "more", "none": "no stories found",
-           "unattributed": "unattributed commits since", "reconstructed": "reconstructed"},
+           "unattributed": "unattributed commits since", "reconstructed": "reconstructed",
+           "by_person": "reconstructed (person)", "by_delegated": "reconstructed (delegated)"},
     "es": {"complete": "historia completa", "cut": "historia INCOMPLETA: todos los estados son desconocidos",
            "stories": "historias", "progress": "en curso", "ready": "listas", "reverted": "revertidas",
            "unknown": "desconocidas", "stale": "estancada", "more": "más", "none": "no hay historias",
-           "unattributed": "commits sin atribuir desde", "reconstructed": "reconstruidas"},
+           "unattributed": "commits sin atribuir desde", "reconstructed": "reconstruidas",
+           "by_person": "reconstruidas (persona)", "by_delegated": "reconstruidas (delegada)"},
 }
 
 
@@ -509,7 +532,7 @@ def build_story(path: str, content: bytes | None, id_from: str) -> dict | None:
             raise LedgerError(f"the story file {path} cannot be read and its name has no EPIC-NNN id")
         sid = m.group(0)
         return {"id": sid, "title": sid, "epic": sid.split("-")[0], "wave": None, "depends_on": [], "path": path,
-                "unreadable": True}
+                "unreadable": True, "touches": [], "dimensions": []}
     meta, body = front_matter(content.decode("utf-8", errors="replace"))
     if id_from == "filename":
         m = STORY_ID.match(base)
@@ -527,20 +550,45 @@ def build_story(path: str, content: bytes | None, id_from: str) -> dict | None:
     return {"id": sid, "title": title, "epic": epic if isinstance(epic, str) and epic else sid.split("-")[0],
             "wave": wave if isinstance(wave, int) and not isinstance(wave, bool) else None,
             "depends_on": [d for d in deps if isinstance(d, str)] if isinstance(deps, list) else [],
-            "path": path, "unreadable": False}
+            "path": path, "unreadable": False, "touches": text_list(meta.get("touches")),
+            "dimensions": text_list(meta.get("dimensions"))}
 
 
-def read_stories(trunk_sha: str, cfg: dict) -> tuple[list[dict], list[str]]:
-    """(the stories of the trunk's tree, the paths of the story files that could not be read): `ls-tree` and
-    one `cat-file --batch`. A duplicate id keeps the first path, but a readable file beats an unreadable one."""
-    pattern = glob_regex(cfg["stories"])
-    found = []
+def text_list(value) -> list[str]:
+    """The non-empty strings of a TOML list (anything else: none)."""
+    return [v.strip() for v in value if isinstance(v, str) and v.strip()] if isinstance(value, list) else []
+
+
+def read_tree(trunk_sha: str) -> list[tuple[str, str]]:
+    """(path, blob) of every regular file of the trunk's tree (no symlinks), from one `ls-tree`."""
+    files = []
     for rec in git_read(["ls-tree", "-r", "-z", "--full-tree", trunk_sha]).decode(errors="replace").split("\0"):
         meta, _, path = rec.partition("\t")
         fields = meta.split()
-        if len(fields) == 3 and fields[0] != "120000" and fields[1] == "blob" and pattern.fullmatch(path):
-            found.append((path, fields[2]))
-    found.sort()
+        if len(fields) == 3 and fields[0] != "120000" and fields[1] == "blob":
+            files.append((path, fields[2]))
+    return files
+
+
+def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]]) -> dict:
+    """What the approval modes read from the trunk's tree, in one `cat-file`: state.toml, critical.toml and the
+    review files ({run: bytes}). A file the clone lacks reads as absent."""
+    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE)
+              or (path.startswith(REVIEWS + "/") and path.endswith(".json")
+                  and RUN_ID.fullmatch(path[len(REVIEWS) + 1:-5]) and "/" not in path[len(REVIEWS) + 1:])}
+    blobs = read_blobs(list(wanted.values()), trunk_sha)
+    content = {path: blobs.get(sha) for path, sha in wanted.items()}
+    reviews = {path[len(REVIEWS) + 1:-5]: data for path, data in content.items()
+               if path.startswith(REVIEWS + "/") and data is not None}
+    return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews}
+
+
+def read_stories(trunk_sha: str, cfg: dict, tree: list[tuple[str, str]] | None = None) -> tuple[list[dict], list[str]]:
+    """(the stories of the trunk's tree, the paths of the story files that could not be read): `ls-tree` and
+    one `cat-file --batch`. A duplicate id keeps the first path, but a readable file beats an unreadable one."""
+    pattern = glob_regex(cfg["stories"])
+    found = sorted((path, sha) for path, sha in (read_tree(trunk_sha) if tree is None else tree)
+                   if pattern.fullmatch(path))
     blobs = read_blobs([sha for _, sha in found], trunk_sha)
     stories, unreadable = {}, []
     for path, sha in found:
@@ -753,7 +801,7 @@ def new_story(story: dict) -> dict:
     return {"id": story["id"], "title": story["title"], "epic": story["epic"], "wave": story["wave"],
             "state": "defined", "since": None, "since_exact": False, "commit": None, "convoy": None,
             "version": None, "candidate": None, "environments": dict.fromkeys(ENVIRONMENTS),
-            "reconstructed": False, "correction": None, "reverted": False, "branches": [], "attempts": [],
+            "reconstructed": False, "reconstructed_by": None, "correction": None, "reverted": False, "branches": [], "attempts": [],
             "swarm": [], "signals": [], "reason": None, "path": story["path"]}
 
 
@@ -845,6 +893,7 @@ def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], 
                 on_trunk_facts(rec, row["commit"], arrival, ct, tags, deploys)
                 rec["reconstructed"], rec["reverted"] = True, False
                 rec["correction"] = {k: row[k] for k in ("kind", "commit", "evidence", "approver", "date")}
+                rec["reconstructed_by"] = "delegated" if is_delegated(row["approver"]) else "person"
             else:
                 rec["reverted"] = True
         rec["branches"] = sorted(branches[sid]["branches"]) if sid in branches else []
@@ -891,7 +940,10 @@ def read_all(state: dict) -> dict:
     check_trunk(trunk)
     refs = read_refs(trunk)
     trunk_sha = resolve_trunk(trunk, refs)
-    stories, unreadable = read_stories(trunk_sha, cfg)
+    tree = read_tree(trunk_sha)
+    stories, unreadable = read_stories(trunk_sha, cfg, tree)
+    extra = read_trunk_files(trunk_sha, tree)
+    reviews = {run: parse_review(data, run) for run, data in extra["reviews"].items()}
     tags = [sha for _, _, sha in version_tags(refs)]
     remotes = [sha for name, sha in refs.items() if name.startswith("refs/remotes/origin/")]
     graph = read_graph(sorted({trunk_sha, *tags, *remotes}))
@@ -907,14 +959,16 @@ def read_all(state: dict) -> dict:
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
-                                    else None, set(placed[0]), graph)
+                                    else None, set(placed[0]), graph, reviews)
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
                                       cfg["stale_days"], time.time(), corrections)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
     facts["diffs"] += corrections["diffs"]
+    records = {r["id"]: r for r in facts["stories"]}
+    facts["diffs"] += pending_reviews(reviews, records)
     return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "stories": stories, "log": log,
-            "graph": graph, "placed": placed, "corrections": corrections,
-            "records": {r["id"]: r for r in facts["stories"]}}
+            "graph": graph, "placed": placed, "corrections": corrections, "records": records, "reviews": reviews,
+            "approval": approval_config(extra["state"]), "areas": critical_areas(extra["critical"])}
 
 
 # ── corrections (docs/ledger.md, "Corrections file") ──
@@ -956,8 +1010,9 @@ def valid_date(text: str) -> bool:
         return False
 
 
-def row_problem(row, story_ids: set | None, reachable: set) -> str | None:
-    """Why a row cannot count, or None. `story_ids` None: some story file is unreadable, so any id may exist."""
+def row_problem(row, story_ids: set | None, reachable: set, reviews: dict | None = None) -> str | None:
+    """Why a row cannot count, or None. `story_ids` None: some story file is unreadable, so any id may exist.
+    `reviews`: {run: parsed review file or None} of the trunk, which back the rows a delegated review approved."""
     if not isinstance(row, dict):
         return "not a table"
     values = {k: plain_value(row.get(k)) for k in ("story", "commit", "kind", "evidence", "approver", "date")}
@@ -972,20 +1027,20 @@ def row_problem(row, story_ids: set | None, reachable: set) -> str | None:
         return f"commit {values['commit'][:12]} is not reachable from the trunk"
     if story_ids is not None and values["story"] not in story_ids:
         return f"no story {values['story']}"
-    if values["approver"].strip().lower().startswith("delegated:"):
-        return "a delegated approver needs [ledger.approval] (LEDGER-015); this project approves by a person"
     if not ISO_DATE.fullmatch(values["date"]) or not valid_date(values["date"]):
         return f"date {values['date']!r} is not a YYYY-MM-DD date"
+    if is_delegated(values["approver"]):
+        return delegated_problem(values, reviews or {})
     return None
 
 
 def apply_rows(rows: list, story_ids: set | None, reachable: set, where: str,
-               bad: list | None = None) -> tuple[list[dict], list[dict]]:
+               bad: list | None = None, reviews: dict | None = None) -> tuple[list[dict], list[dict]]:
     """(the active rows, normalized, in file order; one CORRECTION_INVALID diff per row that cannot count).
     A retract deactivates the earlier active rows of the same story and commit; one with none is invalid."""
     active, diffs = [], []
     for i, row in enumerate(rows, 1):
-        problem = row_problem(row, story_ids, reachable)
+        problem = row_problem(row, story_ids, reachable, reviews)
         norm = {k: plain_value(row.get(k)) for k in ("story", "commit", "kind", "evidence", "approver", "date")} \
             if not problem else None
         if norm and norm["kind"] == "retract":
@@ -1069,7 +1124,8 @@ def cat_blobs(shas: list[str]) -> dict[str, bytes | None]:
     return blobs
 
 
-def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, graph: dict | None = None) -> dict:
+def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, graph: dict | None = None,
+                      reviews: dict | None = None) -> dict:
     """The corrections file as the trunk has it: active rows, diffs (CORRECTION_INVALID, CORRECTION_EDITED,
     CORRECTION_UNCHECKED) and `unreadable` (a reason, when the tip's version is absent from a partial clone).
     Two git calls (three in a partial clone) whatever the number of versions."""
@@ -1093,7 +1149,7 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
             result["diffs"].append({"level": "error", "code": "CORRECTION_INVALID", "detail": f"{CORRECTIONS}: {why}"})
         else:
             tip_rows = rows
-            result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS)
+            result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS, reviews=reviews)
     tip_keys = [row_key(row) for row in tip_rows]
     unchecked, reported = 0, set()
     # Oldest first, so a row is named where it first was; then the versions merges' parents had.
@@ -1309,10 +1365,7 @@ def cmd_correct(state: dict, commit: str, story: str, evidence: str) -> int:
 def cmd_accept(state: dict) -> int:
     """A person, in their terminal (the `human` approval mode): the proposed rows, shown and confirmed, are
     appended to the corrections file with the person's name and today's date; nothing else is rewritten."""
-    if os.environ.get("CLAUDECODE") or not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("Keelokit: `backfill --accept` is for a person in their own terminal (no terminal here, or Claude "
-              "Code's shell); "
-              "an agent proposes rows and never accepts them.", file=sys.stderr)
+    if not person_only("backfill --accept"):
         return 1
     user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
     if not user:
@@ -1340,7 +1393,8 @@ def cmd_accept(state: dict) -> int:
             "date": today} if isinstance(r, dict) else r for r in proposed]
     ids = {s["id"] for s in ctx["stories"] if not s.get("unreadable")}
     known = None if any(s.get("unreadable") for s in ctx["stories"]) else ids
-    before, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS)
+    reviews = known_reviews(ctx)
+    before, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS, reviews=reviews)
     kept, skipped = [], []
     for row in new:
         if isinstance(row, dict) and row.get("kind") != "retract" and any(
@@ -1349,7 +1403,7 @@ def cmd_accept(state: dict) -> int:
         else:
             kept.append(row)
     rows_bad: list[int] = []
-    _, diffs = apply_rows(current + kept, known, ctx["placed"][0], PROPOSED, rows_bad)
+    _, diffs = apply_rows(current + kept, known, ctx["placed"][0], PROPOSED, rows_bad, reviews)
     bad = [d["detail"].replace(f" row {i} ", f" row {i - len(current)} ", 1)
            for i, d in zip(rows_bad, diffs) if i > len(current)]
     if bad:
@@ -1369,17 +1423,458 @@ def cmd_accept(state: dict) -> int:
     if answer.strip().lower() not in ("y", "yes"):
         print("Keelokit: nothing accepted.")
         return 1
-    text = current_text or CORRECTIONS_HEADER
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a" if current_text else "w", encoding="utf-8") as f:
-        if not current_text:
-            f.write(text)
-        elif not current_text.endswith("\n"):
-            f.write("\n")
-        f.write(rows_toml(kept, ("story", "commit", "kind", "evidence", "approver", "date")))
+    append_corrections(current_text, kept)
     source.unlink()
     print(f"Keelokit: {len(kept)} row(s) added to {CORRECTIONS}. Commit them yourself with "
           "`git -c keelokit.allowTamper=true commit`, saying why in the message.")
+    return 0
+
+
+def append_corrections(current_text: str, rows: list[dict]) -> None:
+    """Append rows to the corrections file without rewriting a byte (the header when the file is new)."""
+    target = ROOT / CORRECTIONS
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a" if current_text else "w", encoding="utf-8") as f:
+        if not current_text:
+            f.write(CORRECTIONS_HEADER)
+        elif not current_text.endswith("\n"):
+            f.write("\n")
+        f.write(rows_toml(rows, ("story", "commit", "kind", "evidence", "approver", "date")))
+
+
+def person_only(command: str) -> bool:
+    """True when this is a person in their own terminal (both ends a terminal, not Claude Code's shell)."""
+    if os.environ.get("CLAUDECODE") or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"Keelokit: `{command}` is for a person in their own terminal (no terminal here, or Claude Code's "
+              "shell); an agent proposes rows and never accepts them.", file=sys.stderr)
+        return False
+    return True
+
+
+# ── approval modes and the delegated review (docs/ledger.md, "Approval modes"; LEDGER-015) ──
+
+def is_delegated(approver) -> bool:
+    return isinstance(approver, str) and approver.strip().lower().startswith(DELEGATED)
+
+
+def delegated_run(approver: str) -> str:
+    return approver.strip()[len(DELEGATED):].strip()
+
+
+def load_toml(content: bytes | None) -> dict | None:
+    """A TOML file's data; {} when absent, None when it cannot be read."""
+    if content is None:
+        return {}
+    try:
+        return tomllib.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+
+
+def approval_config(content: bytes | None) -> dict:
+    """`[ledger.approval]` of the trunk's state.toml: mode (human when absent, unreadable or unknown), human_for
+    (mixed; the known reasons, all three by default) and sample (a share in [0, 1], 0.05 by default)."""
+    state = load_toml(content) or {}
+    ledger = state.get("ledger")
+    table = ledger.get("approval") if isinstance(ledger, dict) else None
+    table = table if isinstance(table, dict) else {}
+    mode = table.get("mode")
+    reasons = table.get("human_for")
+    share = table.get("sample")
+    fine = isinstance(share, (int, float)) and not isinstance(share, bool) and math.isfinite(share) and 0 <= share <= 1
+    return {"mode": mode if isinstance(mode, str) and mode in MODES else "human",
+            "human_for": [h for h in HUMAN_FOR if h in reasons] if isinstance(reasons, list) else list(HUMAN_FOR),
+            "sample": share if fine else DEFAULT_SAMPLE}
+
+
+def critical_areas(content: bytes | None) -> list[str] | None:
+    """The paths of the trunk's critical areas; None when critical.toml cannot be read (then every story counts
+    as critical: the safe side)."""
+    data = load_toml(content)
+    if data is None:
+        return None
+    areas = data.get("area", [])
+    if not isinstance(areas, list):
+        return None
+    return sorted({p.strip() for a in areas if isinstance(a, dict) and isinstance(a.get("paths"), list)
+                   for p in a["paths"] if isinstance(p, str) and p.strip()})
+
+
+def overlaps(a: str, b: str) -> bool:
+    """The same path, or one is a directory that holds the other (as the doctor reads `touches`)."""
+    a, b = a.strip().strip("/"), b.strip().strip("/")
+    return bool(a and b) and (a == b or a.startswith(b + "/") or b.startswith(a + "/"))
+
+
+def is_critical(story: dict, areas: list[str] | None) -> bool:
+    """A story in a critical area (its touches meet one) or with the integrity dimension."""
+    return areas is None or "integrity" in story["dimensions"] or any(
+        overlaps(t, a) for t in story["touches"] for a in areas)
+
+
+def parse_review(content: bytes, run: str) -> dict | None:
+    """A review file's data when it is an object for this run with a list of rows, else None."""
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict) or data.get("run") != run or not isinstance(data.get("rows"), list):
+        return None
+    return data
+
+
+def local_reviews() -> dict:
+    """{run: parsed or None} of the review files in the work tree (what a run just wrote, not yet committed)."""
+    found = {}
+    folder = ROOT / REVIEWS
+    for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        run = path.name[:-5]
+        if RUN_ID.fullmatch(run) and path.is_file():
+            try:
+                found[run] = parse_review(path.read_bytes(), run)
+            except OSError:
+                found[run] = None
+    return found
+
+
+def known_reviews(ctx: dict) -> dict:
+    """The trunk's review files, with the work tree's on top (for the commands that write the work tree)."""
+    return {**ctx["reviews"], **local_reviews()}
+
+
+def verdict(row: dict, judge: str) -> str | None:
+    v = row.get(judge)
+    return v.get("verdict") if isinstance(v, dict) and v.get("verdict") in ("yes", "no") else None
+
+
+def refuted(row: dict) -> bool | None:
+    v = row.get("skeptic")
+    return v.get("refuted") if isinstance(v, dict) and isinstance(v.get("refuted"), bool) else None
+
+
+def verdicts_problem(row) -> str | None:
+    """Why a review row lacks the verdicts the decision needs, or None."""
+    if not isinstance(row, dict):
+        return "not an object"
+    a, b = verdict(row, "judge_a"), verdict(row, "judge_b")
+    if a is None or b is None:
+        return "judge_a and judge_b each need a verdict, yes or no"
+    if a == b == "yes" and refuted(row) is None:
+        return "both judges said yes, so the skeptic's verdict is needed (refuted: true or false)"
+    return None
+
+
+def judges_approve(row: dict) -> bool:
+    """Both judges said yes and the skeptic failed to refute."""
+    return verdict(row, "judge_a") == verdict(row, "judge_b") == "yes" and refuted(row) is False
+
+
+def by_opus(row: dict) -> bool:
+    """Every verdict of the row names an Opus model (critical stories in `delegated` are judged by Opus)."""
+    return all(isinstance(row.get(k), dict) and isinstance(row[k].get("model"), str)
+               and "opus" in row[k]["model"].lower() for k in ("judge_a", "judge_b", "skeptic"))
+
+
+def decide(row: dict, approval: dict) -> str:
+    """approved | person | pending, from the verdicts, the mode and the row's `critical` and `confidence` (both
+    computed by ledger.py). Pure: the review file's own `decision` is never read."""
+    mode, reasons = approval["mode"], approval["human_for"]
+    if mode == "mixed":
+        if row.get("critical") and "critical" in reasons:
+            return "person"
+        if row.get("confidence") == "low" and "low-confidence" in reasons:
+            return "person"
+        if judges_approve(row):
+            return "approved"
+        return "person" if "disagreement" in reasons else "pending"
+    if mode == "delegated":
+        if row.get("critical") and not by_opus(row):
+            return "pending"
+        return "approved" if judges_approve(row) else "pending"
+    return "pending"
+
+
+def delegated_problem(values: dict, reviews: dict) -> str | None:
+    """Why a row approved by `delegated:<run>` cannot count: its review file, on the trunk, must hold the same
+    story, commit and kind with decision approved, both judges yes and the skeptic's refutation failed."""
+    run = delegated_run(values["approver"])
+    if not RUN_ID.fullmatch(run):
+        return f"the delegated approver {values['approver']!r} names no valid run"
+    if run not in reviews:
+        return f"a delegated row needs its review file {REVIEWS}/{run}.json on the trunk"
+    review = reviews[run]
+    if review is None:
+        return f"{REVIEWS}/{run}.json is not a review file of run {run}"
+    same = [r for r in review["rows"] if isinstance(r, dict)
+            and (r.get("story"), r.get("commit"), r.get("kind")) == (values["story"], values["commit"], values["kind"])]
+    if not any(r.get("decision") == "approved" and judges_approve(r) for r in same):
+        return f"{REVIEWS}/{run}.json does not show this row approved by both judges with the skeptic's refutation failed"
+    return None
+
+
+def pending_reviews(reviews: dict, records: dict) -> list[dict]:
+    """One PENDING_REVIEW warning per story a review on the trunk left to the person or pending, while it is not
+    on the trunk."""
+    diffs, seen = [], set()
+    for run in sorted(reviews):
+        for row in (reviews[run] or {}).get("rows", []):
+            if not isinstance(row, dict) or row.get("decision") not in ("person", "pending"):
+                continue
+            sid = row.get("story")
+            if isinstance(sid, str) and sid in records and not records[sid]["commit"] and sid not in seen:
+                seen.add(sid)
+                where = "in the person's queue" if row["decision"] == "person" else "pending"
+                diffs.append({"level": "warning", "code": "PENDING_REVIEW",
+                              "detail": f"{sid}: {where} after the delegated review {run} "
+                                        f"({str(row.get('commit'))[:12]}); not on the trunk"})
+    return diffs
+
+
+def changed_paths(shas: list[str]) -> dict[str, set[str]]:
+    """commit -> the paths its diff touches (a merge: against its first parent), from one `git log`."""
+    unique = sorted(set(shas))
+    if not unique:
+        return {}
+    out = git_read(["-c", "core.quotePath=false", "log", "--no-walk=unsorted", "--stdin", "--format=%x00%H",
+                    "--name-only", "--no-renames", "--diff-merges=first-parent"],
+                   "".join(f"{s}\n" for s in unique).encode()).decode(errors="replace")
+    paths: dict[str, set[str]] = {}
+    for chunk in out.split("\0")[1:]:
+        lines = [line for line in chunk.split("\n") if line.strip()]
+        if lines:
+            paths[lines[0].strip()] = set(lines[1:])
+    return paths
+
+
+def filter_rows(ctx: dict, rows: list, active: set) -> list[tuple[dict | None, str | None]]:
+    """The mechanical filter (no model), one (kept row, None) or (None, why it is dropped) per row: the commit
+    is a full sha on the trunk, the story exists and is not on the trunk yet, the row repeats no active row
+    (`active`: (story, commit)) nor an earlier one, the evidence is there, and the commit's diff touches one of
+    the story's `touches` when it has any."""
+    stories = {s["id"]: s for s in ctx["stories"]}
+    reachable, records, areas = ctx["placed"][0], ctx["records"], ctx["areas"]
+    seen, results = set(), []
+    for row in rows:
+        if not isinstance(row, dict):
+            results.append((None, "not a table"))
+            continue
+        v = {k: plain_value(row.get(k)) for k in ("story", "commit", "kind", "evidence")}
+        missing = [k for k, x in v.items() if not isinstance(x, str) or not x.strip()]
+        story = stories.get(v["story"]) if not missing else None
+        why = (f"missing or empty: {', '.join(missing)}" if missing
+               else f"kind {v['kind']!r} is not backfill or late" if v["kind"] not in ("backfill", "late")
+               else f"commit {v['commit'][:12]!r} is not a full sha" if not FULL_SHA.fullmatch(v["commit"])
+               else f"commit {v['commit'][:12]} is not reachable from the trunk" if v["commit"] not in reachable
+               else f"no story {v['story']}" if story is None
+               else f"the story file {story['path']} cannot be read" if story.get("unreadable")
+               else f"{v['story']} is already on the trunk" if records[v["story"]]["commit"]
+               else f"a duplicate of a row of {v['story']} at {v['commit'][:12]}" if (v["story"], v["commit"]) in active | seen
+               else None)
+        if why:
+            results.append((None, why))
+            continue
+        seen.add((v["story"], v["commit"]))
+        confidence = row.get("confidence")
+        results.append(({**v, "evidence": v["evidence"].strip(),
+                         "confidence": confidence if isinstance(confidence, str) and confidence in CONFIDENCE else "low",
+                         "critical": is_critical(story, areas), "title": story["title"], "path": story["path"]}, None))
+    touched = changed_paths([k["commit"] for k, _ in results if k and stories[k["story"]]["touches"]])
+    for i, (kept, _) in enumerate(results):
+        if kept and stories[kept["story"]]["touches"] and not any(
+                overlaps(p, t) for p in touched.get(kept["commit"], ()) for t in stories[kept["story"]]["touches"]):
+            results[i] = (None, f"the diff of {kept['commit'][:12]} touches none of {kept['story']}'s paths")
+    return results
+
+
+def dropped_entry(row, why: str) -> dict:
+    get = row.get if isinstance(row, dict) else (lambda _k: None)
+    return {"story": str(get("story")), "commit": str(get("commit")), "kind": str(get("kind")), "reason": why}
+
+
+def worktree_active(ctx: dict) -> tuple[str, list | None, set]:
+    """(the work tree's corrections text, its rows or None when unreadable, the (story, commit) of its active rows)."""
+    target = ROOT / CORRECTIONS
+    text = target.read_text(encoding="utf-8") if target.exists() else ""
+    rows, why = parse_rows(text.encode()) if text else ([], None)
+    if why:
+        return text, None, set()
+    known = None if any(s.get("unreadable") for s in ctx["stories"]) else {s["id"] for s in ctx["stories"]}
+    active, _ = apply_rows(rows, known, ctx["placed"][0], CORRECTIONS, reviews=known_reviews(ctx))
+    return text, rows, {(r["story"], r["commit"]) for r in active} | \
+        {(r["story"], r["commit"]) for r in ctx["corrections"]["active"]}
+
+
+def read_proposed() -> tuple[list | None, str | None]:
+    try:
+        rows, why = parse_rows((ROOT / PROPOSED).read_bytes())
+    except OSError:
+        return None, "missing: run `ledger.py backfill --propose` or `ledger.py correct` first"
+    return (rows, None) if not why and rows else (None, why or "has no rows")
+
+
+def run_id(trunk_sha: str, rows: list[dict]) -> str:
+    """A run's id from the trunk and its rows: the same input gives the same id, with no clock."""
+    digest = hashlib.sha256((trunk_sha + json.dumps(rows, sort_keys=True)).encode()).hexdigest()
+    return "r" + digest[:12]
+
+
+def cmd_filter(state: dict) -> int:
+    """`review --filter`: the proposed rows a delegated review may judge, as JSON; writes nothing."""
+    proposed, why = read_proposed()
+    if why:
+        print(f"Keelokit: nothing to review: {PROPOSED} {why}", file=sys.stderr)
+        return 1
+    ctx = read_all(state)
+    need_history(ctx)
+    _, rows, active = worktree_active(ctx)
+    if rows is None:
+        print(f"Keelokit: {CORRECTIONS} cannot be read; fix it first", file=sys.stderr)
+        return 1
+    results = filter_rows(ctx, proposed, active)
+    kept = [k for k, _ in results if k]
+    approval = ctx["approval"]
+    print(json.dumps({"schema": 1, "run": run_id(ctx["trunk_sha"], kept), "mode": approval["mode"],
+                      "human_for": approval["human_for"], "sample": approval["sample"], "rows": kept,
+                      "dropped": [dropped_entry(r, why) for r, (_, why) in zip(proposed, results) if why]}, indent=1))
+    return 0
+
+
+def sample_of(run: str, rows: list[dict], share: float) -> list[dict]:
+    """The rows the person is shown for a spot check: ordered by a hash of the run and the row, the first
+    ceil(share × n). The same run always gives the same sample."""
+    if share <= 0 or not rows:
+        return []
+    ranked = sorted(rows, key=lambda r: hashlib.sha256(f"{run}\0{r['story']}\0{r['commit']}".encode()).hexdigest())
+    return [{"story": r["story"], "commit": r["commit"]} for r in ranked[:math.ceil(share * len(rows))]]
+
+
+def refuse(message: str) -> int:
+    print(f"Keelokit: nothing accepted: {message}", file=sys.stderr)
+    return 1
+
+
+def cmd_accept_delegated(state: dict, run: str) -> int:
+    """`backfill --accept --delegated <run>`: with `[ledger.approval]` delegated or mixed on the trunk, decide every
+    row of the run's review file from its verdicts (the mechanical filter again first), write the decisions into
+    the file, append the approved rows as `delegated:<run>` and leave the person's queue and the pending rows in
+    the proposed file."""
+    if not RUN_ID.fullmatch(run):
+        return refuse(f"{run!r} is not a run id")
+    ctx = read_all(state)
+    need_history(ctx)
+    approval = ctx["approval"]
+    if approval["mode"] not in ("delegated", "mixed"):
+        return refuse("the trunk's .keelokit/state.toml does not delegate approval ([ledger.approval] mode = "
+                      "\"delegated\" or \"mixed\", a person's commit): only a person accepts rows, with "
+                      "`ledger.py backfill --accept` in their terminal")
+    path = ROOT / REVIEWS / f"{run}.json"
+    try:
+        review = parse_review(path.read_bytes(), run)
+    except OSError:
+        return refuse(f"no review file {REVIEWS}/{run}.json")
+    if review is None:
+        return refuse(f"{REVIEWS}/{run}.json is not a review file of run {run} (JSON with run and rows)")
+    if any(isinstance(r, dict) and "decision" in r for r in review["rows"]):
+        return refuse(f"run {run} was already decided; start a new review")
+    problems = [f"row {i}: {p}" for i, r in enumerate(review["rows"], 1) if (p := verdicts_problem(r))]
+    if not review["rows"] or problems:
+        return refuse(f"{REVIEWS}/{run}.json " + ("has no rows" if not problems else "\n  " + "\n  ".join(problems)))
+    current_text, current, active = worktree_active(ctx)
+    if current is None:
+        return refuse(f"{CORRECTIONS} cannot be read; fix it first")
+    results = filter_rows(ctx, review["rows"], active)
+    for row, (kept, why) in zip(review["rows"], results):
+        if why:
+            row.update(decision="dropped", reason=why)
+        else:
+            row.update(critical=kept["critical"], confidence=kept["confidence"])
+            row["decision"] = decide(row, approval)
+    approved = [k for row, (k, _) in zip(review["rows"], results) if row["decision"] == "approved"]
+    review.update(mode=approval["mode"], human_for=approval["human_for"],
+                  sample=sample_of(run, approved, approval["sample"]))
+    new = [{"story": k["story"], "commit": k["commit"], "kind": k["kind"], "evidence": k["evidence"],
+            "approver": f"{DELEGATED}{run}", "date": datetime.now().date().isoformat()} for k in approved]
+    known = None if any(s.get("unreadable") for s in ctx["stories"]) else {s["id"] for s in ctx["stories"]}
+    bad: list[int] = []
+    _, diffs = apply_rows(current + new, known, ctx["placed"][0], CORRECTIONS, bad,
+                          {**known_reviews(ctx), run: review})
+    if [i for i in bad if i > len(current)]:
+        return refuse("; ".join(d["detail"] for i, d in zip(bad, diffs) if i > len(current)))
+    path.write_text(json.dumps(review, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    if new:
+        append_corrections(current_text, new)
+    settled = {(r.get("story"), r.get("commit"), r.get("kind")) for r in review["rows"]
+               if r["decision"] in ("approved", "dropped")}
+    proposed, _ = read_proposed()
+    if proposed:
+        left = [r for r in proposed if not isinstance(r, dict) or
+                (plain_value(r.get("story")), plain_value(r.get("commit")), plain_value(r.get("kind"))) not in settled]
+        (ROOT / PROPOSED).write_text(PROPOSED_HEADER + rows_toml(
+            [r for r in left if isinstance(r, dict)], ("story", "commit", "kind", "confidence", "evidence")),
+            encoding="utf-8")
+    count = {d: [r for r in review["rows"] if r["decision"] == d] for d in ("approved", "person", "pending", "dropped")}
+    print(f"Keelokit: delegated review {run} ({approval['mode']}): {len(count['approved'])} approved, "
+          f"{len(count['person'])} for the person, {len(count['pending'])} pending, {len(count['dropped'])} dropped.")
+    for label, key in (("approved", "approved"), ("for the person (`backfill --accept`, in their terminal)", "person"),
+                       ("pending (PENDING_REVIEW)", "pending"), ("dropped by the filter", "dropped")):
+        for r in count[key]:
+            print(f"  {label}: {r['story']} {str(r['commit'])[:12]}" + (f" — {r['reason']}" if key == "dropped" else ""))
+    for r in review["sample"]:
+        print(f"  sample for the person to check: {r['story']} {r['commit'][:12]}")
+    if review["sample"]:
+        print(f"  A wrong one sends the whole run back: `python3 .keelokit/bin/ledger.py review --reject-sample {run}`"
+              " (a person, in their terminal).")
+    print(f"Commit {CORRECTIONS} and {REVIEWS}/{run}.json together.")
+    return 0
+
+
+def cmd_reject_sample(state: dict, run: str) -> int:
+    """`review --reject-sample <run>`, a person in their terminal: a retract row for every active row the run
+    approved, and those rows back in the proposed file for another review."""
+    if not person_only(f"review --reject-sample {run}"):
+        return 1
+    if not RUN_ID.fullmatch(run):
+        print(f"Keelokit: {run!r} is not a run id", file=sys.stderr)
+        return 1
+    user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
+    if not user:
+        print("Keelokit: set your name first: `git config user.name \"Your Name\"` (it becomes the approver).",
+              file=sys.stderr)
+        return 1
+    ctx = read_all(state)
+    need_history(ctx)
+    current_text, current, _ = worktree_active(ctx)
+    if current is None:
+        print(f"Keelokit: {CORRECTIONS} cannot be read; fix it first", file=sys.stderr)
+        return 1
+    known = None if any(s.get("unreadable") for s in ctx["stories"]) else {s["id"] for s in ctx["stories"]}
+    active, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS, reviews=known_reviews(ctx))
+    mine = [r for r in active if is_delegated(r["approver"]) and delegated_run(r["approver"]) == run]
+    if not mine:
+        print(f"Keelokit: nothing to send back: no active row of {CORRECTIONS} was approved by run {run}",
+              file=sys.stderr)
+        return 1
+    for r in mine:
+        print(f"  {r['kind']} {r['story']} {r['commit'][:12]} — {r['evidence']}")
+    try:
+        answer = input(f"Retract these {len(mine)} row(s) of run {run} as {user} and send them back to review? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        print("Keelokit: nothing retracted.")
+        return 1
+    today = datetime.now().date().isoformat()
+    append_corrections(current_text, [{"story": r["story"], "commit": r["commit"], "kind": "retract",
+                                       "evidence": f"sample of delegated run {run} rejected", "approver": user,
+                                       "date": today} for r in mine])
+    proposed = ROOT / PROPOSED
+    old = proposed.read_text(encoding="utf-8") if proposed.exists() else PROPOSED_HEADER
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    proposed.write_text(old + ("" if old.endswith("\n") else "\n") + rows_toml(
+        [{**r, "confidence": "low"} for r in mine], ("story", "commit", "kind", "confidence", "evidence")),
+        encoding="utf-8")
+    print(f"Keelokit: {len(mine)} row(s) of run {run} retracted in {CORRECTIONS} and proposed again in {PROPOSED}. "
+          "Commit the retractions yourself with `git -c keelokit.allowTamper=true commit`, then review them again.")
     return 0
 
 
@@ -1400,6 +1895,12 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "check", bool(argv[1:])
     if argv == ["backfill", "--accept"]:
         return "accept", None
+    if argv[:3] == ["backfill", "--accept", "--delegated"] and len(argv) == 4:
+        return "accept-delegated", argv[3]
+    if argv == ["review", "--filter"]:
+        return "filter", None
+    if argv[:2] == ["review", "--reject-sample"] and len(argv) == 3:
+        return "reject-sample", argv[2]
     if argv[:2] == ["backfill", "--propose"]:
         rest, sources = argv[2:], []
         while rest:
@@ -1423,6 +1924,12 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_propose(state, args)
         if command == "correct":
             return cmd_correct(state, *args)
+        if command == "filter":
+            return cmd_filter(state)
+        if command == "accept-delegated":
+            return cmd_accept_delegated(state, args)
+        if command == "reject-sample":
+            return cmd_reject_sample(state, args)
         return cmd_accept(state)
     except LedgerError as e:
         print(f"Keelokit: {e}", file=sys.stderr)
@@ -1452,9 +1959,10 @@ def summary(facts: dict, lang: str) -> list[str]:
     ready = [r["id"] for r in stories if r["state"] == "ready"]
     reverted = [r["id"] for r in stories if r["reverted"]]
     unknown = [r["id"] for r in stories if r["state"] == "unknown"]
-    rebuilt = [r["id"] for r in stories if r.get("reconstructed")]
+    person = [r["id"] for r in stories if r.get("reconstructed") and r.get("reconstructed_by") != "delegated"]
+    delegated = [r["id"] for r in stories if r.get("reconstructed") and r.get("reconstructed_by") == "delegated"]
     for label, items in (("progress", progress), ("ready", ready), ("reverted", reverted), ("unknown", unknown),
-                         ("reconstructed", rebuilt)):
+                         ("by_person", person), ("by_delegated", delegated)):
         if items:
             lines.append(f"{t[label]}: {listed(items, t['more'])}")
     loose = facts["unattributed"]
