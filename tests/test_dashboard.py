@@ -803,6 +803,58 @@ class DashboardTest(unittest.TestCase):
                      "del bug bash", "Salud y entornos", "Generar el reporte completo", "24 sep"):
             self.assertIn(esc(text), html)
 
+    def test_LEDGER_001_S4_a_shallow_clone_shows_no_story_as_pending_for_lack_of_history(self):
+        """main: plan, AUTH-001, AUTH-002, AUTH-003, chore, AUTH-004, chore. A --depth 3 clone holds
+        only AUTH-004's trailer: the other three are done, but the clone can't tell."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog")
+        self.context()
+        for sid, wave, deps in (("AUTH-001", 1, ""), ("AUTH-002", 1, ""), ("AUTH-003", 2, '"AUTH-001"'),
+                                ("AUTH-004", 2, ""), ("AUTH-005", 3, '"AUTH-002"'), ("AUTH-006", 3, "")):
+            self.story(sid, wave, deps)
+        self.commit("docs: plan")
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.commit(f"feat: {sid}\n\nStory: {sid}")
+        self.commit("chore: x")
+        self.commit("feat: AUTH-004\n\nStory: AUTH-004")
+        self.commit("chore: y")
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where)
+
+        def clone(name: str, *depth: str) -> Path:
+            subprocess.run(["git", "clone", "-q", *depth, f"file://{self.root}", str(where / name)],
+                           check=True, capture_output=True)
+            return where / name
+
+        full, shallow = clone("full"), clone("shallow", "--depth=3")
+        self.assertEqual(sh(shallow, "git", "rev-parse", "--is-shallow-repository").strip(), "true", "fixture")
+        state = lambda root: json.loads(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--json"))
+        # The full history is as today.
+        self.assertEqual({x["id"]: x["status"] for x in state(full)["stories"]},
+                         {"AUTH-001": "done", "AUTH-002": "done", "AUTH-003": "done", "AUTH-004": "done",
+                          "AUTH-005": "ready", "AUTH-006": "ready"})
+        s = state(shallow)
+        status = {x["id"]: x["status"] for x in s["stories"]}
+        self.assertEqual(status["AUTH-004"], "done", "a trailer in the clone still proves done")
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.assertEqual(status[sid], "unknown", f"{sid} is done on the full history: {status}")
+        self.assertFalse([sid for sid, st in status.items() if st in ("ready", "blocked")],
+                         f"nothing reads as pending for lack of history: {status}")
+        self.assertIn("AUTH-004", s["done"])
+        # The progress figures read unknown, with the reason, on both pages.
+        for page in (self.ops_at(shallow), self.page_at(shallow)):
+            text = html_lib.unescape(re.sub(r"<[^>]+>", " ", page))
+            self.assertNotRegex(text, r"\b\d+ of 6 stor", "no progress count read from a cut history")
+            self.assertRegex(text.lower(), r"unknown", "the figure says unknown")
+            self.assertRegex(text.lower(), r"shallow", "and why")
+
+    def ops_at(self, root: Path) -> str:
+        return Path(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--lang", "en").strip()).read_text()
+
+    def page_at(self, root: Path) -> str:
+        html = Path(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--report", "--lang", "en").strip()).read_text()
+        self.assert_links_land(html)
+        return html
+
 
 # I18N-2: the headings of the PRD and the reports as someone would write them in each language of
 # the page (project-new writes documents in English unless the user asks otherwise). A tuple is
