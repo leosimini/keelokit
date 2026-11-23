@@ -1,11 +1,13 @@
 """ledger.py history: the SessionStart hook completes the trunk's history (LEDGER-002);
 ledger.py and ledger.py --json: every story's state from git (LEDGER-003, the classes after LedgerHistoryTest).
+LEDGER-004 (corrections) and LEDGER-015 (delegated review of corrections) follow, from CORR onwards.
 Run: python3 -m unittest discover -s tests
 
 Everything runs against real git with local remotes (file:// and a refused http port), never the
 network. The slow server is git's own `remote.origin.uploadpack` (a `sleep` in front of
 git-upload-pack); the server that rejects --filter is a `git` wrapper first on PATH that logs its
 argv. Each git call runs with a clean environment: no proxy, no global or system config."""
+import hashlib
 import http.server
 import json
 import os
@@ -2782,6 +2784,627 @@ class LedgerCorrectionsNestedFoxtrotTest(LedgerCase):
         self.assertFalse(repo.git("ls-tree", "origin/main", "--", CORR).strip(), "fixture: the row is gone from main")
         data = ledger_check(self, repo)
         self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+
+# ── LEDGER-015: corrections approved by agents, with an adversarial review, when the person delegates it ──
+# The approval mode is read from the trunk's committed .keelokit/state.toml (D1); GitRepo excludes /.keelokit/,
+# so the harness files are committed with `git add -f` (commit_harness).
+
+STATE = ".keelokit/state.toml"
+CRITICAL = ".keelokit/critical.toml"
+REVIEWS = ".keelokit/ledger-reviews"
+RUN_ID = re.compile(r"r[0-9a-f]{12}")
+CRITICAL_TOML = '[[area]]\nname = "payments"\nwhy = "money moves"\npaths = ["apps/api/pay/charge.ts"]\n'
+# The stories of the delegated fixtures: id -> (touches, dimensions). UXC-303 touches a critical area,
+# UXC-304 declares integrity.
+DELEGATED_STORIES = {"UXC-301": ("apps/api/login/", "logic"), "UXC-302": ("apps/api/search/", "logic"),
+                     "UXC-303": ("apps/api/pay/", "logic"), "UXC-304": ("apps/api/ledger/", "integrity"),
+                     "UXC-305": ("apps/api/export/", "logic"), "UXC-306": ("apps/api/misc/", "logic")}
+
+
+def story15(sid: str, touches: tuple = (), dimensions: tuple = ("logic",)) -> str:
+    """A story with `touches` and `dimensions` in its front matter (the filter and the critical flag read them)."""
+    t = ", ".join(json.dumps(p) for p in touches)
+    d = ", ".join(json.dumps(x) for x in dimensions)
+    return (f'+++\nid = "{sid}"\nepic = "{sid.split("-")[0]}"\ntitle = "Title of {sid}"\nwave = 1\n'
+            f'depends_on = []\ntouches = [{t}]\ndimensions = [{d}]\n+++\n# Title of {sid}\n\n'
+            '```gherkin\nScenario: [S1] works\n```\n')
+
+
+def approval(mode: str | None = None, human_for: list | None = None, sample: float | None = None) -> str:
+    """state.toml text: a [ledger] table, and [ledger.approval] when a mode is given."""
+    text = '[ledger]\ntrunk = "main"\n'
+    if mode is not None:
+        text += f"\n[ledger.approval]\nmode = {json.dumps(mode)}\n"
+        if human_for is not None:
+            text += f"human_for = {json.dumps(human_for)}\n"
+        if sample is not None:
+            text += f"sample = {sample!r}\n"
+    return text
+
+
+def commit_harness(repo: GitRepo, message: str, files: dict) -> str:
+    """A trunk commit of `files`, harness files included (`git add -f`: /.keelokit/ is excluded in GitRepo)."""
+    for rel, text in files.items():
+        repo.write(rel, text)
+    repo.git("add", "-A")
+    repo.git("add", "-f", *files)
+    repo.git("commit", "-q", "-m", message, when=repo.next_date())
+    return repo.sha()
+
+
+def verdicts(a: str = "yes", b: str = "yes", refuted: bool | None = False, model: str | None = None) -> dict:
+    """judge_a, judge_b and skeptic of one review row; refuted None leaves the skeptic out (null)."""
+    m = {"model": model} if model else {}
+    return {"judge_a": {"verdict": a, "reason": "S1 is proven by apps/api/x.ts", **m},
+            "judge_b": {"verdict": b, "reason": "the diff implements S1", **m},
+            "skeptic": None if refuted is None else {"refuted": refuted, "reason": "tried the revert and the scope",
+                                                     **m}}
+
+
+def review_row(story: str, commit: str, evidence: str = "EV", decision: str | None = "approved", **v) -> dict:
+    row = {"story": story, "commit": commit, "kind": "backfill", "evidence": evidence, "confidence": "medium",
+           "critical": False, "title": f"Title of {story}", "path": f"backlog/stories/{story}-s.md", **verdicts(**v)}
+    if decision is not None:
+        row["decision"] = decision
+    return row
+
+
+def review_text(run: str, rows: list[dict]) -> str:
+    return json.dumps({"schema": 1, "run": run, "rows": rows, "dropped": []}, indent=1) + "\n"
+
+
+def delegated_row(story: str, commit: str, run: str, evidence: str = "EV") -> str:
+    return toml_row(story=story, commit=commit, evidence=evidence, approver=f"delegated:{run}", date="2026-11-25")
+
+
+def proposed_row(story: str, commit: str, confidence: str = "medium", evidence: str | None = None,
+                 kind: str = "backfill") -> str:
+    return toml_row(story=story, commit=commit, kind=kind, confidence=confidence, approver=None, date=None,
+                    evidence=f"{story}: diff of {commit[:7]}" if evidence is None else evidence)
+
+
+def review_filter(test: unittest.TestCase, repo: GitRepo) -> dict:
+    """`ledger.py review --filter`: JSON on stdout, exit 0 (D3)."""
+    r = repo.ledger("review", "--filter")
+    test.assertNotIn("Traceback", r.stderr)
+    test.assertEqual(r.returncode, 0, f"ledger.py review --filter exited {r.returncode}\n{r.stdout}{r.stderr}")
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        test.fail(f"ledger.py review --filter did not print JSON:\n{r.stdout[:2000]}")
+
+
+def build_delegated(tmp: Path, state: str | None) -> tuple[GitRepo, dict]:
+    """Six stories with touches, one commit on the trunk touching each story's path, critical.toml and (unless
+    state is None) state.toml committed on the trunk, published."""
+    repo = GitRepo(tmp)
+    repo.commit("docs: plan\n\nNo-story: docs", {f"backlog/stories/{sid}-s.md": story15(sid, (path,), (dim,))
+                                                 for sid, (path, dim) in DELEGATED_STORIES.items()})
+    c = {sid: repo.commit(f"feat: work under {path}", {f"{path}x.ts": f"export const v = '{sid}'\n"})
+         for sid, (path, _) in DELEGATED_STORIES.items()}
+    files = {CRITICAL: CRITICAL_TOML}
+    if state is not None:
+        files[STATE] = state
+    commit_harness(repo, "chore: harness\n\nNo-story: harness", files)
+    repo.publish()
+    return repo, c
+
+
+def agent_env() -> dict:
+    return {"CLAUDECODE": "1"}
+
+
+class LedgerDelegatedFilterTest(LedgerCase):
+    """S2 and D3: `review --filter` drops, with a reason and with no model, every row it can prove wrong; it keeps
+    the rest with their critical flag, names a deterministic run, and writes nothing."""
+
+    @classmethod
+    def setUpClass(cls):
+        repo = cls.repo = GitRepo(cls.class_tmp())
+        stories = {"UXC-201": (("apps/api/login/",), ("logic",)), "UXC-202": (("apps/api/search/",), ("logic",)),
+                   "UXC-203": ((), ("logic",)), "UXC-204": (("apps/api/pay/",), ("logic",)),
+                   "UXC-205": ((), ("integrity",)), "UXC-206": (("apps/api/a6/",), ("logic",)),
+                   "UXC-207": (("apps/api/login/",), ("logic",)), "UXC-208": (("apps/api/login/",), ("logic",))}
+        repo.commit("docs: plan\n\nNo-story: docs",
+                    {f"backlog/stories/{sid}-s.md": story15(sid, *tv) for sid, tv in stories.items()})
+        c = cls.c = {}
+        c["login"] = repo.commit("feat: the login form", {"apps/api/login/form.ts": "export {}\n"})
+        c["elsewhere"] = repo.commit("docs: notes", {"docs/notes.md": "notes\n"})
+        c["pay"] = repo.commit("feat: charge", {"apps/api/pay/charge.ts": "export {}\n"})
+        c["s206"] = repo.commit("feat: UXC-206\n\nWhy.\n\nStory: UXC-206", {"apps/api/a6/x.ts": "export {}\n"})
+        repo.git("checkout", "-q", "-b", "feat/search")
+        repo.commit("feat: search", {"apps/api/search/q.ts": "export {}\n"})
+        repo.git("checkout", "-q", "main")
+        repo.commit("chore: the trunk moves", {"docs/other.md": "x\n"})
+        c["merge"] = repo.merge("feat/search", "Merge branch 'feat/search'")
+        c["side"] = repo.on_branch("side", "feat: never merged")[0]
+        commit_harness(repo, "chore: harness\n\nNo-story: harness",
+                       {STATE: approval("mixed"), CRITICAL: CRITICAL_TOML})
+        repo.publish()
+        cls.proposed = "".join([
+            proposed_row("UXC-201", c["login"]),                        # kept: touches its path
+            proposed_row("UXC-202", c["elsewhere"]),                    # dropped: diff outside touches
+            proposed_row("UXC-201", c["side"]),                         # dropped: not on the trunk
+            proposed_row("NOPE-9", c["login"]),                         # dropped: no such story
+            proposed_row("UXC-201", c["login"], evidence="again"),      # dropped: duplicate (story, commit)
+            proposed_row("UXC-206", c["login"]),                        # dropped: already on the trunk
+            proposed_row("UXC-207", c["login"], evidence=""),           # dropped: empty evidence
+            proposed_row("UXC-208", c["login"], kind="retract"),        # dropped: kind is not backfill|late
+            proposed_row("UXC-203", c["elsewhere"]),                    # kept: the story has no touches
+            proposed_row("UXC-204", c["pay"]),                          # kept, critical (critical.toml)
+            proposed_row("UXC-205", c["elsewhere"], confidence="low"),  # kept, critical (integrity)
+            proposed_row("UXC-202", c["merge"]),                        # kept: a merge, diffed to its first parent
+        ])
+        repo.write(PROPOSED, cls.proposed)
+
+    def result(self) -> dict:
+        cls = type(self)
+        if "_result" not in cls.__dict__:
+            cls._result = review_filter(self, cls.repo)
+        return cls._result
+
+    def kept(self) -> dict:
+        return {(r["story"], r["commit"]): r for r in self.result()["rows"]}
+
+    def test_LEDGER_015_S2_the_filter_keeps_rows_whose_commit_touches_the_story(self):
+        c = self.c
+        self.assertEqual(set(self.kept()), {("UXC-201", c["login"]), ("UXC-203", c["elsewhere"]),
+                                            ("UXC-204", c["pay"]), ("UXC-205", c["elsewhere"]),
+                                            ("UXC-202", c["merge"])}, self.result())
+
+    def test_LEDGER_015_S2_the_filter_drops_what_it_can_prove_wrong_with_a_reason(self):
+        c = self.c
+        dropped = {(d["story"], d["commit"], d["kind"]): d for d in self.result()["dropped"]}
+        for why, key in {"diff outside the story's touches": ("UXC-202", c["elsewhere"], "backfill"),
+                         "commit not on the trunk": ("UXC-201", c["side"], "backfill"),
+                         "unknown story": ("NOPE-9", c["login"], "backfill"),
+                         "story already on the trunk": ("UXC-206", c["login"], "backfill"),
+                         "empty evidence": ("UXC-207", c["login"], "backfill"),
+                         "retract kind": ("UXC-208", c["login"], "retract")}.items():
+            with self.subTest(why):
+                self.assertIn(key, dropped, self.result()["dropped"])
+                self.assertTrue(str(dropped[key].get("reason", "")).strip(), "each dropped row says why")
+        self.assertEqual(sum(1 for d in self.result()["dropped"] if (d["story"], d["commit"]) == ("UXC-201", c["login"])),
+                         1, "the duplicate of a kept row is dropped once, the first one is kept")
+        self.assertEqual([r["evidence"] for r in self.result()["rows"] if r["story"] == "UXC-201"],
+                         [f"UXC-201: diff of {c['login'][:7]}"], "the first of two identical rows is the one kept")
+
+    def test_LEDGER_015_S2_the_filter_flags_critical_stories(self):
+        flags = {k[0]: r["critical"] for k, r in self.kept().items()}
+        self.assertEqual(flags, {"UXC-201": False, "UXC-203": False, "UXC-204": True, "UXC-205": True,
+                                 "UXC-202": False}, "critical: touches a critical.toml area, or the integrity dimension")
+
+    def test_LEDGER_015_S2_dx_the_filter_output_schema(self):
+        d = self.result()
+        self.assertEqual(d["schema"], 1)
+        self.assertEqual(d["mode"], "mixed")
+        self.assertEqual(d["human_for"], ["critical", "disagreement", "low-confidence"], "the default of mixed")
+        self.assertEqual(d["sample"], 0.05, "the default sample")
+        self.assertRegex(d["run"], RUN_ID.pattern)
+        for row in d["rows"]:
+            with self.subTest(row["story"]):
+                self.assertLessEqual({"story", "commit", "kind", "evidence", "confidence", "critical", "title", "path"},
+                                     set(row))
+                self.assertEqual(row["path"], f"backlog/stories/{row['story']}-s.md")
+                self.assertEqual(row["title"], f"Title of {row['story']}")
+        self.assertEqual(self.kept()[("UXC-205", self.c["elsewhere"])]["confidence"], "low")
+
+    def test_LEDGER_015_S2_the_run_id_is_deterministic_and_the_filter_writes_nothing(self):
+        repo = self.repo
+        first = self.result()["run"]
+        again = review_filter(self, repo)
+        self.assertEqual(again["run"], first, "no clock, no randomness: the same trunk and rows give the same run")
+        self.assertEqual((repo.path / PROPOSED).read_text(), self.proposed, "the proposed file is untouched")
+        self.assertFalse((repo.path / CORR).exists(), "nothing is approved")
+        self.assertFalse((repo.path / REVIEWS).exists(), "the filter writes no review file")
+
+    def test_LEDGER_015_dx_review_spellings_print_the_usage_and_exit_2(self):
+        for args in (["review"], ["review", "--filter", "x"], ["review", "--reject-sample"], ["review", "--nope"],
+                     ["backfill", "--accept", "--delegated"], ["backfill", "--accept", "--delegated", "r1", "x"],
+                     ["backfill", "--delegated", "r1"]):
+            with self.subTest(args=args):
+                r = self.repo.ledger(*args, extra_env=agent_env())
+                self.assertNotIn("Traceback", r.stderr)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+
+class LedgerDelegatedAcceptCase(LedgerCase):
+    """A fresh delegated fixture per test: propose rows, run the filter, write the review file with the judges'
+    verdicts, then `backfill --accept --delegated <run>` as an agent (CLAUDECODE set, no terminal)."""
+
+    def build(self, state: str | None) -> tuple[GitRepo, dict]:
+        return build_delegated(self.tmp, state)
+
+    def review(self, repo: GitRepo, rows: dict, extra: list[dict] = (), override: dict | None = None) -> str:
+        """Propose `rows` (story -> commit), run the filter and write its rows to the review file with the verdicts
+        of `override` (story -> verdicts kwargs, default all yes); `extra` rows are added as they are."""
+        repo.write(PROPOSED, "".join(proposed_row(s, c) for s, c in rows.items()))
+        d = review_filter(self, repo)
+        run = d["run"]
+        out = [{**r, **verdicts(**(override or {}).get(r["story"], {}))} for r in d["rows"]]
+        repo.write(f"{REVIEWS}/{run}.json", review_text(run, out + list(extra)))
+        return run
+
+    def accept(self, repo: GitRepo, run: str) -> subprocess.CompletedProcess:
+        r = repo.ledger("backfill", "--accept", "--delegated", run, extra_env=agent_env())
+        self.assertNotIn("Traceback", r.stderr)
+        return r
+
+    def file(self, repo: GitRepo, run: str) -> dict:
+        return json.loads((repo.path / REVIEWS / f"{run}.json").read_text())
+
+    def decisions(self, repo: GitRepo, run: str) -> dict:
+        return {r["story"]: r.get("decision") for r in self.file(repo, run)["rows"]}
+
+    def land(self, repo: GitRepo, run: str) -> None:
+        """Commit the rows and the review file to the trunk and publish (the workflow's Decide step)."""
+        files = [f"{REVIEWS}/{run}.json"] + ([CORR] if (repo.path / CORR).exists() else [])
+        repo.git("add", "-f", *files)
+        repo.git("commit", "-q", "-m", f"chore: delegated review {run}\n\nNo-story: ledger", when=repo.next_date())
+        repo.publish()
+
+    def corr(self, repo: GitRepo) -> list[dict]:
+        return corrections_rows(repo) if (repo.path / CORR).exists() else []
+
+    def pending(self, repo: GitRepo) -> list[dict]:
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error"), [], data["diffs"])
+        return [d for d in data["diffs"] if d["code"] == "PENDING_REVIEW"]
+
+
+class LedgerDelegatedDecisionTest(LedgerDelegatedAcceptCase):
+    """S3–S6 and the decision table of D5: ledger.py computes each row's decision from the verdicts, the mode and
+    the trunk (never from the file); only an approved row is written, as delegated:<run>."""
+
+    def test_LEDGER_015_S3_INV_005_agreement_and_a_failed_refutation_approve_as_delegated(self):
+        repo, c = self.build(approval("delegated"))
+        run = self.review(repo, {"UXC-301": c["UXC-301"]})
+        before = today_dates()
+        r = self.accept(repo, run)
+        dates = before | today_dates()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((repo.path / CORR).read_text().startswith("#"), "a new file starts with its header")
+        [row] = corrections_rows(repo)
+        self.assertEqual(set(row), ROW_KEYS)
+        self.assertEqual((row["story"], row["commit"], row["kind"]), ("UXC-301", c["UXC-301"], "backfill"))
+        self.assertEqual(row["approver"], f"delegated:{run}")
+        self.assertIn(row["date"], dates)
+        self.assertEqual(row["evidence"], f"UXC-301: diff of {c['UXC-301'][:7]}")
+        f = self.file(repo, run)
+        [rr] = f["rows"]
+        self.assertEqual(rr["decision"], "approved")
+        self.assertEqual((rr["judge_a"]["verdict"], rr["judge_b"]["verdict"], rr["skeptic"]["refuted"]),
+                         ("yes", "yes", False), "the verdicts stay in the review file")
+        self.assertEqual(f["mode"], "delegated")
+        self.assertEqual(f["sample"], [{"story": "UXC-301", "commit": c["UXC-301"]}], "ceil(0.05 × 1) = 1 row")
+        self.assertEqual(proposed_rows(repo) if (repo.path / PROPOSED).exists() else [], [],
+                         "an approved row leaves the proposed file")
+        self.land(repo, run)
+        s = self.stories(repo)["UXC-301"]
+        self.assertEqual(s["state"], "on-trunk")
+        self.assertIs(s["reconstructed"], True)
+        self.assertEqual(s["reconstructed_by"], "delegated")
+        self.assertEqual(self.pending(repo), [])
+        self.assertEqual(ledger_check(self, repo)["diffs"], [])
+
+    def test_LEDGER_015_S3_INV_008_the_delegated_accept_appends_without_rewriting_and_skips_an_active_row(self):
+        repo, c = self.build(approval("delegated"))
+        old = corrections(toml_row(story="UXC-302", commit=c["UXC-302"])) + "# a person's note  \n"
+        repo.commit("chore: corrections\n\nNo-story: ledger", {CORR: old})
+        repo.publish()
+        run = self.review(repo, {"UXC-301": c["UXC-301"]},
+                          extra=[review_row("UXC-302", c["UXC-302"], decision=None)])
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        new = (repo.path / CORR).read_text()
+        self.assertTrue(new.startswith(old), "the bytes already there are never rewritten")
+        rows = corrections_rows(repo)
+        self.assertEqual([(x["story"], x["approver"]) for x in rows], [("UXC-302", "Leo"), ("UXC-301", f"delegated:{run}")],
+                         "UXC-302 is already on the trunk: dropped or skipped, never written twice")
+
+    def test_LEDGER_015_S4_disagreement_goes_to_the_persons_queue_in_mixed(self):
+        repo, c = self.build(approval("mixed"))
+        run = self.review(repo, {"UXC-301": c["UXC-301"]}, override={"UXC-301": {"a": "yes", "b": "no", "refuted": None}})
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("UXC-301", r.stdout, "the person's queue is printed")
+        self.assertEqual(self.corr(repo), [], "nothing is written")
+        self.assertEqual(self.decisions(repo, run), {"UXC-301": "person"})
+        self.assertEqual([(x["story"], x["commit"]) for x in proposed_rows(repo)], [("UXC-301", c["UXC-301"])],
+                         "the row stays in the proposed file, for the person")
+        self.land(repo, run)
+        s = self.stories(repo)["UXC-301"]
+        self.assertEqual(s["state"], "ready", "INV-005: the story is not on the trunk")
+        self.assertIs(s["reconstructed"], False)
+        pending = self.pending(repo)
+        self.assertEqual(len(pending), 1, pending)
+        self.assertEqual(pending[0]["level"], "warning")
+        self.assertIn("UXC-301", pending[0]["detail"])
+
+    def test_LEDGER_015_S5_a_refutation_stays_pending_in_delegated(self):
+        repo, c = self.build(approval("delegated"))
+        run = self.review(repo, {"UXC-301": c["UXC-301"], "UXC-302": c["UXC-302"]},
+                          override={"UXC-301": {"refuted": True}, "UXC-302": {"a": "no", "b": "yes", "refuted": None}})
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.corr(repo), [], "a refuted or disputed row is not written")
+        self.assertEqual(self.decisions(repo, run), {"UXC-301": "pending", "UXC-302": "pending"})
+        self.land(repo, run)
+        s = self.stories(repo)
+        self.assertEqual((s["UXC-301"]["state"], s["UXC-302"]["state"]), ("ready", "ready"))
+        pending = self.pending(repo)
+        self.assertEqual(sorted(sid for sid in ("UXC-301", "UXC-302") for d in pending if sid in d["detail"]),
+                         ["UXC-301", "UXC-302"], pending)
+        self.assertEqual(len(pending), 2, "one PENDING_REVIEW per story")
+        self.assertTrue(all(d["level"] == "warning" for d in pending))
+
+    def test_LEDGER_015_S6_a_critical_story_goes_to_the_person_in_mixed_whatever_the_judges_say(self):
+        repo, c = self.build(approval("mixed"))
+        run = self.review(repo, {"UXC-303": c["UXC-303"], "UXC-304": c["UXC-304"]},
+                          override={s: {"model": "opus"} for s in ("UXC-303", "UXC-304")})
+        f = self.file(repo, run)  # the review file says not critical: ledger.py reads the trunk, never the file
+        for row in f["rows"]:
+            row["critical"] = False
+        repo.write(f"{REVIEWS}/{run}.json", json.dumps(f))
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.decisions(repo, run), {"UXC-303": "person", "UXC-304": "person"},
+                         "critical.toml area and the integrity dimension")
+        self.assertEqual(self.corr(repo), [])
+
+    def test_LEDGER_015_S6_a_critical_story_in_delegated_needs_opus_verdicts(self):
+        repo, c = self.build(approval("delegated"))
+        run = self.review(repo, {"UXC-303": c["UXC-303"], "UXC-304": c["UXC-304"]},
+                          override={"UXC-303": {"model": "sonnet"}, "UXC-304": {"model": "opus"}})
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.decisions(repo, run), {"UXC-303": "pending", "UXC-304": "approved"})
+        self.assertEqual([x["story"] for x in self.corr(repo)], ["UXC-304"])
+
+    def test_LEDGER_015_S2_a_row_the_filter_drops_is_never_approved_whatever_the_judges_say(self):
+        repo, c = self.build(approval("delegated"))
+        # UXC-302's touches are apps/api/search/; UXC-301's commit touches apps/api/login/ only.
+        run = self.review(repo, {"UXC-301": c["UXC-301"]}, extra=[review_row("UXC-302", c["UXC-301"], decision=None)])
+        repo.write(PROPOSED, proposed_row("UXC-301", c["UXC-301"]) + proposed_row("UXC-302", c["UXC-301"]))
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([x["story"] for x in self.corr(repo)], ["UXC-301"])
+        self.assertEqual(self.decisions(repo, run)["UXC-302"], "dropped")
+        left = proposed_rows(repo) if (repo.path / PROPOSED).exists() else []
+        self.assertEqual(left, [], "approved and dropped rows leave the proposed file")
+
+    def test_LEDGER_015_logic_mixed_low_confidence_and_human_for(self):
+        """D5's mixed rows: low confidence goes to the person only when listed; a disagreement not listed is pending;
+        an empty human_for lets agreeing judges approve a critical story."""
+        cases = [(["critical", "disagreement", "low-confidence"], "UXC-301", {}, "low", "person"),
+                 (["critical"], "UXC-301", {}, "low", "approved"),
+                 (["critical"], "UXC-302", {"a": "no", "b": "yes", "refuted": None}, "medium", "pending"),
+                 ([], "UXC-303", {}, "medium", "approved")]
+        for human_for, story, v, confidence, expected in cases:
+            with self.subTest(human_for=human_for, story=story, expected=expected):
+                self.tmp = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, self.tmp, True)
+                repo, c = self.build(approval("mixed", human_for=human_for))
+                repo.write(PROPOSED, proposed_row(story, c[story], confidence=confidence))
+                d = review_filter(self, repo)
+                self.assertEqual(d["human_for"], human_for)
+                run = d["run"]
+                repo.write(f"{REVIEWS}/{run}.json", review_text(run, [{**x, **verdicts(**v)} for x in d["rows"]]))
+                r = self.accept(repo, run)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.decisions(repo, run), {story: expected})
+                self.assertEqual([x["story"] for x in self.corr(repo)], [story] if expected == "approved" else [])
+
+    def test_LEDGER_015_logic_the_sample_is_the_first_rows_by_hash_of_the_run(self):
+        repo, c = self.build(approval("delegated", sample=0.5))
+        rows = {s: c[s] for s in ("UXC-301", "UXC-302", "UXC-305")}
+        run = self.review(repo, rows)
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        order = sorted(rows.items(), key=lambda sc: hashlib.sha256((run + sc[0] + sc[1]).encode()).hexdigest())
+        self.assertEqual(self.file(repo, run)["sample"], [{"story": s, "commit": x} for s, x in order[:2]],
+                         "ceil(0.5 × 3) = 2, ordered by sha256(run + story + commit)")
+
+    def test_LEDGER_015_logic_a_malformed_review_is_refused_and_nothing_is_written(self):
+        repo, c = self.build(approval("delegated"))
+        run = self.review(repo, {"UXC-301": c["UXC-301"]})
+        good = (repo.path / REVIEWS / f"{run}.json").read_text()
+        proposed = (repo.path / PROPOSED).read_text()
+        d = json.loads(good)
+        no_b = json.loads(good)
+        del no_b["rows"][0]["judge_b"]
+        no_skeptic = json.loads(good)
+        no_skeptic["rows"][0]["skeptic"] = None
+        other_run = {**d, "run": "rother"}
+        for why, text in {"not JSON": "{", "another run": json.dumps(other_run), "no judge_b": json.dumps(no_b),
+                          "both yes and no skeptic": json.dumps(no_skeptic), "missing": None}.items():
+            with self.subTest(why):
+                path = repo.path / REVIEWS / f"{run}.json"
+                if text is None:
+                    path.unlink()
+                else:
+                    path.write_text(text)
+                r = self.accept(repo, run)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertFalse((repo.path / CORR).exists(), "nothing written")
+                self.assertEqual((repo.path / PROPOSED).read_text(), proposed, "the proposal is kept")
+        for bad in ("../evil", "a/b", ".hidden", "x" * 65):
+            with self.subTest(run=bad):
+                r = self.accept(repo, bad)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertFalse((repo.path / CORR).exists())
+
+    def test_LEDGER_015_D1_an_approval_only_in_the_work_tree_enables_nothing(self):
+        repo, c = self.build(approval())
+        repo.state(approval("delegated"))  # the agent's uncommitted edit
+        run = self.review(repo, {"UXC-301": c["UXC-301"]})
+        self.assertEqual(review_filter(self, repo)["mode"], "human", "the mode is the trunk's")
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertFalse((repo.path / CORR).exists())
+
+    def test_LEDGER_015_D1_an_invalid_mode_or_state_file_is_human(self):
+        repo, c = self.build(approval("yolo"))
+        run = self.review(repo, {"UXC-301": c["UXC-301"]})
+        for why, text in {"unknown mode": None, "invalid TOML": "[ledger.approval\nmode = 'delegated'\n"}.items():
+            with self.subTest(why):
+                if text is not None:
+                    commit_harness(repo, "chore: state\n\nNo-story: harness", {STATE: text})
+                    repo.publish()
+                self.assertEqual(review_filter(self, repo)["mode"], "human")
+                r = self.accept(repo, run)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertFalse((repo.path / CORR).exists())
+
+
+class LedgerDelegatedHumanModeTest(LedgerDelegatedAcceptCase):
+    """S9: without a [ledger.approval] table nothing changes: only a person accepts rows (LEDGER-004)."""
+
+    def test_LEDGER_015_S9_without_delegation_the_delegated_accept_is_refused(self):
+        repo, c = self.build(approval())
+        run = self.review(repo, {"UXC-301": c["UXC-301"]})
+        self.assertEqual(review_filter(self, repo)["mode"], "human")
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("human", (r.stdout + r.stderr).lower(), "it says the project approves by a person")
+        self.assertFalse((repo.path / CORR).exists())
+        r = repo.ledger("backfill", "--accept", extra_env=agent_env())
+        self.assertEqual(r.returncode, 1, "the person's accept still needs a person's terminal")
+        self.assertFalse((repo.path / CORR).exists())
+
+    def test_LEDGER_015_S9_a_delegated_row_without_its_review_file_is_correction_invalid(self):
+        repo, c = self.build(None)
+        repo.commit("chore: corrections\n\nNo-story: ledger", {CORR: corrections(delegated_row("UXC-301", c["UXC-301"], "rgone"))})
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertIn("CORRECTION_INVALID", codes(data, "error"), data["diffs"])
+        self.assertIn("rgone", details(data, "CORRECTION_INVALID"))
+        self.assertIs(self.stories(repo)["UXC-301"]["reconstructed"], False)
+
+
+class LedgerDelegatedRecordTest(LedgerCase):
+    """S7 and D6: who approved shows in the summary and the JSON; a delegated row counts only when its committed
+    review file approves it (CORRECTION_INVALID otherwise, naming the run)."""
+
+    @classmethod
+    def setUpClass(cls):
+        repo, c = cls.repo, cls.c = build_delegated(cls.class_tmp(), approval("delegated"))
+        reviews = {"rok": [review_row("UXC-302", c["UXC-302"])],
+                   "rnob": [review_row("UXC-305", c["UXC-305"], b="no", refuted=None)],
+                   "rperson": [review_row("UXC-306", c["UXC-306"], decision="person")]}
+        files = {f"{REVIEWS}/{run}.json": review_text(run, rows) for run, rows in reviews.items()}
+        files[CORR] = corrections(toml_row(story="UXC-301", commit=c["UXC-301"]),
+                                  delegated_row("UXC-302", c["UXC-302"], "rok"),
+                                  delegated_row("UXC-304", c["UXC-304"], "rmissing"),
+                                  delegated_row("UXC-305", c["UXC-305"], "rnob"),
+                                  delegated_row("UXC-306", c["UXC-306"], "rperson"))
+        commit_harness(repo, "chore: corrections\n\nNo-story: ledger", files)
+        repo.publish()
+
+    def test_LEDGER_015_S7_INV_005_the_json_says_who_approved(self):
+        s = self.stories(self.repo)
+        self.assertEqual((s["UXC-301"]["reconstructed"], s["UXC-301"]["reconstructed_by"]), (True, "person"))
+        self.assertEqual((s["UXC-302"]["reconstructed"], s["UXC-302"]["reconstructed_by"]), (True, "delegated"))
+        self.assertEqual(s["UXC-302"]["correction"]["approver"], "delegated:rok")
+        self.assertIsNone(s["UXC-303"]["reconstructed_by"], "null unless reconstructed")
+
+    def test_LEDGER_015_S7_the_summary_says_reconstructed_person_or_delegated(self):
+        r = self.repo.ledger()
+        self.assertNotIn("Traceback", r.stderr)
+        lines = r.stdout.splitlines()
+        person = [x for x in lines if x.startswith("reconstructed (person):")]
+        delegated = [x for x in lines if x.startswith("reconstructed (delegated):")]
+        self.assertEqual(len(person), 1, r.stdout)
+        self.assertEqual(len(delegated), 1, r.stdout)
+        self.assertIn("UXC-301", person[0])
+        self.assertNotIn("UXC-302", person[0])
+        self.assertIn("UXC-302", delegated[0])
+        self.assertNotIn("UXC-301", delegated[0])
+
+    def test_LEDGER_015_S7_dx_the_spanish_summary(self):
+        self.repo.state(approval("delegated") + '\n[dashboard]\nlang = "es"\n')
+        self.addCleanup(self.repo.state, approval("delegated"))
+        out = self.repo.ledger().stdout
+        self.assertRegex(out, r"(?m)^reconstruidas \(persona\): .*UXC-301")
+        self.assertRegex(out, r"(?m)^reconstruidas \(delegada\): .*UXC-302")
+
+    def test_LEDGER_015_D6_a_delegated_row_counts_only_when_its_review_file_approves_it(self):
+        data = ledger_check(self, self.repo)
+        invalid = [d["detail"] for d in data["diffs"] if d["code"] == "CORRECTION_INVALID"]
+        for run in ("rmissing", "rnob", "rperson"):
+            with self.subTest(run):
+                self.assertEqual(sum(run in d for d in invalid), 1, invalid)
+        self.assertFalse(any("rok" in d for d in invalid), invalid)
+        s = self.stories(self.repo)
+        for sid in ("UXC-304", "UXC-305", "UXC-306"):
+            self.assertIs(s[sid]["reconstructed"], False, sid)
+        self.assertIs(s["UXC-302"]["reconstructed"], True)
+
+
+class LedgerDelegatedRejectSampleTest(LedgerCase):
+    """S8 and D9: `review --reject-sample <run>`, a person in their terminal, retracts every row of that run
+    (append-only, INV-008) and sends them back to the proposed file; other runs and the person's rows stay."""
+
+    def build(self) -> tuple[GitRepo, dict]:
+        repo, c = build_delegated(self.tmp, approval("delegated"))
+        files = {f"{REVIEWS}/rs.json": review_text("rs", [review_row("UXC-301", c["UXC-301"], evidence="E1"),
+                                                          review_row("UXC-302", c["UXC-302"], evidence="E2")]),
+                 f"{REVIEWS}/rt.json": review_text("rt", [review_row("UXC-306", c["UXC-306"])]),
+                 CORR: corrections(delegated_row("UXC-301", c["UXC-301"], "rs", evidence="E1"),
+                                   delegated_row("UXC-302", c["UXC-302"], "rs", evidence="E2"),
+                                   toml_row(story="UXC-305", commit=c["UXC-305"]),
+                                   delegated_row("UXC-306", c["UXC-306"], "rt"))}
+        commit_harness(repo, "chore: corrections\n\nNo-story: ledger", files)
+        repo.publish()
+        s = self.stories(repo)
+        self.assertTrue(all(s[x]["reconstructed"] for x in ("UXC-301", "UXC-302", "UXC-305", "UXC-306")),
+                        "D6: delegated rows backed by their committed review file count")
+        return repo, c
+
+    def test_LEDGER_015_S8_INV_008_a_rejected_sample_retracts_every_row_of_the_run(self):
+        repo, c = self.build()
+        old = (repo.path / CORR).read_text()
+        before = today_dates()
+        code, out = run_in_pty(repo, "review", "--reject-sample", "rs", answer="y\n")
+        dates = before | today_dates()
+        self.assertNotIn("Traceback", out)
+        self.assertEqual(code, 0, out)
+        self.assertIn("[y/N]", out)
+        new = (repo.path / CORR).read_text()
+        self.assertTrue(new.startswith(old), "rows are only added")
+        added = corrections_rows(repo)[4:]
+        self.assertEqual([(r["story"], r["commit"], r["kind"]) for r in added],
+                         [("UXC-301", c["UXC-301"], "retract"), ("UXC-302", c["UXC-302"], "retract")])
+        for r in added:
+            self.assertEqual(r["approver"], "T")
+            self.assertIn(r["date"], dates)
+            self.assertEqual(r["evidence"], "sample of delegated run rs rejected")
+        back = [(r["story"], r["commit"], r["kind"], r["evidence"]) for r in proposed_rows(repo)]
+        self.assertEqual(back, [("UXC-301", c["UXC-301"], "backfill", "E1"), ("UXC-302", c["UXC-302"], "backfill", "E2")],
+                         "the rows go back to review")
+        repo.git("add", CORR)
+        repo.git("commit", "-q", "-m", "chore: reject sample rs\n\nNo-story: ledger", when=repo.next_date())
+        repo.publish()
+        s = self.stories(repo)
+        for sid in ("UXC-301", "UXC-302"):
+            self.assertEqual((s[sid]["state"], s[sid]["reconstructed"]), ("ready", False), sid)
+        for sid in ("UXC-305", "UXC-306"):
+            self.assertIs(s[sid]["reconstructed"], True, f"{sid}: another run and the person's rows stay")
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+
+    def test_LEDGER_015_S8_reject_sample_is_a_persons_and_needs_rows_to_retract(self):
+        repo, _ = self.build()
+        old = (repo.path / CORR).read_text()
+        r = repo.ledger("review", "--reject-sample", "rs")
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 1, "no terminal: an agent")
+        code, out = run_in_pty(repo, "review", "--reject-sample", "rs", answer="y\n", extra_env=agent_env())
+        self.assertEqual(code, 1, "Claude Code's shell, even under a pty")
+        code, out = run_in_pty(repo, "review", "--reject-sample", "rnone", answer="y\n")
+        self.assertNotIn("Traceback", out)
+        self.assertEqual(code, 1, "nothing to retract")
+        self.assertEqual((repo.path / CORR).read_text(), old, "nothing written")
+        self.assertFalse((repo.path / PROPOSED).exists())
 
 
 if __name__ == "__main__":
