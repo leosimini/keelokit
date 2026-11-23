@@ -367,7 +367,8 @@ class GuardApprovalModeTest(unittest.TestCase):
                 self.refused_then_allowed()
                 sh(self.repo, "git", "reset", "-q", "--", STATE)
         with self.subTest("deleted"):
-            sh(self.repo, "git", "rm", "-q", STATE)
+            rm = sh(self.repo, "git", "rm", "-qf", STATE)
+            self.assertEqual(rm.returncode, 0, f"fixture: git rm failed\n{rm.stderr}")
             self.refused_then_allowed()
 
     def test_LEDGER_015_S1_a_commit_that_leaves_the_table_equal_passes(self):
