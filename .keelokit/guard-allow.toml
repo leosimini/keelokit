@@ -1,1 +1,5 @@
-# no entries yet
+[[allow]]
+rule = "SEC-1"
+path = "apps/mobile/google-services.json"
+reason = "Firebase key, public by design"
+approver = "Leo"
