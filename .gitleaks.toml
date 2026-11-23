@@ -1,0 +1,9 @@
+# The secret scan (SEC-1) runs gitleaks' default rules on the whole history, except two places
+# whose "secrets" are fakes on purpose: the guard's tests, which feed it fake keys to prove it
+# blocks them, and the bug bash reports that quote those tests' commands as evidence.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake secrets that test the guard, and the bug bash reports that quote them"
+paths = ['''^tests/test_guard\.py$''', '''^docs/bugbash/''']

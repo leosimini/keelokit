@@ -1,0 +1,71 @@
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, {% if 'api' in apps %}beforeEach, {% endif %}expect, it{% if 'api' in apps %}, vi{% endif %} } from 'vitest';
+import { App } from './App';
+import { t } from './i18n';
+{%- if 'api' in apps %}
+
+const stubFetch = (impl: () => Promise<Response>) => {
+  const fetchMock = vi.fn(impl);
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+};
+
+// No test reaches a real API; by default the health request never settles.
+beforeEach(() => {
+  stubFetch(() => new Promise(() => {}));
+});
+{%- endif %}
+
+afterEach(() => {
+  cleanup();
+{%- if 'api' in apps %}
+  vi.unstubAllGlobals();
+{%- endif %}
+});
+
+it('shows the product name as the page heading', () => {
+  render(<App />);
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(t('app.name'));
+});
+{%- if 'api' in apps %}
+
+it('says it is checking the API while the request is in flight', () => {
+  render(<App />);
+  expect(screen.getByRole('status').textContent).toBe(t('health.checking'));
+});
+
+it('shows a healthy API', async () => {
+  const body = JSON.stringify({ status: 'ok', db: 'up' });
+  const fetchMock = stubFetch(async () => new Response(body));
+
+  render(<App />);
+
+  expect(await screen.findByText(t('health.ok'))).toBeTruthy();
+  expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/health$/));
+});
+
+it('shows a degraded API answered with 503', async () => {
+  const body = JSON.stringify({ status: 'degraded', db: 'down' });
+  stubFetch(async () => new Response(body, { status: 503 }));
+
+  render(<App />);
+
+  expect(await screen.findByText(t('health.degraded'))).toBeTruthy();
+});
+
+it('shows the error state when the API cannot be reached', async () => {
+  stubFetch(() => Promise.reject(new TypeError('Failed to fetch')));
+
+  render(<App />);
+
+  expect(await screen.findByText(t('health.error'))).toBeTruthy();
+});
+
+it('shows the error state when the payload breaks the contract', async () => {
+  stubFetch(async () => new Response(JSON.stringify({ status: 'fine' })));
+
+  render(<App />);
+
+  expect(await screen.findByText(t('health.error'))).toBeTruthy();
+});
+{%- endif %}

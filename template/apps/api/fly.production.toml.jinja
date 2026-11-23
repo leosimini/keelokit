@@ -1,0 +1,40 @@
+# Fly.io, production. Deploy from the repo root: fly deploy --config apps/api/fly.production.toml
+# Secrets (the keys in README's apps/api/.env block) go in with `fly secrets set`, never here.
+
+app = "{{ project_slug }}-api"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  # Relative to this file; the build context is the directory you deploy from (the repo root).
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"
+  # Runs on a temporary machine from the new image before any machine is replaced; if it fails,
+  # the old release keeps serving. So each migration must work with the release still running.
+  release_command = "/app/node_modules/.bin/prisma migrate deploy --config /app/prisma.config.ts"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 2
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "5s"
+    method = "GET"
+    # 503 while the database is unreachable, so a release that can't reach it never goes live.
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

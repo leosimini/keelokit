@@ -1,0 +1,23 @@
+import type { HealthResponse } from '@{{ project_slug }}/shared';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import { PrismaService } from '../prisma.service.js';
+
+/** Fly's health check. 503 while the database is unreachable, so a broken release never goes live. */
+@Controller('health')
+export class HealthController {
+  constructor(private readonly prisma: PrismaService) {}
+
+  @Get()
+  async check(): Promise<HealthResponse> {
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return { status: 'ok', db: 'up' };
+    } catch {
+      // An HttpException, so Nest answers without logging it as an error (no Sentry event per poll).
+      throw new ServiceUnavailableException({
+        status: 'degraded',
+        db: 'down',
+      } satisfies HealthResponse);
+    }
+  }
+}

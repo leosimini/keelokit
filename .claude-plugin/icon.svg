@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Keelokit">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B4CC4"/>
+      <stop offset="0.55" stop-color="#2F8FEF"/>
+      <stop offset="1" stop-color="#63C0FB"/>
+    </linearGradient>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0D3F95"/>
+      <stop offset="0.5" stop-color="#0A2D74"/>
+      <stop offset="1" stop-color="#051A4C"/>
+    </linearGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE45A"/>
+      <stop offset="0.55" stop-color="#FBC82A"/>
+      <stop offset="1" stop-color="#E9A415"/>
+    </linearGradient>
+    <linearGradient id="foil" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F7963A"/>
+      <stop offset="0.6" stop-color="#EE7B24"/>
+      <stop offset="1" stop-color="#D8621A"/>
+    </linearGradient>
+    <linearGradient id="wing" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFA24A"/>
+      <stop offset="1" stop-color="#D9651C"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9FDCFF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#9FDCFF" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="512" height="512" rx="112"/></clipPath>
+    <clipPath id="underwater">
+      <path d="M0 271 C36 258 66 246 96 244 C140 241 172 262 206 274 C238 284 300 283 512 272 V512 H0 Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="512" height="512" fill="url(#sky)"/>
+
+    <!-- sea, with a soft wave on the left -->
+    <path d="M0 271 C36 258 66 246 96 244 C140 241 172 262 206 274 C238 284 300 283 512 272 V512 H0 Z" fill="url(#sea)"/>
+    <!-- lit band just under the surface -->
+    <path d="M0 271 C36 258 66 246 96 244 C140 241 172 262 206 274 C238 284 300 283 512 272 V292 C300 302 238 302 206 292 C172 280 140 260 96 262 C66 264 36 276 0 289 Z" fill="url(#shine)" opacity="0.55"/>
+    <!-- the surface line -->
+    <path d="M0 271 C36 258 66 246 96 244 C140 241 172 262 206 274 C238 284 300 283 512 272" fill="none" stroke="#E8F7FF" stroke-width="3.5" stroke-linecap="round"/>
+
+    <!-- the foil: stabilizer, fuselage, front wing, mast -->
+    <path d="M104 356 C120 348 164 347 192 358 C168 367 126 368 104 361 Z" fill="url(#wing)"/>
+    <path d="M130 361 C172 364 250 369 338 379 L338 388 C250 382 170 374 130 368 Z" fill="#E36E1E"/>
+    <path d="M276 378 C310 364 386 366 436 390 C394 406 316 406 276 388 Z" fill="url(#wing)"/>
+    <path d="M276 196 L300 196 C294 238 282 290 270 336 C264 358 262 368 268 380 L220 380 C236 373 245 362 249 344 C261 290 271 238 276 196 Z" fill="url(#foil)"/>
+
+    <!-- what's under the surface sits a little deeper in the blue -->
+    <g clip-path="url(#underwater)">
+      <rect y="240" width="512" height="272" fill="#0A2D74" opacity="0.12"/>
+    </g>
+
+    <!-- the board -->
+    <path d="M102 208 C100 192 124 180 174 168 L374 122 C406 114 428 102 440 90 C450 116 444 140 420 152 C360 180 262 200 156 222 C122 228 104 224 102 208 Z" fill="url(#board)"/>
+    <path d="M114 196 C150 182 250 160 378 132 C404 126 424 114 437 100" fill="none" stroke="#FFF3A6" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
+    <path d="M146 214 C250 194 350 172 420 146" fill="none" stroke="#D98E10" stroke-width="4" stroke-linecap="round" opacity="0.6"/>
+  </g>
+</svg>

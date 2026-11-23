@@ -1,0 +1,95 @@
+# What this project is, as Keelokit understands it. It decides which house rules apply (a rule with
+# `needs` applies only when every trait it lists is here), which lenses a bug bash runs, and what the
+# dashboard shows. Keep it true: the doctor warns when the repo shows a trait that's missing here
+# (a first migration, a new app, a deploy config), and plan-intake, build-story and check-health
+# update it as the product grows.
+#
+# kind: web-product · mobile-app · api-service · library · cli · plugin · static-site · other
+# traits: typescript · ui · web · mobile · site · api · database · hosted · i18n · personal-data ·
+#         payments · developer-facing
+{%- if mode == 'project' %}
+{%- set traits = ['typescript'] %}
+{%- if 'web' in apps or 'mobile' in apps or 'site' in apps %}{% set traits = traits + ['ui'] %}{% endif %}
+{%- if 'web' in apps %}{% set traits = traits + ['web'] %}{% endif %}
+{%- if 'mobile' in apps %}{% set traits = traits + ['mobile'] %}{% endif %}
+{%- if 'site' in apps %}{% set traits = traits + ['site'] %}{% endif %}
+{%- if 'api' in apps %}{% set traits = traits + ['api'] %}{% endif %}
+{%- if 'api' in apps %}{% set traits = traits + ['database'] %}{% endif %}
+{%- if 'api' in apps or 'web' in apps or 'site' in apps %}{% set traits = traits + ['hosted'] %}{% endif %}
+{%- if 'web' in apps or 'mobile' in apps %}{% set traits = traits + ['i18n'] %}{% endif %}
+
+kind = "{{ 'web-product' if 'web' in apps else 'mobile-app' if 'mobile' in apps else 'api-service' if 'api' in apps else 'static-site' }}"
+traits = [{% for t in traits %}"{{ t }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+
+[detected]
+stack = ["TypeScript", "pnpm workspaces"{% if 'api' in apps %}, "NestJS", "Prisma", "PostgreSQL"{% endif %}{% if 'web' in apps %}, "Vite + React"{% endif %}{% if 'mobile' in apps %}, "Expo"{% endif %}{% if 'site' in apps %}, "Astro"{% endif %}]
+tests = ["Vitest", "Playwright"{% if 'mobile' in apps %}, "Jest"{% endif %}]
+ci = ["GitHub Actions"]
+hosting = [{% if 'api' in apps %}"Fly.io (API, PostgreSQL)"{% endif %}{% if 'api' in apps and ('web' in apps or 'site' in apps) %}, {% endif %}{% if 'web' in apps or 'site' in apps %}"a static host (web, site)"{% endif %}]
+{%- else %}
+
+# An existing repo: /keelokit:project-adopt diagnoses it from the code and fills this in.
+kind = "unknown"
+traits = []
+
+[detected]
+stack = []
+tests = []
+ci = []
+hosting = []
+{%- endif %}
+
+# How `bash .keelokit/bin/run-local.sh` launches the Expo app and its API on this Mac
+# (/keelokit:run-local). Every key is optional: what is missing is detected from the repo, and
+# `run-local.sh detect` prints what it finds. Keys, with an example:
+#   mobile_dir      = "apps/mobile"            where app.json or app.config.* is
+#   android_package = "com.demo.app"           what `adb` installs and uninstalls
+#   ios_bundle      = "com.demo.app"           the iOS bundle id (is the app installed on the simulator?)
+#   scheme          = "demo"                   the app's URL scheme (opens the installed app on Metro)
+#   pm              = "pnpm"                   pnpm | npm | yarn (classic or berry) | bun, from the lockfile
+#   api_dir         = "apps/api"               "" means no backend
+#   api_start       = "pnpm run dev:api"
+#   api_ready_url   = "http://localhost:3000/health"   "" waits for the port instead
+#   api_migrate     = "pnpm --dir apps/api run prisma:migrate:deploy"
+#   api_seed        = ""                       a command, or nothing; it is offered, never run silently
+#   db_service      = "postgres"               the docker compose service; "" means no database
+#   services        = ["redis", "mailpit"]     other compose services started with it (and stopped with it)
+#   api_port        = 3000
+#   api_url_env     = "EXPO_PUBLIC_API_URL"    the variable the app reads for the API address
+#   api_url_suffix  = ""                       a path the address carries, such as "/api/v1"
+#   client          = "auto"                   auto | expo-go | dev-client
+#   android_target  = "ask"                    ask | auto | phone | emulator. ask: with a phone connected and an emulator
+#                                              available it asks which, at a terminal (default: last time's); auto: the phone
+#                                              when one is connected, else it offers the emulator; with --yes or no terminal
+#                                              ask takes the last choice, else the phone
+#   users_file      = "docs/test-users.md"     a file of the project that lists the test accounts (printed by `users`, shown
+#                                              when a launch starts); otherwise docs/test-users.md, docs/local-testing.md,
+#                                              a README "Test users" section or the seed's log are searched
+#   avd             = "Pixel_7_API_34"         the emulator to boot (otherwise the one you chose last time)
+#   jdk             = 17                       the JDK Gradle needs: 17 for React Native 0.73 and later (Expo SDK 50+), 11 before
+#   node            = 22                       the Node major the project needs (.nvmrc, .node-version or engines when not set)
+{%- if mode == 'project' and 'mobile' in apps %}
+
+[local]
+mobile_dir = "apps/mobile"
+android_package = "com.{{ project_slug | replace('-', '') }}.app"
+pm = "pnpm"
+{%- if 'api' in apps %}
+api_dir = "apps/api"
+api_start = "pnpm run dev:api"
+api_ready_url = "http://localhost:3000/health"
+api_migrate = "pnpm --dir apps/api run prisma:migrate:deploy"
+api_seed = ""
+db_service = "postgres"
+services = []
+api_port = 3000
+api_url_env = "EXPO_PUBLIC_API_URL"
+api_url_suffix = ""
+{%- else %}
+api_dir = ""
+db_service = ""
+{%- endif %}
+client = "auto"
+android_target = "ask"
+jdk = 17
+{%- endif %}

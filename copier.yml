@@ -1,0 +1,152 @@
+# Keelokit template.
+#   New product:    uvx copier==9.18.2 copy gh:leosimini/keelokit <dir>
+#   Existing repo:  add --data mode=harness (installs only .keelokit/)
+#   Upgrade later:  uvx copier==9.18.2 update -a .keelokit/answers.yml --conflict rej
+_subdirectory: template
+_min_copier_version: "9.4.0"
+_answers_file: .keelokit/answers.yml
+# Ownership after generation. Listed here = the PRODUCT owns it: rendered once, never touched by
+# `copier update` again (matched against destination paths, on copy and update alike). Everything
+# else (CI, hooks, scripts/, lint/format/tsconfig base, Docker, playwright/vite/vitest configs,
+# .keelokit/ harness) is the TEMPLATE's: updates 3-way-merge into it.
+_skip_if_exists:
+  # Project knowledge and local harness choices.
+  - docs/context/*.md
+  - docs/prd.md
+  - .keelokit/rules.local.toml
+  - .keelokit/exceptions.toml
+  - .keelokit/guard-allow.toml
+  - .keelokit/critical.toml
+  - .keelokit/profile.toml
+  - .keelokit/verify-routing.toml
+  - .keelokit/ux.toml
+  - .keelokit/red-causes.toml
+  - .keelokit/verify-clock.toml
+  - docs/escapes.md
+  - docs/prelaunch-debt-ledger.md
+  - CHANGELOG.md
+  - backlog/*.md
+  - README.md
+  # Product code: the template's version is only a starting point; it diverges on day one.
+  - apps/*/src/**
+  # ...except the generic locale-drift test, which enforces a house rule (I18N-1).
+  - "!apps/*/src/i18n/i18n.test.ts"
+  - apps/*/e2e/**
+  - apps/*/index.html
+  - apps/mobile/index.ts
+  - packages/*/src/**
+  # Migrations are append-only history and the schema/seed are the product's data model.
+  - apps/*/prisma/**
+  # Dependencies and app config the product edits: a template bump would conflict every time.
+  - apps/*/package.json
+  - packages/*/package.json
+  - apps/mobile/app.json
+  - apps/mobile/eas.json
+  - apps/*/.env.example
+  - apps/api/.env.ci
+  # Fly app names, regions and machine sizes are set per product (fly launch / scale).
+  - apps/api/fly.*.toml
+_exclude:
+  - node_modules
+  - dist
+  - .DS_Store
+  - __pycache__
+  # Only the apps the product needs. Conditions live here, not in file names: some tools (claude.ai's
+  # plugin upload among them) reject paths with {, %, ' or spaces.
+  - "{% if 'api' not in apps %}apps/api{% endif %}"
+  - "{% if 'web' not in apps %}apps/web{% endif %}"
+  - "{% if 'mobile' not in apps %}apps/mobile{% endif %}"
+  - "{% if 'site' not in apps %}apps/site{% endif %}"
+  - "{% if 'api' not in apps %}docker-compose.yml{% endif %}"
+  - "{% if 'api' not in apps %}docker-compose.yml.jinja{% endif %}"
+  - "{% if credit == 'off' %}docs/assets/built-with-keelokit.svg{% endif %}"
+  # Web and mobile pieces that only make sense against a real API.
+  - "{% if 'api' not in apps %}apps/web/e2e/stack{% endif %}"
+  - "{% if 'api' not in apps %}apps/web/.env.example{% endif %}"
+  - "{% if 'api' not in apps %}apps/web/playwright.stack.config.ts{% endif %}"
+  - "{% if 'api' not in apps %}apps/web/src/env.d.ts{% endif %}"
+  - "{% if 'api' not in apps %}apps/mobile/e2e/stack{% endif %}"
+  - "{% if 'api' not in apps %}apps/mobile/.env.example{% endif %}"
+  - "{% if 'api' not in apps %}apps/mobile/playwright.stack.config.ts{% endif %}"
+  # The arch-specs (references/stable-tests.md) reach new projects only: an update would turn an
+  # existing codebase that already breaks a rule red. The product owns them once generated.
+  - "{% if _copier_operation == 'update' %}packages/shared/src/arch{% endif %}"
+  # mode=harness (existing repos, /keelokit:project-adopt): install only .keelokit/, never touch the code.
+  - "{% if mode == 'harness' %}**{% endif %}"
+  - "{% if mode == 'harness' %}!.keelokit{% endif %}"
+  - "{% if mode == 'harness' %}!.keelokit/**{% endif %}"
+  # An adopted repo has its own CI jobs and checks: the map of the template's jobs is for generated ones.
+  - "{% if mode == 'harness' %}.keelokit/verify-map.toml{% endif %}"
+  - "{% if mode == 'harness' %}.keelokit/verify-routing.toml{% endif %}"
+  - "{% if mode == 'harness' %}.keelokit/red-causes.toml{% endif %}"
+  - "{% if mode == 'harness' %}.keelokit/verify-clock.toml{% endif %}"
+
+mode:
+  type: str
+  help: New product (full monorepo) or harness only (existing repo)?
+  choices:
+    New product — full monorepo: project
+    Existing repo — harness only: harness
+  default: project
+
+project_name:
+  type: str
+  help: Product name (as users read it)
+  validator: "{% if not project_name %}Required{% endif %}"
+
+project_slug:
+  type: str
+  help: Package/repo slug (lowercase, dashes)
+  # The name in ASCII (Peña S.A. → pena-s-a, Straße → strasse: the Latin letters of Western, Central
+  # and Northern Europe), anything else a dash, and app- in front when that would start with a digit
+  # or leave nothing (3D Store → app-3d-store, 東京 → app). Keelokit runs copier with --defaults,
+  # which never asks again, so the default must pass the validator below (tests/test_copier.py).
+  default: >-
+    {{ project_name | lower | regex_replace('[\u0300-\u036f]', '')
+    | regex_replace('ß', 'ss') | regex_replace('æ', 'ae') | regex_replace('œ', 'oe')
+    | regex_replace('þ', 'th') | regex_replace('ĳ', 'ij')
+    | regex_replace('[àáâãäåāăą]', 'a') | regex_replace('[çćĉċč]', 'c')
+    | regex_replace('[ðďđ]', 'd') | regex_replace('[èéêëēĕėęě]', 'e')
+    | regex_replace('[ĝğġģ]', 'g') | regex_replace('[ĥħ]', 'h') | regex_replace('[ìíîïĩīĭįı]', 'i')
+    | regex_replace('[ĵ]', 'j') | regex_replace('[ķĸ]', 'k') | regex_replace('[ĺļľŀł]', 'l')
+    | regex_replace('[ñńņňŉŋ]', 'n') | regex_replace('[òóôõöøōŏő]', 'o')
+    | regex_replace('[ŕŗř]', 'r') | regex_replace('[śŝşšſș]', 's') | regex_replace('[ţťŧț]', 't')
+    | regex_replace('[ùúûüũūŭůűų]', 'u') | regex_replace('[ŵ]', 'w') | regex_replace('[ýÿŷ]', 'y')
+    | regex_replace('[źżž]', 'z')
+    | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '')
+    | regex_replace('^(?![a-z])', 'app-') | regex_replace('-+$', '') }}
+  validator: "{% if not (project_slug | regex_search('^[a-z][a-z0-9-]*$')) %}lowercase letters, digits and dashes{% endif %}"
+
+description:
+  type: str
+  help: One sentence — what problem it solves, for whom
+  default: ""
+
+apps:
+  type: str
+  help: Which apps does this product need?
+  multiselect: true
+  choices:
+    API (NestJS + Prisma + PostgreSQL): api
+    Web app / backoffice (Vite + React): web
+    Mobile (Expo): mobile
+    Public site (Astro): site
+  default: [api, web]
+  when: "{{ mode == 'project' }}"
+  validator: "{% if mode == 'project' and not apps %}Pick at least one{% endif %}"
+
+credit:
+  type: str
+  help: 'Sign the project "Built with Keelokit"? (changed later from the dashboard)'
+  choices:
+    Visible — README badge and a line at the foot of the public site: visible
+    Quiet — README badge and an invisible generator tag: quiet
+    "Off": "off"
+  default: visible
+  when: false
+
+postgis:
+  type: bool
+  help: Needs geospatial queries (PostGIS)?
+  default: false
+  when: "{{ mode == 'project' and 'api' in apps }}"

@@ -1,0 +1,43 @@
+import { render, screen } from '@testing-library/react-native';
+
+import app from '../app.json';
+import { HomeScreen } from './HomeScreen';
+import { t } from './i18n';
+
+const title = t('home.title', { name: app.expo.name });
+{% if 'api' in apps %}
+afterEach(() => jest.restoreAllMocks());
+
+it('shows the product name and says it is checking the API', async () => {
+  jest.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
+  await render(<HomeScreen />);
+
+  expect(screen.getByRole('header', { name: title })).toBeOnTheScreen();
+  expect(screen.getByText(t('health.checking'))).toBeOnTheScreen();
+});
+
+it('shows the API health when the response matches the contract', async () => {
+  jest.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ status: 'ok', db: 'up' }));
+  await render(<HomeScreen />);
+
+  const ok = t('health.ok', { status: t('health.status.ok'), db: t('health.db.up') });
+  expect(await screen.findByText(ok)).toBeOnTheScreen();
+});
+
+it.each([
+  ['unreachable', () => Promise.reject(new TypeError('Network request failed'))],
+  ['failing', () => Promise.resolve(new Response(null, { status: 503 }))],
+  ['off-contract', () => Promise.resolve(Response.json({ status: 'fine', database: true }))],
+])('shows an error when the API is %s', async (_, respond) => {
+  jest.spyOn(globalThis, 'fetch').mockImplementation(respond);
+  await render(<HomeScreen />);
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(t('health.error'));
+});
+{%- else %}
+it('shows the product name as a header', async () => {
+  await render(<HomeScreen />);
+
+  expect(screen.getByRole('header', { name: title })).toBeOnTheScreen();
+});
+{%- endif %}

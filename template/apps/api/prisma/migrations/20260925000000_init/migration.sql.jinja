@@ -1,0 +1,8 @@
+{% if postgis -%}
+-- The postgis/postgis image (docker-compose, CI) also preinstalls these three. Nothing uses them,
+-- and left in place they make `prisma migrate dev` report drift from this history.
+DROP EXTENSION IF EXISTS postgis_tiger_geocoder, postgis_topology, fuzzystrmatch;
+CREATE EXTENSION IF NOT EXISTS postgis;
+{%- else -%}
+-- Baseline: an empty database. The first model's migration follows this one.
+{%- endif %}
