@@ -14,6 +14,17 @@
   `critique_skills = [...]` under `[gate]` in `.keelokit/ux.toml` (`[]`, with the reason in a comment, when no
   design skills are available). A piece is checked when a branch that changes the interface touches it, so
   critiques already on main are not re-read until then.
+- **`ledger.py show`, `next`, `--release` and a complete `check` (LEDGER-005).** `ledger.py show <ID>` answers
+  "where is this story and why did it end up that way" in at most 60 lines (`--full` for the rest): state and
+  date, commits with subject, body and `Claude-Session:`, the story file's addendum headings, rows of
+  `docs/escapes.md` and bug-bash findings that name it or arrive through `Finding:`, abandoned attempts
+  (`Dropped:` commits on any origin branch) and corrections, each with where it lives. `ledger.py next` lists the
+  ready stories nobody works on, by wave and id; `ledger.py --release vX.Y.Z` the stories that entered a version.
+  `ledger.py check [--ci] [--json]` now gives every code of docs/ledger.md: `UNKNOWN_STORY`, and from `[ledger]
+  since` on `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY` and `SQUASH_LOST_TRAILERS` (errors with `enforce =
+  "block"`, warnings with `"warn"`), plus the warnings `STALE_BRANCH`, `DONE_TWICE` and `SNAPSHOT_BEHIND`; `--ci`
+  makes an incomplete history an error. Reads only: still a fixed number of git calls.
+
 - **Corrections can be approved by agents, when the person delegates it (LEDGER-015).** `[ledger.approval]` in
   `.keelokit/state.toml` (`mode = "human"`, the default, `"delegated"` or `"mixed"`) says who approves the rows a
   backfill proposes. With delegation, `/keelokit:ledger-review-flow` runs `ledger.py review --filter` (a mechanical
