@@ -2849,8 +2849,13 @@ def review_row(story: str, commit: str, evidence: str = "EV", decision: str | No
     return row
 
 
-def review_text(run: str, rows: list[dict]) -> str:
-    return json.dumps({"schema": 1, "run": run, "rows": rows, "dropped": []}, indent=1) + "\n"
+def review_text(run: str, rows: list[dict], mode: str | None = "delegated") -> str:
+    """A review file; `mode` is the recorded mode (round 1, ESC-114: a delegated row counts only when its review
+    recorded delegated or mixed), None leaves it out."""
+    data = {"schema": 1, "run": run, **({"mode": mode} if mode is not None else {}), "rows": rows, "dropped": []}
+    if mode == "mixed":
+        data["human_for"] = ["critical", "disagreement", "low-confidence"]
+    return json.dumps(data, indent=1) + "\n"
 
 
 def delegated_row(story: str, commit: str, run: str, evidence: str = "EV") -> str:
@@ -3405,6 +3410,134 @@ class LedgerDelegatedRejectSampleTest(LedgerCase):
         self.assertEqual(code, 1, "nothing to retract")
         self.assertEqual((repo.path / CORR).read_text(), old, "nothing written")
         self.assertFalse((repo.path / PROPOSED).exists())
+
+
+# ── LEDGER-015, review round 1: what got past the first tests (ESC-114, ESC-116, ESC-117) ──
+
+
+class LedgerDelegatedRowValidityTest(LedgerCase):
+    """ESC-114 (F5): a delegated row counts only when its review recorded delegated or mixed, its kind is backfill or
+    late, ledger.py re-decides it approved (recorded mode, human_for, confidence and models, with `critical`
+    recomputed from the trunk now) and its commit touches the story's paths. A hand-written "approved" is not enough."""
+
+    @classmethod
+    def setUpClass(cls):
+        repo, c = cls.repo, cls.c = build_delegated(cls.class_tmp(), approval("mixed"))
+        opus = {"model": "claude-opus-4"}
+        reviews = {
+            "rcrit": (review_text("rcrit", [review_row("UXC-303", c["UXC-303"])], mode="mixed")),
+            "rout": (review_text("rout", [review_row("UXC-301", c["UXC-302"])])),
+            "rnomode": (review_text("rnomode", [review_row("UXC-305", c["UXC-305"])], mode=None)),
+            "rhuman": (review_text("rhuman", [review_row("UXC-306", c["UXC-306"])], mode="human")),
+            "rret": (review_text("rret", [{**review_row("UXC-302", c["UXC-302"]), "kind": "retract"}])),
+            "rok": (review_text("rok", [review_row("UXC-304", c["UXC-304"], **opus)])),
+        }
+        files = {f"{REVIEWS}/{run}.json": text for run, text in reviews.items()}
+        files[CORR] = corrections(
+            delegated_row("UXC-303", c["UXC-303"], "rcrit"),
+            delegated_row("UXC-301", c["UXC-302"], "rout"),
+            delegated_row("UXC-305", c["UXC-305"], "rnomode"),
+            delegated_row("UXC-306", c["UXC-306"], "rhuman"),
+            toml_row(story="UXC-302", commit=c["UXC-302"]),
+            toml_row(story="UXC-302", commit=c["UXC-302"], kind="retract", approver="delegated:rret"),
+            delegated_row("UXC-304", c["UXC-304"], "rok"))
+        commit_harness(repo, "chore: corrections\n\nNo-story: ledger", files)
+        repo.publish()
+
+    def invalid(self) -> list[str]:
+        cls = type(self)
+        if "_invalid" not in cls.__dict__:
+            data = ledger_check(self, cls.repo)
+            cls._invalid = [d["detail"] for d in data["diffs"] if d["code"] == "CORRECTION_INVALID"]
+        return cls._invalid
+
+    def assert_invalid(self, run: str, story: str) -> None:
+        self.assertEqual(sum(run in d for d in self.invalid()), 1, self.invalid())
+        self.assertIs(self.stories(self.repo)[story]["reconstructed"], False, story)
+
+    def test_LEDGER_015_D6_ESC_114_INV_005_an_approved_critical_story_in_mixed_does_not_count(self):
+        self.assert_invalid("rcrit", "UXC-303")
+
+    def test_LEDGER_015_D6_ESC_114_INV_005_a_commit_outside_the_storys_paths_does_not_count(self):
+        self.assert_invalid("rout", "UXC-301")
+
+    def test_LEDGER_015_D6_ESC_114_a_review_with_no_recorded_mode_or_mode_human_does_not_count(self):
+        self.assert_invalid("rnomode", "UXC-305")
+        self.assert_invalid("rhuman", "UXC-306")
+
+    def test_LEDGER_015_D6_ESC_114_INV_005_a_delegated_retract_does_not_count(self):
+        self.assertEqual(sum("rret" in d for d in self.invalid()), 1, self.invalid())
+        self.assertIs(self.stories(self.repo)["UXC-302"]["reconstructed"], True, "the person's row stays active")
+
+    def test_LEDGER_015_D6_ESC_114_a_critical_row_judged_by_opus_in_delegated_still_counts(self):
+        self.assertFalse(any("rok" in d for d in self.invalid()), self.invalid())
+        s = self.stories(self.repo)["UXC-304"]
+        self.assertEqual((s["reconstructed"], s["reconstructed_by"]), (True, "delegated"))
+
+
+class LedgerDelegatedHumanReviewTest(LedgerCase):
+    def test_LEDGER_015_S9_ESC_114_without_delegation_a_review_recorded_human_or_without_mode_backs_nothing(self):
+        """F10: a project whose trunk has no [ledger.approval]; the delegated rows' review files say approved."""
+        repo, c = build_delegated(self.tmp, approval())
+        files = {f"{REVIEWS}/rh.json": review_text("rh", [review_row("UXC-301", c["UXC-301"])], mode="human"),
+                 f"{REVIEWS}/rn.json": review_text("rn", [review_row("UXC-302", c["UXC-302"])], mode=None),
+                 CORR: corrections(delegated_row("UXC-301", c["UXC-301"], "rh"),
+                                   delegated_row("UXC-302", c["UXC-302"], "rn"))}
+        commit_harness(repo, "chore: corrections\n\nNo-story: ledger", files)
+        repo.publish()
+        data = ledger_check(self, repo)
+        invalid = details(data, "CORRECTION_INVALID")
+        self.assertIn("rh", invalid)
+        self.assertIn("rn", invalid)
+        s = self.stories(repo)
+        self.assertEqual((s["UXC-301"]["reconstructed"], s["UXC-302"]["reconstructed"]), (False, False))
+
+
+class LedgerDelegatedLaunderTest(LedgerDelegatedAcceptCase):
+    """ESC-116 (F7): a row a review left to the person or pending (on the trunk or in the work tree) is dropped by the
+    filter and by the delegated accept: judging it again cannot launder a disagreement."""
+
+    def test_LEDGER_015_S4_ESC_116_a_row_left_to_the_person_or_pending_is_dropped_by_the_filter_and_the_accept(self):
+        repo, c = self.build(approval("mixed"))
+        commit_harness(repo, "chore: delegated review\n\nNo-story: ledger", {
+            f"{REVIEWS}/rp.json": review_text("rp", [review_row("UXC-301", c["UXC-301"], decision="person",
+                                                                b="no", refuted=None)], mode="mixed"),
+            f"{REVIEWS}/rq.json": review_text("rq", [review_row("UXC-302", c["UXC-302"], decision="pending",
+                                                                refuted=True)], mode="mixed")})
+        repo.publish()
+        repo.write(f"{REVIEWS}/rw.json", review_text("rw", [review_row("UXC-305", c["UXC-305"], decision="pending",
+                                                                       refuted=True)], mode="mixed"))
+        repo.write(PROPOSED, "".join(proposed_row(s, c[s]) for s in ("UXC-301", "UXC-302", "UXC-305", "UXC-306")))
+        d = review_filter(self, repo)
+        self.assertEqual([r["story"] for r in d["rows"]], ["UXC-306"], d)
+        reasons = {x["story"]: x["reason"] for x in d["dropped"]}
+        self.assertIn("left to the person by run rp", reasons.get("UXC-301", ""))
+        self.assertIn("pending after run rq", reasons.get("UXC-302", ""))
+        self.assertIn("pending after run rw", reasons.get("UXC-305", ""), "a review in the work tree counts too")
+        repo.write(f"{REVIEWS}/rnew.json", review_text("rnew", [review_row("UXC-301", c["UXC-301"], decision=None),
+                                                                review_row("UXC-306", c["UXC-306"], decision=None)],
+                                                       mode=None))
+        r = self.accept(repo, "rnew")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.decisions(repo, "rnew"), {"UXC-301": "dropped", "UXC-306": "approved"})
+        self.assertEqual([x["story"] for x in self.corr(repo)], ["UXC-306"])
+
+
+class LedgerDelegatedResumeTest(LedgerDelegatedAcceptCase):
+    def test_LEDGER_015_S3_ESC_117_INV_008_a_resumed_accept_of_the_same_run_appends_nothing_twice(self):
+        """ESC-117 (F8): a resumed workflow puts back the undecided review file and runs the accept again; with
+        rows of delegated:<run> already in the work tree's corrections file it refuses."""
+        repo, c = self.build(approval("delegated"))
+        run = self.review(repo, {"UXC-301": c["UXC-301"]})
+        undecided = (repo.path / REVIEWS / f"{run}.json").read_text()
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        written = (repo.path / CORR).read_text()
+        repo.write(f"{REVIEWS}/{run}.json", undecided)
+        r = self.accept(repo, run)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual((repo.path / CORR).read_text(), written, "no second copy")
+        self.assertEqual(len(corrections_rows(repo)), 1)
 
 
 if __name__ == "__main__":

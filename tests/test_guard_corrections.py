@@ -4,6 +4,7 @@ delegated accept (GuardApprovalModeTest). Run: python3 -m unittest discover -s t
 In a file of its own: tests/test_guard.py holds secret-shaped fixtures that the guard's whole-file SEC-1 scan
 refuses, so a commit that touches it cannot pass the pre-commit hook until a person registers it (ESC-091)."""
 import json
+import os
 import subprocess
 from pathlib import Path
 import unittest
@@ -238,16 +239,25 @@ def approval_toml(mode: str | None) -> str:
     return '[ledger]\ntrunk = "main"\n' + (f'\n[ledger.approval]\nmode = "{mode}"\n' if mode else "")
 
 
-def review_json(decision: str | None = "approved", b: str | None = "yes", skeptic: bool = True, run: str = "r1") -> str:
-    row = {"story": "UXC-113", "commit": SHA, "kind": "backfill", "evidence": "train sheet 18", "confidence": "medium",
-           "critical": False, "title": "t", "path": "backlog/stories/UXC-113-a.md",
-           "judge_a": {"verdict": "yes", "reason": "S1 in apps/api/a.ts"},
-           "skeptic": {"refuted": False, "reason": "no revert, in scope"} if skeptic else None}
+def review_json(decision: str | None = "approved", b: str | None = "yes", skeptic: bool = True, run: str = "r1",
+                mode: str | None = "delegated", kind: str = "backfill", critical: bool = False,
+                confidence: str = "medium", model: str | None = None) -> str:
+    """A review file of run `run` with one row for DELEGATED_ROW; `mode` is the recorded mode (None leaves it out)."""
+    m = {"model": model} if model else {}
+    row = {"story": "UXC-113", "commit": SHA, "kind": kind, "evidence": "train sheet 18", "confidence": confidence,
+           "critical": critical, "title": "t", "path": "backlog/stories/UXC-113-a.md",
+           "judge_a": {"verdict": "yes", "reason": "S1 in apps/api/a.ts", **m},
+           "skeptic": {"refuted": False, "reason": "no revert, in scope", **m} if skeptic else None}
     if b is not None:
-        row["judge_b"] = {"verdict": b, "reason": "the diff does S1"}
+        row["judge_b"] = {"verdict": b, "reason": "the diff does S1", **m}
     if decision is not None:
         row["decision"] = decision
-    return json.dumps({"schema": 1, "run": run, "rows": [row], "dropped": []})
+    data = {"schema": 1, "run": run, "rows": [row], "dropped": []}
+    if mode is not None:
+        data["mode"] = mode
+        if mode == "mixed":
+            data["human_for"] = ["critical", "disagreement", "low-confidence"]
+    return json.dumps(data)
 
 
 class GuardApprovalModeTest(unittest.TestCase):
@@ -462,6 +472,121 @@ class GuardApprovalModeTest(unittest.TestCase):
                 self.assertEqual(run.returncode, 1, run.stderr)
                 self.assertIn("QA-4", run.stderr)
                 sh(self.repo, "git", "reset", "-q", "--", CORRECTIONS, REVIEW)
+
+
+
+class GuardApprovalRound1Test(unittest.TestCase):
+    """LEDGER-015 review round 1 (ESC-110..113, ESC-115, ESC-118): an alias of a protected file, a trunk switch, an
+    Edit the guard could not apply, the delegated exception's recorded fields and a foreign ledger.py."""
+
+    setUp = test_guard.GuardTest.setUp
+    tearDown = test_guard.GuardTest.tearDown
+    env = test_guard.GuardRegistryTest.env
+    run_claude = test_guard.GuardRegistryTest.run_claude
+    stage = test_guard.GuardRegistryTest.stage
+    run_pre_commit = test_guard.GuardRegistryTest.run_pre_commit
+    assert_blocked = GuardCorrectionsTest.assert_blocked
+    commit_trunk = GuardApprovalModeTest.commit_trunk
+    assert_passes = GuardApprovalModeTest.assert_passes
+
+    def test_LEDGER_015_S1_ESC_110_INV_002_a_tool_write_through_a_symlink_is_judged_as_its_target(self):
+        self.commit_trunk({STATE: approval_toml(None)})
+        for link, target in [("s.toml", STATE), ("s2.toml", CORRECTIONS), ("s3.toml", ".keelokit/guard-allow.toml"),
+                             ("k", ".keelokit")]:
+            os.symlink(target, self.repo / link)
+        for path, content, word in [("s.toml", approval_toml("delegated"), "[ledger.approval]"),
+                                    ("k/state.toml", approval_toml("delegated"), "[ledger.approval]"),
+                                    ("s2.toml", CORRECTION_ROW, "QA-4"), ("s3.toml", "# x\n", "QA-4")]:
+            with self.subTest(path=path):
+                self.assert_blocked(self.run_claude("Write", file_path=path, content=content), word)
+        with self.subTest("Edit through the link"):
+            self.assert_blocked(self.run_claude("Edit", file_path="s.toml", old_string='trunk = "main"',
+                                                new_string='trunk = "main"\napproval = {mode = "mixed"}'),
+                                "[ledger.approval]")
+
+    def test_LEDGER_015_S1_ESC_111_INV_002_ln_naming_a_protected_file_is_blocked_in_any_form(self):
+        for cmd in [f"ln -s {STATE} s.toml", f"ln {STATE} s.toml", f"ln -sf {CORRECTIONS} c.toml",
+                    f"ln -s {CORRECTIONS} c.toml", f'ln -s "$PWD/{STATE}" /tmp/s.toml',
+                    "cd .keelokit && ln -s state.toml s.toml"]:
+            with self.subTest(cmd=cmd):
+                self.assert_blocked(self.run_claude("Bash", command=cmd), "QA-4")
+
+    def test_LEDGER_015_S1_ESC_112_INV_002_an_edit_that_moves_the_trunk_is_blocked(self):
+        self.commit_trunk({STATE: '[run]\nnote = "x"\n'})
+        self.assert_blocked(self.run_claude("Edit", file_path=STATE, old_string='note = "x"',
+                                            new_string='note = "x"\n\n[ledger]\ntrunk = "evil"'), "QA-4")
+        self.assert_blocked(self.run_claude("Write", file_path=STATE, content='[harbor]\ntrunk = "dev"\n'), "QA-4")
+        self.assert_passes(self.run_claude("Write", file_path=STATE,
+                                           content='[run]\nnote = "x"\n\n[ledger]\ntrunk = "main"\n'))
+        self.commit_trunk({STATE: '[ledger]\ntrunk = "main"\n'})
+        self.assert_blocked(self.run_claude("Edit", file_path=STATE, old_string='trunk = "main"',
+                                            new_string='trunk = "develop"'), "QA-4")
+
+    def test_LEDGER_015_S1_ESC_113_INV_002_an_edit_whose_old_string_is_not_in_the_file_counts_as_a_change(self):
+        self.commit_trunk({STATE: approval_toml("mixed")})
+        self.assert_blocked(self.run_claude("Edit", file_path=STATE, old_string="mode = \u201cmixed\u201d",
+                                            new_string='mode = "delegated"'), "QA-4")
+        self.assert_blocked(self.run_claude("MultiEdit", file_path=STATE, edits=[
+            {"old_string": "no such text", "new_string": 'mode = "delegated"'}]), "QA-4")
+
+    def test_LEDGER_015_D7_ESC_118_INV_002_the_delegated_accept_passes_only_for_the_projects_own_ledger_py(self):
+        self.commit_trunk({STATE: approval_toml("delegated")})
+        (self.repo / REVIEW).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo / REVIEW).write_text(review_json(decision=None))
+        tail = "backfill --accept --delegated r1"
+        for cmd in [f"python3 /tmp/x/ledger.py {tail}", f"python3 ledger.py {tail}", f"python3 scripts/ledger.py {tail}",
+                    f"python3 ../other/.keelokit/bin/ledger.py {tail}"]:
+            with self.subTest(cmd=cmd):
+                self.assert_blocked(self.run_claude("Bash", command=cmd), "QA-4")
+        for cmd in [f"python3 .keelokit/bin/ledger.py {tail}", f"./.keelokit/bin/ledger.py {tail}",
+                    f"python3 {self.repo}/.keelokit/bin/ledger.py {tail}"]:
+            with self.subTest(cmd=cmd):
+                self.assert_passes(self.run_claude("Bash", command=cmd))
+
+    def pre_commit_verdict(self, head_mode: str | None, corrections: str, review: str | None) -> int:
+        self.commit_trunk({STATE: approval_toml(head_mode), CORRECTIONS: CORRECTIONS_HEADER})
+        sh(self.repo, "git", "rm", "-q", "--cached", "--ignore-unmatch", REVIEW)
+        (self.repo / REVIEW).unlink(missing_ok=True)
+        self.stage(CORRECTIONS, corrections)
+        if review is not None:
+            self.stage(REVIEW, review)
+        run = self.run_pre_commit()
+        self.assertNotIn("Traceback", run.stderr)
+        sh(self.repo, "git", "reset", "-q", "--", CORRECTIONS, REVIEW)
+        return run.returncode
+
+    def test_LEDGER_015_D8_ESC_115_the_delegated_exception_re_decides_from_the_recorded_fields(self):
+        row = CORRECTIONS_HEADER + DELEGATED_ROW
+        retract = CORRECTIONS_HEADER + DELEGATED_ROW.replace('kind = "backfill"', 'kind = "retract"')
+        refused = {"a delegated retract": ("delegated", retract, review_json(kind="retract")),
+                   "recorded mode differs from HEAD's": ("delegated", row, review_json(mode="mixed")),
+                   "no recorded mode": ("delegated", row, review_json(mode=None)),
+                   "mixed, recorded critical": ("mixed", row, review_json(mode="mixed", critical=True)),
+                   "mixed, recorded low confidence": ("mixed", row, review_json(mode="mixed", confidence="low")),
+                   "delegated, critical without opus": ("delegated", row, review_json(critical=True, model="sonnet"))}
+        for why, args in refused.items():
+            with self.subTest(why):
+                self.assertEqual(self.pre_commit_verdict(*args), 1)
+        allowed = {"mixed, clear row": ("mixed", row, review_json(mode="mixed")),
+                   "delegated, critical judged by opus": ("delegated", row, review_json(critical=True,
+                                                                                        model="claude-opus-4"))}
+        for why, args in allowed.items():
+            with self.subTest(why):
+                self.assertEqual(self.pre_commit_verdict(*args), 0)
+
+    def test_LEDGER_015_D8_a_newly_added_corrections_file_in_delegated_mode(self):
+        """F10: HEAD has no corrections file (status A): backed delegated rows pass, unbacked ones are refused."""
+        self.commit_trunk({STATE: approval_toml("delegated")})
+        for why, review, expected in [("backed", review_json(), 0), ("not backed", None, 1)]:
+            with self.subTest(why):
+                (self.repo / REVIEW).unlink(missing_ok=True)
+                self.stage(CORRECTIONS, CORRECTIONS_HEADER + DELEGATED_ROW)
+                if review is not None:
+                    self.stage(REVIEW, review)
+                run = self.run_pre_commit()
+                self.assertNotIn("Traceback", run.stderr)
+                self.assertEqual(run.returncode, expected, run.stderr)
+                sh(self.repo, "git", "rm", "-q", "--cached", "--ignore-unmatch", CORRECTIONS, REVIEW)
 
 
 if __name__ == "__main__":
