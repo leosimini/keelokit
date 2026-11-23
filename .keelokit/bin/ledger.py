@@ -7,7 +7,11 @@
     python3 .keelokit/bin/ledger.py history            report: is the trunk's history complete?
                                                        (exit 0 complete, 1 incomplete, 2 not a git repo)
     python3 .keelokit/bin/ledger.py history --ensure   complete it (SessionStart hook); always exit 0
-    python3 .keelokit/bin/ledger.py check [--json]     every difference (exit 1 on an error-level one)
+    python3 .keelokit/bin/ledger.py show <ID> [--full] a story's card: its state and the why (at most 60 lines)
+    python3 .keelokit/bin/ledger.py next               the ready stories nobody works on, by wave and id
+    python3 .keelokit/bin/ledger.py --release vX.Y.Z   the stories that entered that version
+    python3 .keelokit/bin/ledger.py check [--ci] [--json]
+                                                       every difference (exit 1 on an error-level one)
     python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
                                                        candidate correction rows, for review, written to
                                                        .keelokit/ledger-corrections.proposed.toml
@@ -259,6 +263,15 @@ FRONT_MATTER = re.compile(r"\+\+\+\n(.*?)\n\+\+\+(?:\n|$)", re.S)
 HEX_SHA = re.compile(r"[0-9a-fA-F]{7,64}")
 DEFAULT_STORIES = "backlog/stories/*.md"
 DEFAULT_STALE_DAYS = 7
+DEFAULT_NO_STORY = ("harness", "docs", "release", "deps", "ci")
+DEFAULT_SNAPSHOT = "keelokit/ledger"
+SHOW_LINES = 60
+SHOW_WIDTH = 200
+ESCAPES = "docs/escapes.md"
+BUGBASH = "docs/bugbash/"
+ADDENDUM_HEADING = re.compile(r"#{1,6}\s+Addendum\b")
+SQUASHED_TRAILER = re.compile(r"(?im)^[\s*-]*(?:Story|Part-of):\s*[A-Z][A-Z0-9]*-[0-9]+")
+TRAILER_LINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*:\s")
 FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
 CORRECTIONS = "backlog/ledger-corrections.toml"
 PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
@@ -357,7 +370,12 @@ def read_config(state: dict) -> dict:
     id_from = setting(state, "id_from", str, "front-matter")
     since = setting(state, "since", str, "").strip()
     lang = state.get("dashboard", {}).get("lang") if isinstance(state.get("dashboard"), dict) else None
+    no_story = state.get("ledger", {}).get("no_story") if isinstance(state.get("ledger"), dict) else None
+    snapshot = state.get("ledger", {}).get("snapshot") if isinstance(state.get("ledger"), dict) else None
     return {"stories": setting(state, "stories", str, DEFAULT_STORIES).strip(),
+            "no_story": text_list(no_story) if isinstance(no_story, list) else list(DEFAULT_NO_STORY),
+            "enforce": "warn" if setting(state, "enforce", str, "block").strip() == "warn" else "block",
+            "snapshot": snapshot.strip() if isinstance(snapshot, str) else DEFAULT_SNAPSHOT,
             "id_from": id_from if id_from in ("front-matter", "filename") else "front-matter",
             "stale_days": setting(state, "stale_days", float, DEFAULT_STALE_DAYS),
             "since": since if HEX_SHA.fullmatch(since) else None,
@@ -601,16 +619,17 @@ def read_stories(trunk_sha: str, cfg: dict, tree: list[tuple[str, str]] | None =
 
 
 def read_log(args: list[str]) -> list[list[str]]:
-    """Records of a NUL-separated log: 7 fields, the last the raw body, so no message can break the parsing."""
+    """Records of a NUL-separated log: 8 fields (the 7th every trailer, the last the raw body), so no message can
+    break the parsing."""
     fmt = ("%H%x00%P%x00%ct%x00%(trailers:key=Story,valueonly,separator=%x2C,unfold)%x00"
            "%(trailers:key=Part-of,valueonly,separator=%x2C,unfold)%x00"
-           "%(trailers:key=No-story,valueonly,separator=%x2C,unfold)%x00%B")
+           "%(trailers:key=No-story,valueonly,separator=%x2C,unfold)%x00%(trailers:only,unfold)%x00%B")
     parts = git_read(["log", "-z", f"--format={fmt}", *args]).decode(errors="replace").split("\0")
     if parts and parts[-1] == "":
         parts.pop()
-    if len(parts) % 7:
+    if len(parts) % 8:
         raise LedgerError("git log gave an unexpected answer")
-    return [parts[i:i + 7] for i in range(0, len(parts), 7)]
+    return [parts[i:i + 8] for i in range(0, len(parts), 8)]
 
 
 def story_ids(field: str) -> list[str]:
@@ -621,35 +640,89 @@ def read_trunk_log(trunk_sha: str) -> list[dict]:
     """Every trunk commit, children before parents: sha, parents, ct, trailers, the commits it reverts."""
     return [{"sha": sha, "parents": parents.split(), "ct": int(ct), "story": story_ids(story),
              "part_of": story_ids(part), "attributed": bool(story.strip() or part.strip() or nostory.strip()),
-             "no_story": bool(nostory.strip()), "reverts": REVERTS.findall(body), "message": body}
-            for sha, parents, ct, story, part, nostory, body in read_log(["--topo-order", trunk_sha])]
+             "no_story": bool(nostory.strip()), "reverts": REVERTS.findall(body), "message": body,
+             "trailers": parse_trailers(trailers)}
+            for sha, parents, ct, story, part, nostory, trailers, body in read_log(["--topo-order", trunk_sha])]
+
+
+def parse_trailers(text: str) -> list[tuple[str, str]]:
+    """(key, value) of each line of `%(trailers:only,unfold)`."""
+    pairs = []
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip():
+            pairs.append((key.strip(), value.strip()))
+    return pairs
+
+
+def trailer_values(trailers: list[tuple[str, str]], key: str) -> list[str]:
+    """The values of one trailer key (git matches keys in any case)."""
+    return [v for k, v in trailers if k.lower() == key.lower()]
+
+
+def trailer_ids(trailers: list[tuple[str, str]], key: str) -> list[str]:
+    return [i for v in trailer_values(trailers, key) for i in story_ids(v)]
+
+
+def split_message(message: str, trailers: list) -> tuple[str, list[str]]:
+    """(subject, body lines): the body is what is outside the subject line and the trailer paragraph (the last
+    one, when git read trailers from it); its lines that are not trailers count as body."""
+    paragraphs = [p for p in re.split(r"\n[ \t]*\n", message.replace("\r\n", "\n").strip("\n")) if p.strip()]
+    if not paragraphs:
+        return "", []
+    first = paragraphs[0].split("\n")
+    body = first[1:]
+    rest = paragraphs[1:]
+    last = rest.pop().split("\n") if trailers and rest else []
+    for p in rest:
+        body += ["", *p.split("\n")] if body else p.split("\n")
+    body += [line for line in last if line.strip() and not TRAILER_LINE.match(line) and not line[:1].isspace()]
+    while body and not body[0].strip():
+        body.pop(0)
+    return first[0].strip(), [line.rstrip() for line in body]
 
 
 def read_branches(trunk_sha: str, refs: dict, graph: dict, on_trunk: set) -> dict[str, dict]:
-    """story id -> {branches, newest}: every origin branch whose commits off the trunk include a Part-of
-    commit of the story. One log finds the Part-of commits; each branch tip gets a bit, and the bits flow from
-    the tips to their parents in one pass over the off-trunk commits (children before parents)."""
-    fmt = "%H%x00%ct%x00%(trailers:key=Part-of,valueonly,separator=%x2C,unfold)"
+    """story id -> {branches, newest, commits, dropped}: every origin branch whose commits off the trunk include a
+    Part-of commit of the story, and those commits and the story's `Dropped:` commits there (for `show`). One log
+    finds them; each branch tip gets a bit, and the bits flow from the tips to their parents in one pass over the
+    off-trunk commits (children before parents)."""
+    fmt = ("%H%x00%ct%x00%(trailers:key=Part-of,valueonly,separator=%x2C,unfold)%x00"
+           "%(trailers:key=Dropped,valueonly,separator=%x2C,unfold)%x00%(trailers:only,unfold)%x00%B")
     out = git_read(["log", "-z", f"--format={fmt}", "--remotes=origin", "--not", trunk_sha]).decode(errors="replace")
     parts = out.split("\0")
     if parts and parts[-1] == "":
         parts.pop()
-    if len(parts) % 3:
+    if len(parts) % 6:
         raise LedgerError("git log gave an unexpected answer")
-    marked = {sha: (story_ids(trailer), int(ct)) for sha, ct, trailer in (parts[i:i + 3] for i in range(0, len(parts), 3))
-              if story_ids(trailer)}
+    marked = {sha: (story_ids(part), story_ids(dropped), int(ct), parse_trailers(trailers), body)
+              for sha, ct, part, dropped, trailers, body in (parts[i:i + 6] for i in range(0, len(parts), 6))
+              if story_ids(part) or story_ids(dropped)}
     if not marked:
         return {}
     names = [n for n in sorted(refs) if n.startswith("refs/remotes/origin/") and n != "refs/remotes/origin/HEAD"]
     masks = flow_masks(graph, on_trunk, [(1 << i, refs[n]) for i, n in enumerate(names)])
     result: dict[str, dict] = {}
-    for sha, (ids, ct) in marked.items():
-        for sid in ids:
-            entry = result.setdefault(sid, {"mask": 0, "newest": 0})
-            entry["mask"] |= masks.get(sha, 0)
+    for sha, (part, dropped, ct, trailers, body) in marked.items():
+        if not masks.get(sha):
+            continue
+        commit = {"sha": sha, "ct": ct, "trailers": trailers, "message": body, "mask": masks[sha], "names": names}
+        for sid in part:
+            entry = result.setdefault(sid, {"mask": 0, "newest": 0, "commits": [], "dropped": []})
+            entry["mask"] |= masks[sha]
             entry["newest"] = max(entry["newest"], ct)
+            entry["commits"].append(commit)
+        for sid in dropped:
+            result.setdefault(sid, {"mask": 0, "newest": 0, "commits": [], "dropped": []})["dropped"].append(commit)
     return {sid: {"branches": {names[i].removeprefix("refs/remotes/origin/") for i in set_bits(e["mask"])},
-                  "newest": e["newest"]} for sid, e in result.items() if e["mask"]}
+                  "newest": e["newest"], "commits": e["commits"], "dropped": e["dropped"]}
+            for sid, e in result.items()}
+
+
+def held_by(commit: dict) -> list[str]:
+    """The origin branches that hold an off-trunk commit of read_branches (named only when asked: a commit can be
+    on thousands of branches)."""
+    return sorted(commit["names"][i].removeprefix("refs/remotes/origin/") for i in set_bits(commit["mask"]))
 
 
 def flow_masks(graph: dict, on_trunk: set, tips: list[tuple[int, str]]) -> dict[str, int]:
@@ -868,7 +941,7 @@ def deploy_heads(graph: dict, refs: dict) -> dict:
 
 def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], graph: dict, refs: dict,
                    arrivals_: tuple, branches: dict, stale_days: float, now: float,
-                   corrections: dict | None = None) -> list[dict]:
+                   corrections: dict | None = None, trunk: str = "") -> list[dict]:
     """The record of every story, from the facts. `corrections`: the active rows and the reverted map
     (corrections_facts); a story with no live Story: commit is reconstructed from its oldest active row whose
     commit is not reverted (INV-005)."""
@@ -897,17 +970,31 @@ def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], 
             else:
                 rec["reverted"] = True
         rec["branches"] = sorted(branches[sid]["branches"]) if sid in branches else []
+        rec["attempts"] = attempts_of(sid, branches.get(sid), log, trunk)
     if corrections["unreadable"]:
         for rec in records.values():
             if not rec["commit"]:
                 mark_unknown([rec], corrections["unreadable"])
     settle_dependencies(stories, records, unreadable)
     for sid, rec in records.items():
-        if sid in branches and rec["state"] in ("defined", "ready"):
+        if branches.get(sid, {}).get("branches") and rec["state"] in ("defined", "ready"):
             rec["state"] = "in-progress"
             if now - branches[sid]["newest"] > stale_days * 86400:
                 rec["signals"] = ["stale"]
     return list(records.values())
+
+
+def attempts_of(sid: str, entry: dict | None, log: list[dict], trunk: str) -> list[dict]:
+    """The story's abandoned attempts: `Dropped: <ID>` commits on any origin branch (the trunk too), oldest first,
+    with the branches that hold them and the reason (the commit's body, else its subject)."""
+    found = [(c, held_by(c)) for c in (entry or {}).get("dropped", [])]
+    found += [(c, [trunk]) for c in log if sid in trailer_ids(c["trailers"], "Dropped")]
+    attempts = []
+    for c, held in sorted(found, key=lambda x: (x[0]["ct"], x[0]["sha"])):
+        subject, body = split_message(c["message"], c["trailers"])
+        attempts.append({"commit": c["sha"], "branches": list(held), "date": iso(c["ct"]),
+                         "reason": "\n".join(body).strip() or subject})
+    return attempts
 
 
 def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict) -> dict:
@@ -962,14 +1049,15 @@ def read_all(state: dict) -> dict:
                   "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"])}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
-    facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
-                                      cfg["stale_days"], time.time(), corrections)
+    branches = read_branches(trunk_sha, refs, graph, set(placed[0]))
+    facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, branches,
+                                      cfg["stale_days"], time.time(), corrections, trunk)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
     facts["diffs"] += pending_reviews(reviews, records)
     return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "stories": stories, "log": log,
-            "graph": graph, "placed": placed, "corrections": corrections, "records": records, "reviews": reviews,
+            "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
             "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation}
 
 
@@ -1998,21 +2086,335 @@ def cmd_reject_sample(state: dict, run: str) -> int:
     return 0
 
 
-def cmd_check(state: dict, as_json: bool) -> int:
-    """Every difference: one line each, or `{"schema": 1, "diffs": [...]}`. Exit 1 on an error-level one."""
-    facts = ledger_facts(state)
+# ── check: every difference (docs/ledger.md, "Exit codes and difference codes") ──
+
+def short(sha: str) -> str:
+    return sha[:12]
+
+
+def since_range(cfg: dict, log: list[dict], graph: dict) -> list[dict] | None:
+    """The trunk commits after `[ledger] since` (not reachable from it), children first; None without a `since`
+    that names exactly one commit of the trunk's history."""
+    since = cfg["since"]
+    matches = [s for s in graph if s.startswith(since.lower())] if since else []
+    if len(matches) != 1:
+        return None
+    held = set(first_reach(graph, [matches[0]]))
+    return [c for c in log if c["sha"] not in held]
+
+
+def category(value: str) -> str:
+    """The category of a `No-story:` value: what comes before the first space, dash or colon."""
+    return re.split(r"[\s—–:,]", value.strip(), maxsplit=1)[0].strip()
+
+
+def attribution_diffs(ctx: dict) -> list[dict]:
+    """UNKNOWN_STORY, UNATTRIBUTED, SQUASH_LOST_TRAILERS, BAD_CATEGORY and STORY_NO_BODY on the trunk commits after
+    `since` (the rules hold from there on); without a `since`, UNKNOWN_STORY on every trunk commit and nothing else
+    (attribution is not required). Errors under `enforce = "block"`, warnings under "warn"."""
+    cfg, log, graph = ctx["cfg"], ctx["log"], ctx["graph"]
+    level = "error" if cfg["enforce"] == "block" else "warning"
+    diffs = []
+
+    def add(code: str, c: dict, detail: str) -> None:
+        subject = c["message"].split("\n", 1)[0].strip()[:80]
+        diffs.append({"level": level, "code": code, "detail": f"{short(c['sha'])} {subject!r}: {detail}"})
+
+    known = {s["id"] for s in ctx["stories"]}
+    in_range = since_range(cfg, log, graph)
+    for c in reversed(log if in_range is None else in_range):
+        if ctx["unreadable"]:
+            break  # an unreadable story file may hold the id
+        unknown = sorted({i for i in c["story"] + c["part_of"] if i not in known})
+        if unknown:
+            add("UNKNOWN_STORY", c, f"names {', '.join(unknown)}, which no story file of the trunk has")
+    if in_range is None:
+        return diffs
+    by_sha, arrival = {c["sha"]: c for c in log}, ctx["placed"][0]
+    for c in reversed(in_range):
+        if not c["attributed"] and not by_sha[arrival[c["sha"]]]["attributed"]:
+            if SQUASHED_TRAILER.search(c["message"]):
+                add("SQUASH_LOST_TRAILERS", c, "its body has Story:/Part-of: lines git does not read as trailers "
+                    "(a squash that lost its branch's trailers)")
+            else:
+                add("UNATTRIBUTED", c, "no Story:, Part-of: or No-story:, and no merge that brings it has one")
+        bad = [v for v in trailer_values(c["trailers"], "No-story") if category(v) not in cfg["no_story"]]
+        if bad:
+            add("BAD_CATEGORY", c, f"No-story: {bad[0]!r} is not one of [ledger] no_story ({', '.join(cfg['no_story'])})")
+        if c["story"] and not split_message(c["message"], c["trailers"])[1]:
+            add("STORY_NO_BODY", c, f"closes {', '.join(c['story'])} with no body (what was decided, what was left out)")
+    return diffs
+
+
+def done_twice(ctx: dict) -> list[dict]:
+    """DONE_TWICE: a story whose live Story: commits arrived on the trunk in more than one first-parent commit."""
+    reverted = revert_status(ctx["log"], ctx["graph"])
+    arrival = ctx["placed"][0]
+    seen: dict[str, dict[str, str]] = {}
+    for c in reversed(ctx["log"]):
+        if not reverted[c["sha"]]:
+            for sid in c["story"]:
+                if sid in ctx["records"]:
+                    seen.setdefault(sid, {}).setdefault(arrival[c["sha"]], c["sha"])
+    return [{"level": "warning", "code": "DONE_TWICE",
+             "detail": f"{sid}: Story: commits {', '.join(short(s) for s in found.values())} arrived separately"}
+            for sid, found in sorted(seen.items()) if len(found) > 1]
+
+
+def stale_branches(ctx: dict) -> list[dict]:
+    days = ctx["cfg"]["stale_days"]
+    return [{"level": "warning", "code": "STALE_BRANCH",
+             "detail": f"{r['id']}: in progress on {', '.join(r['branches'])} with no commit in {days:g} days "
+                       f"(newest {iso(ctx['branches'][r['id']]['newest'])[:10]})"}
+            for r in ctx["facts"]["stories"] if "stale" in r["signals"]]
+
+
+def snapshot_behind(ctx: dict) -> list[dict]:
+    """SNAPSHOT_BEHIND: origin/<snapshot> exists and its ledger.json is not of the trunk's head (one `cat-file`,
+    only when the branch exists)."""
+    name = ctx["cfg"]["snapshot"]
+    head = ctx["refs"].get(f"refs/remotes/origin/{name}") if name else None
+    if not head:
+        return []
+    content = cat_specs([f"{head}:ledger.json"]).get(f"{head}:ledger.json")
+    try:
+        at = json.loads(content.decode("utf-8")).get("trunk_sha") if content is not None else None
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        at = None
+    if at == ctx["trunk_sha"]:
+        return []
+    where = f"is of {short(at)}" if isinstance(at, str) else "has no readable ledger.json"
+    return [{"level": "warning", "code": "SNAPSHOT_BEHIND",
+             "detail": f"origin/{name} {where}; the trunk is at {short(ctx['trunk_sha'])}"}]
+
+
+def all_diffs(state: dict, ci: bool) -> list[dict]:
+    """The facts' differences and those only `check` gives (docs/ledger.md: the "Given by" column)."""
+    ctx = read_all(state)
+    diffs = list(ctx["facts"]["diffs"])
+    if ctx["reason"] is None:
+        diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
+    if ci:
+        diffs = [{**d, "level": "error"} if d["code"] == "HISTORY_INCOMPLETE" else d for d in diffs]
+    return diffs
+
+
+def cmd_check(state: dict, args: tuple) -> int:
+    """Every difference: one line each, or `{"schema": 1, "diffs": [...]}`. Exit 1 on an error-level one. `--ci`
+    reads as the CI does (HISTORY_INCOMPLETE is an error)."""
+    as_json, ci = args
+    diffs = all_diffs(state, ci)
     if as_json:
-        print(json.dumps({"schema": 1, "diffs": facts["diffs"]}, indent=1))
+        print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
     else:
-        for d in facts["diffs"]:
+        for d in diffs:
             print(f"{d['level']} {d['code']} {d['detail']}")
-    return 1 if any(d["level"] == "error" for d in facts["diffs"]) else 0
+    return 1 if any(d["level"] == "error" for d in diffs) else 0
+
+
+# ── show, next, --release ──
+
+SHOW_LABELS = {
+    "en": {"state": "state", "since": "since", "approx": "approximate", "exact": "exact", "version": "version",
+           "candidate": "candidate", "branches": "branches", "file": "file", "commits": "commits",
+           "attempts": "attempts (Dropped:)", "corrections": "corrections", "escapes": "escapes", "findings": "findings",
+           "none": "no commits yet", "more": "more lines: `ledger.py show {id} --full`", "on": "on",
+           "body_more": "more lines: git show {sha}", "no_story": "no story {id} among the stories of the trunk",
+           "ready_none": "no story is ready", "wave": "wave", "release": "{tag} (after {prev}): {n} stories",
+           "release_first": "{tag} (from the start): {n} stories", "no_tag": "no version tag {tag}",
+           "session": "session"},
+    "es": {"state": "estado", "since": "desde", "approx": "aproximada", "exact": "exacta", "version": "versión",
+           "candidate": "candidata", "branches": "ramas", "file": "archivo", "commits": "commits",
+           "attempts": "intentos (Dropped:)", "corrections": "correcciones", "escapes": "escapes",
+           "findings": "hallazgos", "none": "todavía sin commits", "more": "líneas más: `ledger.py show {id} --full`",
+           "on": "en", "body_more": "líneas más: git show {sha}", "no_story": "no hay historia {id} en el trunk",
+           "ready_none": "ninguna historia está lista", "wave": "ola", "release": "{tag} (después de {prev}): {n} historias",
+           "release_first": "{tag} (desde el principio): {n} historias", "no_tag": "no hay tag de versión {tag}",
+           "session": "sesión"},
+}
+BODY_LINES = 6
+
+
+def id_pattern(ids) -> re.Pattern | None:
+    ids = sorted(set(ids))
+    return re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(map(re.escape, ids)) + r")(?![0-9])") if ids else None
+
+
+def text_lines(content: bytes | None) -> list[str]:
+    return content.decode("utf-8", errors="replace").replace("\r\n", "\n").split("\n") if content else []
+
+
+def addendum_headings(path: str, content: bytes | None) -> list[str]:
+    found, fenced = [], False
+    for n, line in enumerate(text_lines(content), 1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced and ADDENDUM_HEADING.match(line):
+            found.append(f"{path}:{n} {line.strip()}")
+    return found
+
+
+def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
+    """The lines of `show`: the facts first, then the why, each with where it lives."""
+    t, names = SHOW_LABELS[lang], STATE_NAMES[lang]
+    rec = next(r for r in ctx["facts"]["stories"] if r["id"] == sid)
+    lines = [f"{sid} — {rec['title']}"]
+    state = f"{t['state']}: {names.get(rec['state'], rec['state'])}"
+    if rec["since"]:
+        state += f" {t['since']} {rec['since']} ({t['exact'] if rec['since_exact'] else t['approx']})"
+    marks = []
+    if rec["reconstructed"]:
+        marks.append(LABELS[lang]["by_delegated" if rec["reconstructed_by"] == "delegated" else "by_person"])
+    if rec["reverted"]:
+        marks.append(LABELS[lang]["reverted"])
+    if "stale" in rec["signals"]:
+        marks.append(LABELS[lang]["stale"])
+    lines.append(" · ".join([state, *marks]))
+    if rec["reason"]:
+        lines.append(f"  {rec['reason']}")
+    facts = []
+    if rec["version"] or rec["candidate"]:
+        facts.append(f"{t['version']}: {rec['version'] or '—'}" + (f" ({t['candidate']} {rec['candidate']})"
+                                                                     if rec["candidate"] else ""))
+    facts += [f"{env}: {short(head)}" for env, head in rec["environments"].items() if head]
+    if facts:
+        lines.append(" · ".join(facts))
+    if rec["branches"]:
+        lines.append(f"{t['branches']}: {', '.join(rec['branches'])}")
+    lines.append(f"{t['file']}: {rec['path']}")
+    if ctx["reason"] is not None:
+        return lines
+    blobs = read_blobs([sha for path, sha in ctx["tree"] if path == rec["path"] or path == ESCAPES
+                        or (path.startswith(BUGBASH) and path.endswith(".md"))], ctx["trunk_sha"])
+    by_path = {path: blobs.get(sha) for path, sha in ctx["tree"] if sha in blobs}
+    lines += [f"  {h}" for h in addendum_headings(rec["path"], by_path.get(rec["path"]))]
+    # The story's commits: Story: first (the decision), then Part-of: newest first; the trunk's, then the branches'.
+    entry = ctx["branches"].get(sid, {})
+    trunk_commits = [c for c in ctx["log"] if sid in c["story"] or sid in c["part_of"]]
+    commits = [(c, None) for c in trunk_commits] + [(c, held_by(c)) for c in entry.get("commits", [])
+                                                     if c["sha"] not in {x["sha"] for x in trunk_commits}]
+    commits.sort(key=lambda x: (sid not in x[0].get("story", []), -x[0]["ct"], x[0]["sha"]))
+    findings = set()
+    lines.append(f"{t['commits']}:" if commits else f"{t['commits']}: {t['none']}")
+    for c, held in commits:
+        kind = "Story" if sid in c.get("story", []) else "Part-of"
+        subject, body = split_message(c["message"], c["trailers"])
+        where = f" ({t['on']} {', '.join(held)})" if held else ""
+        lines.append(f"  {short(c['sha'])} {iso(c['ct'])[:10]} {kind}{where}: {subject}")
+        for session in trailer_values(c["trailers"], "Claude-Session")[:1]:
+            lines.append(f"    {t['session']}: {session}")
+        shown = body if full or len(body) <= BODY_LINES else body[:BODY_LINES - 1]
+        lines += [f"    {line}" if line else "" for line in shown]
+        if len(shown) < len(body):
+            lines.append(f"    … {len(body) - len(shown)} {t['body_more'].format(sha=short(c['sha']))}")
+        findings.update(i for v in trailer_values(c["trailers"], "Finding") for i in ID_TOKEN.findall(v))
+    if rec["attempts"]:
+        lines.append(f"{t['attempts']}:")
+        for a in rec["attempts"]:
+            reason = a["reason"].split("\n")
+            lines.append(f"  {short(a['commit'])} {a['date'][:10]} {t['on']} {', '.join(a['branches'])}: {reason[0]}")
+            lines += [f"    {line}" for line in (reason[1:] if full else reason[1:BODY_LINES])]
+    rows = [r for r in ctx["corrections"]["active"] if r["story"] == sid]
+    if rows:
+        lines.append(f"{t['corrections']}:")
+        lines += [f"  {r['kind']} {short(r['commit'])} {r['approver']} {r['date']}: {r['evidence']}" for r in rows]
+    names_it, by_finding = id_pattern([sid]), id_pattern(findings)
+    escapes = [f"  {ESCAPES}:{n} {line.strip()}" for n, line in enumerate(text_lines(by_path.get(ESCAPES)), 1)
+               if line.lstrip().startswith("|") and (names_it.search(line) or by_finding and by_finding.search(line))]
+    if escapes:
+        lines += [f"{t['escapes']}:", *escapes]
+    found = []
+    for path in sorted(p for p in by_path if p.startswith(BUGBASH)):
+        for n, line in enumerate(text_lines(by_path[path]), 1):
+            hit = by_finding.search(line) if by_finding and line.lstrip().startswith("#") else None
+            if hit:
+                found.append(f"  {hit.group(0)} {path}:{n} {line.strip()}")
+            elif names_it.search(line):
+                found.append(f"  {path}:{n} {line.strip()}")
+    if found:
+        lines += [f"{t['findings']}:", *found]
+    return lines
+
+
+def bounded(lines: list[str], sid: str, lang: str, full: bool) -> list[str]:
+    """At most SHOW_LINES lines of at most SHOW_WIDTH characters, the last saying how to see the rest."""
+    if full:
+        return lines
+    lines = [line if len(line) <= SHOW_WIDTH else line[:SHOW_WIDTH - 1] + "…" for line in lines]
+    if len(lines) <= SHOW_LINES:
+        return lines
+    rest = len(lines) - (SHOW_LINES - 1)
+    return lines[:SHOW_LINES - 1] + [f"… {rest} {SHOW_LABELS[lang]['more'].format(id=sid)}"]
+
+
+def cmd_show(state: dict, args: tuple) -> int:
+    sid, full = args
+    lang = read_config(state)["lang"]
+    ctx = read_all(state)
+    if sid not in {r["id"] for r in ctx["facts"]["stories"]}:
+        print(f"Keelokit: {SHOW_LABELS[lang]['no_story'].format(id=sid)}")
+        return 1
+    print("\n".join(bounded(card(ctx, sid, lang, full), sid, lang, full)))
+    return 0
+
+
+def id_key(sid: str) -> tuple:
+    epic, _, number = sid.rpartition("-")
+    return (epic, int(number) if number.isdigit() else 0, sid)
+
+
+def cmd_next(state: dict) -> int:
+    """The ready stories (ready already excludes in-progress), by wave (none last) and id."""
+    lang = read_config(state)["lang"]
+    ctx = read_all(state)
+    if ctx["reason"] is not None:
+        print(f"Keelokit: {ctx['reason']}")
+        return 1
+    ready = sorted((r for r in ctx["facts"]["stories"] if r["state"] == "ready"),
+                   key=lambda r: (r["wave"] is None, r["wave"] or 0, id_key(r["id"])))
+    t = SHOW_LABELS[lang]
+    for r in ready:
+        print(f"{r['id']}  {t['wave']} {r['wave'] if r['wave'] is not None else '—'}  {r['title']}")
+    if not ready:
+        print(t["ready_none"])
+    return 0
+
+
+def cmd_release(state: dict, tag: str) -> int:
+    """The stories whose commit (Story:, or a correction's) is in the tag and not in the previous final version
+    tag (in version order); the first version takes everything before it."""
+    lang = read_config(state)["lang"]
+    t = SHOW_LABELS[lang]
+    ctx = read_all(state)
+    if ctx["reason"] is not None:
+        print(f"Keelokit: {ctx['reason']}")
+        return 1
+    refs = ctx.get("refs", {})
+    tags = version_tags(refs)
+    key = version_key(tag)
+    if key is None or f"refs/tags/{tag}" not in refs:
+        print(f"Keelokit: {t['no_tag'].format(tag=tag)}")
+        return 1
+    previous = [(k, name, sha) for k, name, sha in tags if k[1] == 1 and k < key and name != tag]
+    held = set(first_reach(ctx["graph"], [previous[-1][2]])) if previous else set()
+    inside = set(first_reach(ctx["graph"], [refs[f"refs/tags/{tag}"]])) - held
+    stories = sorted((r for r in ctx["facts"]["stories"] if r["commit"] in inside), key=lambda r: id_key(r["id"]))
+    head = (t["release"].format(tag=tag, prev=previous[-1][1], n=len(stories)) if previous
+            else t["release_first"].format(tag=tag, n=len(stories)))
+    print("\n".join([head, *(f"{r['id']}  {r['title']}" for r in stories)]))
+    return 0
 
 
 def parse_command(argv: list[str]) -> tuple | None:
     """(command, arguments) for the corrections commands and check, or None for any other spelling."""
-    if argv[:1] == ["check"] and argv[1:] in ([], ["--json"]):
-        return "check", bool(argv[1:])
+    if argv[:1] == ["check"] and len(set(argv[1:])) == len(argv[1:]) and set(argv[1:]) <= {"--json", "--ci"}:
+        return "check", ("--json" in argv, "--ci" in argv)
+    if argv[:1] == ["show"] and len(argv) in (2, 3) and not argv[1].startswith("-") and argv[2:] in ([], ["--full"]):
+        return "show", (argv[1], len(argv) == 3)
+    if argv == ["next"]:
+        return "next", None
+    if argv[:1] == ["--release"] and len(argv) == 2 and not argv[1].startswith("-"):
+        return "release", argv[1]
     if argv == ["backfill", "--accept"]:
         return "accept", None
     if argv[:3] == ["backfill", "--accept", "--delegated"] and len(argv) == 4:
@@ -2040,6 +2442,12 @@ def run_command(state: dict, command: str, args) -> int:
     try:
         if command == "check":
             return cmd_check(state, args)
+        if command == "show":
+            return cmd_show(state, args)
+        if command == "next":
+            return cmd_next(state)
+        if command == "release":
+            return cmd_release(state, args)
         if command == "propose":
             return cmd_propose(state, args)
         if command == "correct":

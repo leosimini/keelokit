@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "ledger.py show, next and check, with the why of every story"
 wave = 10
 depends_on = ["LEDGER-015"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "docs/ledger.md", "CHANGELOG.md"]
 dimensions = ["logic", "dx", "docs"]
 invariants = []
 origin = "docs/ledger.md — Contracts (commands, difference codes); premortem failure 6"
@@ -74,3 +74,51 @@ Scenario: [S8] show is bounded
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line,
 `Story: LEDGER-005` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-23
+
+Decided (smallest option consistent with the story and docs/ledger.md; the coordinator's delegation, decision 7):
+- `check` alone gives the codes whose "Given by" column names `check` (or the hooks): the attribution codes,
+  `STALE_BRANCH`, `DONE_TWICE`, `SNAPSHOT_BEHIND`. `ledger.py` and `--json` keep LEDGER-003/004/015's `diffs`
+  (`HISTORY_INCOMPLETE`, `CORRECTION_*`, `PENDING_REVIEW`) and their exit codes: a stale branch does not turn the
+  summary's exit into 1. `check` exits 1 on an error-level difference, 0 on warnings only (S6).
+- The attribution codes read the trunk commits after `[ledger] since` (not reachable from it): `UNATTRIBUTED` (no
+  `Story:`/`Part-of:`/`No-story:` of its own nor on the first-parent commit that brought it, as LEDGER-003's count),
+  `SQUASH_LOST_TRAILERS` (such a commit whose message has `Story:`/`Part-of:` lines git does not read as trailers:
+  a squash's body; reported instead of `UNATTRIBUTED`), `BAD_CATEGORY` (a `No-story:` whose category, the text
+  before the first space, dash or colon, is not in `[ledger] no_story`), `STORY_NO_BODY` (a `Story:` commit with no
+  line outside its subject line and its trailer paragraph). `UNKNOWN_STORY` (a `Story:`/`Part-of:` id with no story
+  file on the trunk) reads the same range, or every trunk commit when there is no `since`; skipped while a story
+  file is unreadable. Errors under `enforce = "block"` (the default), warnings under `"warn"`.
+- `DONE_TWICE`: a known story whose live `Story:` commits arrived on the trunk through more than one first-parent
+  commit (two commits of one merged branch are one delivery). `STALE_BRANCH`: once per in-progress story with the
+  `stale` signal, naming its branches. `SNAPSHOT_BEHIND`: `origin/<[ledger] snapshot>` exists and its `ledger.json`
+  is not of the trunk's head (LEDGER-011 writes it; `snapshot = ""` turns it off); one `cat-file`, only when the
+  branch exists. Two sessions on one story (two branches) are listed by `show` and the summary, with no code: the
+  table has none outside Harbor's `STORY_TAKEN`.
+- `--ci` reads as the CI does: `HISTORY_INCOMPLETE` is an error (as with `CI` set).
+- `show <ID> [--full]`: header (state in `[dashboard] lang`, date with exact/approximate, reconstructed by whom,
+  reverted, stale, the unknown reason), version and candidate, environments, branches, the file and its
+  `# … Addendum` headings (path:line, outside code fences), the commits (the trunk's `Story:` and `Part-of:` and
+  the origin branches' `Part-of:`; `Story:` first, then newest first) with date, subject, `Claude-Session:` and
+  body (6 lines each unless `--full`), attempts, active correction rows, `docs/escapes.md` table rows and
+  `docs/bugbash/**/*.md` lines that name the id, and bug-bash headings and escape rows that name a `Finding:` id of
+  its commits. Without `--full` lines are cut at 200 characters and the card at 60 lines, the last one saying
+  `ledger.py show <ID> --full`. Exit 1 for an id that is not a story; with a cut history only the header and the
+  file (the facts are unknown). Convoy events wait for LEDGER-013.
+- Attempts: `Dropped: <ID>` commits off the trunk on origin branches, and on the trunk (named by the trunk), fill
+  the story's `attempts` in `--json` (`commit`, `branches`, `date`, `reason`: the body, else the subject). A
+  `Dropped:` commit does not end `in-progress` here: LEDGER-008 (`drop`) owns that.
+- `next`: the `ready` stories (in-progress already wins over ready), by wave (none last) then epic and number.
+  With a cut history it prints the reason and exits 1.
+- `--release vX.Y.Z`: the stories whose commit (`Story:`, or a correction's) is reachable from the tag and not from
+  the previous final version tag in version order (rc tags are never the previous one); the first version takes
+  everything before it. An unknown or non-version tag exits 1.
+- The trunk log carries every trailer (`%(trailers:only,unfold)`) and the branch log the `Dropped:` trailer and the
+  body: still one call each, so the S10 budget holds (`show` adds one `cat-file` for the story file, escapes and
+  bug-bash files).
+- docs/ledger.md joined the touches for its "built so far" line.
+
+On this repo (no `[ledger] since` yet) `check` reports `UNKNOWN_STORY` on the ESC-090 junk commits on main
+(`AUTH-001`, `A-001`, `PAY-001`, …) and `DONE_TWICE` for HARN-009, HARN-017 and HARN-019: writing `since` (the
+0.15.0 upgrade step) clears the first; the phase-1 gate needs it.
