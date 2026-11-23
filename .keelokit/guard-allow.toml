@@ -1,0 +1,10 @@
+[[allow]]
+rule = "SEC-1"
+path = "apps/api/.env.production"
+reason = "Firebase key, public by design"
+approver = "Leo"
+[[allow]]
+rule = "SEC-2"
+path = "apps/mobile/google-services.json"
+reason = "Firebase key, public by design"
+approver = "Leo"
