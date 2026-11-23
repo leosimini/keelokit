@@ -116,8 +116,17 @@ is reconstructed once from `backlog/ledger-corrections.toml`: `ledger.py backfil
 writes candidate rows with a confidence and their evidence (commits and merged branches that name the id, train
 sheets, a `BOARD.md`, Harbor's imported board) to a git-ignored file, `ledger.py correct` proposes one late
 attribution, and a person accepts them with `backfill --accept`; an accepted row makes its story `on-trunk`,
-marked reconstructed. `ledger.py check` lists the differences (`CORRECTION_INVALID`, `CORRECTION_EDITED`), which
-the doctor reports too.
+marked reconstructed. `ledger.py check [--ci] [--json]` lists every difference with its level (the corrections'
+`CORRECTION_*`, which the doctor reports too; `UNKNOWN_STORY` (every trunk commit, or from `[ledger] since` on
+when it is set) and, from `since` on, `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS`,
+errors under `enforce = "block"`; and the warnings
+`STALE_BRANCH`, `DONE_TWICE`, `SNAPSHOT_BEHIND`, `PENDING_REVIEW`) and exits 1 only on an error. `ledger.py show
+<ID> [--full]` gathers a story's why where it already lives, in at most 60 lines: its state and date, its commits
+with their subjects, bodies and `Claude-Session:`, the story file's *Addendum* headings, the rows of
+`docs/escapes.md` and the bug-bash findings that name it or arrive through a `Finding:` trailer, its abandoned
+attempts (`Dropped:` commits on any origin branch, also in `--json` as `attempts`) and its corrections. `ledger.py
+next` lists the ready stories nobody works on, by wave and id; `ledger.py --release vX.Y.Z` the stories whose
+commit is in that tag and not in the previous version tag.
 
 ## Lifecycle
 
