@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Tests that stay green (FLEET-003).** `references/stable-tests.md` holds the rules against intermittent
+  tests, now eleven: rule 10, test data is deterministic (fixtures or a seeded generator, never `Math.random`,
+  `randomUUID` or unseeded `faker`), and rule 11, an absence ("this route is closed") is asserted in one registry
+  every spec reads. Four arch-specs fail naming the `file:line` that breaks rules 3, 4, 7 and 10 (sleeps, literal
+  dates, inherited `GIT_*`, random test data); a new project gets them in `packages/shared/src/arch/`, run by
+  `pnpm verify`. `.keelokit/bin/flaky.sh` reproduces an intermittent red under load and in other time zones and
+  reports each failing run with its seed, zone and load. The verifier, the reviewer and `build-story` cite the
+  rules. An existing project gets `flaky.sh` with `/keelokit:harness-upgrade`; the arch-specs are not added by an
+  update (a codebase that already breaks a rule would turn red): copy them from `references/arch-specs/`.
 - **Projects with an API pass the dependency audit again.** Prisma 7.10 pins `effect` 3.20.0, which carries a high
   advisory (GHSA-7589-6fvf-x4pw, ReDoS in `Schema.TemplateLiteral`) fixed in 3.22.1; the template now overrides it
   (`'@prisma/config>effect': ^3.22.1` in `pnpm-workspace.yaml`), like the other pinned fixes there, until Prisma ships
