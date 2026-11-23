@@ -100,12 +100,17 @@ def expected_captures(cfg: dict) -> list[str]:
 
 HEADING = re.compile(r"(?m)^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 FENCE = re.compile(r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?(`{3,}|~{3,})")
-RAN = re.compile(r"(?mi)^[ \t]*(?:[-*+][ \t]+)?[*_]*Ran[*_]*:[*_]*[ \t]*(\d{4}-\d{2}-\d{2})\b")
+RAN = re.compile(r"(?mi)^[ \t]*(?:[-*+][ \t]+)?[*_]*Ran[*_]*:[*_]*[ \t]*[*_]*(\d{4}-\d{2}-\d{2})\b")
 ITEM = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+(.*)$")
 # What may come before a priority: a task box, emoji or other symbols, bold, a bracket.
 PRIORITY = re.compile(r"(?i)^(?:\[[ xX]\][ \t]*)?[^\w\[(]*[\[(]?(P\d)\b[\])]?[*_:]*(.*)$")
-# A skill's own severity, where a priority belongs: a table cell that is only that, or an item that starts with it.
-SEVERITY = re.compile(r"(?i)^[^\w]*(?:critical|major|moderate|serious|blocker)\b|^[^\w]*[🔴🟠🟡]")
+# A skill's own severity where a priority belongs: a table cell that is only that, or an item that
+# opens with it as a label ("Critical:", "**Major**", "🔴 …"), not a sentence that starts with the word.
+SEVERITY_WORD = r"(?:critical|major|moderate|serious|blocker)"
+SEVERITY_CELL = re.compile(rf"(?i)^\W*{SEVERITY_WORD}\W*$|^\W*[🔴🟠🟡]")
+SEVERITY_HEAD = re.compile(rf"(?i)^\W*(?:{SEVERITY_WORD}|minor|total)\W*$")
+SEVERITY_ITEM = re.compile(rf"(?i)^(?:[*_]+{SEVERITY_WORD}[*_]+|[\[(]?{SEVERITY_WORD}[\])]?[ \t]*[:—–]|\W*[🔴🟠🟡])")
+STARTS_RESOLVED = re.compile(r"(?i)^(?:[—–]|-{1,2})?\s*(?:fixed in\s+\S|decided:\s*\S)")
 # The item ends with a dash, then "fixed in <x>" or "decided: <reason>" (a reason may hold dashes,
 # a "fixed in" may not: whatever follows another dash is not the end).
 RESOLUTION = re.compile(r"(?i)(?:[—–]|(?:^|\s)-{1,2})\s*(?:fixed in\s+(?:(?![—–]|\s-{1,2}\s).)*\S|decided:\s*\S.*)$")
@@ -117,6 +122,8 @@ def unfenced(text: str) -> str:
     out, fence = [], None
     for line in unicodedata.normalize("NFKC", text).replace("\r\n", "\n").split("\n"):
         m = FENCE.match(line)
+        if m and m.group(1)[0] == "`" and "`" in line[m.end():]:
+            m = None  # ```code``` inline: a backtick fence's info string holds no backtick
         if fence:
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = None
@@ -159,26 +166,34 @@ def findings(body: str) -> list[tuple[str | None, str, bool]]:
                 continue
             at = next((k for k, c in enumerate(cells) if PRIORITY.match(c) and PRIORITY.match(c).group(2).strip() == ""), None)
             text = " | ".join(c for c in cells if c)
-            if at is not None:
+            after = [c for c in cells[at + 1:] if c] if at is not None else []
+            if at is not None:  # the fix or the decision is the row's last cell
                 out.append((PRIORITY.match(cells[at]).group(1).upper(), text,
-                            resolved(" — " + " ".join(c for c in cells[at + 1:] if c))))
-            elif any(SEVERITY.match(c) and len(c) <= 20 for c in cells):
-                out.append((None, text, False))
+                            bool(after) and bool(STARTS_RESOLVED.match(after[-1]))))
+            elif any(SEVERITY_CELL.match(c) for c in cells) and not all(SEVERITY_HEAD.match(c) for c in cells if c):
+                out.append((None, text, False))  # a row graded by severity (a header of severities is not)
             continue
         m = ITEM.match(line)
         if not m:
             continue
-        indent, text = len(m.group(1).expandtabs()), m.group(2)
+        indent, text, subs = len(m.group(1).expandtabs()), m.group(2), []
         while i < len(lines) and lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) > indent:
             sub = ITEM.match(lines[i])
             if sub and PRIORITY.match(sub.group(2)):
                 break  # a finding of its own
-            text += " " + (sub.group(0).strip() if sub else lines[i].strip())
+            if sub:
+                subs.append(sub.group(2).strip())  # a sub-bullet: the fix, or a note
+            elif subs:
+                subs[-1] += " " + lines[i].strip()
+            else:
+                text += " " + lines[i].strip()  # a wrapped line
             i += 1
         p = PRIORITY.match(text)
         if p:
-            out.append((p.group(1).upper(), f"{p.group(1).upper()}{p.group(2)}".strip(), resolved(p.group(2))))
-        elif SEVERITY.match(text):
+            done = resolved(p.group(2)) or any(STARTS_RESOLVED.match(x) for x in subs)
+            shown = " ".join([f"{p.group(1).upper()}{p.group(2)}".strip(), *subs])
+            out.append((p.group(1).upper(), shown, done))
+        elif SEVERITY_ITEM.match(text):
             out.append((None, text.strip(), False))
     return out
 
