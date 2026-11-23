@@ -18,7 +18,8 @@ Answer three things, in this order, in at most ten lines:
    - **None found, empty folder or no code** → offer a new product (`/keelokit:project-new`).
    - **None found, existing code** → offer to bring it under the harness (`/keelokit:project-adopt`).
    Do not install or scaffold anything without the user's answer.
-2. Run `python3 .keelokit/bin/doctor.py --brief`. If Python is missing, say so and stop.
+2. Run `python3 .keelokit/bin/doctor.py --brief` and `python3 .keelokit/bin/ledger.py` (the stories'
+   states: what is ready, in progress elsewhere, unknown). If Python is missing, say so and stop.
 3. Route:
    | State | Next action |
    |---|---|
@@ -30,11 +31,12 @@ Answer three things, in this order, in at most ten lines:
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
    | Several sessions or worktrees running, or the user asks how they are doing | `/keelokit:coordinate` (`python3 .keelokit/bin/status.py`) |
    | The CI of main is red or cancelled twice in a row (`python3 .keelokit/bin/ci.py health`) | `ci.py jobs` for the failing job and step; fix before starting stories |
-   | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave) |
+   | Story states `unknown` (the ledger can't read the history) | `python3 .keelokit/bin/ledger.py history --ensure`, then route again; never treat unknown as not done |
+   | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave): `python3 .keelokit/bin/ledger.py next` lists them, without the ones in progress elsewhere |
    | A wave just finished, or a release is near | Propose `/keelokit:check-bugbash` |
    | A wave is done and its bug bash is clean | Propose `/keelokit:ship-release` (and `/keelokit:check-security` before the first production release) |
    | The skeleton exists but `docs/deploy.md` doesn't, or an environment's checklist has open steps | Propose `/keelokit:ship-setup` |
-   | Nothing ready, backlog not empty | Show which dependency blocks the next wave |
+   | Nothing ready, backlog not empty | Show which dependency blocks the next wave, and what is in progress (`ledger.py`) |
    | Backlog empty or done | Offer `/keelokit:plan-backlog` for the next slice, or a new feature intake |
 4. If the user already said what they want, skip the report and do it.
 5. Offer the dashboard (`/keelokit:project-dashboard`) with the answer, and open it without asking when

@@ -32,4 +32,6 @@ Ask once, in one line, what the user wants unless they said it:
   remote, otherwise to the files next to it.
 
 Then say in two lines what it covers (the date, the stage, stories done of total, open decisions)
-and that it doesn't update itself: generate a new one to share a later state.
+and that it doesn't update itself: generate a new one to share a later state. The stories' states on
+the page are the ledger's (`python3 .keelokit/bin/ledger.py --json`): quote its counts, never a count of
+your own; when the page says progress is unknown, say so and why (`python3 .keelokit/bin/ledger.py`).

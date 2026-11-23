@@ -12,12 +12,15 @@
 
 Any other command line (a missing ID, an unknown mode, an extra argument) prints the usage and exits 2.
 
+Story states come from `.keelokit/bin/ledger.py --json` (docs/ledger.md: one reader): a story is done
+when the ledger has it on the trunk or later, by its `Story:` commit or an approved correction (shown
+apart as reconstructed: TRACE-1 and INV-1 skip it); ready when the ledger says so. A story file not on
+the trunk yet is not done, and ready once its dependencies are done.
 Without main or origin/main (a shallow CI checkout) nothing counts as done and the doctor says so,
 `--scope` exits 2, and `--critical --changed` lists every critical file: never HEAD for main.
-With main but an incomplete history (a shallow clone that reaches a cut commit of main) the done set
-is unknown, not low: the Backlog line says unknown with the reason and `git fetch --unshallow origin
-main`, an error in CI (`fetch-depth: 0`), a warning elsewhere. Stories whose `Story:` trailer is seen
-stay done; rules that need "not done" become warnings.
+When the ledger can't answer (a cut history, a story it reads as unknown, no ledger.py) the done set is
+unknown, not low: the Backlog line says unknown with the reason, an error in CI (`fetch-depth: 0`), a
+warning elsewhere; rules that need "not done" become warnings.
 
 Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the rule
 and has active cases, a lint rule that is on, a CI job with real steps, no continue-on-error and no
@@ -29,8 +32,7 @@ tracked; every invariant in domain.md has an id and a class; critical areas poin
 backlog stories are well-formed, stories in one wave don't touch the same paths or the same
 critical area, a story touching a critical area declares `integrity` and its invariants, and every
 scenario and invariant of a done story is cited by an active test title; the escape log names the
-check each escaped bug left behind. A story is done when a commit reachable from main carries the
-trailer `Story: <ID>` — status is never stored in a file.
+check each escaped bug left behind. Status is never stored in a file (INV-005, read through the ledger).
 
 Process checks (CI-1, CI-2, FMT-1, FLAKY-1, MIG-1, DEBT-1): no CI job without `timeout-minutes` and
 none whose timeout, test timeout or retries grew since main (split or shard instead); every CI job
@@ -805,57 +807,37 @@ def check_escapes() -> int:
     return rows
 
 
-def cut_commits(run, shas: list[str], known: set[str]) -> bool:
-    """True when a shallow-file commit has a parent that main's history (`known`: one rev-list) doesn't
-    hold: really cut. A root commit, or a boundary whose parents main walks anyway, is nothing cut.
-    Raw objects, since %P is rewritten to empty in a shallow repo; one batched call. Fails closed: a
-    failed call or a missing object reads as cut."""
-    if not shas:
-        return False
-    code, out = run(["git", "cat-file", "--batch"], "".join(f"{s}\n" for s in shas).encode())
-    if code != 0:
-        return True
-    pos = 0
-    while pos < len(out):
-        end = out.find(b"\n", pos)
-        if end < 0:
-            return True
-        head = out[pos:end].split()
-        if len(head) < 3 or head[1] != b"commit":
-            return True  # "<sha> missing", or anything unexpected
-        size = int(head[2])
-        body = out[end + 1:end + 1 + size]
-        for line in body.split(b"\n\n", 1)[0].split(b"\n"):
-            if line.startswith(b"parent ") and line[7:].decode() not in known:
-                return True
-        pos = end + 1 + size + 1
-    return False
+ON_TRUNK = ("on-trunk", "in-version", "in-staging", "in-production")
 
 
-def incomplete_history() -> str | None:
-    """Why the done set can't be trusted, or None. A shallow clone whose main reaches a commit of the
-    shallow file lacks history: a story without its trailer may be done. Two or three git calls."""
-    if (ref := main_ref()) is None or git("rev-parse", "--is-shallow-repository").strip() != "true":
-        return None
-    shallow = Path(git("rev-parse", "--git-path", "shallow").strip() or "shallow")
-    text = read(shallow if shallow.is_absolute() else ROOT / shallow) or ""
-    cut = set(text.split())
-    known = set(git("rev-list", ref).split())
-    reach = sorted(cut & known)
-    if not reach or not cut_commits(lambda cmd, data: (lambda r: (r.returncode, r.stdout))(subprocess.run(cmd, cwd=ROOT, input=data, capture_output=True)), reach, known):
-        return None
-    return (f"the clone is shallow and cut main's history (it has {git('rev-list', '--count', ref).strip()} commits of {ref}); "
-            "run `git fetch --unshallow origin main`")
-
-
-def done_story_ids() -> set[str]:
-    """Stories closed by a `Story: <ID>` trailer on a commit reachable from main."""
-    if (ref := main_ref()) is None:
-        if git("rev-parse", "--verify", "--quiet", "HEAD").strip():
-            errors.append(NO_MAIN.format(what="count done stories from"))
-        return set()
-    trailers = git("log", ref, "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
-    return {sid.strip() for line in trailers.splitlines() for sid in line.split(",") if sid.strip()}
+def ledger_states() -> tuple[dict[str, dict], str | None]:
+    """LEDGER-006: the trunk's story records by id, from `ledger.py --json` (docs/ledger.md, "The principle":
+    one reader, so the doctor never reads `Story:` trailers itself), and why the states are unknown, or None.
+    Unknown when the ledger is missing or cannot answer, the history is incomplete, or any story is unknown:
+    never a lower state. A repo with no commit yet has nothing on the trunk."""
+    if not git("rev-parse", "--verify", "--quiet", "HEAD").strip():
+        return {}, None
+    ledger = ROOT / ".keelokit/bin/ledger.py"
+    if not ledger.is_file():
+        return {}, "no .keelokit/bin/ledger.py to read story states from (`/keelokit:harness-upgrade` brings it)"
+    why = ""
+    try:
+        out = subprocess.run([sys.executable, str(ledger), "--json"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=120)
+        why = (out.stderr.strip().splitlines() or [""])[-1].removeprefix("Keelokit: ")
+        facts = json.loads(out.stdout) if out.returncode in (0, 1) else None
+        records = {s["id"]: s for s in facts["stories"] if isinstance(s, dict) and isinstance(s.get("id"), str)
+                   and isinstance(s.get("state"), str)}
+        history = facts["history"]
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return {}, f"ledger.py could not answer ({why or 'run `python3 .keelokit/bin/ledger.py`'})"
+    unknown = [s for s in records.values() if s["state"] == "unknown"]
+    if history == "incomplete" or unknown:
+        reason = next((s.get("reason") for s in unknown if isinstance(s.get("reason"), str) and s.get("reason")), None)
+        reason = reason or next((d.get("detail") for d in facts.get("diffs", []) if isinstance(d, dict)
+                                 and d.get("code") == "HISTORY_INCOMPLETE" and isinstance(d.get("detail"), str)), None)
+        return {}, reason or "the ledger reads the history as incomplete (run `python3 .keelokit/bin/ledger.py`)"
+    return records, None
 
 
 def read_story(path: Path) -> dict | None:
@@ -956,8 +938,17 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         if sid in stories:
             errors.append(f"{rel}: duplicate id {sid}")
         stories[sid] = meta
-    done = done_story_ids() & stories.keys() if stories else set()
-    gap = incomplete_history() if stories else None
+    records: dict[str, dict] = {}
+    gap = None
+    if stories and main_ref() is None:
+        if git("rev-parse", "--verify", "--quiet", "HEAD").strip():
+            errors.append(NO_MAIN.format(what="count done stories from"))
+    elif stories:
+        records, gap = ledger_states()
+    # States come from the ledger; a story file not on the trunk yet (a plan on a branch) has no record there:
+    # not done, and ready once every dependency is on the trunk by the ledger.
+    done = {sid for sid in stories if records.get(sid, {}).get("state") in ON_TRUNK}
+    reconstructed = sorted(sid for sid in done if records[sid].get("reconstructed") is True)
     if gap:
         if os.environ.get("CI"):
             errors.append(f"done state unknown: {gap} (CI: checkout with `fetch-depth: 0`)")
@@ -1004,14 +995,17 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         shared = set(areas_hit(stories[a].get("touches", []), areas)) & set(areas_hit(stories[b].get("touches", []), areas))
         if shared:
             clashes.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time" + maybe)
-    corpus = cited_titles() if done else ""
+    # Reconstructed stories (done by an approved correction row) predate TRACE-1 and INV-1: they skip both
+    # and are listed apart (docs/ledger.md, decision 5).
+    checked = done - set(reconstructed)
+    corpus = cited_titles() if checked else ""
     # One pass over the titles, not one search per done story (NFR-1): every `<text>.S<n>` citation
     # (.S1 must not match .S10), keyed by the text's last characters at each length a done id has.
-    lengths = {len(sid) for sid in done}
+    lengths = {len(sid) for sid in checked}
     cited = {(corpus[max(0, m.start() - n):m.start()], m.group(1))
              for m in re.finditer(r"\.([Ss]\d+)\b", corpus) for n in lengths}
     proven: dict[str, bool] = {}  # one search per invariant, not per story
-    for sid in sorted(done):
+    for sid in sorted(checked):
         untested = [f"{sid}.{s}" for s in stories[sid]["_scenarios"] if (sid, s) not in cited]
         if untested:
             errors.append(f"story {sid} is done but no active test title cites {', '.join(untested)} (TRACE-1)")
@@ -1023,10 +1017,12 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             errors.append(f"story {sid} is done but no active test title cites invariant {', '.join(unproven)} (INV-1)")
     ready = [] if gap else [
         sid for sid, m in stories.items()
-        if sid not in done and all(d in done for d in m.get("depends_on", []))
+        if (records[sid]["state"] == "ready" if sid in records
+            else all(d in done for d in m.get("depends_on", [])))
     ]
     ready.sort(key=lambda s: (stories[s].get("wave", 99), s))
-    return {"total": len(stories), "done": done, "ready": ready, "stories": stories, "unknown": gap}
+    return {"total": len(stories), "done": done, "ready": ready, "stories": stories, "unknown": gap,
+            "reconstructed": reconstructed}
 
 
 # ── Process checks: CI budget, the verify map, formatting, migrations, flaky tests, the debt ledger ──
@@ -1465,6 +1461,8 @@ def main() -> int:
     print((f"  Backlog: unknown, {backlog['unknown']}" if backlog["unknown"]
            else f"  Backlog: {len(backlog['done'])}/{backlog['total']} done")
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))
+    if backlog["reconstructed"]:
+        print(f"  Reconstructed (approved corrections; TRACE-1 and INV-1 skip them): {', '.join(backlog['reconstructed'])}")
     if debt_open or debt_waiting:
         print(f"  Pre-launch debt: {debt_open} open · {debt_waiting} waiting on the owner (`doctor --launch`)")
     for w in warnings:
