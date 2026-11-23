@@ -1,0 +1,5 @@
+[[allow]]
+rule = "QA-4"
+path = "apps/mobile/google-services.json"
+reason = "Firebase key, public by design"
+approver = "Leo"
