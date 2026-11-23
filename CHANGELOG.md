@@ -7,6 +7,7 @@
   free (or in the container's cgroup limit), says so, and stops in seconds with exit 3 when even one worker would be
   killed for memory (`VERIFY_FORCE=1` runs it anyway); `[verify] memory_per_worker_mb` in `.keelokit/state.toml`
   overrides the measure, and `status` shows the workers chosen. An existing project runs `/keelokit:harness-upgrade`.
+- **`pnpm verify` no longer passes a git hook's `GIT_DIR` to the tests.** Run by the pre-push hook in a linked worktree, it handed every test an absolute `GIT_DIR`, and a test's throwaway repo acted on the real one (commits, config, even a push). `scripts/verify.sh` now drops the inherited `GIT_*` variables first; `harness-upgrade` brings it to existing projects.
 - **A session that starts in a shallow clone completes the trunk's history (main by default) before the doctor reads it.** The SessionStart
   hook runs `ledger.py history --ensure` (commits only, 20 s at most); offline or slower than the cap it says so in one
   line and goes on, with `git fetch --unshallow origin <trunk>` as the fix.

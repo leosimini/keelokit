@@ -41,6 +41,11 @@
 # warning that scrolls by let two fake tokens reach main. To skip one knowingly:
 # KEELOKIT_ALLOW_MISSING="semgrep" (names, space separated).
 set -euo pipefail
+# A git hook runs this with GIT_DIR (absolute in a linked worktree) and friends exported. Every test that
+# runs git in a throwaway repo would inherit them and act on this repository instead: on 2026-11-23 they
+# committed fixtures to it and pushed them to origin's main (ESC-090). Git finds the repo from the
+# working directory without them.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
 # Test workers that run out of heap are the most common red that isn't a bug: give Node 4 GB unless
 # the caller already chose a size.
 case " ${NODE_OPTIONS:-} " in
