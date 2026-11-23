@@ -191,11 +191,19 @@ class PerWorkerPeaksTest(unittest.TestCase):
         self.assertEqual(peaks, {"unit": 1000})  # 8 cores − 1
         self.assertEqual(fn("per_worker_peaks")([self.line({"unit": 700}, {"unit": "cgroup"})], 1), {"unit": 700})
 
-    def test_FLEET_001_S2_the_last_entry_with_the_step_wins_any_result(self):
-        lines = [self.line({"unit": 500, "integration": 1000}, {"unit": "rss", "integration": "rss"}),
-                 self.line({"unit": 800}, {"unit": "rss"}, result="fail"),
+    def test_FLEET_001_S2_the_max_of_the_last_10_entries_that_measured_the_step_wins(self):
+        """FLEET-001.S2: a small run after a big one (a narrowed rerun, a --packages run, an early red) must not erase the
+        real peak: the figure is the max over the last 10 entries that measured the step, any result."""
+        lines = [self.line({"unit": 2355, "integration": 1000}, {"unit": "rss", "integration": "rss"}),
+                 self.line({"unit": 310}, {"unit": "rss"}, result="fail"),
                  self.line({}, {})]
-        self.assertEqual(fn("per_worker_peaks")(lines, 8), {"unit": 800, "integration": 1000})
+        self.assertEqual(fn("per_worker_peaks")(lines, 8), {"unit": 2355, "integration": 1000})
+        # beyond the last 10 that measured it, an old peak no longer counts; entries that didn't measure it don't count
+        old = [self.line({"unit": 9000}, {"unit": "rss"})]
+        recent = [self.line({"unit": 300}, {"unit": "rss"}) if i % 2 == 0 else self.line({"lint": 50}, {"lint": "rss"})
+                  for i in range(20)]
+        self.assertEqual(fn("per_worker_peaks")(old + recent, 8)["unit"], 300)
+        self.assertEqual(fn("per_worker_peaks")(old + recent[:18], 8)["unit"], 9000)  # 9 measured since: still inside
 
     def test_FLEET_001_malformed_history_is_skipped(self):
         lines = [self.line({"unit": 600}, {"unit": "rss"}),
@@ -413,8 +421,9 @@ class StatusWorkersLineTest(MemoryFixture):
         return r.stdout.splitlines()
 
     def test_FLEET_001_S2_status_shows_the_last_workers_why(self):
+        old = "integration: 3 workers, 9.0 GB free, 2.3 GB each last time"
         why = "integration: 2 workers, 6.0 GB free, 2.3 GB each last time"
-        out = self.status([{"t": 1, "result": "pass", "workers_why": why}, {"t": 2, "result": "pass", "workers_why": ""}])
+        out = self.status([{"t": 1, "result": "pass", "workers_why": old}, {"t": 2, "result": "pass", "workers_why": why}])
         at = next(i for i, l in enumerate(out) if l.startswith("verify:"))
         self.assertEqual(out[at + 1], f"verify workers: {why}", out)
 
