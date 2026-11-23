@@ -109,8 +109,9 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
   a sha (7–64 hex) or it is ignored.
 - `on-trunk`: the oldest non-reverted `Story:` commit by trunk arrival. `since` is the committer date (UTC) of the
   first-parent trunk commit that brought it, `since_exact = false`, and null below `on-trunk`.
-- Reverts: `This reverts commit <full sha>.` and git's `-m 1` form (`, reversing changes made to …`). Reverting a trunk
-  commit reverts everything it brought (a merge reverts the commits it landed); a reverted revert does not count. An
+- Reverts: `This reverts commit <full sha>.` and git's `-m 1` form (`, reversing changes made to …`). Reverting a merge
+  (on the first-parent chain or inside a branch) reverts every commit reachable from it and not from its first parent;
+  a reverted revert does not count. An
   abbreviated sha in a revert body is not resolved (git always writes the full one).
 - Tags: `v<N>(.<N>)*` with an optional `-rc.<N>`, in version order (rc before its final), peeled fully. Only a final
   tag makes `in-version`; the first rc tag containing the commit is the new key `candidate`. Other `v*` tags are ignored.
@@ -119,19 +120,25 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
 - `branches`: every origin branch whose history off the trunk reaches a `Part-of:` commit, listed whatever the state;
   `in-progress` only when nothing higher holds; `stale` from the newest `Part-of:` commit's committer date.
 - A dependency with no such story is not met; a dependency whose state is unknown makes the dependent unknown,
-  settled over the whole graph.
+  settled over the whole graph. While any story file is unreadable, a dependency id with no readable record is
+  unknown too (the file may hold it), and a readable story wins a duplicate id over an unreadable one.
 - Fail closed: a shallow boundary with a missing parent under the trunk, the `v*` tags, the deploy branches or any
   origin branch makes the history `incomplete`, every state `unknown` with the reason (`history --ensure` as the fix),
   and `HISTORY_INCOMPLETE` (error when `CI` is set, else warning). A story blob absent from a partial clone is never
-  fetched lazily (one `rev-list --objects --missing=print` finds them): that story is `unknown` with the reason.
+  fetched lazily (in a partial clone one `rev-list --objects --missing=print` finds them): that story is `unknown`
+  with the reason, its id from the file name's EPIC-NNN prefix; an unreadable file without one exits 2. A shallow
+  origin branch unrelated to the trunk also makes the history incomplete: broader than needed, never a wrong state,
+  and `history --ensure` clears it.
 - New keys in schema 1: `candidate`, `reason`, `path`. `unattributed` counts trunk commits after `since` with none of
   `Story:`/`Part-of:`/`No-story:` and not brought by a merge that carries one; no `since` gives 0.
 - The doctor does not read `[ledger]` (ledger.py does), so its input-contract test lists it as not read, like `[dashboard]`
   and `[run]`; tests/test_doctor.py joined the touches for that line.
 
-Measured: 9 git calls per read whatever the number of stories (10 with a nested tag, 11 in a shallow clone); this repo
+Measured: 9 git calls per read whatever the number of stories (one more with a nested tag, two more in a shallow
+clone); the branches holding each `Part-of:` commit come from one pass over the commits off the trunk (2 000
+branches along a 10 000-commit chain under the budget); this repo
 reads in about 0.1 s, the 10 000-commit, 700-story fixture well under the 2 s budget.
 
-Escape rows ESC-063..065, ESC-080, ESC-081 are in docs/escapes.md. Left out: commit 47c54d1 (the first implementation)
+Escape rows ESC-063..065 and ESC-080..084 are in docs/escapes.md. Left out: commit 47c54d1 (the first implementation)
 lacks its `Part-of:` trailer and was not rewritten; nothing reads the ledger yet (the doctor and the dashboard move
 to it in LEDGER-006).
