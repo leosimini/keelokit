@@ -52,7 +52,7 @@ NETWORK = ("could not resolve host", "connection refused", "connection timed out
 
 def git_env() -> dict:
     return {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
-            "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never"}
+            "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never"}
 
 
 def run_git(args: list[str], timeout: float | None = None) -> tuple[int | None, str]:
@@ -120,8 +120,20 @@ def is_shallow() -> bool | None:
     return None if code else out == "true"
 
 
-def config_set(key: str) -> bool:
-    return git_out("config", "--local", "--get", key)[0] == 0
+def config_get(key: str) -> str | None:
+    code, out = git_out("config", "--local", "--get", key)
+    return out if code == 0 else None
+
+
+def restore_config(snapshot: dict[str, str | None]) -> None:
+    """Put the filter config back exactly as it was: unset what was unset, set what was set."""
+    for key, value in snapshot.items():
+        if config_get(key) == value:
+            continue
+        if value is None:
+            git_out("config", "--local", "--unset-all", key)
+        else:
+            git_out("config", "--local", key, value)
 
 
 def ensure(trunk: str, cap: float) -> str:
@@ -129,7 +141,21 @@ def ensure(trunk: str, cap: float) -> str:
     fix = f"`git fetch --unshallow origin {trunk}`"
     if git_out("remote", "get-url", "origin")[0]:
         return f"Keelokit: no origin: history incomplete; add a remote, then run {fix}"
-    before = {k: config_set(k) for k in KEYS}
+    snapshot = {k: config_get(k) for k in KEYS}
+    honoured = False
+    try:
+        line, honoured = fetch_history(trunk, cap, fix)
+        return line
+    finally:
+        # git writes the promisor config before it contacts the server: whatever does not end as a
+        # complete fetch whose filter the server honoured (failed, cut, ignored, plain fallback)
+        # leaves the config as it was, so a later fetch neither warns forever nor comes back partial.
+        if not honoured:
+            restore_config(snapshot)
+
+
+def fetch_history(trunk: str, cap: float, fix: str) -> tuple[str, bool]:
+    """(the one line, whether a complete fetch's filter was honoured)."""
     start = time.monotonic()
     deadline = start + cap
     spec = f"+refs/heads/{trunk}:refs/remotes/origin/{trunk}"  # also fills origin/<trunk> in a single-branch clone
@@ -148,23 +174,17 @@ def ensure(trunk: str, cap: float) -> str:
             break
         if i == 0 and "filter" not in err.lower():
             break
-    # An ignored filter (or the plain fallback after a rejected one) leaves a promisor config behind
-    # and a later fetch would warn forever. A filter the server honoured keeps it: the clone is partial.
-    if plain or "filtering not recognized by server" in err:
-        for key in KEYS:
-            if not before[key] and config_set(key):
-                git_out("config", "--local", "--unset-all", key)
     if code is None:
-        return f"Keelokit: cut at {cap:g}s: history incomplete; run {fix}"
+        return f"Keelokit: cut at {cap:g}s: history incomplete; run {fix}", False
     if code != 0:
         msg = " ".join(last_error(err).split())
-        if any(n in err.lower() for n in NETWORK):
-            return f"Keelokit: offline: history incomplete ({msg}); the doctor reads unknown until {fix}"
-        return f"Keelokit: fetch failed: history incomplete ({msg}); the doctor reads unknown until {fix}"
+        kind = "offline" if any(n in err.lower() for n in NETWORK) else "fetch failed"
+        return f"Keelokit: {kind}: history incomplete ({msg}); the doctor reads unknown until {fix}", False
     if is_shallow():
-        return f"Keelokit: history still incomplete after the fetch; run {fix}"
+        return f"Keelokit: history still incomplete after the fetch; run {fix}", False
     count = git_out("rev-list", "--count", f"refs/remotes/origin/{trunk}")[1]
-    return f"Keelokit: history completed ({count} commits of {trunk}) in {time.monotonic() - start:.1f}s"
+    line = f"Keelokit: history completed ({count} commits of {trunk}) in {time.monotonic() - start:.1f}s"
+    return line, not plain and "filtering not recognized by server" not in err
 
 
 def history(do_ensure: bool, state: dict, trunk: str) -> int:
