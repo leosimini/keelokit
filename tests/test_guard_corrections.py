@@ -193,5 +193,34 @@ class GuardCorrectionsTest(unittest.TestCase):
                 self.assertEqual(self.bash(cmd), 0)
 
 
+    # Review round 2 (ESC-097): the rule must not block a read, a mention or another file
+
+    def test_LEDGER_004_S3_ESC_097_mentions_reads_and_other_files_pass(self):
+        f = CORRECTIONS
+        for cmd in [f'git commit -m "fix(guard): protect {f}"', "git add template/backlog/ledger-corrections.toml",
+                    f"git add {f}", f"cat {f} 2>/dev/null", f"git show HEAD:{f} 2>/dev/null", f"grep -c row {f} 2>&1",
+                    f"sed -n 1,40p {f}", f"awk '{{print}}' {f}", "find . -name ledger-corrections.toml",
+                    "cp template/backlog/ledger-corrections.toml /tmp/x",
+                    "sed -i 's/ledger-corrections.toml/x/' docs/design.md",
+                    'echo "run python3 .keelokit/bin/ledger.py backfill --accept yourself"',
+                    'gh pr comment 12 --body "a person runs ledger.py backfill --accept"']:
+            with self.subTest(cmd=cmd):
+                run = self.run_claude("Bash", command=cmd)
+                self.assertNotIn("Traceback", run.stderr)
+                self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_LEDGER_004_S3_ESC_097_INV_002_writes_and_the_accept_are_still_blocked(self):
+        f = CORRECTIONS
+        accept = [("echo 'python3 .keelokit/bin/ledger.py backfill --accept' | sh", "backfill --accept"),
+                  ('echo y | script -qec "python3 .keelokit/bin/ledger.py backfill --accept" /dev/null',
+                   "backfill --accept")]
+        writes = [f"cat x > {f}", f"cat x 2>/dev/null > {f}", f"git checkout feat -- {f}",
+                  f"git restore --source=feat {f}", f"python3 -c \"open('{f}','a').write('x')\"",
+                  f"install -m644 /tmp/x {f}", f"git diff --output={f} HEAD~1", f"cp /tmp/x {f}"]
+        for cmd, word in accept + [(w, "QA-4") for w in writes]:
+            with self.subTest(cmd=cmd):
+                self.assert_blocked(self.run_claude("Bash", command=cmd), word)
+
+
 if __name__ == "__main__":
     unittest.main()
