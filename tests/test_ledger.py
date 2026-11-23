@@ -1807,12 +1807,22 @@ def propose(test: unittest.TestCase, repo: GitRepo, *args: str) -> tuple[subproc
     return r, proposed_rows(repo)
 
 
+def person_env(tmp: Path, extra_env: dict | None = None) -> dict:
+    """A person's shell: the clean environment without CLAUDECODE (the suite may run inside a Claude session,
+    and `backfill --accept` refuses Claude Code's own shell, ESC-092)."""
+    env = clean_env(tmp)
+    env.pop("CLAUDECODE", None)
+    env.update(extra_env or {})
+    return env
+
+
 def run_in_pty(repo: GitRepo, *args: str, answer: str | None = None,
-               timeout: float = 60) -> tuple[int, str]:
+               timeout: float = 60, extra_env: dict | None = None) -> tuple[int, str]:
     """ledger.py with stdin, stdout and stderr on a real pseudo-terminal, as a person in their terminal.
     `answer` is typed once the `[y/N]` question appears; the output is read until the program exits."""
     master, slave = os.openpty()
-    p = subprocess.Popen(["python3", ".keelokit/bin/ledger.py", *args], cwd=repo.path, env=clean_env(repo.tmp),
+    p = subprocess.Popen(["python3", ".keelokit/bin/ledger.py", *args], cwd=repo.path,
+                         env=person_env(repo.tmp, extra_env),
                          stdin=slave, stdout=slave, stderr=slave, close_fds=True)
     os.close(slave)
     out, sent = b"", False
@@ -2332,7 +2342,7 @@ class LedgerCorrectionsAcceptTest(LedgerCase):
         try:
             os.write(master, b"y\n")
             r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "backfill", "--accept"], cwd=repo.path,
-                               env=clean_env(repo.tmp), stdin=slave, capture_output=True, text=True, timeout=60)
+                               env=person_env(repo.tmp), stdin=slave, capture_output=True, text=True, timeout=60)
         finally:
             os.close(slave)
             os.close(master)
@@ -2519,6 +2529,229 @@ class LedgerCorrectionsUsageTest(LedgerCase):
                 r = repo.ledger(*args)
                 self.assertNotIn("Traceback", r.stderr)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+
+
+# ── LEDGER-004, review round 1: what got past the first tests (ESC-092..095) ──
+
+
+class LedgerCorrectionsReviewAcceptTest(LedgerCase):
+    def test_LEDGER_004_S3_accept_refuses_claude_codes_own_shell_even_under_a_pty(self):
+        """ESC-092: an agent can give the accept a terminal (`script`, `unbuffer`, tmux); Claude Code's shell
+        sets CLAUDECODE, and there `backfill --accept` refuses: exit 1, nothing written."""
+        repo = GitRepo(self.tmp)
+        repo.plan("UXC-113")
+        c = repo.commit("feat: login form for UXC-113")
+        repo.publish()
+        repo.write(PROPOSED, toml_row(commit=c, approver=None, date=None, confidence="medium"))
+        code, out = run_in_pty(repo, "backfill", "--accept", answer="y\n", extra_env={"CLAUDECODE": "1"})
+        self.assertNotIn("Traceback", out)
+        self.assertEqual(code, 1, out)
+        self.assertIn("terminal", out.lower(), "it says a person's terminal is needed")
+        self.assertFalse((repo.path / CORR).exists(), "nothing written")
+        self.assertTrue((repo.path / PROPOSED).exists(), "the proposal is kept")
+
+
+class LedgerCorrectionsReviewProposeTest(LedgerCase):
+    """ESC-093: a revert commit is no evidence that a story shipped, and a commit's own Part-of: trailer is
+    work in progress, not a candidate."""
+
+    @classmethod
+    def setUpClass(cls):
+        repo = cls.repo = GitRepo(cls.class_tmp())
+        repo.plan("UXC-113", "UXC-114", "UXC-115")
+        c = cls.c = {}
+        c["s113"] = repo.commit("feat: UXC-113 login")
+        c["r113"] = repo.revert(c["s113"])  # 'Revert "feat: UXC-113 login"' names the id in its subject
+        c["other"] = repo.commit("feat: unrelated")
+        c["r115"] = repo.commit(f"fix: undo the UXC-115 tweak\n\nThis reverts commit {c['other']}.")
+        c["p114"] = repo.commit("wip: the search box\n\nPart-of: UXC-114")
+        repo.publish()
+
+    def rows(self) -> dict:
+        cls = type(self)
+        if "_rows" not in cls.__dict__:
+            _, rows = propose(self, cls.repo)
+            cls._rows = {row["story"]: row for row in rows}
+        return cls._rows
+
+    def test_LEDGER_004_S1_ESC_093_a_revert_commit_is_never_a_candidate(self):
+        self.assertNotIn("UXC-113", self.rows(), f"the revert {self.c['r113'][:7]} is no evidence")
+        self.assertNotIn("UXC-115", self.rows(), "a body with 'This reverts commit <sha>.' is a revert")
+
+    def test_LEDGER_004_S1_ESC_093_ids_in_a_commits_own_part_of_trailer_are_no_candidates(self):
+        self.assertNotIn("UXC-114", self.rows())
+
+
+class LedgerCorrectionsReviewAppendOnlyTest(LedgerCase):
+    """ESC-094 and ESC-095 (INV-008): a row removed or rewritten through a merge that is fast-forwarded onto
+    the trunk (a foxtrot merge) is CORRECTION_EDITED, and so is a reordering; a normal PR merge is not."""
+
+    def setUp(self):
+        super().setUp()
+        repo = self.repo = GitRepo(self.tmp)
+        repo.plan("UXC-113", "UXC-114", "UXC-115")
+        self.login = repo.commit("feat: the login form")
+        self.search = repo.commit("feat: search")
+        self.export = repo.commit("feat: export")
+        repo.publish()
+
+    def corr(self, message: str, *rows: str) -> str:
+        return self.repo.commit(f"{message}\n\nNo-story: ledger", {CORR: corrections(*rows)})
+
+    def foxtrot(self, merged_text: str | None) -> dict:
+        """main accepts a row; feat (from before it) merges main with --no-commit, changes the file to
+        `merged_text` (None: removes it) and commits; main is fast-forwarded to feat."""
+        repo = self.repo
+        before = repo.sha()
+        self.corr("chore: accept row", toml_row(commit=self.login))
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "feat", before)
+        repo.commit("feat: work on feat")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "main", check=False)
+        if merged_text is None:
+            repo.git("rm", "-q", "-f", CORR)
+        else:
+            repo.write(CORR, merged_text)
+            repo.git("add", CORR)
+        repo.git("commit", "-q", "-m", "Merge main into feat\n\nNo-story: release", when=repo.next_date())
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--ff-only", "feat")
+        repo.publish()
+        return ledger_check(self, repo)
+
+    def test_LEDGER_004_S5_ESC_094_a_row_deleted_through_a_foxtrot_merge_is_correction_edited(self):
+        data = self.foxtrot(None)
+        self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+
+    def test_LEDGER_004_S5_ESC_094_a_row_rewritten_through_a_foxtrot_merge_is_correction_edited(self):
+        data = self.foxtrot(corrections(toml_row(commit=self.login, evidence="rewritten on feat")))
+        self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+
+    def test_LEDGER_004_S5_logic_a_pr_that_edits_its_own_new_row_before_merging_is_no_edit(self):
+        repo = self.repo
+        self.corr("chore: row A", toml_row(commit=self.login))
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "feat")
+        self.corr("chore: row B", toml_row(commit=self.login), toml_row(story="UXC-114", commit=self.search))
+        self.corr("chore: row B, fixed", toml_row(commit=self.login),
+                  toml_row(story="UXC-114", commit=self.search, evidence="fixed before review"))
+        repo.git("checkout", "-q", "main")
+        repo.merge("feat", "Merge feat\n\nNo-story: release")
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertNotIn("CORRECTION_EDITED", codes(data), data["diffs"])
+
+    def test_LEDGER_004_S5_logic_a_row_that_arrived_through_a_merge_is_checked(self):
+        repo = self.repo
+        repo.git("checkout", "-q", "-b", "feat")
+        self.corr("chore: row A", toml_row(commit=self.login))
+        repo.git("checkout", "-q", "main")
+        repo.merge("feat", "Merge feat\n\nNo-story: release")
+        self.corr("chore: rewrite", toml_row(commit=self.login, evidence="rewritten on main"))
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+
+    def test_LEDGER_004_S5_ESC_095_reordering_rows_is_correction_edited(self):
+        backfill = toml_row(commit=self.login)
+        retract = toml_row(commit=self.login, kind="retract", evidence="wrong commit")
+        self.corr("chore: v1", backfill)
+        self.corr("chore: v2", backfill, retract)
+        self.corr("chore: v3 reordered", retract, backfill)  # now the backfill is active again
+        self.repo.publish()
+        data = ledger_check(self, self.repo)
+        self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+
+    def test_LEDGER_004_S5_logic_two_branches_appending_different_rows_merged_is_no_edit(self):
+        repo = self.repo
+        a = toml_row(commit=self.login)
+        b = toml_row(story="UXC-114", commit=self.search)
+        c = toml_row(story="UXC-115", commit=self.export)
+        self.corr("chore: row A", a)
+        base = repo.sha()
+        repo.git("checkout", "-q", "-b", "b1")
+        self.corr("chore: row B", a, b)
+        repo.git("checkout", "-q", "-b", "b2", base)
+        self.corr("chore: row C", a, c)
+        repo.git("checkout", "-q", "main")
+        repo.merge("b1", "Merge b1\n\nNo-story: release")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "b2", check=False)  # both appended: a conflict
+        repo.write(CORR, corrections(a, b, c))
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "Merge b2\n\nNo-story: release", when=repo.next_date())
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertNotIn("CORRECTION_EDITED", codes(data), data["diffs"])
+        self.assertEqual(codes(data), [], data["diffs"])
+
+    def test_LEDGER_004_S5_ESC_095_a_tip_that_is_not_toml_is_invalid_and_edited(self):
+        for why, tip in {"not TOML": "[[row]\nstory = \n", "row is not a list": 'row = "x"\n'}.items():
+            with self.subTest(why):
+                self.repo.git("reset", "-q", "--hard", "origin/main")
+                self.corr("chore: row A", toml_row(commit=self.login))
+                self.repo.commit("chore: broken\n\nNo-story: ledger", {CORR: CORR_HEADER + tip})
+                self.repo.git("push", "-q", "-f", "origin", "main")
+                self.repo.git("fetch", "-q", "--prune", "origin")
+                data = ledger_check(self, self.repo)
+                self.assertIn("CORRECTION_INVALID", codes(data, "error"), data["diffs"])
+                self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+                self.repo.git("reset", "-q", "--hard", f"origin/main~2")
+                self.repo.git("push", "-q", "-f", "origin", "main")
+                self.repo.git("fetch", "-q", "--prune", "origin")
+
+    def test_LEDGER_004_S6_a_date_that_is_no_calendar_date_is_correction_invalid(self):
+        self.corr("chore: row", toml_row(commit=self.login, date="2026-99-99"))
+        self.repo.publish()
+        data = ledger_check(self, self.repo)
+        self.assertIn("CORRECTION_INVALID", codes(data, "error"), data["diffs"])
+        self.assertIs(self.stories(self.repo)["UXC-113"]["reconstructed"], False)
+
+
+class LedgerCorrectionsBudgetTest(LedgerCase):
+    """A fixed number of git calls (docs/ledger.md, "Performance and trust"): the corrections file's history,
+    merges included, never costs one call per version."""
+
+    def counted(self, repo: GitRepo) -> int:
+        bindir = repo.tmp / f"shim-{repo.path.name}"
+        bindir.mkdir()
+        log = repo.tmp / f"argv-{repo.path.name}.log"
+        log.touch()
+        real = shutil.which("git", path=clean_env(repo.tmp)["PATH"])
+        (bindir / "git").write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        (bindir / "git").chmod(0o755)
+        r = repo.ledger("--json", path=f"{bindir}{os.pathsep}{clean_env(repo.tmp)['PATH']}")
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        self.assertNotIn("CORRECTION_EDITED", r.stdout)
+        self.calls = getattr(self, "calls", []) + [log.read_text()]
+        return len(log.read_text().splitlines())
+
+    def build(self, name: str, versions: int) -> GitRepo:
+        repo = GitRepo(self.tmp, name=name)
+        repo.plan("UXC-113")
+        shas = [repo.commit(f"feat: part {n}") for n in range(versions)]
+        rows: list[str] = []
+        for n, sha in enumerate(shas):
+            rows.append(toml_row(commit=sha, evidence=f"part {n}"))
+            if n % 3 == 2:  # every third version arrives through a --no-ff merge
+                repo.git("checkout", "-q", "-b", f"rows-{n}")
+                repo.commit(f"chore: row {n}\n\nNo-story: ledger", {CORR: corrections(*rows)})
+                repo.git("checkout", "-q", "main")
+                repo.merge(f"rows-{n}", f"Merge rows-{n}\n\nNo-story: release")
+            else:
+                repo.commit(f"chore: row {n}\n\nNo-story: ledger", {CORR: corrections(*rows)})
+        repo.git("checkout", "-q", "-b", "side")  # both repos hold a merge that does not touch the file
+        repo.commit("feat: side work")
+        repo.git("checkout", "-q", "main")
+        repo.merge("side", "Merge side\n\nNo-story: release")
+        repo.publish()
+        return repo
+
+    def test_LEDGER_004_nfr_git_calls_do_not_grow_with_the_versions_of_the_corrections_file(self):
+        one = self.counted(self.build("one", 1))
+        thirty = self.counted(self.build("thirty", 30))
+        self.assertEqual(thirty, one, "30 versions (some through merges) cost the git calls of 1\n"
+                         + "\n---\n".join(self.calls))
 
 
 if __name__ == "__main__":
