@@ -555,5 +555,23 @@ class MemoryAwareVerifyTest(VerifyFixture):
         self.assertEqual(set(peaks), {"doctor", "unit"}, "only this run's own steps, none erased, none of the preflight's")
 
 
+    def test_FLEET_001_S1_per_run_peak_files_of_a_dead_run_are_removed_at_start(self):
+        """FLEET-001.S1: a verify killed with SIGKILL never reaches its cleanup and leaves keelokit-verify.peaks.<pid> and
+        its .started marker; the next verify removes those of a dead pid at start and keeps those of a live one."""
+        dead = subprocess.Popen(["true"])
+        dead.wait()  # reaped: its pid names no process
+        live = os.getpid()
+        files = {pid: [self.git_dir / f"keelokit-verify.peaks.{pid}", self.git_dir / f"keelokit-verify.peaks.{pid}.started"]
+                 for pid in (dead.pid, live)}
+        for paths in files.values():
+            for f in paths:
+                f.write_text("unit\t100\trss\n")
+        self.commit_change()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([f.name for f in files[dead.pid] if f.exists()], [], "a dead run's files are gone")
+        self.assertEqual([f.exists() for f in files[live]], [True, True], "a live run's files are kept")
+
+
 if __name__ == "__main__":
     unittest.main()
