@@ -1,17 +1,8 @@
 # Next sessions
 
-Where things stand after 0.8.3 (2026-10-03), and what's left, in the order to take it. Not a
-story file: the doctor and the dashboard read only `stories/`.
-
-## Where things stand
-
-- **0.8.1 is out**: tag `v0.8.1`, GitHub Release with `keelokit-plugin.zip`, `release` branch
-  pushed, CI green on `main` (its upgrade test starts from v0.8.1).
-- **keelokit.com** is live with 0.8.1: "startups", the new crew rule, the keel lead in a personal
-  voice, no "card" line, and screenshots of the Fleetly sample. The version and the zip link come
-  from the latest GitHub release by themselves.
-- The screenshot generator lives in the keelokit.com repo, `tools/dashboard-shots/` (sample
-  project `fixture.py` + `shots.py`; see its docstring).
+What Leo does by hand, and what's left, in the order to take it. Not a story file: the doctor and the
+dashboard read only `stories/`. Where things stand is not kept here: ask `python3 .keelokit/bin/ledger.py`
+(`show <ID>` for one story, `--release vX.Y.Z` for a version).
 
 ## For Leo, by hand
 

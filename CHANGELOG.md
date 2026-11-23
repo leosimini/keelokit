@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A new session knows where the truth is (LEDGER-007).** The session start now prints, under one line that
+  frames it as data, the ledger's summary (story states read from git) and one line of where to look —
+  `ledger.py show <ID>` for a story, `/harbor:log` for what is under way, `backlog/` for what is asked — before
+  the doctor's brief, in at most 12 lines. A generated project's `AGENTS.md` gains *Where the truth is*: each
+  question a session asks ("Is X done, in which version?", "What do I take?", "Why did it end up this way?") with
+  the `ledger.py` command that answers it, and the rule that the state is asked of the ledger, never of memory or
+  of a handoff file. The agent brief and the execution protocol say the same, so an adopted repo gets it too.
 - **The doctor, the dashboard, `status.py` and the skills read the ledger (LEDGER-006).** Story states come from
   `ledger.py --json` alone, so every tool gives the same answer, whatever `[ledger]` configures (trunk, story
   files, ids). The doctor's done count is the ledger's (reverts and approved corrections included); stories done only by a correction row are listed as *Reconstructed* and
