@@ -4,7 +4,7 @@ epic = "FLEET"
 title = "Tests that stay green: stable-tests rules, arch-specs and flaky.sh reach main, with JOUNA's two rules"
 wave = 22
 depends_on = []
-touches = ["references/stable-tests.md", "references/arch-specs/README.md", "references/arch-specs/_walk.ts", "references/arch-specs/no-inherited-git-env.arch.test.ts", "references/arch-specs/no-literal-dates.arch.test.ts", "references/arch-specs/no-sleeps-in-specs.arch.test.ts", "references/arch-specs/no-random-test-data.arch.test.ts", "template/.keelokit/bin/flaky.sh", "agents/verifier.md", "agents/reviewer.md", "skills/build-story/SKILL.md", "copier.yml", "scripts/test-template.sh", "tests/test_scripts.py", "CHANGELOG.md"]
+touches = ["references/stable-tests.md", "references/arch-specs/README.md", "references/arch-specs/_walk.ts", "references/arch-specs/no-inherited-git-env.arch.test.ts", "references/arch-specs/no-literal-dates.arch.test.ts", "references/arch-specs/no-sleeps-in-specs.arch.test.ts", "references/arch-specs/no-random-test-data.arch.test.ts", "template/.keelokit/bin/flaky.sh", "agents/verifier.md", "agents/reviewer.md", "skills/build-story/SKILL.md", "copier.yml", "scripts/test-template.sh", "tests/test_scripts.py", "CHANGELOG.md", "template/packages/shared/src/arch/_walk.ts", "template/packages/shared/src/arch/no-inherited-git-env.arch.test.ts", "template/packages/shared/src/arch/no-literal-dates.arch.test.ts", "template/packages/shared/src/arch/no-sleeps-in-specs.arch.test.ts", "template/packages/shared/src/arch/no-random-test-data.arch.test.ts", "template/packages/shared/package.json.jinja", "template/packages/shared/tsconfig.build.json", "backlog/stories/FLEET-003-tests-that-stay-green.md"]
 dimensions = ["logic", "dx", "docs"]
 invariants = []
 origin = "docs/fleet-lessons.md — lessons 1 and 6; the unmerged branch claude/orquestador-y-verify (2026-10-31)"
@@ -74,3 +74,23 @@ Scenario: [S6] A generated project gets them
 ## Definition of done
 `scripts/verify.sh` and `scripts/test-template.sh` green, every scenario covered by a test titled with its
 id, a CHANGELOG line, `Story: FLEET-003` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-23
+- **New projects only.** The arch-specs ship in `template/packages/shared/src/arch/` (byte-identical copies of
+  `references/arch-specs/*.ts`, checked by a test) and run with the shared package's tests in `pnpm verify`.
+  `copier.yml` excludes that folder on `copier update` (`_copier_operation == 'update'`): an existing project that
+  already breaks a rule would turn red, and its `packages/shared/package.json` (product-owned) lacks `@types/node`.
+  The product owns them once generated; later template fixes to them do not reach existing projects (copy from
+  `references/arch-specs/`). `flaky.sh` and the `tsconfig.build.json` exclude do arrive by update.
+- `touches` grew by the template copies, shared's `package.json.jinja` (`@types/node`) and `tsconfig.build.json`
+  (keeps `src/arch` out of `dist`). `_walk.ts` carries `/// <reference types="node" />` because TypeScript 6 adds
+  no types by default.
+- `flaky.sh` gained `--seed` (run r gets `FLAKY_SEED=S+r-1`), a `failed:` line per failing run with seed, zone,
+  stress and load average, decimal-only numbers and a refusal of unknown zones.
+- Arch-spec scope: test files plus sources and JSON under e2e, fixtures, __fixtures__, __tests__, __mocks__, mocks,
+  test, tests, testing, test-utils; hidden folders, `tmp` and symlinks are never walked; a line that pins the clock
+  (`setSystemTime`, Playwright `clock.install`) may hold a literal date.
+- Escapes from the review and the breaker are logged in `docs/escapes.md` as ESC-060 (flaky.sh false green on
+  input parsing), ESC-061 (walker isolation) and ESC-062 (arch-spec coverage gaps).
+- Not done: the rest of `claude/orquestador-y-verify`; the closed-routes registry itself (rule 11 is a rule for
+  projects, not code in the template); no mechanical check for rule 11.
