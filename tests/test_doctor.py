@@ -3,6 +3,7 @@ import ast
 import contextlib
 import io
 import json
+import os
 import re
 import runpy
 import shutil
@@ -1074,6 +1075,129 @@ class DoctorTest(unittest.TestCase):
                                         "a package manager in a doctor message: an adopted repo may have none")
                     for cmd in re.findall(r"\bruns? `([^`]+)`", text):
                         self.assertRegex(cmd, r"^(\{DOCTOR_CMD\}|python3 \.keelokit/bin/\w+\.py\b|git |chmod \+x )", cmd)
+
+    # ── LEDGER-001: an incomplete (shallow) history reads unknown, never a lower count ──
+    def ledger_origin(self, critical: bool = False) -> None:
+        """Six stories, four done (AUTH-001..004), on main as: plan, AUTH-001, AUTH-002, AUTH-003,
+        chore, AUTH-004, chore. A `--depth 3` clone keeps only the last three commits, so only
+        AUTH-004's trailer is in it. `critical`: AUTH-001 and AUTH-002 share wave 1, a path and a
+        critical area without 'integrity' (fine once done), and AUTH-004 lacks its S10 citation."""
+        self.rules()
+        layout = {"AUTH-001": (1, "apps/api/a1/"), "AUTH-002": (1, "apps/api/a1/" if critical else "apps/api/a2/"),
+                  "AUTH-003": (2, "apps/api/a3/"), "AUTH-004": (2, "apps/api/a4/"),
+                  "AUTH-005": (3, "apps/api/a5/"), "AUTH-006": (3, "apps/api/a6/")}
+        for sid, (wave, path) in layout.items():
+            self.write(f"backlog/stories/{sid}-a.md", STORY.format(id=sid, wave=wave, touches=f'"{path}"'))
+            self.write(f"{path}x.ts", "export {}\n")
+        if critical:
+            self.write(".keelokit/critical.toml", '[[area]]\nname = "money"\nwhy = "w"\npaths = ["apps/api/a1/"]\n')
+        cites = []
+        for n in range(1, 5):
+            cites.append(f"    def test_AUTH_00{n}_S1_works(self):\n        pass\n")
+            if not (critical and n == 4):
+                cites.append(f"    def test_AUTH_00{n}_S10_also_works(self):\n        pass\n")
+        self.write("tests/test_auth.py", "import unittest\n\n\nclass T(unittest.TestCase):\n" + "\n".join(cites))
+        self.commit("docs: plan AUTH")
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.commit(f"feat: {sid}\n\nStory: {sid}")
+        self.commit("chore: x")
+        self.commit("feat: AUTH-004\n\nStory: AUTH-004")
+        self.commit("chore: y")
+
+    def ledger_clone(self, depth: int | None = 3) -> Path:
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where)
+        clone = where / "clone"
+        subprocess.run(["git", "clone", "-q", *([f"--depth={depth}"] if depth else []), f"file://{self.root}", str(clone)],
+                       check=True, capture_output=True)
+        shallow = sh(clone, "git", "rev-parse", "--is-shallow-repository").strip()
+        self.assertEqual(shallow, "true" if depth else "false", "fixture: the clone is (not) shallow as intended")
+        return clone
+
+    @staticmethod
+    def ledger_doctor(clone: Path, *args: str, ci: bool = False) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS")}
+        if ci:
+            env["CI"] = "1"
+        return subprocess.run(["python3", ".keelokit/bin/doctor.py", *args], cwd=clone, env=env,
+                              capture_output=True, text=True)
+
+    @staticmethod
+    def backlog_line(out: str) -> str:
+        return next((line for line in out.splitlines() if "Backlog" in line), "")
+
+    def test_LEDGER_001_S1_a_shallow_clone_says_the_count_is_unknown_never_a_low_count(self):
+        self.ledger_origin()
+        clone = self.ledger_clone(3)
+        out = self.ledger_doctor(clone, "--brief").stdout
+        line = self.backlog_line(out)
+        self.assertRegex(line.lower(), r"unknown", out)
+        self.assertRegex(line.lower(), r"shallow", out)
+        self.assertRegex(line, r"\b3\b", "the number of main's commits the clone has: " + out)
+        self.assertIn("git fetch --unshallow origin main", line, out)
+        self.assertNotRegex(out, r"\b\d+/6\b", "never a count read from a cut history: " + out)
+        self.assertNotIn("Next ready stories", out, "any of them may be done")
+        self.assertIn("Keelokit:", out, "the rest of --brief is still there")
+
+    def test_LEDGER_001_S2_the_full_history_reads_as_today(self):
+        self.ledger_origin()
+        clone = self.ledger_clone(None)
+        brief = self.ledger_doctor(clone, "--brief").stdout.splitlines()
+        self.assertIn("Context gaps: 0 (0 blocking) · Backlog: 4/6 done", brief)
+        self.assertIn("Next ready stories: AUTH-005, AUTH-006", brief)
+        full = self.ledger_doctor(clone, "--ci")
+        self.assertIn("  Backlog: 4/6 done · next: AUTH-005, AUTH-006", full.stdout.splitlines())
+        self.assertNotRegex(full.stdout.lower(), r"shallow|unknown", full.stdout)
+        self.assertIn("harness healthy", full.stdout)
+        self.assertEqual(full.returncode, 0, full.stdout)
+
+    def test_LEDGER_001_S3_INV_006_a_shallow_clone_in_ci_is_an_error_and_exits_non_zero(self):
+        self.ledger_origin()
+        clone = self.ledger_clone(3)
+        ci = self.ledger_doctor(clone, "--ci", ci=True)
+        errors = [line for line in ci.stdout.splitlines() if line.strip().startswith("ERROR")]
+        self.assertTrue(any("fetch-depth: 0" in e for e in errors), ci.stdout)
+        self.assertEqual(ci.returncode, 1, "INV-006: an error means a non-zero exit\n" + ci.stdout)
+        # Without CI (a cloud session's pre-push verify) it is a warning, never silent, and not a red.
+        local = self.ledger_doctor(clone, "--ci")
+        lines = local.stdout.splitlines()
+        self.assertTrue(any(l.strip().startswith("warn") and "shallow" in l.lower() for l in lines), local.stdout)
+        self.assertFalse([l for l in lines if l.strip().startswith("ERROR")], local.stdout)
+        self.assertEqual(local.returncode, 0, local.stdout)
+        self.assertIn("unknown", self.backlog_line(local.stdout).lower(), local.stdout)
+        self.assertNotRegex(local.stdout, r"\b\d+/6\b", local.stdout)
+
+    def test_LEDGER_001_S5_no_story_is_judged_not_done_when_its_done_state_is_unknown(self):
+        self.ledger_origin(critical=True)
+        out = self.ledger_doctor(self.ledger_clone(3), "--ci").stdout
+        lines = out.splitlines()
+        errors = [l for l in lines if l.strip().startswith("ERROR")]
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.assertFalse([e for e in errors if sid in e], f"a false error against {sid}, maybe done:\n{out}")
+        # The rules that need "not done" still say something: a warning that the done state is unknown.
+        self.assertTrue(any(l.strip().startswith("warn") and "AUTH-001" in l and "unknown" in l.lower() for l in lines), out)
+        # A story proven done (its trailer is in the clone) is still checked by TRACE-1.
+        self.assertIn("story AUTH-004 is done but no active test title cites AUTH-004.S10 (TRACE-1)", out)
+
+    def test_LEDGER_001_INV_005_done_comes_from_main_only_when_main_s_history_is_complete(self):
+        self.ledger_origin()
+        # main cut: no number lower than the truth, in the brief or the full report.
+        clone = self.ledger_clone(3)
+        for args in (["--brief"], ["--ci"]):
+            out = self.ledger_doctor(clone, *args).stdout
+            for n in range(4):
+                self.assertNotIn(f"{n}/6 done", out, out)
+        # A shallow repo whose boundary is only on another branch (main complete) still counts.
+        sh(self.root, "git", "checkout", "-q", "--orphan", "side")
+        for i in range(3):
+            self.commit(f"chore: side {i}")
+        sh(self.root, "git", "checkout", "-q", "main")
+        full = self.ledger_clone(None)
+        subprocess.run(["git", "fetch", "-q", "--depth=1", "origin", "side:refs/remotes/origin/side"],
+                       cwd=full, check=True, capture_output=True)
+        self.assertEqual(sh(full, "git", "rev-parse", "--is-shallow-repository").strip(), "true", "fixture")
+        self.assertIn("Context gaps: 0 (0 blocking) · Backlog: 4/6 done",
+                      self.ledger_doctor(full, "--brief").stdout.splitlines())
 
 
 # pnpm 10's own commands (`pnpm help --all`), minus start and test, which run the package script.
