@@ -938,6 +938,31 @@ class DashboardTest(unittest.TestCase):
         status = {x["id"]: x["status"] for x in self.state()["stories"]}
         self.assertEqual(status["AUTH-0001"], "done", status)
 
+    def test_LEDGER_006_S1_ESC_142_the_dashboard_lists_the_ledgers_stories_wherever_they_live(self):
+        """`[ledger] stories` outside backlog/stories, and a branch behind the trunk: the page lists every story
+        the ledger has, with its state, and counts the same done as the doctor."""
+        self.ledger_fixture()
+        self.write("roadmap/AUTH-009-x.md", STORY.format(id="AUTH-009", epic="AUTH", title="t AUTH-009", wave=1, deps="", body=""))
+        self.write(".keelokit/state.toml", (self.root / ".keelokit/state.toml").read_text() + '\n[ledger]\nstories = "roadmap/*.md"\n')
+        self.commit("chore: roadmap\n\nNo-story: docs")
+        self.commit("feat: auth nine\n\nWhy.\n\nStory: AUTH-009")
+        sh(self.root, "git", "update-ref", "refs/remotes/origin/main", "main")
+        status = {x["id"]: x["status"] for x in self.state()["stories"]}
+        self.assertEqual(status.get("AUTH-009"), "done", status)
+        brief = sh(self.root, "python3", ".keelokit/bin/doctor.py", "--brief")
+        done = re.search(r"Backlog: (\d+)/", brief).group(1)
+        self.assertIn(f"{done} of {len(status)} stories done", visible_text(self.page("--lang", "en")))
+
+    def test_LEDGER_006_S1_ESC_142_a_branch_behind_the_trunk_still_lists_what_landed(self):
+        self.ledger_fixture()
+        base = sh(self.root, "git", "rev-parse", "HEAD").strip()
+        self.story("AUTH-007", 1)
+        self.commit("feat: auth seven\n\nWhy.\n\nStory: AUTH-007")
+        sh(self.root, "git", "update-ref", "refs/remotes/origin/main", "main")
+        sh(self.root, "git", "checkout", "-q", "-b", "plan", base)
+        status = {x["id"]: x["status"] for x in self.state()["stories"]}
+        self.assertEqual(status.get("AUTH-007"), "done", status)
+
     def fake_ledger(self, facts: object) -> None:
         self.write(".keelokit/bin/ledger.py", f"import sys\nsys.stdout.write({json.dumps(json.dumps(facts))})\n")
 
@@ -960,6 +985,14 @@ class DashboardTest(unittest.TestCase):
             {**story, "version": 5, "branches": 5},
             {**story, "id": "AUTH-002", "path": "backlog/stories/AUTH-002-x.md", "state": "in-progress", "branches": "auth-002"},
             {**story, "id": "AUTH-004", "path": "backlog/stories/AUTH-004-x.md", "state": "delivered"}]})
+        for state in ({}, [], 1):  # ESC-141: a state that is not text
+            self.fake_ledger({"schema": 1, "history": "complete", "diffs": [], "stories": [{**story, "state": state}]})
+            self.assertEqual({x["status"] for x in self.state()["stories"]}, {"unknown"})
+            self.assertRegex(self.status_py(), r"in progress elsewhere \(ledger\): unknown")
+        self.fake_ledger({"schema": 1, "history": "complete", "diffs": None, "stories": [
+            {**story, "version": 5, "branches": 5},
+            {**story, "id": "AUTH-002", "path": "backlog/stories/AUTH-002-x.md", "state": "in-progress", "branches": "auth-002"},
+            {**story, "id": "AUTH-004", "path": "backlog/stories/AUTH-004-x.md", "state": "delivered"}]})
         status = {x["id"]: x["status"] for x in self.state()["stories"]}
         self.assertEqual((status["AUTH-001"], status["AUTH-002"], status["AUTH-004"]), ("done", "progress", "progress"))
         self.assertIn("In progress", visible_text(self.ops("--lang", "en")))
@@ -971,11 +1004,12 @@ class DashboardTest(unittest.TestCase):
     def test_LEDGER_006_ESC_136_the_readers_parse_on_python_3_11(self):
         """The scripts say 3.11+: a 3.12-only f-string (the same quote nested) is a SyntaxError there."""
         py311 = shutil.which("python3.11")
+        if not py311:
+            self.skipTest("no python3.11 on this machine: nothing to check the grammar with")
         for path in (DASHBOARD, DOCTOR, STATUS, DOCTOR.parents[3] / ".keelokit/bin/doctor.py"):
-            if py311:
-                r = subprocess.run([py311, "-c", "import ast, sys; ast.parse(open(sys.argv[1]).read())", str(path)],
-                                   capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, f"{path}: {r.stderr}")
+            r = subprocess.run([py311, "-c", "import ast, sys; ast.parse(open(sys.argv[1]).read())", str(path)],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, f"{path}: {r.stderr}")
 
     def test_LEDGER_001_S4_a_shallow_clone_shows_no_story_as_pending_for_lack_of_history(self):
         """main: plan, AUTH-001, AUTH-002, AUTH-003, chore, AUTH-004, chore. A --depth 3 clone holds
