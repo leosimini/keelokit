@@ -3681,7 +3681,7 @@ class LedgerShowTest(LedgerCase):
             "docs/escapes.md": "# Escapes\n\n| Id | Date | Found by | What escaped | Class | Check added |\n"
                                "|---|---|---|---|---|---|\n"
                                "| ESC-001 | 2026-11-20 | SHOW-001 breaker | the cache kept a stale row | consistency | t1 |\n"
-                               "| ESC-002 | 2026-11-20 | OTHER-1 reviewer | SHOW-0010 is not SHOW-001 | logic | t2 |\n"
+                               "| ESC-002 | 2026-11-20 | OTHER-1 reviewer | SHOW-0010 and XSHOW-001 differ | logic | t2 |\n"
                                "| ESC-003 | 2026-11-21 | bug bash | LOG-303: the retry doubled the charge | money | t3 |\n",
             "docs/bugbash/2026-11-21/logic.md": "# logic\n\n### LOG-302 · Unrelated\n- text\n\n"
                                                 "### LOG-303 · The retry doubles the charge (P1)\n- **Where:** api\n",
@@ -3712,7 +3712,7 @@ class LedgerShowTest(LedgerCase):
         rows = [line for line in out.splitlines() if "ESC-001" in line]
         self.assertTrue(rows, out)
         self.assertIn("docs/escapes.md", rows[0], "the escape row with its path")
-        self.assertNotIn("ESC-002", out, "SHOW-0010 does not name SHOW-001")
+        self.assertNotIn("ESC-002", out, "SHOW-0010 and XSHOW-001 do not name SHOW-001")
         self.assertNotIn("Decided: the smallest option.", out, "headings, not the addendum's contents")
 
     def test_LEDGER_005_S2_show_lists_an_abandoned_attempt_with_its_reason_and_branch(self):
