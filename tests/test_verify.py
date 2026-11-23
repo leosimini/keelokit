@@ -7,6 +7,7 @@ file git doesn't track yet, a deleted one, one taken out of the index or ignored
 pnpm's `[origin/main]` filter see tracked files only, so each check that decides "changed since
 main" is run here across every state, against the real pnpm that decides the scope. The doctor's
 `--critical --changed` (what `pnpm mutation` mutates) gets the same matrix."""
+import json
 import os
 import shutil
 import subprocess
@@ -14,6 +15,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_verify_operativo import VerifyFixture  # noqa: E402  (no tests of its own: nothing is collected twice)
 
 ROOT = Path(__file__).resolve().parents[1]
 PNPM = shutil.which("pnpm")
@@ -400,6 +404,99 @@ class CriticalChangedTest(GitStates, unittest.TestCase):
                 out = sh(root, sys.executable, ".keelokit/bin/doctor.py", "--critical", "--changed").split()
                 want = {"new-untracked": ["packages/a/src/new.ts"], "deleted": []}.get(state, ["packages/a/src/index.ts"])
                 self.assertEqual(out, want, state)
+
+
+class MemoryAwareVerifyTest(VerifyFixture):
+    """FLEET-001 at verify.sh level: the real script and verify_tools.py, a stub pnpm, a fake meminfo and no cgroup.
+    The peaks the plan reads are seeded in the history; the cores are this machine's, so the expected count is
+    computed from them (2 needs 2 cores)."""
+
+    PEAK = 2355  # MB: 2.3 GB per worker
+
+    def memory(self, kb):
+        p = self.tmp / "meminfo"
+        p.write_text(f"MemTotal: 16384000 kB\nMemAvailable: {kb} kB\n")
+        return {"KEELOKIT_MEMINFO": str(p), "KEELOKIT_CGROUP_DIR": ""}
+
+    def seed_peak(self, step="unit", mb=PEAK):
+        entry = {"t": 1, "head": "0" * 40, "base": "0" * 40, "level": "changed", "result": "pass", "rc": 0, "planned": [step],
+                 "passed": [step], "failed_steps": [], "peak_mb": {step: mb}, "peak_source": {step: "rss"}}
+        (self.git_dir / "keelokit-verify.history").write_text(json.dumps(entry) + "\n")
+
+    def unit_calls(self):
+        return [c for c in self.called() if "run test" in c]
+
+    def test_FLEET_001_S1_a_run_records_the_peak_of_a_step_it_ran(self):
+        """FLEET-001.S1: on Linux the max resident size is always measurable, so a step that ran an external command
+        has a positive peak and its source."""
+        self.commit_change()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        entry = self.history()[-1]
+        measured = {s: mb for s, mb in entry.get("peak_mb", {}).items() if s in ("unit", "doctor")}
+        self.assertTrue(measured, entry.get("peak_mb"))
+        for step, mb in measured.items():
+            self.assertIsInstance(mb, int)
+            self.assertGreater(mb, 0)
+            self.assertIn(entry["peak_source"][step], {"rss", "cgroup"})
+
+    def test_FLEET_001_S2_workers_fit_the_memory_and_the_runner_gets_them(self):
+        """FLEET-001.S2: 6 GB free and 2.3 GB per unit worker last time → --maxWorkers=2 (on 2+ cores) and the line."""
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        cores = {os.cpu_count() or 1}
+        if hasattr(os, "sched_getaffinity"):
+            cores.add(len(os.sched_getaffinity(0)))
+        expected = {max(1, min(2, c)) for c in cores}
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        self.assertTrue(any(f"--maxWorkers={n}" in c for c in calls for n in expected), calls)
+        self.assertIn("Workers for this machine's memory: unit:", r.stdout)
+        self.assertRegex(r.stdout, r"unit: [12] workers?, 6\.0 GB free, 2\.3 GB each last time")
+        entry = self.history()[-1]
+        self.assertIn(entry["workers"].get("unit"), expected)
+        self.assertIn("6.0 GB free", entry["workers_why"])
+
+    def test_FLEET_001_S3_nothing_fits_stop_in_seconds_with_exit_3(self):
+        """FLEET-001.S3: 1.5 GB free and 2.3 GB for one worker → exit 3 before any tool runs, both numbers, the way out."""
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(**self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        for part in ("unit", "2.3 GB", "1.5 GB", "VERIFY_FORCE=1"):
+            self.assertIn(part, r.stderr)
+        ran = [c for c in self.called() if "ls --depth" not in c]
+        self.assertEqual(ran, [], "the refusal comes before any step runs a tool")
+
+    def test_FLEET_001_S3_verify_force_runs_it_with_one_worker(self):
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(VERIFY_FORCE="1", **self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any("--maxWorkers=1" in c for c in self.unit_calls()), self.called())
+
+    def test_FLEET_001_S4_no_measure_runs_with_todays_workers(self):
+        """FLEET-001.S4: no recorded peak and no override → the runner's command is exactly today's, no plan line."""
+        self.commit_change()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        self.assertFalse(any("--maxWorkers" in c or "--workers" in c for c in self.called()), self.called())
+        self.assertTrue(all(c.endswith("--if-present run test") for c in calls), calls)
+        self.assertNotIn("Workers for this machine's memory", r.stdout)
+
+    def test_FLEET_001_S5_the_override_in_state_toml_wins(self):
+        """FLEET-001.S5: [verify] memory_per_worker_mb = 1500 is used instead of the 2.3 GB measured."""
+        self.commit_change()
+        self.seed_peak()
+        (self.repo / ".keelokit/state.toml").write_text("[verify]\nmemory_per_worker_mb = 1500\n")
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1.5 GB each ([verify] memory_per_worker_mb)", r.stdout)
+        self.assertNotIn("2.3 GB each last time", r.stdout)
 
 
 if __name__ == "__main__":
