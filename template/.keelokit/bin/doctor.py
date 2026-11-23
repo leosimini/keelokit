@@ -14,6 +14,10 @@ Any other command line (a missing ID, an unknown mode, an extra argument) prints
 
 Without main or origin/main (a shallow CI checkout) nothing counts as done and the doctor says so,
 `--scope` exits 2, and `--critical --changed` lists every critical file: never HEAD for main.
+With main but an incomplete history (a shallow clone that reaches a cut commit of main) the done set
+is unknown, not low: the Backlog line says unknown with the reason and `git fetch --unshallow origin
+main`, an error in CI (`fetch-depth: 0`), a warning elsewhere. Stories whose `Story:` trailer is seen
+stay done; rules that need "not done" become warnings.
 
 Checks: every MUST rule has an enforcer, and each enforcer looks alive (a test that cites the rule
 and has active cases, a lint rule that is on, a CI job with real steps, no continue-on-error and no
@@ -779,6 +783,20 @@ def check_escapes() -> int:
     return rows
 
 
+def incomplete_history() -> str | None:
+    """Why the done set can't be trusted, or None. A shallow clone whose main reaches a commit of the
+    shallow file lacks history: a story without its trailer may be done. Two or three git calls."""
+    if (ref := main_ref()) is None or git("rev-parse", "--is-shallow-repository").strip() != "true":
+        return None
+    shallow = Path(git("rev-parse", "--git-path", "shallow").strip() or "shallow")
+    text = read(shallow if shallow.is_absolute() else ROOT / shallow) or ""
+    cut = set(text.split())
+    if not cut or not (cut & set(git("rev-list", ref).split())):
+        return None
+    return (f"the clone is shallow and cut main's history (it has {git('rev-list', '--count', ref).strip()} commits of {ref}); "
+            "run `git fetch --unshallow origin main`")
+
+
 def done_story_ids() -> set[str]:
     """Stories closed by a `Story: <ID>` trailer on a commit reachable from main."""
     if (ref := main_ref()) is None:
@@ -888,6 +906,12 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             errors.append(f"{rel}: duplicate id {sid}")
         stories[sid] = meta
     done = done_story_ids() & stories.keys() if stories else set()
+    gap = incomplete_history() if stories else None
+    if gap:
+        if os.environ.get("CI"):
+            errors.append(f"done state unknown: {gap} (CI: checkout with `fetch-depth: 0`)")
+        else:
+            warnings.append(f"done state unknown: {gap}")
     for sid, meta in stories.items():
         for dep in meta.get("depends_on", []):
             if dep not in stories:
@@ -907,7 +931,10 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         if invs and "integrity" not in (dims or []):
             errors.append(f"story {sid}: lists invariants — declare the 'integrity' dimension too")
         if (hit := areas_hit(meta.get("touches", []), areas)) and "integrity" not in (dims or []):
-            if sid not in done:
+            if sid not in done and gap:  # it may be done: no red CI for lack of history
+                warnings.append(f"story {sid}: touches critical area {', '.join(hit)} without 'integrity'; its done state is unknown "
+                                "(shallow clone), declare 'integrity' and the invariants it must keep if it is not done")
+            elif sid not in done:
                 errors.append(f"story {sid}: touches critical area {', '.join(hit)} — declare 'integrity' and the invariants it must keep")
             else:  # LOG-304: shipped before (or despite) the area; visible, but not a retroactive red CI
                 warnings.append(f"story {sid} is done but touches critical area {', '.join(hit)} without 'integrity': "
@@ -917,13 +944,15 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         for iid in sorted(set(invariants) - kept):
             warnings.append(f"invariant {iid} ({invariants[iid]}) is kept by no story yet")
     pending = [s for s in stories if s not in done]
+    clashes = warnings if gap else errors  # pending may include done stories: only a warning then
+    maybe = " (done state unknown: shallow clone)" if gap else ""
     for a, b in wave_clashes(pending, stories, areas):
         clash = [f"{x}" for x in stories[a].get("touches", []) for y in stories[b].get("touches", []) if overlaps(x, y)]
         if clash:
-            errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} but both touch {', '.join(clash)} — move one to a later wave")
+            clashes.append(f"stories {a} and {b} share wave {stories[a].get('wave')} but both touch {', '.join(clash)} — move one to a later wave" + maybe)
         shared = set(areas_hit(stories[a].get("touches", []), areas)) & set(areas_hit(stories[b].get("touches", []), areas))
         if shared:
-            errors.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time")
+            clashes.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time" + maybe)
     corpus = cited_titles() if done else ""
     # One pass over the titles, not one search per done story (NFR-1): every `<text>.S<n>` citation
     # (.S1 must not match .S10), keyed by the text's last characters at each length a done id has.
@@ -941,12 +970,12 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         unproven = [i for i in stories[sid].get("invariants", []) if not proven[i]]
         if unproven:
             errors.append(f"story {sid} is done but no active test title cites invariant {', '.join(unproven)} (INV-1)")
-    ready = [
+    ready = [] if gap else [
         sid for sid, m in stories.items()
         if sid not in done and all(d in done for d in m.get("depends_on", []))
     ]
     ready.sort(key=lambda s: (stories[s].get("wave", 99), s))
-    return {"total": len(stories), "done": done, "ready": ready, "stories": stories}
+    return {"total": len(stories), "done": done, "ready": ready, "stories": stories, "unknown": gap}
 
 
 # ── Process checks: CI budget, the verify map, formatting, migrations, flaky tests, the debt ledger ──
@@ -1079,7 +1108,9 @@ def check_migration_waves(backlog: dict, done: set[str], excepted: set[str]) -> 
         if sid not in done and any("migrations" in t for t in meta.get("touches", [])):
             waves.setdefault(meta.get("wave"), []).append(sid)
     for wave, sids in sorted(waves.items(), key=lambda kv: str(kv[0])):
-        if len(sids) > 1:
+        if len(sids) > 1 and backlog.get("unknown"):
+            warnings.append(f"MIG-1: stories {', '.join(sorted(sids))} share wave {wave} and all add migrations (done state unknown: shallow clone)")
+        elif len(sids) > 1:
             flag("MIG-1", excepted, f"stories {', '.join(sorted(sids))} share wave {wave} and all add migrations — "
                                     "move them to separate waves so they serialize")
 
@@ -1360,7 +1391,8 @@ def main() -> int:
     if mode == "--brief":
         print("Keelokit:", f"gate pending → {pending}" if pending else "all gates approved")
         print(f"Context gaps: {gaps} ({blocking} blocking) · "
-              f"Backlog: {len(backlog['done'])}/{backlog['total']} done")
+              + (f"Backlog: unknown, {backlog['unknown']}" if backlog["unknown"]
+                 else f"Backlog: {len(backlog['done'])}/{backlog['total']} done"))
         if backlog["ready"]:
             print("Next ready stories:", ", ".join(backlog["ready"][:3]))
         if profile is not None:
@@ -1378,7 +1410,8 @@ def main() -> int:
         print(f"  Profile: {profile.get('kind', 'unknown')} · traits: {', '.join(sorted(profile['traits'])) or 'none'}"
               + (f" · not applicable: {', '.join(not_applicable)}" if not_applicable else ""))
     print(f"  Invariants: {len(invariants)} · Critical areas: {len(areas)} · Escapes logged: {escapes}")
-    print(f"  Backlog: {len(backlog['done'])}/{backlog['total']} done"
+    print((f"  Backlog: unknown, {backlog['unknown']}" if backlog["unknown"]
+           else f"  Backlog: {len(backlog['done'])}/{backlog['total']} done")
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))
     if debt_open or debt_waiting:
         print(f"  Pre-launch debt: {debt_open} open · {debt_waiting} waiting on the owner (`doctor --launch`)")

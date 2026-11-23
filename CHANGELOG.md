@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A shallow clone no longer reports a low story count.** When the clone cuts main's history, the doctor and the
+  dashboard say the done state is unknown (with the commits it has and `git fetch --unshallow origin main`) instead of
+  counting fewer done stories; in CI the doctor fails with `fetch-depth: 0` as the fix.
 - **Projects with an API pass the dependency audit again.** Prisma 7.10 pins `effect` 3.20.0, which carries a high
   advisory (GHSA-7589-6fvf-x4pw, ReDoS in `Schema.TemplateLiteral`) fixed in 3.22.1; the template now overrides it
   (`'@prisma/config>effect': ^3.22.1` in `pnpm-workspace.yaml`), like the other pinned fixes there, until Prisma ships
