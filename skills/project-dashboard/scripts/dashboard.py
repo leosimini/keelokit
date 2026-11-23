@@ -102,6 +102,7 @@ T = {
         "story_blocked": "Espera a {deps}",
         "story_gap": "Espera respuesta a {gaps}",
         "story_unknown": "Desconocido",
+        "story_unknown_why": "El clon es superficial (shallow): esta historia puede estar terminada. Corré git fetch --unshallow origin main",
         "history_unknown": ("Avance desconocido: el clon es superficial (shallow) y tiene {n} commit de main. Corré git fetch --unshallow origin main",
                             "Avance desconocido: el clon es superficial (shallow) y tiene {n} commits de main. Corré git fetch --unshallow origin main"),
         "next_unknown": "Traé la historia completa",
@@ -340,6 +341,7 @@ T = {
         "story_blocked": "Waits for {deps}",
         "story_gap": "Waits for an answer to {gaps}",
         "story_unknown": "Unknown",
+        "story_unknown_why": "The clone is shallow: this story may be done. Run git fetch --unshallow origin main",
         "history_unknown": ("Progress unknown: the clone is shallow and has {n} commit of main. Run git fetch --unshallow origin main",
                             "Progress unknown: the clone is shallow and has {n} commits of main. Run git fetch --unshallow origin main"),
         "next_unknown": "Fetch the full history first",
@@ -737,24 +739,29 @@ def github_base(root: Path) -> str | None:
     return f"https://github.com/{m.group(1)}/blob/main/" if m else None
 
 
-def cut_commits(run, shas: list[str]) -> bool:
-    """True when one of these shallow-file commits has parents (its raw object says so; %P is rewritten
-    to empty in a shallow repo) that the clone lacks. A root commit listed there is nothing cut. One
-    batched call, whatever the number of commits."""
+def cut_commits(run, shas: list[str], known: set[str]) -> bool:
+    """True when a shallow-file commit has a parent that main's history (`known`: one rev-list) doesn't
+    hold: really cut. A root commit, or a boundary whose parents main walks anyway, is nothing cut.
+    Raw objects, since %P is rewritten to empty in a shallow repo; one batched call. Fails closed: a
+    failed call or a missing object reads as cut."""
     if not shas:
         return False
-    out = run(["git", "cat-file", "--batch"], "".join(f"{s}\n" for s in shas).encode())
+    code, out = run(["git", "cat-file", "--batch"], "".join(f"{s}\n" for s in shas).encode())
+    if code != 0:
+        return True
     pos = 0
     while pos < len(out):
-        end = out.index(b"\n", pos)
+        end = out.find(b"\n", pos)
+        if end < 0:
+            return True
         head = out[pos:end].split()
         if len(head) < 3 or head[1] != b"commit":
-            pos = end + 1
-            continue
+            return True  # "<sha> missing", or anything unexpected
         size = int(head[2])
         body = out[end + 1:end + 1 + size]
-        if any(line.startswith(b"parent ") for line in body.split(b"\n\n", 1)[0].split(b"\n")):
-            return True
+        for line in body.split(b"\n\n", 1)[0].split(b"\n"):
+            if line.startswith(b"parent ") and line[7:].decode() not in known:
+                return True
         pos = end + 1 + size + 1
     return False
 
@@ -768,8 +775,9 @@ def history_gap(root: Path, ref: str | None) -> dict | None:
     shallow = Path(git(root, "rev-parse", "--git-path", "shallow").strip() or "shallow")
     cut = set(read(shallow if shallow.is_absolute() else root / shallow).split())
     commits = git(root, "rev-list", ref).split()
-    reach = sorted(cut & set(commits))
-    if not reach or not cut_commits(lambda cmd, data: subprocess.run(cmd, cwd=root, input=data, capture_output=True).stdout, reach):
+    known = set(commits)
+    reach = sorted(cut & known)
+    if not reach or not cut_commits(lambda cmd, data: (lambda r: (r.returncode, r.stdout))(subprocess.run(cmd, cwd=root, input=data, capture_output=True)), reach, known):
         return None
     return {"commits": len(commits), "ref": ref, "fix": "git fetch --unshallow origin main",
             "reason": f"the clone is shallow and cut main's history ({len(commits)} commits of {ref}): "
@@ -1763,7 +1771,7 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
     anchor = f' id="story-{view}-{esc(st["id"])}"' if view else ""
     return (f'<details class="doc story"{anchor}><summary><span class="sid">{esc(st["id"])}</span>'
             f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
-            f'<span class="pill {"unk" if status == "unknown" else status}"{f' title="{esc(st["reason"])}"' if st.get("reason") else ""}>{esc(label)}</span>{CHEV}</summary>'
+            f'<span class="pill {"unk" if status == "unknown" else status}"{f' title="{esc(t["story_unknown_why"])}"' if status == "unknown" else ""}>{esc(label)}</span>{CHEV}</summary>'
             f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{build}'
             f'{markdown(st["body"], links, st["path"])}</div></details>')
 
