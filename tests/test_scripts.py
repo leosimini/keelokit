@@ -357,3 +357,36 @@ class CleanGitEnvTest(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertNotEqual(leaked.returncode, 0, "the fixture's identity reached the real repo's config")
             self.assertEqual(run("git", "log", "-1", "--format=%s", cwd=scratch2), "fixture")
+
+
+class UnitShardTest(unittest.TestCase):
+    """CI runs the unit suite in shards (scripts/unit_shard.py): no test file may be left out or run twice."""
+
+    def shard(self, *args):
+        return subprocess.run(["python3", str(ROOT / "scripts/unit_shard.py"), *args], capture_output=True, text=True)
+
+    def test_every_test_file_is_in_exactly_one_shard_and_the_split_is_stable(self):
+        files = sorted(p.stem for p in (ROOT / "tests").glob("test_*.py"))
+        for k in (1, 2, 3):
+            with self.subTest(shards=k):
+                got = [self.shard(str(n), str(k)).stdout.split() for n in range(1, k + 1)]
+                flat = [m for s in got for m in s]
+                self.assertEqual(sorted(flat), files)
+                self.assertEqual(len(flat), len(set(flat)))
+                self.assertEqual(got, [self.shard(str(n), str(k)).stdout.split() for n in range(1, k + 1)])
+
+    def test_the_ci_workflow_runs_every_shard_it_asks_for(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        m = re.search(r"shard: \[([\d, ]+)\]", ci)
+        self.assertIsNotNone(m, "the unit job has no shard matrix")
+        shards = [int(x) for x in m.group(1).split(",")]
+        call = re.search(r"unit_shard\.py \$\{\{ matrix\.shard \}\} (\d+)", ci)
+        self.assertIsNotNone(call)
+        self.assertEqual(shards, list(range(1, int(call.group(1)) + 1)))
+
+    def test_a_bad_shard_is_a_usage_error(self):
+        for args in ([], ["0", "2"], ["3", "2"], ["x", "2"]):
+            with self.subTest(args=args):
+                r = self.shard(*args)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("usage", r.stderr)
