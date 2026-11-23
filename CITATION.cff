@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use or write about Keelokit, please cite it as below."
+type: software
+title: "Keelokit"
+abstract: >-
+  A Claude Code plugin where separate agents test, review and try to break every story, and each
+  bug leaves a check so it can't return. From idea to a TypeScript app with CI and a live dashboard.
+authors:
+  - given-names: Leopoldo
+    family-names: Simini
+    alias: leosimini
+    website: "https://leopoldosimini.com"
+repository-code: "https://github.com/leosimini/keelokit"
+url: "https://keelokit.com"
+license: MIT
+keywords:
+  - claude-code
+  - claude-code-plugin
+  - ai-agents
+  - spec-driven-development
+  - typescript

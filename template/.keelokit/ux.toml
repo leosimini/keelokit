@@ -1,0 +1,21 @@
+# UX-3 — what counts as interface, and what evidence a change to it brings (bin/ux_gate.py).
+# Product-owned: `copier update` leaves it alone. Every key is optional; these are the defaults.
+# `enabled = false` switches the gate off (and the doctor says so); say why in a comment here.
+[gate]
+enabled = true
+# Files that are interface. Add the folders of your apps and design-system package.
+ui_paths = ["apps/web/src/**", "apps/mobile/src/**", "apps/site/src/**", "packages/ui*/src/**"]
+# Interface paths that need no captures (tests, text files, locale files).
+exempt_paths = ["**/*.test.*", "**/*.spec.*", "**/__tests__/**", "**/*.md", "**/i18n/**", "**/locales/**"]
+# Where a piece's evidence lives: <evidence_dir>/<piece>/<surface>-<width>-<theme>-<state>.png + CRITIQUE.md
+evidence_dir = "docs/design/captures"
+# Which surfaces the product has. A web-only product keeps "desktop" and, if it is responsive, "mobile".
+surfaces = ["mobile", "desktop"]
+# `themes = []` for a product with one theme (the name then has no theme part).
+themes = ["light", "dark"]
+critique_file = "CRITIQUE.md"
+critique_sections = ["Journey", "Design critique", "Consistency and coherence", "Real device"]
+
+[gate.widths]
+mobile = [360, 390]
+desktop = [1280, 1440]

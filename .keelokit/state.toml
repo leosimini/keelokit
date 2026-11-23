@@ -1,0 +1,14 @@
+[gates]
+intake = "2026-09-28"
+adopt = "2026-09-28"
+backlog = "2026-09-28"
+
+[dashboard]
+lang = "es"
+url = "https://claude.ai/artifact/UQSFizBPxuGyU1V9Yjy9BM"
+
+[run]
+mode = "auto"        # Leo delegated coordination and decisions to the coordinator session (2026-11-23):
+                     # it goes on alone and stops only where a person is required (see docs/ledger.md)
+build = "serial"     # one story at a time: most stories touch the guard, the doctor or the dashboard
+decided = "2026-09-28"

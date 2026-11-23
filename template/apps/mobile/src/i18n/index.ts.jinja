@@ -1,0 +1,16 @@
+import { createTranslator } from '@{{ project_slug }}/shared';
+import { getLocales } from 'expo-localization';
+
+import en from './en.json';
+import es from './es.json';
+
+export const messages = { en, es };
+type Locale = keyof typeof messages;
+
+// The first of the user's preferred languages that we ship; English otherwise.
+const locale =
+  getLocales()
+    .map((l) => l.languageCode)
+    .find((code): code is Locale => !!code && code in messages) ?? 'en';
+
+export const t = createTranslator(messages[locale], locale);

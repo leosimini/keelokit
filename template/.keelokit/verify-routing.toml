@@ -1,0 +1,32 @@
+# What a change calls for (read by scripts/verify.sh through bin/verify_tools.py).
+#
+# Each [[route]] says: files matching `paths` need these `steps`. A file takes the FIRST route that
+# matches it, so specific routes go first. A change runs the union of its files' steps plus `always`. Three guards keep the map honest:
+#   - a file NO route knows runs everything (unknown goes up, never down);
+#   - `pnpm verify --all` is every step, so any plan is a subset of it;
+#   - tests/test_verify_plan.py walks the template's files and checks each against this table.
+# Steps: format lint typecheck unit integration build e2e e2e-stack mutation sast audit.
+# (The secret scan and the doctor always run. Which packages a step covers is decided by pnpm from
+# the diff, as before.) `steps = ["all"]` means everything.
+always = []
+
+# The harness itself, CI and hooks: change one and everything is re-proven (even its prose: the doctor reads it).
+[[route]]
+paths = [".keelokit/**", ".github/**", ".githooks/**", "scripts/**"]
+steps = ["all"]
+
+# Text people read in the app: strings are checked by their own tests and the linter.
+[[route]]
+paths = ["apps/*/src/i18n/locales/**", "apps/*/src/**/locales/**"]
+steps = ["format", "lint", "typecheck", "unit"]
+
+# Prose and the project's own records: nothing to compile or test.
+[[route]]
+paths = ["**/*.md", "docs/**", "backlog/**", "LICENSE", "CHANGELOG.md", ".prettierignore", ".gitattributes"]
+steps = ["format"]
+
+# Code, tests, configs, manifests and dependencies.
+[[route]]
+paths = ["apps/**", "packages/**", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig*.json",
+         "eslint.config.*", ".prettierrc", ".nvmrc", "docker-compose.yml"]
+steps = ["all"]

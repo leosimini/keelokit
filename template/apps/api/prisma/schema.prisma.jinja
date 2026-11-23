@@ -1,0 +1,19 @@
+// Models go here; `pnpm --filter ./apps/api prisma:migrate:dev --name <change>` writes the migration.
+// The connection URL lives in prisma.config.ts (Prisma 7).
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+{%- if postgis %}
+  previewFeatures     = ["postgresqlExtensions"]
+{%- endif %}
+}
+
+datasource db {
+  provider   = "postgresql"
+{%- if postgis %}
+  extensions = [postgis]
+{%- endif %}
+}

@@ -1,0 +1,73 @@
+{% if 'api' in apps -%}
+import { healthResponseSchema, type HealthResponse } from '@{{ project_slug }}/shared';
+{% endif -%}
+import { colors, font, spacing } from '@{{ project_slug }}/ui-tokens';
+{%- if 'api' in apps %}
+import { useEffect, useState } from 'react';
+{%- endif %}
+import { StyleSheet, Text, View } from 'react-native';
+
+import app from '../app.json';
+import { t } from './i18n';
+{% if 'api' in apps %}
+type Health = { state: 'loading' } | { state: 'ok'; health: HealthResponse } | { state: 'error' };
+
+// CONTRACT-1: a response that doesn't match the shared schema is an error, never a guess.
+async function fetchHealth(): Promise<Health> {
+  const res = await fetch(`${process.env.EXPO_PUBLIC_API_URL}/health`);
+  if (!res.ok) return { state: 'error' };
+  const parsed = healthResponseSchema.safeParse(await res.json());
+  return parsed.success ? { state: 'ok', health: parsed.data } : { state: 'error' };
+}
+
+function healthText(h: Health) {
+  if (h.state === 'loading') return t('health.checking');
+  if (h.state === 'error') return t('health.error');
+  return t('health.ok', {
+    status: t(`health.status.${h.health.status}`),
+    db: t(`health.db.${h.health.db}`),
+  });
+}
+{% endif %}
+export function HomeScreen() {
+{%- if 'api' in apps %}
+  const [health, setHealth] = useState<Health>({ state: 'loading' });
+
+  useEffect(() => {
+    fetchHealth()
+      .catch((): Health => ({ state: 'error' }))
+      .then(setHealth);
+  }, []);
+{% endif %}
+  return (
+    <View role="main" style={styles.container}>
+      <Text accessibilityRole="header" style={styles.title}>
+        {t('home.title', { name: app.expo.name })}
+      </Text>
+{%- if 'api' in apps %}
+      <Text
+        accessibilityRole={health.state === 'error' ? 'alert' : undefined}
+        accessibilityLiveRegion="polite"
+        style={styles.muted}
+      >
+        {healthText(health)}
+      </Text>
+{%- endif %}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    padding: spacing.lg,
+    backgroundColor: colors.background,
+  },
+  title: { fontSize: font.size.xl, fontWeight: '700', color: colors.text },
+{%- if 'api' in apps %}
+  muted: { fontSize: font.size.md, color: colors.textMuted },
+{%- endif %}
+});

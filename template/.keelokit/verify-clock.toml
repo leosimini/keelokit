@@ -1,0 +1,33 @@
+# Clocks the unit tests a change adds or edits run at, besides the machine's own (pnpm verify, the
+# "Changed tests at awkward clocks" step; it needs libfaketime). `at` is the local time in `zone`.
+# Add your market's zone and its own awkward hours; the product owns this file.
+
+[[scenario]] # already tomorrow in UTC, on the last day of a month
+name = "month-end-late"
+zone = "America/Los_Angeles"
+at = "2027-01-31 23:30:00"
+
+[[scenario]] # already next year in UTC
+name = "year-end-late"
+zone = "America/Los_Angeles"
+at = "2027-12-31 23:30:00"
+
+[[scenario]] # a leap day, still the 28th in UTC
+name = "leap-day-early"
+zone = "Europe/Berlin"
+at = "2028-02-29 00:30:00"
+
+[[scenario]] # the hour the spring DST change skips
+name = "dst-gap"
+zone = "America/New_York"
+at = "2027-03-14 02:30:00"
+
+[[scenario]] # the hour the autumn DST change repeats
+name = "dst-overlap"
+zone = "Europe/Berlin"
+at = "2027-10-31 02:30:00"
+
+[[scenario]] # a new month east of UTC, still the old one in UTC
+name = "midnight-east"
+zone = "Australia/Sydney"
+at = "2027-07-01 00:30:00"

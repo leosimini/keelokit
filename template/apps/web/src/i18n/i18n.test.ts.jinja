@@ -1,0 +1,10 @@
+// Enforces house rule I18N-1: every locale has the same keys and placeholders as the base one.
+import { localeDrift } from '@{{ project_slug }}/shared';
+import { expect, it } from 'vitest';
+import { locales } from '.';
+
+const { en, ...others } = locales;
+
+it.each(Object.entries(others))('%s has the same keys and placeholders as en', (_, messages) => {
+  expect(localeDrift(en, messages)).toEqual([]);
+});

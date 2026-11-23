@@ -1,0 +1,46 @@
+// Enforces house rule E2E-1: the critical journey, walked in a real browser with an axe scan.
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test{% if 'api' in apps %}, type Page{% endif %} } from '@playwright/test';
+import en from '../src/i18n/en.json' with { type: 'json' };
+
+test.use({ locale: 'en-US' });
+{%- if 'api' in apps %}
+
+// Hermetic: no API runs in E2E. The header lets it work when VITE_API_URL is another origin.
+const mockHealth = (page: Page, respond: 'ok' | 'down') =>
+  page.route('**/health', (route) =>
+    respond === 'ok'
+      ? route.fulfill({
+          json: { status: 'ok', db: 'up' },
+          headers: { 'access-control-allow-origin': '*' },
+        })
+      : route.abort('connectionrefused'),
+  );
+{%- endif %}
+
+test.describe('WEB-HOME.S1 the home page', () => {
+  test('shows the product{% if 'api' in apps %} and a healthy API{% endif %} and passes axe', async ({ page }) => {
+{%- if 'api' in apps %}
+    await mockHealth(page, 'ok');
+{%- endif %}
+    await page.goto('/');
+
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(en['app.name']);
+{%- if 'api' in apps %}
+    await expect(page.getByRole('status')).toHaveText(en['health.ok']);
+{%- endif %}
+
+    const { violations } = await new AxeBuilder({ page }).analyze();
+    const blocking = violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+    expect(blocking.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
+  });
+{%- if 'api' in apps %}
+
+  test('says when the API is down', async ({ page }) => {
+    await mockHealth(page, 'down');
+    await page.goto('/');
+
+    await expect(page.getByRole('status')).toHaveText(en['health.error']);
+  });
+{%- endif %}
+});

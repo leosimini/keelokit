@@ -1,0 +1,40 @@
+{%- if 'api' in apps -%}
+import { healthResponseSchema, type HealthResponse } from '@{{ project_slug }}/shared';
+import { useEffect, useState } from 'react';
+{% endif -%}
+import { t } from './i18n';
+
+export function App() {
+{%- if 'api' in apps %}
+  const [health, setHealth] = useState<HealthResponse | 'error'>();
+
+  useEffect(() => {
+    // Read the body whatever the status code: a degraded API answers 503 with a HealthResponse.
+    fetch(`${import.meta.env.VITE_API_URL}/health`)
+      .then((res) => res.json())
+      .then((body: unknown) => {
+        // CONTRACT-1: a payload that drifted from the shared schema is an error, never a guess.
+        const parsed = healthResponseSchema.safeParse(body);
+        setHealth(parsed.success ? parsed.data : 'error');
+      })
+      .catch(() => setHealth('error'));
+  }, []);
+
+  const status =
+    health === undefined
+      ? t('health.checking')
+      : health === 'error'
+        ? t('health.error')
+        : t(`health.${health.status}`);
+{% endif %}
+  return (
+    <main>
+      <h1>{t('app.name')}</h1>
+{%- if 'api' in apps %}
+      <p className="status" role="status">
+        {status}
+      </p>
+{%- endif %}
+    </main>
+  );
+}

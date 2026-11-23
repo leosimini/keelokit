@@ -1,0 +1,8 @@
+import { localeDrift } from '@{{ project_slug }}/shared';
+
+import { messages } from '.';
+
+// I18N-1: every locale has exactly the keys and {placeholders} of the base locale (en).
+it.each(Object.entries(messages))('%s matches en', (_, other) => {
+  expect(localeDrift(messages.en, other)).toEqual([]);
+});
