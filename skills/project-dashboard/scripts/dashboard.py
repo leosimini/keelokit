@@ -737,6 +737,28 @@ def github_base(root: Path) -> str | None:
     return f"https://github.com/{m.group(1)}/blob/main/" if m else None
 
 
+def cut_commits(run, shas: list[str]) -> bool:
+    """True when one of these shallow-file commits has parents (its raw object says so; %P is rewritten
+    to empty in a shallow repo) that the clone lacks. A root commit listed there is nothing cut. One
+    batched call, whatever the number of commits."""
+    if not shas:
+        return False
+    out = run(["git", "cat-file", "--batch"], "".join(f"{s}\n" for s in shas).encode())
+    pos = 0
+    while pos < len(out):
+        end = out.index(b"\n", pos)
+        head = out[pos:end].split()
+        if len(head) < 3 or head[1] != b"commit":
+            pos = end + 1
+            continue
+        size = int(head[2])
+        body = out[end + 1:end + 1 + size]
+        if any(line.startswith(b"parent ") for line in body.split(b"\n\n", 1)[0].split(b"\n")):
+            return True
+        pos = end + 1 + size + 1
+    return False
+
+
 def history_gap(root: Path, ref: str | None) -> dict | None:
     """LEDGER-001: set when the done set read from `ref` can't be trusted: a shallow clone whose main
     reaches a commit of the shallow file. A story without its trailer may be done, so it is unknown,
@@ -746,7 +768,8 @@ def history_gap(root: Path, ref: str | None) -> dict | None:
     shallow = Path(git(root, "rev-parse", "--git-path", "shallow").strip() or "shallow")
     cut = set(read(shallow if shallow.is_absolute() else root / shallow).split())
     commits = git(root, "rev-list", ref).split()
-    if not cut or not cut & set(commits):
+    reach = sorted(cut & set(commits))
+    if not reach or not cut_commits(lambda cmd, data: subprocess.run(cmd, cwd=root, input=data, capture_output=True).stdout, reach):
         return None
     return {"commits": len(commits), "ref": ref, "fix": "git fetch --unshallow origin main",
             "reason": f"the clone is shallow and cut main's history ({len(commits)} commits of {ref}): "
@@ -1075,7 +1098,7 @@ def next_step(s: dict, lang: str) -> dict:
         unknown = bool(s["history_gap"])  # LEDGER-001: the stories may be done, not blocked
         return {"title": t["next_unknown" if unknown else "next_blocked"],
                 "detail": t["next_unknown_d" if unknown else "next_blocked_d"],
-                "command": None if unknown else "/keelokit", "anchor": "stage-backlog"}
+                "command": "git fetch --unshallow origin main" if unknown else "/keelokit", "anchor": "stage-backlog"}
     last_story = max((e["date"] for e in s["history"] if e["kind"] == "story"), default="")
     last_bb = max((b["date"] for b in s["bugbashes"]), default="")
     if s["stories"] and last_story and last_bb < last_story:
@@ -1402,7 +1425,7 @@ details[open]>summary .chev{transform:rotate(225deg) translateY(-2px)}
 .pill.todo{color:var(--idle);background:var(--idle-soft)}
 .pill.ready{color:var(--accent);background:var(--accent-soft)}
 .pill.blocked,.pill.gap{color:var(--bad);background:var(--bad-soft)}
-.pill.unknown{color:var(--attn);background:var(--attn-soft)}
+.pill.unk{color:var(--attn);background:var(--attn-soft)}
 .sea .pill.review{color:var(--ember);background:#353346}
 .sea .pill.current{color:var(--board);background:#2E3C48}
 .sea .pill.done{color:var(--reef);background:#1A3C5F}
@@ -1740,7 +1763,7 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
     anchor = f' id="story-{view}-{esc(st["id"])}"' if view else ""
     return (f'<details class="doc story"{anchor}><summary><span class="sid">{esc(st["id"])}</span>'
             f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
-            f'<span class="pill {status}">{esc(label)}</span>{CHEV}</summary>'
+            f'<span class="pill {"unk" if status == "unknown" else status}"{f' title="{esc(st["reason"])}"' if st.get("reason") else ""}>{esc(label)}</span>{CHEV}</summary>'
             f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{build}'
             f'{markdown(st["body"], links, st["path"])}</div></details>')
 

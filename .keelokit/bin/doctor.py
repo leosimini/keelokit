@@ -760,6 +760,28 @@ def check_escapes() -> int:
     return rows
 
 
+def cut_commits(run, shas: list[str]) -> bool:
+    """True when one of these shallow-file commits has parents (its raw object says so; %P is rewritten
+    to empty in a shallow repo) that the clone lacks. A root commit listed there is nothing cut. One
+    batched call, whatever the number of commits."""
+    if not shas:
+        return False
+    out = run(["git", "cat-file", "--batch"], "".join(f"{s}\n" for s in shas).encode())
+    pos = 0
+    while pos < len(out):
+        end = out.index(b"\n", pos)
+        head = out[pos:end].split()
+        if len(head) < 3 or head[1] != b"commit":
+            pos = end + 1
+            continue
+        size = int(head[2])
+        body = out[end + 1:end + 1 + size]
+        if any(line.startswith(b"parent ") for line in body.split(b"\n\n", 1)[0].split(b"\n")):
+            return True
+        pos = end + 1 + size + 1
+    return False
+
+
 def incomplete_history() -> str | None:
     """Why the done set can't be trusted, or None. A shallow clone whose main reaches a commit of the
     shallow file lacks history: a story without its trailer may be done. Two or three git calls."""
@@ -768,7 +790,8 @@ def incomplete_history() -> str | None:
     shallow = Path(git("rev-parse", "--git-path", "shallow").strip() or "shallow")
     text = read(shallow if shallow.is_absolute() else ROOT / shallow) or ""
     cut = set(text.split())
-    if not cut or not (cut & set(git("rev-list", ref).split())):
+    reach = sorted(cut & set(git("rev-list", ref).split()))
+    if not reach or not cut_commits(lambda cmd, data: subprocess.run(cmd, cwd=ROOT, input=data, capture_output=True).stdout, reach):
         return None
     return (f"the clone is shallow and cut main's history (it has {git('rev-list', '--count', ref).strip()} commits of {ref}); "
             "run `git fetch --unshallow origin main`")
