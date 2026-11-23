@@ -407,17 +407,18 @@ class RecordPeaksTest(MemoryFixture):
 class StatusWorkersLineTest(MemoryFixture):
     """status.py says the workers chosen and why, after the verify line (dx)."""
 
-    def status(self, entries):
+    def status(self, entries, raw=b""):
         repo = self.tmp / "repo"
         shutil.copytree(REPO / "template/.keelokit/bin", repo / ".keelokit/bin")
         g = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
         subprocess.run([*g, "init", "-q", "-b", "main", str(repo)], check=True)
         subprocess.run([*g, "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True)
         (repo / ".git/keelokit-verify.state").write_text("state=pass\nrc=0\nhead=abcdef0\nlevel=changed\nsince=0\n")
-        (repo / ".git/keelokit-verify.history").write_text("".join(json.dumps(e) + "\n" for e in entries))
+        (repo / ".git/keelokit-verify.history").write_bytes(raw + "".join(json.dumps(e) + "\n" for e in entries).encode())
         env = {**os.environ, "KEELOKIT_STATUS_OFFLINE": "1"}
         r = subprocess.run([sys.executable, ".keelokit/bin/status.py", "--no-ci"], cwd=repo, capture_output=True,
                            text=True, env=env, timeout=60)
+        self.assertNotIn("Traceback", r.stderr)
         return r.stdout.splitlines()
 
     def test_FLEET_001_S2_status_shows_the_last_workers_why(self):
@@ -430,6 +431,80 @@ class StatusWorkersLineTest(MemoryFixture):
     def test_FLEET_001_S4_status_says_nothing_without_a_why(self):
         out = self.status([{"t": 1, "result": "pass"}])
         self.assertFalse(any(l.startswith("verify workers:") for l in out), out)
+
+    def test_FLEET_001_S2_status_shows_no_why_when_the_last_run_planned_nothing(self):
+        """FLEET-001.S2 (N3): only the last entry's why: a later run that planned nothing leaves no older why showing."""
+        out = self.status([{"t": 1, "result": "pass", "workers_why": "integration: 2 workers, 6.0 GB free, 2.3 GB each last time"},
+                           {"t": 2, "result": "pass", "workers_why": ""}])
+        self.assertTrue(any(l.startswith("verify:") for l in out), out)
+        self.assertFalse(any(l.startswith("verify workers:") for l in out), out)
+
+    def test_FLEET_001_S2_status_survives_a_history_that_is_not_utf8(self):
+        """FLEET-001.S2 (R8): a history line that isn't UTF-8 must not crash status.py."""
+        why = "unit: 1 worker, 2.3 GB free, 2.3 GB each last time"
+        out = self.status([{"t": 2, "result": "pass", "workers_why": why}], raw=b'{"workers_why": "\xff\xfe bad"}\n')
+        self.assertIn(f"verify workers: {why}", out)
+
+
+class Round1PlanTest(MemoryFixture):
+    """FLEET-001 round 1: the review's and the breaker's findings at unit level, reproduced before the fix."""
+
+    def test_FLEET_001_S2_e2e_steps_are_never_planned_or_refused(self):
+        """FLEET-001.S2 (R6): the worker steps are unit and integration; e2e/e2e-stack peaks are the build's."""
+        plan = fn("memory_plan")
+        self.assertEqual(plan(["e2e", "e2e-stack"], (1536, "MemAvailable"), {"e2e": 99999, "e2e-stack": 99999}, None, 8),
+                         ({}, [], None))
+        workers, lines, refusal = plan(["unit", "e2e", "e2e-stack"], (6144, "MemAvailable"), {"e2e": 3000}, 1500, 8)
+        self.assertEqual(set(workers), {"unit"})
+        self.assertIsNone(refusal)
+        self.assertFalse(any(l.startswith("e2e") for l in lines), lines)
+
+    def test_FLEET_001_S6_reclaimable_cache_in_the_cgroup_counts_as_available(self):
+        """FLEET-001.S6 (R7): memory.current counts page cache; inactive_file in memory.stat is reclaimable and is
+        added back, so a container whose cache fills memory.max does not read as full."""
+        missing = self.tmp / "no-meminfo"
+        cg = self.cgroup(4096 * 2**20, 4000 * 2**20)
+        self.assertEqual(fn("memory_available_mb")(missing, cg), (96, "cgroup memory.max"))  # no memory.stat: as before
+        (cg / "memory.stat").write_text(f"anon {1000 * 2**20}\nfile {3000 * 2**20}\nactive_file {900 * 2**20}\n"
+                                        f"inactive_file {2048 * 2**20}\n")
+        self.assertEqual(fn("memory_available_mb")(missing, cg), (96 + 2048, "cgroup memory.max"))
+        self.assertEqual(fn("memory_available_mb")(self.meminfo(GB6), cg), (2144, "cgroup memory.max"))
+
+    def test_FLEET_001_S2_non_finite_or_absurd_peaks_are_skipped(self):
+        """FLEET-001.S2 (R8): NaN, Infinity, 1e308 or more than 1 TB per worker is not a figure: skipped, not planned."""
+        good = json.dumps({"peak_mb": {"unit": 600}, "peak_source": {"unit": "rss"}})
+        bad = ['{"peak_mb": {"unit": NaN}, "peak_source": {"unit": "rss"}}',
+               '{"peak_mb": {"unit": Infinity}, "peak_source": {"unit": "rss"}}',
+               '{"peak_mb": {"unit": -Infinity}, "peak_source": {"unit": "cgroup"}}',
+               '{"peak_mb": {"unit": 1e308}, "peak_source": {"unit": "rss"}}',
+               '{"peak_mb": {"unit": 1e308}, "peak_source": {"unit": "cgroup"}, "workers": {"unit": 1}}',
+               '{"peak_mb": {"unit": 2000000}, "peak_source": {"unit": "rss"}}']
+        self.assertEqual(fn("per_worker_peaks")([good, *bad], 8), {"unit": 600})
+        self.assertEqual(fn("per_worker_peaks")(bad, 8), {})
+
+    def test_FLEET_001_S5_an_absurd_override_is_no_override(self):
+        """FLEET-001.S5 (R8): an override past any machine (10**400, 10 TB) is no override, not "inf GB" or a crash."""
+        state = self.tmp / "state.toml"
+        for value in (10**400, 10**7):
+            state.write_text(f"[verify]\nmemory_per_worker_mb = {value}\n")
+            self.assertIsNone(fn("memory_override")(state), value)
+        state.write_text(f"[verify.memory_per_worker_mb]\nunit = {10**400}\nintegration = 1500\n")
+        self.assertEqual(fn("memory_override")(state), {"integration": 1500})
+
+    def test_FLEET_001_S2_the_cli_survives_bad_figures(self):
+        """FLEET-001.S2 (R8): Infinity in the history and 10**400 in state.toml → a plan from what is sane, no traceback."""
+        (self.tmp / ".keelokit/bin").mkdir(parents=True)
+        shutil.copy(TOOLS_PY, self.tmp / ".keelokit/bin/verify_tools.py")
+        (self.tmp / ".keelokit/state.toml").write_text(f"[verify]\nmemory_per_worker_mb = {10**400}\n")
+        history = self.tmp / "history"
+        history.write_text('{"peak_mb": {"integration": Infinity, "unit": NaN}, "peak_source": {"integration": "rss", "unit": "rss"}}\n')
+        env = {**os.environ, "KEELOKIT_MEMINFO": str(self.meminfo(GB6)), "KEELOKIT_CGROUP_DIR": ""}
+        r = subprocess.run([sys.executable, str(self.tmp / ".keelokit/bin/verify_tools.py"), "workers", str(history),
+                            "--steps", "unit integration", "--cores", "8"], capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertNotIn("inf", r.stdout.lower())
+        self.assertEqual(r.stdout.strip(), "")
 
 
 if __name__ == "__main__":

@@ -419,8 +419,11 @@ class MemoryAwareVerifyTest(VerifyFixture):
         return {"KEELOKIT_MEMINFO": str(p), "KEELOKIT_CGROUP_DIR": ""}
 
     def seed_peak(self, step="unit", mb=PEAK):
-        entry = {"t": 1, "head": "0" * 40, "base": "0" * 40, "level": "changed", "result": "pass", "rc": 0, "planned": [step],
-                 "passed": [step], "failed_steps": [], "peak_mb": {step: mb}, "peak_source": {step: "rss"}}
+        self.seed_peaks({step: mb})
+
+    def seed_peaks(self, peaks):
+        entry = {"t": 1, "head": "0" * 40, "base": "0" * 40, "level": "changed", "result": "pass", "rc": 0, "planned": list(peaks),
+                 "passed": list(peaks), "failed_steps": [], "peak_mb": peaks, "peak_source": {s: "rss" for s in peaks}}
         (self.git_dir / "keelokit-verify.history").write_text(json.dumps(entry) + "\n")
 
     def unit_calls(self):
@@ -493,6 +496,63 @@ class MemoryAwareVerifyTest(VerifyFixture):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("1.5 GB each ([verify] memory_per_worker_mb)", r.stdout)
         self.assertNotIn("2.3 GB each last time", r.stdout)
+
+
+    # Round 1 (review and breaker findings), reproduced before the fix.
+
+    def test_FLEET_001_S3_a_memory_refusal_is_not_recorded_as_a_red_run(self):
+        """FLEET-001.S3 (R1): like the busy-machine refusal, a memory refusal leaves no history line and blames no step
+        (it was recorded as a red `git` step, and --rerun-failed then said it stopped in a setup step)."""
+        self.commit_change()
+        self.seed_peak()
+        before = (self.git_dir / "keelokit-verify.history").read_text()
+        r = self.verify(**self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual((self.git_dir / "keelokit-verify.history").read_text(), before, "the refusal must not be a run")
+
+    def test_FLEET_001_S3_no_refusal_for_integration_without_an_api(self):
+        """FLEET-001.S3 (R4): integration is only checked when apps/api/package.json exists: with no API it won't run,
+        so its huge peak and low memory refuse nothing, in a full plan or with --steps integration."""
+        self.commit_change()
+        self.seed_peaks({"integration": 99999})
+        mem = self.memory(1536 * 1024)
+        r = self.verify(**mem)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("will not start", r.stderr)
+        r = self.verify("--steps", "integration", **mem)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("will not start", r.stderr)
+
+    def test_FLEET_001_S2_e2e_peaks_plan_no_workers_and_refuse_nothing(self):
+        """FLEET-001.S2 (R6): e2e and e2e-stack scripts build in the same command, so their peak is not a Playwright
+        worker's: it is recorded but plans no --workers and refuses nothing, measured or overridden."""
+        self.commit_change()
+        self.seed_peaks({"e2e": 99999, "e2e-stack": 99999})
+        r = self.verify(**self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("will not start", r.stderr)
+        self.assertTrue(any("run e2e" in c for c in self.called()), self.called())
+        self.assertFalse(any("--workers" in c for c in self.called()), self.called())
+        (self.repo / ".keelokit/state.toml").write_text("[verify]\nmemory_per_worker_mb = 1500\n")
+        self.calls.write_text("")
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(any("--workers" in c for c in self.called() if "run e2e" in c), self.called())
+
+    def test_FLEET_001_S1_a_preflight_during_a_verify_never_mixes_their_peaks(self):
+        """FLEET-001.S1 (R3): a preflight started while a verify runs (here from inside the verify's unit step, so no
+        timing is involved) must not empty the verify's peaks nor add its own to them: per-run files."""
+        (self.shims / "pnpm").write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "pnpm $*" >> "$CALLS"\n'
+            'case "$*" in *"run test"*) [ -n "${INNER:-}" ] || INNER=1 bash scripts/verify.sh --preflight >/dev/null 2>&1 ;; esac\n'
+            "exit 0\n")
+        self.commit_change()
+        r = self.verify("--steps", "doctor,unit", **self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any("lint" in c for c in self.called()), "the inner preflight ran: " + repr(self.called()))
+        peaks = self.history()[-1]["peak_mb"]
+        self.assertEqual(set(peaks), {"doctor", "unit"}, "only this run's own steps, none erased, none of the preflight's")
 
 
 if __name__ == "__main__":
