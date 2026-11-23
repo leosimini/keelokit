@@ -1,3 +1,0 @@
-# Stack
-
-Apps: api, web
