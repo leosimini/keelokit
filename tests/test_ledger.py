@@ -4089,6 +4089,67 @@ class LedgerRound1Test(LedgerCase):
         data = ledger_check(self, repo)
         self.assertIn(squash[:7], details(data, "SQUASH_LOST_TRAILERS"))
 
+    def github_merges(self, *messages: str) -> tuple[GitRepo, str, list[str], list[str]]:
+        """A branch with `messages`, the trunk moving on meanwhile, the trunk synced into the branch with a
+        trailerless merge, and the branch merged with GitHub's trailerless "Merge pull request" commit."""
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1", "A-2")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        work = repo.on_branch("a-1", *messages, keep=True)
+        repo.commit("feat: A-2\n\nWhy.\n\nStory: A-2")
+        repo.git("checkout", "-q", "a-1")
+        sync = repo.merge("main", "Merge remote-tracking branch 'origin/main' into a-1")
+        repo.git("checkout", "-q", "main")
+        pr = repo.merge("a-1", "Merge pull request #13 from someone/a-1")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        return repo, since, work, [sync, pr]
+
+    def test_ESC_130_ESC_134_a_trailerless_merge_of_attributed_commits_is_attributed(self):
+        repo, _, _, (sync, pr) = self.github_merges("wip\n\nPart-of: A-1", "feat: A-1\n\nWhy.\n\nStory: A-1")
+        data = ledger_check(self, repo)
+        self.assertNotIn("UNATTRIBUTED", codes(data), data["diffs"])
+        self.assertEqual(read_json(self, repo)["unattributed"]["commits"], 0, "the facts agree")
+
+    def test_ESC_131_a_merge_that_brings_an_unattributed_commit_still_reports_it(self):
+        repo, _, (good, loose), (sync, pr) = self.github_merges("wip\n\nPart-of: A-1", "chore: loose")
+        data = ledger_check(self, repo)
+        found = details(data, "UNATTRIBUTED")
+        self.assertIn(loose[:7], found)
+        self.assertIn(pr[:7], found, "the merge brings an unattributed commit")
+        self.assertNotIn(good[:7], found)
+        self.assertNotIn(sync[:7], found, "the sync brings only the trunk's attributed commit")
+
+    def test_ESC_132_a_merge_bringing_nothing_new_is_attributed(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        repo.git("checkout", "-q", "-b", "a-1")
+        repo.commit("wip\n\nPart-of: A-1")
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-s", "ours", "-m", "Merge branch 'a-1'", "a-1",
+                 when=repo.next_date())
+        repo.git("checkout", "-q", "a-1")
+        sync = repo.merge("main", "Merge branch 'main' into a-1")
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--ff-only", "a-1")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        data = ledger_check(self, repo)
+        self.assertNotIn(sync[:7], details(data, "UNATTRIBUTED"), data["diffs"])
+
+    def test_ESC_133_a_trailer_outside_the_last_paragraph_says_where_it_must_go(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("A-1")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        apart = repo.commit("fix: x\n\nWhy.\n\nPart-of: A-1\n\nCo-Authored-By: C <c@example.com>")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        found = details(ledger_check(self, repo), "SQUASH_LOST_TRAILERS")
+        self.assertIn(apart[:7], found)
+        self.assertIn("last paragraph", found)
+        self.assertIn("same final paragraph", found)
+
     def test_LEDGER_005_S1_ESC_127_show_prints_no_terminal_control_characters(self):
         repo = GitRepo(self.tmp)
         repo.plan("A-1")

@@ -86,6 +86,13 @@ In the last paragraph of the message, as `git interpret-trailers` reads them.
 - A `Story:` commit has a body: at least one line outside the subject and the trailers.
 - A merge commit's trailers cover the commits it brings in: those reachable from its second parent and not
   from its first.
+- A merge commit with no trailer of its own (GitHub's "Merge pull request #N from …", a sync of the trunk into a
+  branch) is attributed when every non-merge commit it brings in — reachable from its non-first parents and not
+  from its first — is attributed. A merge that brings nothing new is attributed. A merge that brings an
+  unattributed commit is `UNATTRIBUTED`, and so is that commit.
+- Git reads trailers only in the message's last paragraph: a `Story:`/`Part-of:` line in a paragraph of its own
+  before `Co-Authored-By:` or `Claude-Session:` is not a trailer (`SQUASH_LOST_TRAILERS`). Put every trailer in
+  the same final paragraph, with no blank line between them.
 - `Claude-Session:`, which cloud sessions already add, links a commit to the session that made it.
 
 ### States
