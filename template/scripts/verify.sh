@@ -34,7 +34,7 @@
 # What it leaves in the git directory (docs/verify.md): keelokit-verify.state (running / pass / fail,
 # the step and the pid, so a run that was cut is noticed), .log (the whole output), .seal (the commit
 # that passed), .history (one JSON line per run, with the peak memory of each step and the workers the
-# memory plan chose), .peaks (what the steps' commands used, this run). Exit codes decide, never log text:
+# memory plan chose), .peaks.<pid> (what the steps' commands used, while a run lasts). Exit codes decide, never log text:
 # a verify killed by a signal exits non-zero and says so.
 #
 # Tools the CI uses must exist here too: a missing gitleaks or semgrep fails the run, because a
@@ -89,8 +89,8 @@ log="$common/keelokit-verify.log"
 state="$common/keelokit-verify.state"
 seal="$common/keelokit-verify.seal"
 history="$common/keelokit-verify.history"
-peaks="$common/keelokit-verify.peaks"
-mem_pairs='' mem_why='' w_unit='' w_integration='' w_e2e='' w_stack=''
+peaks="$common/keelokit-verify.peaks.$$" # per run: a preflight beside a verify must not share it
+mem_pairs='' mem_why='' w_unit='' w_integration=''
 tools=.keelokit/bin/verify_tools.py
 
 # Unknown names are an error, never ignored: a typo would verify less than asked and say nothing.
@@ -263,6 +263,7 @@ finish() {
       VERIFY_PARTIAL=$partial VERIFY_CLEAN=$clean_at_start VERIFY_SINCE=$since python3 "$tools" record "$history" "$([ "$rc" -eq 0 ] && echo pass || echo fail)" "$rc" "$head_sha" \
       "$($requested_all && echo all || echo changed)" "$steps_log" "$failed" "$log" 2>/dev/null || true
   fi
+  rm -f "$peaks" "$peaks.started"
   rm -rf "$lock"
   exit "$rc"
 }
@@ -385,14 +386,20 @@ done
 # recorded, or [verify] memory_per_worker_mb. Before the first tool runs: a step whose one worker can't fit
 # stops the run in seconds (exit 3, like a busy machine) instead of an hour-long run ending in a kill.
 mem_steps=
-for s in unit integration e2e e2e-stack; do want "$s" && mem_steps="$mem_steps$s "; done
+has_api=false
+[ -f apps/api/package.json ] && has_api=true
+want unit && mem_steps="unit "
+{ ! $has_api || ! want integration; } || mem_steps="${mem_steps}integration " # no API, no integration run to plan or refuse
 if [ -z "$mem_steps" ] && $requested_all && ! $since && want clock; then mem_steps="unit "; fi # clock reruns the unit tests
 mem_force=
 [ "${VERIFY_FORCE:-}" != 1 ] || mem_force=--force
 if [ -n "$mem_steps" ] && [ -f "$tools" ]; then
   mem_rc=0
   mem_out=$(python3 "$tools" workers "$history" --steps "$mem_steps" ${mem_force:+"$mem_force"}) || mem_rc=$?
-  [ "$mem_rc" -ne 3 ] || exit 3
+  if [ "$mem_rc" -eq 3 ]; then # a refusal is not a run (like the busy machine): no history, no step to blame
+    current_step=starting current_id=starting steps_log=
+    exit 3
+  fi
   if [ "$mem_rc" -eq 0 ] && [ -n "$mem_out" ]; then
     mem_pairs=$(printf '%s\n' "$mem_out" | sed -n 1p)
     mem_why=$(printf '%s\n' "$mem_out" | sed 1d | awk '{ printf "%s%s", (n++ ? "; " : ""), $0 }')
@@ -400,8 +407,6 @@ if [ -n "$mem_steps" ] && [ -f "$tools" ]; then
       case ${pair%%=*} in
         unit) w_unit=${pair#*=} ;;
         integration) w_integration=${pair#*=} ;;
-        e2e) w_e2e=${pair#*=} ;;
-        e2e-stack) w_stack=${pair#*=} ;;
       esac
     done
     [ -z "$mem_why" ] || say "Workers for this machine's memory: $mem_why"
@@ -468,8 +473,6 @@ pkg_list=$(pnpm "${scope[@]}" ls --depth -1 --parseable 2>/dev/null || true)
 affected() { $all || printf '%s\n' "$pkg_list" | grep -q "/$1\$"; }
 step_packages=
 
-has_api=false
-[ -f apps/api/package.json ] && has_api=true
 
 needs_client=false # the Prisma client: only for steps that compile or run the API's code
 for s in typecheck unit integration build e2e e2e-stack mutation; do want "$s" && needs_client=true; done
@@ -617,13 +620,13 @@ if want build; then
 else skip 'Build'; fi
 if want e2e; then
   step e2e 'End-to-end journeys'
-  run pnpm "${scope[@]}" --if-present run e2e ${w_e2e:+"--workers=$w_e2e"}
+  run pnpm "${scope[@]}" --if-present run e2e
 else skip 'End-to-end journeys'; fi
 if $db; then
   for app in $stack_apps; do
     step e2e-stack "End-to-end on the real stack ($app)"
     step_packages="${step_packages}e2e-stack=${app#./} "
-    run pnpm --filter "$app" run e2e:stack ${w_stack:+"--workers=$w_stack"}
+    run pnpm --filter "$app" run e2e:stack
   done
 fi
 

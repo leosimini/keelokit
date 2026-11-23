@@ -313,7 +313,9 @@ def in_a_package(path: str) -> bool:
 
 
 # FLEET-001: workers that fit the machine's memory, and the peak each step used.
-WORKER_STEPS = ["unit", "integration", "e2e", "e2e-stack"]  # the steps whose test runners take a number of workers
+WORKER_STEPS = ["unit", "integration"]  # the steps planned: e2e's scripts build in the same command, so their peak is not a worker's
+PEAK_ENTRIES = 10  # the figure is the largest of this many latest runs that measured the step
+MAX_MB = 1_048_576  # 1 TB: a figure past any machine is a typo or a corrupt file, not a measure
 MEMORY_SHARE = 0.8  # of what is available: the rest is for the OS, the database and the other tools
 
 
@@ -337,9 +339,26 @@ def read_int(path: Path) -> int | None:
         return None
 
 
+def sane_mb(v) -> bool:
+    """A usable figure: a finite number above 0 and at most MAX_MB (never a bool, NaN, Infinity or a giant int)."""
+    try:
+        return not isinstance(v, bool) and isinstance(v, (int, float)) and 0 < v <= MAX_MB
+    except (OverflowError, ValueError):
+        return False
+
+
+def cgroup_cache_bytes(cgroup_dir: Path) -> int:
+    """Reclaimable page cache (inactive_file of memory.stat): memory.current counts it, but the kernel gives it back."""
+    try:
+        m = re.search(r"^inactive_file\s+(\d+)", (cgroup_dir / "memory.stat").read_text(), re.M)
+        return int(m.group(1)) if m else 0
+    except OSError:
+        return 0
+
+
 def memory_available_mb(meminfo: Path, cgroup_dir: Path | None) -> tuple[int, str] | None:
     """(MB available, where the figure comes from): MemAvailable, or what is left under the cgroup's
-    memory.max, whichever is lower. None when neither can be read (macOS: nothing is planned)."""
+    memory.max (plus its reclaimable cache), whichever is lower. None when neither can be read (macOS: nothing is planned)."""
     found: list[tuple[int, str]] = []
     try:
         m = re.search(r"^MemAvailable:\s+(\d+)\s*kB", meminfo.read_text(), re.M)
@@ -350,7 +369,7 @@ def memory_available_mb(meminfo: Path, cgroup_dir: Path | None) -> tuple[int, st
     if cgroup_dir is not None:
         limit, used = read_int(cgroup_dir / "memory.max"), read_int(cgroup_dir / "memory.current")
         if limit is not None and used is not None:  # "max" (no limit) does not parse: not a figure
-            found.append((max(0, (limit - used) // 2**20), "cgroup memory.max"))
+            found.append(((max(0, limit - used) + cgroup_cache_bytes(cgroup_dir)) // 2**20, "cgroup memory.max"))
     return min(found, key=lambda f: f[0]) if found else None
 
 
@@ -360,9 +379,10 @@ def workers_for(available_mb: int, per_worker_mb: float, cores: int) -> int:
 
 
 def per_worker_peaks(history_lines: list[str], cores: int) -> dict[str, float]:
-    """MB one worker used, per step, from the last history line that measured the step (red or green).
+    """MB one worker used, per step: the largest figure among the last PEAK_ENTRIES history lines that measured the
+    step (red or green), so a small run (a narrowed rerun, an early red) does not erase the real peak.
     A resident size ("rss") is already one worker's; a cgroup's is the whole step's, shared by its workers."""
-    peaks: dict[str, float] = {}
+    seen: dict[str, list[float]] = {}
     for line in history_lines:
         try:
             entry = json.loads(line)
@@ -373,15 +393,19 @@ def per_worker_peaks(history_lines: list[str], cores: int) -> dict[str, float]:
             continue
         workers = entry.get("workers") if isinstance(entry.get("workers"), dict) else {}
         for step, mb in peak_mb.items():
-            if isinstance(mb, bool) or not isinstance(mb, (int, float)) or mb <= 0:
+            if not sane_mb(mb):
                 continue
             if source.get(step) == "rss":
-                peaks[step] = float(mb)
+                figure = float(mb)
             elif source.get(step) == "cgroup":
                 n = workers.get(step)
                 n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else max(1, cores - 1)
-                peaks[step] = mb / n
-    return peaks
+                figure = mb / n
+            else:
+                continue
+            if sane_mb(figure):
+                seen.setdefault(step, []).append(figure)
+    return {step: max(figures[-PEAK_ENTRIES:]) for step, figures in seen.items()}
 
 
 def memory_override(state_toml: Path) -> int | dict[str, int] | None:
@@ -392,7 +416,7 @@ def memory_override(state_toml: Path) -> int | dict[str, int] | None:
         return None
 
     def good(v) -> bool:
-        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+        return isinstance(v, int) and sane_mb(v)
 
     if good(value):
         return value
@@ -409,7 +433,7 @@ def gb(mb: float) -> str:
 def memory_plan(steps: list[str], available: tuple[int, str] | None, peaks: dict[str, float], override, cores: int,
                 force: bool = False) -> tuple[dict[str, int], list[str], str | None]:
     """(workers per step, one sentence per step, why the run must not start or None). Only the test steps in
-    `steps` count, and only those with a figure (the override, else the last measure) that memory limits, that is,
+    `steps` count, and only those with a figure (the override, else the measured peak) that memory limits, that is,
     fewer workers fit than there are cores: the rest keep today's workers. A step whose one worker needs more than is available is refused, unless `force` (then 1 worker)."""
     workers: dict[str, int] = {}
     lines: list[str] = []
@@ -445,7 +469,7 @@ def usable_cores() -> int:
 def cmd_workers(args: list[str]) -> int:
     history = args[0] if args else ""
     try:
-        lines = Path(history).read_text().splitlines()
+        lines = Path(history).read_text(errors="replace").splitlines()
     except OSError:
         lines = []
     cores = int(option(args, "--cores", "0") or 0) or usable_cores()
@@ -472,7 +496,9 @@ def peak_from_rusage(maxrss: int, platform: str) -> int:
 
 
 def child_cgroup(name: str) -> Path | None:
-    """A fresh cgroup under this process's own, when the kernel lets us (it has memory.peak); else None."""
+    """A fresh cgroup under this process's own, when the kernel lets us (it has memory.peak); else None.
+    Rare: cgroup v2 allows a child only where the own cgroup has no process-less rule against it and memory
+    accounting is on for it; the resident size is the usual source."""
     own = own_cgroup_dir(Path("/proc/self/cgroup"), Path("/sys/fs/cgroup"))
     if own is None:
         return None
@@ -514,21 +540,34 @@ def cmd_measure(args: list[str]) -> int:
         try:
             Path(started).touch()
         except OSError:
-            pass
+            if cgroup is not None:
+                try:
+                    cgroup.rmdir()
+                except OSError:
+                    pass
+            return 125  # not started: without the marker verify.sh runs the command itself, once
+
+    def into_cgroup():  # runs in the child before exec: its whole life is counted, forks included
+        fd = os.open(str(cgroup / "cgroup.procs"), os.O_WRONLY)
+        os.write(fd, b"0")
+        os.close(fd)
+
+    child = None
     try:
-        child = subprocess.Popen(cmd)
+        if cgroup is not None:
+            try:
+                child = subprocess.Popen(cmd, preexec_fn=into_cgroup)
+            except (OSError, subprocess.SubprocessError):  # the kernel said no: measure the resident size instead
+                try:
+                    cgroup.rmdir()
+                except OSError:
+                    pass
+                cgroup = None
+        if child is None:
+            child = subprocess.Popen(cmd)
     except OSError as e:
         print(f"{cmd[0]}: {e.strerror}", file=sys.stderr)
         return 127 if isinstance(e, FileNotFoundError) else 126
-    if cgroup is not None:
-        try:
-            (cgroup / "cgroup.procs").write_text(str(child.pid))
-        except OSError:
-            try:
-                cgroup.rmdir()
-            except OSError:
-                pass
-            cgroup = None
     _, status, usage = os.wait4(child.pid, 0)
     child.returncode = 0  # reaped here, not by Popen
     peak, source = None, ""
