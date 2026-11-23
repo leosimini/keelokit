@@ -1,8 +1,9 @@
 # The ledger — design and plan (being built)
 
 This is the design of the ledger and the plan to build it. Built so far: completing the trunk's history
-(LEDGER-001, LEDGER-002) and `ledger.py`'s states from git, its summary and `--json` (LEDGER-003; the
-decisions it took are in that story's addendum). The rest does not exist yet: [design.md](design.md)
+(LEDGER-001, LEDGER-002), `ledger.py`'s states from git, its summary and `--json` (LEDGER-003), and the
+corrections file with `backfill`, `correct`, a first `check` and the doctor's report of it (LEDGER-004); the
+decisions each took are in its story's addendum. The rest does not exist yet: [design.md](design.md)
 describes Keelokit as it is. Each story in
 `backlog/stories/LEDGER-*.md` cites the section of this file it implements; a story that needs
 something this file does not say adds it here first.
@@ -149,6 +150,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 |---|---|---|
 | `UNKNOWN_STORY`, `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS` | error | `hook msg`, `prepush`, `check` |
 | `CORRECTION_INVALID`, `CORRECTION_EDITED` | error | `check`, the doctor |
+| `CORRECTION_UNCHECKED` (a partial clone lacks earlier versions of the corrections file, so append-only is checked in CI only) | warning | `check`, the doctor |
 | `HISTORY_INCOMPLETE` | error in CI, warning in a session | every reader |
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The ledger reconstructs the history that has no trailers, with evidence a person approves.**
+  `ledger.py backfill --propose [--from FILE…]` writes candidate rows, each with a confidence and its evidence
+  (commits and merged branches that name the story, train sheets, a `BOARD.md`, Harbor's imported board), to
+  `.keelokit/ledger-corrections.proposed.toml`; `ledger.py correct <commit> --story <ID> --evidence "…"` proposes
+  one late attribution. A person reviews them and runs `ledger.py backfill --accept` in their terminal, which
+  appends them to `backlog/ledger-corrections.toml` with their name and the date; an accepted row makes its story
+  `on-trunk`, marked reconstructed, and a `retract` row cancels one. The file is the person's: the guard blocks
+  agents from writing it or accepting, a commit that changes it needs `keelokit.allowTamper`, and it is
+  append-only. `ledger.py check` and the doctor report an invalid row (`CORRECTION_INVALID`) and a changed or
+  removed one (`CORRECTION_EDITED`). New projects get the file with its format in comments; `harness-upgrade`
+  adds it to existing ones.
 - **`ledger.py` says where every story stands, from git alone.** `python3 .keelokit/bin/ledger.py` prints a
   summary of at most ten lines and `ledger.py --json` the whole ledger (schema 1): each story `defined`, `ready`,
   `in-progress` (with its branch, and `stale` after `[ledger] stale_days`), `on-trunk` (with the commit and an
