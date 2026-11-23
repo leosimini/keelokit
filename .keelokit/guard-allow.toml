@@ -1,1 +1,5 @@
-# nothing
+[[allow]]
+rule = "SEC-2"
+path = "infra/prod.env"
+reason = "Firebase key, public by design"
+approver = "Leo"
