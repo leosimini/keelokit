@@ -38,6 +38,12 @@ dimensions = ["api"]
 """
 
 
+def with_ledger(root: Path) -> None:
+    """LEDGER-006: the dashboard reads story states from the project's ledger.py, as every project has it."""
+    (root / ".keelokit/bin").mkdir(parents=True, exist_ok=True)
+    shutil.copy(LEDGER, root / ".keelokit/bin/ledger.py")
+
+
 def esc(text: str) -> str:
     return html_lib.escape(text, quote=False)
 
@@ -85,6 +91,7 @@ class DashboardTest(unittest.TestCase):
         sh(self.root, "git", "init", "-q", "-b", "main")
         sh(self.root, "git", "config", "user.email", "t@example.com")
         sh(self.root, "git", "config", "user.name", "T")
+        with_ledger(self.root)
 
     def tearDown(self):
         shutil.rmtree(self.root)
@@ -845,9 +852,10 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(status, {"AUTH-001": "done", "AUTH-002": "progress", "AUTH-003": "blocked", "AUTH-004": "ready"})
         two = next(x for x in s["stories"] if x["id"] == "AUTH-002")
         self.assertEqual(two["branches"], ["auth-002"])
-        self.assertEqual(s["next"]["command"], "/keelokit:build-story AUTH-004", "work under way elsewhere is not offered")
         for page in (self.ops("--lang", "en"), self.page("--lang", "en")):
             self.assertIn("In progress", visible_text(page))
+            self.assertIn("/keelokit:build-story AUTH-004", page)
+            self.assertNotIn("/keelokit:build-story AUTH-002", page, "work under way elsewhere is not offered")
         self.assertIn("En curso", visible_text(self.ops("--lang", "es")))
 
     def test_LEDGER_006_S3_status_py_adds_work_in_progress_on_other_machines(self):
@@ -923,12 +931,13 @@ class DashboardTest(unittest.TestCase):
                           "AUTH-005": "ready", "AUTH-006": "ready"})
         s = state(shallow)
         status = {x["id"]: x["status"] for x in s["stories"]}
-        self.assertEqual(status["AUTH-004"], "done", "a trailer in the clone still proves done")
-        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+        # LEDGER-006: the ledger reads every state of a cut history as unknown, AUTH-004's too (its
+        # trailer is in the clone), and the dashboard says what the ledger says.
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"):
             self.assertEqual(status[sid], "unknown", f"{sid} is done on the full history: {status}")
         self.assertFalse([sid for sid, st in status.items() if st in ("ready", "blocked")],
                          f"nothing reads as pending for lack of history: {status}")
-        self.assertIn("AUTH-004", s["done"])
+        self.assertEqual(s["done"], [])
         # The progress figures read unknown, with the reason, on both pages.
         for page in (self.ops_at(shallow), self.page_at(shallow)):
             text = visible_text(page)
@@ -974,8 +983,7 @@ class DashboardTest(unittest.TestCase):
         where = self.ledger_backlog("es")
         shallow = self.ledger_clone_at(where, "shallow", "--depth=3")
         status = {x["id"]: x["status"] for x in self.ledger_state(shallow)["stories"]}
-        self.assertEqual(status["AUTH-004"], "done")
-        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"):  # LEDGER-006: AUTH-004 too
             self.assertEqual(status[sid], "unknown", status)
         for args in ([], ["--report"]):
             out = sh(shallow, "python3", str(DASHBOARD), "--root", str(shallow), "--lang", "es", *args).strip()
@@ -1105,6 +1113,7 @@ class DashboardAnchorsLandTest(unittest.TestCase):
         root = self.tmp / f"{layout}-{stories}-{int(reports)}"
         files = {
             ".keelokit/answers.yml": f"_commit: v0.7.1\nmode: {layout}\nproject_name: Shop\n",
+            ".keelokit/bin/ledger.py": LEDGER.read_text(),
             "docs/context/product.md": "# product\n", "docs/context/constraints.md": "# constraints\n",
             "docs/context/domain.md": "# domain\n\n- **INV-001** [MUST] A booking is paid once.\n",
             "docs/context/environments.md": "| Environment | Purpose | URL |\n|---|---|---|\n| staging | main | staging.shop.app |\n",
@@ -1534,6 +1543,7 @@ class DashboardLayoutTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
+        with_ledger(self.root)
 
     def project(self) -> None:
         a, b, c = f"{LONG}-001", f"{LONG}-002", f"{LONG}-003"
@@ -1618,6 +1628,7 @@ class DashboardStoryLinkTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
+        with_ledger(self.root)
         files = {".keelokit/state.toml": "[gates]\n" + "".join(
             f'{g} = "2026-09-20"\n' for g in ("intake", "product", "stack", "skeleton", "backlog"))}
         for n in range(1, 13):
@@ -1673,6 +1684,7 @@ class DashboardIOContractTest(unittest.TestCase):
         self.project = self.tmp / "shop"
         (self.project / ".keelokit").mkdir(parents=True)
         (self.project / ".keelokit/state.toml").write_text('[dashboard]\nlang = "en"\n')
+        with_ledger(self.project)
 
     def run_cli(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(["python3", str(DASHBOARD), *args], cwd=cwd or self.tmp,
@@ -2048,6 +2060,7 @@ class DashboardRenderedContrastTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)
+        with_ledger(self.root)
 
     def test_A11Y_2_every_text_the_browser_draws_reaches_AA_on_what_it_sits_on(self):
         DashboardLayoutTest.project(self)  # every slot filled, a backlog, reports, a pending decision
