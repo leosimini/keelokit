@@ -1,0 +1,9 @@
+mutation_break = 70
+[[area]]
+name = "money"
+why = "charges and refunds"
+paths = ["apps/api/src/pay/", "packages/shared/src/allocate.ts"]
+[[area]]
+name = "ghost"
+why = "gone"
+paths = ["apps/api/src/nope/"]

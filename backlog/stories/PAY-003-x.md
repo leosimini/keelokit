@@ -1,11 +1,11 @@
 +++
-id = "AUTH-001"
+id = "PAY-003"
 epic = "AUTH"
 title = "t"
 wave = 1
 depends_on = []
-touches = ["apps/api/"]
-dimensions = ["api"]
+touches = ["apps/web/"]
+dimensions = ["ux"]
 +++
 ```gherkin
 Scenario: [S1] works

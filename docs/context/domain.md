@@ -1,1 +1,1 @@
-# domain
+- [INV-001] [MUST] Conserved — class: conservation (S1)
