@@ -536,7 +536,7 @@ fi
 
 if want unit; then
   step unit 'Unit tests'
-  run pnpm "${scope[@]}" --if-present run test ${w_unit:+"--maxWorkers=$w_unit"}
+  run pnpm ${w_unit:+"--workspace-concurrency=1"} "${scope[@]}" --if-present run test ${w_unit:+"--maxWorkers=$w_unit"}
 else skip 'Unit tests'; fi
 
 # The unit tests this change adds or edits, again at the clocks where date code breaks: month and year
@@ -660,7 +660,7 @@ fi
 if $requested_all && ! $since && want clock; then
   if command -v faketime >/dev/null; then
     step clock 'Clock a year ahead (date bombs)'
-    FAKETIME_DONT_FAKE_MONOTONIC=1 run faketime -f '+365d' pnpm "${scope[@]}" --if-present run test ${w_unit:+"--maxWorkers=$w_unit"}
+    FAKETIME_DONT_FAKE_MONOTONIC=1 run faketime -f '+365d' pnpm ${w_unit:+"--workspace-concurrency=1"} "${scope[@]}" --if-present run test ${w_unit:+"--maxWorkers=$w_unit"}
   else
     echo '(faketime not installed — the date-bomb rerun is skipped here; the nightly CI runs it.)'
   fi

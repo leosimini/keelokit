@@ -448,7 +448,7 @@ def memory_plan(steps: list[str], available: tuple[int, str] | None, peaks: dict
         basis_text = f"{gb(per_worker)} each" + (f" ({basis})" if mine else f" {basis}")
         if per_worker > free:
             if not force:
-                return {}, [], (f"verify will not start: {step} needs {gb(per_worker)} for one worker ({'last run' if not mine else basis}) "
+                return {}, [], (f"verify will not start: {step} needs {gb(per_worker)} for one worker ({'the most seen in the last 10 runs' if not mine else basis}) "
                                 f"and {gb(free)} is available ({source}); it would be killed for memory halfway. "
                                 "Free memory, or VERIFY_FORCE=1 runs it with 1 worker.")
             workers[step] = 1

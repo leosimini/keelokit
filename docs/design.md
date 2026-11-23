@@ -47,7 +47,9 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   worker's and nothing is planned or refused for them). The per-worker figure is the largest of the last 10 history
   entries that measured the step, so a small run never erases the real peak; `[verify] memory_per_worker_mb`
   overrides it. Workers are `min(cores, available × 0.8 / peak)`, at least 1, passed through the runner's own flag
-  (`--maxWorkers`) only when memory is what limits them. A step whose one worker needs more than is available stops
+  (`--maxWorkers`) only when memory is what limits them; a planned unit step (and the clock rerun) also runs with
+  `--workspace-concurrency=1`, so packages go one after another and the workers are the machine's, not each package's.
+  The cgroup limits read are cgroup v2 only. A step whose one worker needs more than is available stops
   the run in seconds with exit 3 and no history line, like a busy machine (`VERIFY_FORCE=1` runs it with 1 worker);
   with no measure and no override, or no `/proc` (macOS), nothing changes.
 - `harness/agent-brief.md` — the one page every parallel session is told to read.
