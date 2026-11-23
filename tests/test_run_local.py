@@ -70,6 +70,24 @@ def no_expo(d: Path) -> None:
     write(d, "src/index.ts", "// no app here")
 
 
+def real_tool(name: str) -> str | None:
+    """The program a closed-world PATH should link to for `name`: the first one on PATH that is not a
+    script, else what `which` finds. A wrapper script that hands over to "the next `name` on PATH"
+    (the rm guard hosted Claude sessions put first on PATH, a version manager's shim) finds no next
+    one in a PATH that holds only this test's bin, so it fails or calls itself; the program it would
+    end up running is the one to link."""
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = os.path.join(d or ".", name)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            try:
+                with open(cand, "rb") as f:
+                    if f.read(2) != b"#!":
+                        return cand
+            except OSError:
+                continue
+    return shutil.which(name)
+
+
 class Project:
     """A throwaway git repo with the script installed where an adopted or generated project has it."""
 
@@ -89,7 +107,7 @@ class Project:
         self.calls = Path(tmp.name) / "calls.log"
         self.calls.touch()
         for name in CORE:
-            real = sys.executable if name == "python3" else shutil.which(name)
+            real = sys.executable if name == "python3" else real_tool(name)
             if real:
                 (self.bin / name).symlink_to(real)
         subprocess.run(["git", "init", "-q"], cwd=self.dir, check=True)

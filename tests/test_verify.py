@@ -232,13 +232,28 @@ class VerifyUntrackedCostTest(GitStates, unittest.TestCase):
             "python3": f"#!/bin/sh\nprintf '%s\\n' python3 >> '{execs}'\n",
             "docker": f"#!/bin/sh\nprintf '%s\\n' docker >> '{execs}'\nexit 1\n",
         }
-        for d in os.environ["PATH"].split(os.pathsep):
-            if not os.path.isdir(d):
-                continue
+        dirs = [d for d in os.environ["PATH"].split(os.pathsep) if os.path.isdir(d)]
+
+        def program(path):
+            return os.path.isfile(path) and os.access(path, os.X_OK) and not script(path)
+
+        def script(path):
+            try:
+                with open(path, "rb") as f:
+                    return f.read(2) == b"#!"
+            except OSError:  # executable but unreadable: not a script we can tell apart
+                return False
+
+        for i, d in enumerate(dirs):
             for name in os.listdir(d):
                 real = os.path.join(d, name)
                 if name in own or (shims / name).exists() or not os.access(real, os.X_OK) \
                         or os.path.isdir(real) or "'" in name:
+                    continue
+                # A wrapper script that hands over to "the next `name` on PATH" (the rm guard hosted
+                # Claude sessions put first on PATH) would find this shim as the next one and call
+                # itself forever: shim the program it ends up running instead.
+                if script(real) and any(program(os.path.join(e, name)) for e in dirs[i + 1:]):
                     continue
                 own[name] = f"#!/bin/sh\nprintf '%s\\n' '{name}' >> '{execs}'\nexec '{real}' \"$@\"\n"
                 (shims / name).write_text(own[name])
