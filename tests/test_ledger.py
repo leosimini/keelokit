@@ -1607,5 +1607,133 @@ class LedgerSpanishSummaryTest(LedgerCase):
         self.assertIn("desconocid", r.stdout.lower())
 
 
+# ─────────────── LEDGER-003 round 2: breaker findings (ESC-082..084) ───────────────
+
+
+class LedgerNestedMergeRevertTest(LedgerCase):
+    """ESC-082: reverting a merge reverts every commit reachable from it and not from its first parent,
+    wherever the merge sits (here: off the trunk's first-parent chain)."""
+
+    def test_LEDGER_003_S4_INV_005_reverting_a_merge_off_the_first_parent_chain_reverts_its_story(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.git("checkout", "-q", "-b", "feat")
+        repo.git("checkout", "-q", "-b", "sub")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.git("checkout", "-q", "feat")
+        repo.commit("feat: AUTH-002\n\nWhy.\n\nStory: AUTH-002")
+        inner = repo.merge("sub", "Merge sub into feat\n\nNo-story: release")
+        repo.git("checkout", "-q", "main")
+        repo.commit("chore: trunk moves\n\nNo-story: docs")
+        outer = repo.merge("feat", "Merge feat\n\nNo-story: release")
+        self.assertNotIn(inner, repo.git("rev-list", "--first-parent", "main").split(), "fixture: off the chain")
+        repo.git("revert", "--no-edit", "-m", "1", inner, when=repo.next_date())
+        repo.publish()
+        self.assertTrue(outer)
+        s = self.stories(repo)
+        self.assertEqual(s["AUTH-001"]["state"], "ready")
+        self.assertIs(s["AUTH-001"]["reverted"], True)
+        self.assertEqual(s["AUTH-002"]["state"], "on-trunk", "reachable from the merge's first parent: not reverted")
+        self.assertIs(s["AUTH-002"]["reverted"], False)
+
+
+class LedgerUnreadableIdTest(LedgerCase):
+    """ESC-083: with a story file unreadable, an id it might carry is unknown, not unmet; and a readable
+    file wins the duplicate-id tie over an unreadable one."""
+
+    def test_LEDGER_003_S5_a_dependency_hidden_in_an_unreadable_file_named_with_another_id_is_unknown(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        repo.run(["git", "config", "uploadpack.allowFilter", "true"], repo.bare)
+        dest = self.tmp / "partial"
+        repo.run(["git", "clone", "-q", "--filter=blob:none", f"file://{repo.bare}", str(dest)], self.tmp)
+        clone = GitRepo(self.tmp, existing=dest)
+        repo.commit("docs: more stories\n\nNo-story: docs", {
+            "backlog/stories/A-9-wrongname.md": story_md("E-5"),
+            "backlog/stories/F-6.md": story_md("F-6", depends_on=("E-5",)),
+        })
+        repo.publish()
+        clone.git("fetch", "-q", "origin")
+        clone.git("cat-file", "blob", "refs/remotes/origin/main:backlog/stories/F-6.md")  # only F-6's blob comes
+        clone.git("config", "remote.origin.url", OFFLINE)  # nothing else can come
+        s = self.stories(clone)
+        self.assertEqual(s["AUTH-001"]["state"], "ready")
+        self.assertEqual(s["A-9"]["state"], "unknown", "listed by its file name")
+        self.assertEqual(s["F-6"]["title"], "Title of F-6", "fixture: F-6 is readable")
+        self.assertEqual(s["F-6"]["state"], "unknown", "E-5 may be the unreadable file: unknown, not unmet")
+        self.assertTrue(s["F-6"]["reason"])
+
+    def test_LEDGER_003_S7_a_readable_story_wins_the_duplicate_id_over_an_unreadable_file(self):
+        repo = GitRepo(self.tmp)
+        repo.commit("docs: plan\n\nNo-story: docs", {
+            "backlog/stories/AUTH-001-old.md": story_md("AUTH-001", title="The old one, unreadable"),
+            "backlog/stories/AUTH-001-x.md": story_md("AUTH-001", title="The readable one"),
+        })
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        drop_object(repo, repo.git("rev-parse", "HEAD:backlog/stories/AUTH-001-old.md").strip())
+        s = self.stories(repo)["AUTH-001"]
+        self.assertEqual(s["title"], "The readable one")
+        self.assertEqual(s["path"], "backlog/stories/AUTH-001-x.md")
+        self.assertEqual(s["state"], "on-trunk")
+
+
+class LedgerBranchBudgetTest(LedgerCase):
+    """ESC-084: the branch walk does not grow as branches × off-trunk commits: 2000 origin branches along
+    a 10 000-commit chain off the trunk (refs written by fast-import, only the refs are read). A walk per
+    branch visits ~10 million commits here (about 5 s); one walk over the off-trunk graph stays well under 2 s.
+    (1000 branches on 3000 commits, the breaker's size, ran in 0.6 s on the quadratic walk: too small.)"""
+
+    CHAIN = 10_000
+    BRANCHES = 2000
+
+    @classmethod
+    def setUpClass(cls):
+        repo = cls.repo = GitRepo(cls.class_tmp(), remote=False)
+        out = []
+
+        def data(text: str) -> None:
+            out.append(f"data {len(text.encode())}\n{text}\n")
+
+        def committer(k: int) -> str:
+            return f"committer T <t@example.com> {EPOCH + 60 * k} +0000\n"
+
+        out.append(f"commit refs/heads/main\nmark :1\n{committer(1)}")
+        data("docs: plan\n\nNo-story: docs\n")
+        for i in range(10):
+            out.append(f"M 100644 inline backlog/stories/P-{i}-s.md\n")
+            data(story_md(f"P-{i}"))
+        out.append("reset refs/remotes/origin/main\nfrom :1\n\n")
+        for k in range(2, cls.CHAIN + 2):
+            out.append(f"commit refs/heads/chain\nmark :{k}\n{committer(k)}")
+            data(f"wip {k}\n\nPart-of: P-{k % 10}\n")
+            out.append(f"from :{k - 1}\nM 100644 inline chain.txt\n")
+            data(f"{k}\n")
+        step = cls.CHAIN // cls.BRANCHES
+        for n in range(cls.BRANCHES):
+            out.append(f"reset refs/remotes/origin/wip/{n:04}\nfrom :{2 + step * n + step - 1}\n\n")
+        r = subprocess.run(["git", "fast-import", "--quiet"], cwd=repo.path, env=repo.env, input="".join(out),
+                           capture_output=True, text=True, timeout=300)
+        assert r.returncode == 0, r.stderr
+        repo.git("branch", "-q", "-D", "chain")
+        assert len(repo.git("for-each-ref", "refs/remotes/origin/wip").splitlines()) == cls.BRANCHES
+
+    def test_LEDGER_003_S10_nfr_2000_branches_along_a_10000_commit_chain_take_under_2_seconds(self):
+        best = None
+        for _ in range(2):  # the better of two runs
+            start = time.monotonic()
+            r = self.repo.ledger("--json", timeout=120)
+            took = time.monotonic() - start
+            self.assertIn(r.returncode, (0, 1), r.stderr)
+            best = took if best is None else min(best, took)
+        self.assertLess(best, 2.0, f"ledger.py --json took {best:.2f}s")
+        s = by_id(json.loads(r.stdout))
+        self.assertEqual(s["P-0"]["state"], "in-progress")
+        step = self.CHAIN // self.BRANCHES
+        expected = [f"wip/{n:04}" for n in range(self.BRANCHES) if 2 + step * n + step - 1 >= 10]  # P-0 first at :10
+        self.assertEqual(s["P-0"]["branches"], expected, "every branch holding a Part-of: P-0 commit")
+
+
 if __name__ == "__main__":
     unittest.main()
