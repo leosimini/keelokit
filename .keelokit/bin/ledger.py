@@ -1021,9 +1021,10 @@ def file_versions(trunk_sha: str) -> list[tuple[str, str | None]]:
 
 
 def merge_parent_versions(trunk_sha: str, merges: set[str]) -> list[tuple[str, str]]:
-    """(merge, blob) for the file as each parent of a merge on the trunk's first-parent chain had it, when the
-    merge changed it: a row on the trunk that a merge drops (a "foxtrot" merge, where the old trunk becomes the
-    second parent) is still seen. One log of every commit that touched the file, each merge against each parent."""
+    """(merge, blob) for the file as each parent of a merge reachable from the trunk had it, when the merge changed
+    it: a row on the trunk that a merge drops (a "foxtrot" merge, where the old trunk becomes a second parent, even
+    nested under another merge) is still seen. One log of every commit that touched the file, each merge against
+    each parent."""
     if not merges:
         return []
     out = git_read(["log", "--full-history", "--diff-merges=separate", "--format=%x00%H", "--raw", "--no-abbrev",
@@ -1074,8 +1075,7 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
     Two git calls (three in a partial clone) whatever the number of versions."""
     result = {"active": [], "diffs": [], "unreadable": None}
     versions = file_versions(trunk_sha)
-    chain = first_parent_chain(graph, trunk_sha) if graph else []
-    extra = merge_parent_versions(trunk_sha, {c for c in chain if len(graph.get(c, ())) > 1})
+    extra = merge_parent_versions(trunk_sha, {c for c in reachable if len((graph or {}).get(c, ())) > 1})
     if not versions and not extra:
         return result
     versions = versions or [(trunk_sha, None)]  # never on the first-parent chain: the tip has no file
