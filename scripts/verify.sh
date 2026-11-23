@@ -3,6 +3,11 @@
 # "done". CI runs the same checks (.github/workflows/ci.yml); the template's end-to-end test is
 # slower and stays in CI (scripts/test-template.sh runs it by hand).
 set -euo pipefail
+# A git hook runs this with GIT_DIR (absolute in a linked worktree) and friends exported. Every test that
+# runs git in a throwaway repo would inherit them and act on this repository instead: on 2026-11-23 they
+# committed fixtures to it and pushed them to origin's main (ESC-090). Git finds the repo from the
+# working directory without them.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
 cd "$(git rev-parse --show-toplevel)"
 step() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 
