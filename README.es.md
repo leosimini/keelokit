@@ -80,6 +80,9 @@ completo**: de solo lectura, con cada etapa y sus documentos, lo que encontró c
 revisión de seguridad, las decisiones y el historial, como página para compartir o archivo HTML
 para exportar.
 
+Y cada sesión de Claude arranca sabiendo el estado: el **registro** (`.keelokit/bin/ledger.py`) lee de git
+el estado de cada historia (definida, en curso, en main, en qué versión) y dice por qué quedó así.
+
 Al empezar elegís, una sola vez, cómo trabaja Keelokit: **por etapas** (se detiene para que
 revises cada una) o **automático** (avanza solo y se detiene únicamente donde hace falta una
 persona: preguntas que solo vos podés responder, el PRD, cuentas, producción, dinero, temas
