@@ -1,0 +1,22 @@
+name: CI
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pnpm lint
+  soft:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - run: pnpm test
+  empty:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: 'true'
+  off:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: pnpm test

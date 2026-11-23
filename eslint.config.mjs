@@ -1,0 +1,1 @@
+rules: { 'no-explicit-any': 'error', 'no-console': 'off' }
