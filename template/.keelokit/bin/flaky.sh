@@ -15,12 +15,13 @@
 # class's guard in docs/escapes.md.
 set -uo pipefail
 n=20 stress=0 tzs="" seed=1
+# A decimal number (08 is eight: bash would read it as octal and stop counting), or exit 2.
 number() { case ${2:-} in '' | -* | *[!0-9]*) echo "$1 needs a number" >&2; exit 2 ;; esac; }
 while [ $# -gt 0 ]; do
   case $1 in
-    -n) number -n "${2:-}"; n=$2; shift ;;
-    --stress) number --stress "${2:-}"; stress=$2; shift ;;
-    --seed) number --seed "${2:-}"; seed=$2; shift ;;
+    -n) number -n "${2:-}"; n=$((10#$2)); shift ;;
+    --stress) number --stress "${2:-}"; stress=$((10#$2)); shift ;;
+    --seed) number --seed "${2:-}"; seed=$((10#$2)); shift ;;
     --tz) case ${2:-} in '' | -*) echo '--tz needs a list of time zones' >&2; exit 2 ;; esac; tzs=$2; shift ;;
     --) shift; break ;;
     -h | --help) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -30,6 +31,12 @@ while [ $# -gt 0 ]; do
 done
 [ $# -gt 0 ] || { echo 'give the test command after --' >&2; exit 2; }
 [ "$n" -gt 0 ] || { echo '-n needs a number above 0' >&2; exit 2; }
+# A misspelled zone would run under UTC and pass without testing the edge: refuse it. No glob expansion.
+set -f
+zoneinfo=${TZDIR:-/usr/share/zoneinfo}
+for tz in $tzs; do
+  [ ! -d "$zoneinfo" ] || [ -f "$zoneinfo/$tz" ] || { echo "--tz: unknown time zone: $tz (not in $zoneinfo)" >&2; exit 2; }
+done
 
 # The one-minute load average, or ? where neither Linux nor macOS gives it.
 loadavg() {
