@@ -15,6 +15,9 @@ surfaces = ["mobile", "desktop"]
 themes = ["light", "dark"]
 critique_file = "CRITIQUE.md"
 critique_sections = ["Journey", "Design critique", "Consistency and coherence", "Real device"]
+# The design skills the critique runs: CRITIQUE.md's `## Skills` section has one `### <skill id>`
+# subsection per entry (docs/ux-quality.md §4). `[]` drops the section (say why in a comment here).
+critique_skills = ["design:design-critique", "design:ux-copy", "design:accessibility-review"]
 
 [gate.widths]
 mobile = [360, 390]
