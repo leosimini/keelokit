@@ -1366,5 +1366,246 @@ class LedgerBudgetTest(LedgerCase):
         self.assertEqual(s["PERF-1699"]["branches"], ["wip/4"])
 
 
+# ─────────────── LEDGER-003 round 1: review and breaker findings (ESC-063..065, 080, 081) ───────────────
+
+
+def drop_object(repo: GitRepo, sha: str) -> None:
+    """Make one loose object unreadable: the tree still names it, the object store no longer has it."""
+    path = repo.path / ".git/objects" / sha[:2] / sha[2:]
+    assert path.exists(), f"fixture: {sha} is not a loose object"
+    path.chmod(0o644)
+    path.unlink()
+    assert subprocess.run(["git", "cat-file", "-e", sha], cwd=repo.path, env=repo.env).returncode != 0
+
+
+class LedgerUnreadableStoryTest(LedgerCase):
+    """ESC-063 (review): a story whose file cannot be read is unknown, and so is everything that depends on
+    it, through any chain and whatever the order of the ids; a missing blob is never fetched lazily."""
+
+    def test_LEDGER_003_S5_an_unreadable_dependency_makes_its_dependents_unknown_whatever_the_id_order(self):
+        repo = GitRepo(self.tmp)
+        repo.state('[ledger]\nid_from = "filename"\n')
+
+        def fm(*deps: str) -> str:
+            return "+++\ndepends_on = [" + ", ".join(f'"{d}"' for d in deps) + "]\n+++\n"
+
+        repo.commit("docs: plan\n\nNo-story: docs", {
+            "backlog/stories/AA-2-missing.md": "# The one that will be missing (AA-2)\n",
+            "backlog/stories/AA-1-before.md": fm("AA-2") + "# Sorts before its dependency\n",
+            "backlog/stories/AB-1-after.md": fm("AA-2") + "# Sorts after its dependency\n",
+            "backlog/stories/AA-0-chain.md": fm("AA-1") + "# Depends on a dependent, sorts first\n",
+            "backlog/stories/ZZ-1-chain.md": fm("AB-1") + "# Depends on a dependent, sorts last\n",
+            "backlog/stories/BB-1-free.md": "# Depends on nothing\n",
+        })
+        repo.publish()
+        drop_object(repo, repo.git("rev-parse", "HEAD:backlog/stories/AA-2-missing.md").strip())
+        s = self.stories(repo)
+        self.assertEqual(s["BB-1"]["state"], "ready", "a story that depends on nothing unknown keeps its state")
+        for sid in ("AA-2", "AA-1", "AB-1", "AA-0", "ZZ-1"):
+            self.assertEqual(s[sid]["state"], "unknown", sid)
+            self.assertTrue(isinstance(s[sid]["reason"], str) and s[sid]["reason"].strip(), f"{sid} has a reason")
+
+    def test_LEDGER_003_S7_front_matter_mode_lists_an_unreadable_story_by_its_file_name(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002", "AUTH-003", deps={"AUTH-003": ["AUTH-002"]})
+        repo.publish()
+        drop_object(repo, repo.git("rev-parse", "HEAD:backlog/stories/AUTH-002-s.md").strip())
+        s = self.stories(repo)
+        self.assertEqual(s["AUTH-001"]["state"], "ready")
+        self.assertEqual(s["AUTH-002"]["state"], "unknown", "the id comes from the EPIC-NNN prefix of the name")
+        self.assertTrue(s["AUTH-002"]["reason"])
+        self.assertEqual(s["AUTH-003"]["state"], "unknown", "its dependency is unknown")
+
+    def test_LEDGER_003_S7_front_matter_mode_an_unreadable_file_without_an_id_in_its_name_exits_2(self):
+        repo = GitRepo(self.tmp)
+        repo.commit("docs: plan\n\nNo-story: docs", {"backlog/stories/whatever.md": story_md("AUTH-001")})
+        repo.publish()
+        drop_object(repo, repo.git("rev-parse", "HEAD:backlog/stories/whatever.md").strip())
+        r = repo.ledger("--json")
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("whatever.md", r.stderr, "the line names the file it could not read")
+
+    def test_LEDGER_003_S6_a_blob_none_clone_never_fetches_a_missing_story_lazily(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        repo.run(["git", "config", "uploadpack.allowFilter", "true"], repo.bare)
+        dest = self.tmp / "partial"
+        repo.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{repo.bare}", str(dest)],
+                 self.tmp)
+        clone = GitRepo(self.tmp, existing=dest)
+        log = self.tmp / "upload-pack.log"
+        log.touch()
+        server = self.tmp / "logging-upload-pack"
+        server.write_text(f'#!/bin/sh\necho called >> "{log}"\nexec git-upload-pack "$@"\n')
+        server.chmod(0o755)
+        clone.git("config", "remote.origin.uploadpack", str(server))
+        s = self.stories(clone)
+        self.assertEqual(log.read_text(), "", "ledger.py fetched from origin: a missing blob must not be fetched")
+        self.assertEqual(set(s), {"AUTH-001", "AUTH-002"}, "listed by the EPIC-NNN prefix of their names")
+        for sid in s:
+            self.assertEqual(s[sid]["state"], "unknown", sid)
+            self.assertTrue(s[sid]["reason"])
+
+
+class LedgerMergeRevertTest(LedgerCase):
+    """ESC-064 (breaker): `git revert -m 1` of a merge writes "This reverts commit <sha>, reversing changes
+    made to <sha>." and reverting the merge that brought a Story: commit reverts that story."""
+
+    @classmethod
+    def setUpClass(cls):
+        repo = cls.repo = GitRepo(cls.class_tmp())
+        repo.plan("AUTH-001", "AUTH-002", "AUTH-003")
+        repo.on_branch("feat/one", "feat: AUTH-001 work\n\nNo-story: docs", keep=True)
+        repo.commit("chore: trunk moves\n\nNo-story: docs")
+        merge1 = repo.merge("feat/one", "Merge feat/one\n\nWhy.\n\nStory: AUTH-001")
+        repo.git("revert", "--no-edit", "-m", "1", merge1, when=repo.next_date())
+        cls.revert_msg = repo.git("log", "-1", "--format=%B")
+        repo.on_branch("feat/two", "feat: AUTH-002\n\nWhy.\n\nStory: AUTH-002", keep=True)
+        repo.commit("chore: trunk moves again\n\nNo-story: docs")
+        merge2 = repo.merge("feat/two", "Merge feat/two")
+        repo.git("revert", "--no-edit", "-m", "1", merge2, when=repo.next_date())
+        repo.on_branch("feat/three", "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003", keep=True)
+        repo.commit("chore: trunk moves a third time\n\nNo-story: docs")
+        repo.merge("feat/three", "Merge feat/three")  # not reverted: stays on the trunk
+        repo.publish()
+
+    def test_LEDGER_003_S4_INV_005_reverting_the_story_merge_with_m1_is_a_revert(self):
+        self.assertIn("reversing", self.revert_msg, "fixture: git wrote the -m 1 form")
+        s = by_id(self.shared())["AUTH-001"]
+        self.assertEqual(s["state"], "ready")
+        self.assertIs(s["reverted"], True)
+
+    def test_LEDGER_003_S4_INV_005_reverting_the_arrival_merge_reverts_its_story(self):
+        s = by_id(self.shared())
+        self.assertEqual(s["AUTH-002"]["state"], "ready")
+        self.assertIs(s["AUTH-002"]["reverted"], True)
+        self.assertEqual(s["AUTH-003"]["state"], "on-trunk", "a merge that is not reverted keeps its story")
+        self.assertIs(s["AUTH-003"]["reverted"], False)
+
+
+class LedgerIncompleteHistoryEdgesTest(LedgerCase):
+    """ESC-065: the cut check covers every ref the ledger reads (remote branches too), and a shallow file
+    git cannot read stops the ledger instead of letting it answer from a cut history."""
+
+    def test_LEDGER_003_S6_a_shallow_fetch_of_a_remote_branch_makes_the_history_incomplete(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        clone = repo.clone("full")
+        repo.on_branch("claude/xyz", "wip: AUTH-002 one\n\nPart-of: AUTH-002", "wip: AUTH-002 two\n\nPart-of: AUTH-002")
+        clone.git("fetch", "-q", "--depth", "1", "origin", "claude/xyz")
+        self.assertEqual(clone.git("rev-parse", "--is-shallow-repository").strip(), "true", "fixture: shallow now")
+        self.assertTrue(clone.git("rev-parse", "-q", "--verify", "refs/remotes/origin/claude/xyz").strip())
+        d = read_json(self, clone)
+        self.assertEqual(d["history"], "incomplete", "the first Part-of commit of claude/xyz was cut")
+        for s in d["stories"]:
+            self.assertEqual(s["state"], "unknown", s["id"])
+        self.assertIn("HISTORY_INCOMPLETE", [x.get("code") for x in d["diffs"]])
+
+    def shallow_clone(self) -> GitRepo:
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        for n in range(3):
+            repo.commit(f"chore: {n}\n\nNo-story: docs")
+        repo.publish()
+        return repo.clone("shallow", depth=2)
+
+    def test_LEDGER_003_S6_a_shallow_file_git_cannot_read_exits_2(self):
+        # As root a file cannot be made unreadable by its mode; a shallow file git refuses is the closest case.
+        clone = self.shallow_clone()
+        (clone.path / ".git/shallow").write_bytes(b"\xff\xfe not a sha\n")
+        for args in (["--json"], []):
+            r = clone.ledger(*args)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertEqual(r.returncode, 2, f"{args}: {r.stdout}{r.stderr}")
+            self.assertEqual(r.stdout.strip(), "", f"{args}: no partial answer")
+
+    def test_LEDGER_003_S6_a_shallow_file_replaced_by_a_directory_exits_2(self):
+        # git then says "not shallow" while the history is still cut: never an answer from it.
+        clone = self.shallow_clone()
+        shallow = clone.path / ".git/shallow"
+        shallow.unlink()
+        shallow.mkdir()
+        r = clone.ledger("--json")
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), "")
+
+
+class LedgerRefFactsTest(LedgerCase):
+    """ESC-080 (breaker, review): every ref keeps its facts: a nested annotated tag is peeled to its commit,
+    and a commit on several origin branches is on each of them."""
+
+    def test_LEDGER_003_S2_a_v_tag_on_a_nested_annotated_tag_is_peeled_to_the_commit(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.tag("inner")
+        repo.tag("v1.0.0", "inner")  # an annotated tag of an annotated tag
+        repo.publish()
+        self.assertEqual(repo.git("cat-file", "-t", "v1.0.0^{}").strip(), "commit")
+        self.assertEqual(repo.git("cat-file", "-p", "v1.0.0").splitlines()[1], "type tag", "fixture: nested")
+        s = self.stories(repo)["AUTH-001"]
+        self.assertEqual(s["state"], "in-version")
+        self.assertEqual(s["version"], "v1.0.0")
+
+    def test_LEDGER_003_S3_one_part_of_commit_on_two_origin_branches_lists_both(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        sha = repo.on_branch("claude/b", "wip: AUTH-001\n\nPart-of: AUTH-001")[0]
+        repo.git("push", "-q", "origin", f"{sha}:refs/heads/claude/a")
+        repo.publish()
+        s = self.stories(repo)["AUTH-001"]
+        self.assertEqual(s["state"], "in-progress")
+        self.assertEqual(s["branches"], ["claude/a", "claude/b"])
+
+
+class LedgerSpanishSummaryTest(LedgerCase):
+    """ESC-081 (review): with [dashboard] lang = "es" the state names are Spanish too."""
+
+    ENGLISH = ("defined", "ready", "in-progress", "on-trunk", "in-version", "in-staging", "in-production", "unknown")
+
+    def assert_spanish(self, out: str) -> None:
+        for word in self.ENGLISH:
+            self.assertIsNone(re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", out, re.I),
+                              f"English state name {word!r} in the Spanish summary:\n{out}")
+
+    def test_LEDGER_003_dx_the_spanish_summary_names_the_states_in_spanish(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004", "AUTH-005", "AUTH-006",
+                  deps={"AUTH-005": ["AUTH-006"]})
+        s1 = repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.tag("v1.0.0")
+        repo.commit("feat: AUTH-002\n\nWhy.\n\nStory: AUTH-002")
+        repo.publish()
+        repo.deploy("staging", s1)
+        repo.on_branch("claude/xyz", "wip: AUTH-003\n\nPart-of: AUTH-003")
+        repo.publish()
+        repo.state('[dashboard]\nlang = "es"\n')
+        r = repo.ledger()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spanish(r.stdout)
+        self.assertIn("en curso", r.stdout.lower())
+
+    def test_LEDGER_003_S6_the_spanish_summary_says_desconocido_not_unknown(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        for n in range(3):
+            repo.commit(f"chore: {n}\n\nNo-story: docs")
+        repo.publish()
+        clone = repo.clone("shallow", depth=2)
+        clone.state('[dashboard]\nlang = "es"\n')
+        r = clone.ledger()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assert_spanish(r.stdout)
+        self.assertIn("desconocid", r.stdout.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
