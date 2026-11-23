@@ -115,5 +115,112 @@ class HooksWithoutPython(unittest.TestCase):
                     self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
 
 
+SESSION_LOG = "calls.log"
+STUB = """import sys
+from pathlib import Path
+with open(Path(__file__).resolve().parents[2] / "calls.log", "a") as f:
+    f.write(" ".join([Path(__file__).name, *sys.argv[1:]]) + "\\n")
+"""
+
+
+def session_start():
+    """The SessionStart command hook entries of hooks/hooks.json."""
+    data = json.loads((ROOT / "hooks/hooks.json").read_text())
+    return [h for group in data["hooks"]["SessionStart"] for h in group["hooks"] if h.get("type") == "command"]
+
+
+class SessionStartCompletesHistory(unittest.TestCase):
+    """LEDGER-002.S6: ledger.py history --ensure runs before doctor.py --brief, each guarded."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.proj = Path(self.tmp) / "my project's dir"
+        (self.proj / ".keelokit/bin").mkdir(parents=True)
+        self.path = os.environ["PATH"]
+
+    def stub(self, name, extra=""):
+        (self.proj / ".keelokit/bin" / name).write_text(STUB + extra)
+
+    def calls(self):
+        log = self.proj / SESSION_LOG
+        return log.read_text().splitlines() if log.exists() else []
+
+    def hook(self, path=None, sh="/bin/sh"):
+        hooks = session_start()
+        self.assertEqual(len(hooks), 1, "one SessionStart command runs both, in order")
+        return run([sh, "-c", hooks[0]["command"]], self.proj, path or self.path)
+
+    def test_LEDGER_002_S6_session_start_runs_ledger_history_before_the_doctor(self):
+        self.stub("ledger.py")
+        self.stub("doctor.py")
+        for sh in SHELLS:
+            with self.subTest(shell=sh):
+                (self.proj / SESSION_LOG).unlink(missing_ok=True)
+                r = self.hook(sh=sh)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.calls(), ["ledger.py history --ensure", "doctor.py --brief"])
+
+    def test_LEDGER_002_S6_the_hook_timeout_is_history_seconds_plus_10(self):
+        hooks = session_start()
+        self.assertEqual([h.get("timeout") for h in hooks], [20 + 10],
+                         "[ledger] history_seconds (default and maximum 20) + 10 for the doctor")
+
+    def test_LEDGER_002_S6_without_python3_one_keelokit_line_and_exit_0(self):
+        self.stub("ledger.py")
+        self.stub("doctor.py")
+        nopy = Path(self.tmp) / "empty-bin"
+        nopy.mkdir()
+        for sh in SHELLS:
+            with self.subTest(shell=sh):
+                r = self.hook(str(nopy), sh)
+                lines = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+                self.assertEqual(r.returncode, 0, lines)
+                self.assertEqual(len(lines), 1, lines)
+                self.assertIn("Keelokit", lines[0])
+                self.assertIn("Python 3.11+", lines[0])
+                self.assertEqual(self.calls(), [])
+
+    def test_LEDGER_002_S6_without_ledger_py_the_doctor_still_runs(self):
+        self.stub("doctor.py")
+        r = self.hook()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.calls(), ["doctor.py --brief"])
+        self.assertNotIn("ledger.py", r.stdout + r.stderr, "a missing ledger.py is not an error")
+
+    def test_LEDGER_002_S6_without_doctor_py_the_ledger_still_runs(self):
+        self.stub("ledger.py")
+        r = self.hook()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.calls(), ["ledger.py history --ensure"])
+
+    def test_LEDGER_002_S6_a_failing_ledger_py_does_not_stop_the_doctor(self):
+        for name, extra in (("exit 1", "raise SystemExit(1)\n"), ("crash", "raise RuntimeError('boom')\n")):
+            with self.subTest(ledger=name):
+                (self.proj / SESSION_LOG).unlink(missing_ok=True)
+                self.stub("ledger.py", extra)
+                self.stub("doctor.py")
+                r = self.hook()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.calls(), ["ledger.py history --ensure", "doctor.py --brief"])
+
+    def test_LEDGER_002_S6_ledger_output_reaches_the_session(self):
+        """The ledger's one line is on stdout, before the doctor's summary."""
+        self.stub("ledger.py", "print('Keelokit: history completed (7 commits of main) in 0.4s')\n")
+        self.stub("doctor.py", "print('Keelokit: doctor')\n")
+        r = self.hook()
+        self.assertEqual(r.stdout.splitlines(),
+                         ["Keelokit: history completed (7 commits of main) in 0.4s", "Keelokit: doctor"])
+
+    def test_LEDGER_002_S6_a_project_without_keelokit_bin_is_left_alone(self):
+        other = Path(self.tmp) / "other"
+        other.mkdir()
+        hooks = session_start()
+        for path in (self.path, str(Path(self.tmp))):
+            with self.subTest(path=path):
+                r = run(["/bin/sh", "-c", hooks[0]["command"]], other, path)
+                self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

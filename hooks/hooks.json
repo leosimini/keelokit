@@ -16,7 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"$CLAUDE_PROJECT_DIR/.keelokit/bin/doctor.py\"; [ -f \"$f\" ] || exit 0; command -v python3 >/dev/null || { echo 'Keelokit: python3 not found, so the guard and doctor are off. Install Python 3.11+.'; exit 0; }; python3 \"$f\" --brief; exit 0"
+            "command": "d=\"$CLAUDE_PROJECT_DIR/.keelokit/bin\"; [ -f \"$d/ledger.py\" ] || [ -f \"$d/doctor.py\" ] || exit 0; command -v python3 >/dev/null || { echo 'Keelokit: python3 not found, so the guard and doctor are off. Install Python 3.11+.'; exit 0; }; if [ -f \"$d/ledger.py\" ]; then python3 \"$d/ledger.py\" history --ensure || :; fi; if [ -f \"$d/doctor.py\" ]; then python3 \"$d/doctor.py\" --brief; fi; exit 0",
+            "timeout": 30
           }
         ]
       }
