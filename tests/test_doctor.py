@@ -1147,7 +1147,8 @@ class DoctorTest(unittest.TestCase):
         self.assertRegex(line.lower(), r"unknown", out)
         self.assertRegex(line.lower(), r"shallow", out)
         self.assertRegex(line, r"\b3\b", "the number of main's commits the clone has: " + out)
-        self.assertIn("git fetch --unshallow origin main", line, out)
+        # LEDGER-006: the reason is the ledger's, and so is the fix.
+        self.assertIn("ledger.py history --ensure", line, out)
         self.assertNotRegex(out, r"\b\d+/6\b", "never a count read from a cut history: " + out)
         self.assertNotIn("Next ready stories", out, "any of them may be done")
         self.assertIn("Keelokit:", out, "the rest of --brief is still there")
@@ -1189,8 +1190,9 @@ class DoctorTest(unittest.TestCase):
             self.assertFalse([e for e in errors if sid in e], f"a false error against {sid}, maybe done:\n{out}")
         # The rules that need "not done" still say something: a warning that the done state is unknown.
         self.assertTrue(any(l.strip().startswith("warn") and "AUTH-001" in l and "unknown" in l.lower() for l in lines), out)
-        # A story proven done (its trailer is in the clone) is still checked by TRACE-1.
-        self.assertIn("story AUTH-004 is done but no active test title cites AUTH-004.S10 (TRACE-1)", out)
+        # LEDGER-006: the ledger reads every state of a cut history as unknown, AUTH-004's too (its trailer
+        # is in the clone), so no story counts as done there; the CI's full clone runs TRACE-1.
+        self.assertNotIn("story AUTH-004 is done", out)
 
     def test_LEDGER_001_S2_a_clone_as_deep_as_main_reads_as_a_full_clone(self):
         """Breaker: `--depth N` with N = main's commit count lists the ROOT commit in the shallow file.
@@ -1272,8 +1274,11 @@ class DoctorTest(unittest.TestCase):
         subprocess.run(["git", "fetch", "-q", "--depth=1", "origin", "side:refs/remotes/origin/side"],
                        cwd=full, check=True, capture_output=True)
         self.assertEqual(sh(full, "git", "rev-parse", "--is-shallow-repository").strip(), "true", "fixture")
-        self.assertIn("Context gaps: 0 (0 blocking) · Backlog: 4/6 done",
-                      self.ledger_doctor(full, "--brief").stdout.splitlines())
+        # LEDGER-006: the ledger reads a cut origin branch as an incomplete history too (broader than
+        # needed, never a lower state: LEDGER-003's addendum), and the doctor says what the ledger says.
+        brief = self.ledger_doctor(full, "--brief").stdout
+        self.assertIn("Backlog: unknown, ", brief)
+        self.assertNotRegex(brief, r"\b[0-3]/6 done", brief)
 
 
 
@@ -1468,7 +1473,7 @@ class DoctorReadsTheLedgerTest(LedgerRepo, unittest.TestCase):
         for sid in ("AUTH-003", "AUTH-005"):
             self.assertNotRegex(r.stdout, rf"story {sid} is done but no active test title", r.stdout)
         self.assertRegex(r.stdout, r"(?m)^  Reconstructed \(.*\): AUTH-003, AUTH-005$", r.stdout)
-        self.assertEqual(self.backlog_count(r.stdout)[0], 2, r.stdout)
+        self.assertEqual(self.backlog_count(r.stdout)[0], 3, r.stdout)
         # A story done by its own trailer is still held to TRACE-1.
         self.write("apps/api/a.test.ts", "it('UXC-113.S1 ok', () => {})\nit('UXC-113.S10 ok', () => {})\n")
         self.commit("test: drop AUTH-001's titles\n\nNo-story: docs")
@@ -1755,9 +1760,12 @@ class DoctorInputContractTest(unittest.TestCase):
         # load_profile globs TRAIT_EVIDENCE, a constant; any pattern from a file goes through repo_glob.
         self.assertEqual(globs, {"repo_glob", "load_profile"}, "glob a pattern from a file only through repo_glob")
 
-    def full_fixture(self) -> tuple[Path, dict[str, bool]]:
+    def full_fixture(self, ledger: bool = False) -> tuple[Path, dict[str, bool]]:
         """A healthy project where the doctor reads every kind of file it reads; → file → lenient."""
         root = self.fixture(".keelokit/profile.toml")
+        if ledger:  # LEDGER-006: story states come from ledger.py (only where a test reads the backlog's count:
+            # the contract tests run the doctor thousands of times, and each run would start the ledger too)
+            (root / ".keelokit/bin/ledger.py").write_text(LEDGER.read_text())
         render = lambda rel, top=None, entries=None: self.render(rel, *(HEALTHY[rel] if top is None else (top, entries)))
         rules = {"rule": [{**HEALTHY[".keelokit/harness/rules.toml"][1]["rule"][0],
                            "enforced_by": '["file:src/pay/a.ts#export", "test:apps/a/x.test.ts", "ci:checks", "lint:no-console"]'}]}
@@ -1796,7 +1804,7 @@ class DoctorInputContractTest(unittest.TestCase):
     def test_no_file_saved_in_another_encoding_or_turned_directory_crashes_the_doctor(self):
         """Every file the doctor reads, saved as Latin-1 or replaced by a directory: an ERROR that
         names it (a test file it only scans for titles may hold any bytes), never a traceback."""
-        root, reads = self.full_fixture()
+        root, reads = self.full_fixture(ledger=True)
         code, out = self.run_doctor(root, "--ci")
         self.assertEqual(code, 0, out)
         self.assertIn("Backlog: 1/1 done", out)
@@ -1961,6 +1969,7 @@ class DoctorScaleTest(unittest.TestCase):
             (root / rel).write_text(textwrap.dedent(text))
 
         write(".keelokit/bin/doctor.py", DOCTOR.read_text())
+        write(".keelokit/bin/ledger.py", LEDGER.read_text())
         for f in ("product", "constraints", "environments"):
             write(f"docs/context/{f}.md", f"# {f}\n")
         write("docs/context/domain.md", "- [INV-001] [MUST] Conserved — class: conservation (S1)\n")
