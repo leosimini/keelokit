@@ -56,9 +56,9 @@ new one, and the story's diff.
 ## Failure paths: money stories
 
 Money bugs live where something fails, not on the happy path: they pass tests and reviews and
-show up only when someone asks what happens if a step breaks. For a money story: the `integrity`
-dimension, or a story that moves money in a project with the `payments` trait
-(`.keelokit/profile.toml`), walk every one of these paths (the list and two examples are in
+show up only when someone asks what happens if a step breaks. This section applies to a money
+story: the `integrity` dimension, or a story that moves money in a project with the `payments`
+trait (`.keelokit/profile.toml`). Walk every one of these paths (the list and two examples are in
 `invariants.md`, "the failure paths of a money movement"):
 
 1. an automatic retry still running (the job will try again; does anything else act meanwhile?);

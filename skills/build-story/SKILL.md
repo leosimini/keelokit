@@ -34,10 +34,10 @@ user can force a tier with `--trivial`, `--light` or `--full`; without a flag it
 
 Rules for the choice:
 - **When in doubt, go up one tier.** Missing an escape costs more than a reviewer's tokens.
-- A money story: the `integrity` dimension, or a story that moves money in a project with the
-  `payments` trait, is always **full**: it gets the breaker's failure paths.
-- `integrity`, a critical area, money, reservations, quotas, credits, refunds, notices,
-  permissions or an assistant are always **full** (doctor enforces the declaration).
+- Always **full**: a money story: the `integrity` dimension, or a story that moves money in a
+  project with the `payments` trait (the breaker walks its failure paths); and a critical area,
+  money, reservations, quotas, credits, refunds, notices, permissions or an assistant (doctor
+  enforces the declaration).
 - **Re-evaluate after the builder, escalate only.** If `doctor --scope` fails, or the diff reaches
   `auth`, `data`, a shared contract, a critical area, or a new endpoint or write path the tier
   didn't expect, rerun from the missing steps at the higher tier. Never lower a tier after a
