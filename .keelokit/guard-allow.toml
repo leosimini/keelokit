@@ -1,5 +1,0 @@
-[[allow]]
-rule = "SEC-1"
-reason = "Firebase key, public by design"
-approver = "Leo"
-glob = "apps/mobile/*.[j]son"
