@@ -1,0 +1,6 @@
+[[rule]]
+id = "R-HOOK"
+level = "MUST"
+rule = "r"
+why = "w"
+enforced_by = ['git-hook:pre-commit']
