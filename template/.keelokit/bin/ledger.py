@@ -1744,7 +1744,7 @@ def sample_of(run: str, rows: list[dict], share: float) -> list[dict]:
     ceil(share × n). The same run always gives the same sample."""
     if share <= 0 or not rows:
         return []
-    ranked = sorted(rows, key=lambda r: hashlib.sha256(f"{run}\0{r['story']}\0{r['commit']}".encode()).hexdigest())
+    ranked = sorted(rows, key=lambda r: hashlib.sha256(f"{run}{r['story']}{r['commit']}".encode()).hexdigest())
     return [{"story": r["story"], "commit": r["commit"]} for r in ranked[:math.ceil(share * len(rows))]]
 
 
@@ -1764,7 +1764,8 @@ def cmd_accept_delegated(state: dict, run: str) -> int:
     need_history(ctx)
     approval = ctx["approval"]
     if approval["mode"] not in ("delegated", "mixed"):
-        return refuse("the trunk's .keelokit/state.toml does not delegate approval ([ledger.approval] mode = "
+        return refuse("the project approves by a person (mode human): the trunk's .keelokit/state.toml does not "
+                      "delegate approval ([ledger.approval] mode = "
                       "\"delegated\" or \"mixed\", a person's commit): only a person accepts rows, with "
                       "`ledger.py backfill --accept` in their terminal")
     path = ROOT / REVIEWS / f"{run}.json"
