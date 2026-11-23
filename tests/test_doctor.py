@@ -1316,7 +1316,7 @@ HEALTHY = {
                               "touches": '["apps/a/"]', "dimensions": '["api"]', "invariants": "[]", "origin": '"x"'}, {}),
 }
 # Keys the docs define in these files that the doctor never reads (the dashboard does).
-NOT_READ = {".keelokit/profile.toml": {"detected"}, ".keelokit/state.toml": {"dashboard", "run"}}
+NOT_READ = {".keelokit/profile.toml": {"detected"}, ".keelokit/state.toml": {"dashboard", "ledger", "run"}}
 
 
 def documented_keys(text: str) -> tuple[set[str], dict[str, set[str]]]:
