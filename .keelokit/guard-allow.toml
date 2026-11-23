@@ -1,5 +1,6 @@
 [[allow]]
-rule = "SEC-2"
-path = "infra/prod.env"
+rule = "SEC-1"
+path = "apps/mobile/google-services.json"
 reason = "Firebase key, public by design"
 approver = "Leo"
+expires = "2000-01-01"
