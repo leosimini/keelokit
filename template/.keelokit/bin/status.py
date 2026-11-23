@@ -167,28 +167,37 @@ def verify_line(common: Path) -> str:
     return f"verify: last {st.get('state')} (exit {st.get('rc')}) on {head}, {st.get('level')}"
 
 
+STATES = {"defined", "ready", "in-progress", "delivered", "unknown", "on-trunk", "in-version", "in-staging",
+          "in-production"}  # docs/ledger.md, "States"
+
+
 def elsewhere(local: set[str]) -> str:
     """LEDGER-006: stories in progress on other machines, from `ledger.py --json` (docs/ledger.md: one reader):
     each with its origin branches not checked out in a local worktree (those are listed above). Unknown when
-    the ledger can't answer or reads the history as incomplete: never "none" for lack of history."""
-    head, out = "in progress elsewhere (ledger): ", None
+    the ledger can't answer, answers outside schema 1 or reads the history as incomplete: never "none" for
+    lack of history."""
+    head, why = "in progress elsewhere (ledger): ", ""
     try:
         out = subprocess.run([sys.executable, str(BIN / "ledger.py"), "--json"], cwd=ROOT, capture_output=True,
                              text=True, timeout=120)
+        why = (out.stderr.strip().splitlines() or [""])[-1].removeprefix("Keelokit: ")
         facts = json.loads(out.stdout) if out.returncode in (0, 1) else None
-        stories = [s for s in facts["stories"] if isinstance(s, dict)]
-        history = facts["history"]
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
-        why = (out.stderr.strip().splitlines() or [""])[-1].removeprefix("Keelokit: ") if out else ""
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        facts = None
+    stories = facts.get("stories") if isinstance(facts, dict) else None
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or not isinstance(facts.get("history"), str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and x.get("state") in STATES for x in stories)):
         return head + f"unknown ({why or 'run python3 .keelokit/bin/ledger.py'})"
-    unknown = next((s for s in stories if s.get("state") == "unknown"), None)
-    if history == "incomplete" or unknown:
-        return head + f"unknown ({(unknown or {}).get('reason') or 'history incomplete'})"
+    unknown = next((x for x in stories if x["state"] == "unknown"), None)
+    if facts["history"] == "incomplete" or unknown:
+        reason = (unknown or {}).get("reason")
+        return head + f"unknown ({reason if isinstance(reason, str) and reason else 'history incomplete'})"
     found = []
-    for s in stories:
-        branches = [b for b in s.get("branches") or [] if isinstance(b, str) and b not in local]
-        if s.get("state") == "in-progress" and branches:
-            found.append(f"{s.get('id')} ({', '.join(branches)})")
+    for x in stories:
+        branches = x.get("branches") if isinstance(x.get("branches"), list) else []
+        branches = [b for b in branches if isinstance(b, str) and b not in local]
+        if x["state"] in ("in-progress", "delivered") and branches:
+            found.append(f"{x['id']} ({', '.join(branches)})")
     return head + (", ".join(found) if found else "none")
 
 
@@ -241,6 +250,9 @@ def main() -> int:
 
     brief = subprocess.run([sys.executable, str(BIN / "doctor.py"), "--brief"], cwd=ROOT, capture_output=True, text=True)
     lines += [l for l in brief.stdout.strip().splitlines()[:3]]
+    # Ten lines at most, and the doctor's backlog line among them: the per-worktree lines give way first.
+    while len(lines) > 10 and any(l.startswith("  ") for l in lines):
+        lines.remove(next(l for l in reversed(lines) if l.startswith("  ")))
     print("\n".join(lines[:10]))
     return 0
 

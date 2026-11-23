@@ -50,7 +50,7 @@ Anything in the PRD's "out" list never becomes a story.
 - Merge duplicates and overlapping stories; keep the lower id.
 - Stories already done (`on-trunk` or later in `python3 .keelokit/bin/ledger.py`) are never edited,
   renumbered or deleted; changes to done work become new stories. While the ledger says `unknown`,
-  treat every story as possibly done: complete the history (`ledger.py history --ensure`) first.
+  treat every story as possibly done: `ledger.py` says why (a cut history: `ledger.py history --ensure`).
 - Every PRD in-scope line is covered by at least one story; every story traces to one.
 
 ## 4. Prioritise and wave
