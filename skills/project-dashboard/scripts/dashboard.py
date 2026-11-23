@@ -101,6 +101,13 @@ T = {
         "story_ready": "Lista para construir",
         "story_blocked": "Espera a {deps}",
         "story_gap": "Espera respuesta a {gaps}",
+        "story_unknown": "Desconocido",
+        "story_unknown_why": "El clon es superficial (shallow): esta historia puede estar terminada. Corré git fetch --unshallow origin main",
+        "history_unknown": ("Avance desconocido: el clon es superficial (shallow) y tiene {n} commit de main. Corré git fetch --unshallow origin main",
+                            "Avance desconocido: el clon es superficial (shallow) y tiene {n} commits de main. Corré git fetch --unshallow origin main"),
+        "next_unknown": "Traé la historia completa",
+        "next_unknown_d": "El clon es superficial (shallow): una historia sin su marca puede estar terminada. Corré git fetch --unshallow origin main.",
+        "wait_history_unknown": "El clon es superficial (shallow): no se sabe qué historias están terminadas. Corré git fetch --unshallow origin main",
         "depends": "Depende de",
         "modes": "Cómo construir: en serie o en paralelo",
         "modes_intro": "Cuando hay varias historias listas en la misma ola, Keelokit te pregunta cómo seguir. Las dos formas producen el mismo resultado y la misma calidad; cambia la velocidad, el uso de Claude y cuánto tenés que revisar a la vez.",
@@ -333,6 +340,13 @@ T = {
         "story_ready": "Ready to build",
         "story_blocked": "Waits for {deps}",
         "story_gap": "Waits for an answer to {gaps}",
+        "story_unknown": "Unknown",
+        "story_unknown_why": "The clone is shallow: this story may be done. Run git fetch --unshallow origin main",
+        "history_unknown": ("Progress unknown: the clone is shallow and has {n} commit of main. Run git fetch --unshallow origin main",
+                            "Progress unknown: the clone is shallow and has {n} commits of main. Run git fetch --unshallow origin main"),
+        "next_unknown": "Fetch the full history first",
+        "next_unknown_d": "The clone is shallow: a story without its mark may be done. Run git fetch --unshallow origin main.",
+        "wait_history_unknown": "The clone is shallow: which stories are done is unknown. Run git fetch --unshallow origin main",
         "depends": "Depends on",
         "modes": "How to build: one at a time or in parallel",
         "modes_intro": "When several stories of the same wave are ready, Keelokit asks how to go on. Both ways give the same result and the same quality; what changes is speed, Claude usage and how much you review at once.",
@@ -725,6 +739,51 @@ def github_base(root: Path) -> str | None:
     return f"https://github.com/{m.group(1)}/blob/main/" if m else None
 
 
+def cut_commits(run, shas: list[str], known: set[str]) -> bool:
+    """True when a shallow-file commit has a parent that main's history (`known`: one rev-list) doesn't
+    hold: really cut. A root commit, or a boundary whose parents main walks anyway, is nothing cut.
+    Raw objects, since %P is rewritten to empty in a shallow repo; one batched call. Fails closed: a
+    failed call or a missing object reads as cut."""
+    if not shas:
+        return False
+    code, out = run(["git", "cat-file", "--batch"], "".join(f"{s}\n" for s in shas).encode())
+    if code != 0:
+        return True
+    pos = 0
+    while pos < len(out):
+        end = out.find(b"\n", pos)
+        if end < 0:
+            return True
+        head = out[pos:end].split()
+        if len(head) < 3 or head[1] != b"commit":
+            return True  # "<sha> missing", or anything unexpected
+        size = int(head[2])
+        body = out[end + 1:end + 1 + size]
+        for line in body.split(b"\n\n", 1)[0].split(b"\n"):
+            if line.startswith(b"parent ") and line[7:].decode() not in known:
+                return True
+        pos = end + 1 + size + 1
+    return False
+
+
+def history_gap(root: Path, ref: str | None) -> dict | None:
+    """LEDGER-001: set when the done set read from `ref` can't be trusted: a shallow clone whose main
+    reaches a commit of the shallow file. A story without its trailer may be done, so it is unknown,
+    never pending. A few git calls, not one per story (NFR-1)."""
+    if not ref or git(root, "rev-parse", "--is-shallow-repository").strip() != "true":
+        return None
+    shallow = Path(git(root, "rev-parse", "--git-path", "shallow").strip() or "shallow")
+    cut = set(read(shallow if shallow.is_absolute() else root / shallow).split())
+    commits = git(root, "rev-list", ref).split()
+    known = set(commits)
+    reach = sorted(cut & known)
+    if not reach or not cut_commits(lambda cmd, data: (lambda r: (r.returncode, r.stdout))(subprocess.run(cmd, cwd=root, input=data, capture_output=True)), reach, known):
+        return None
+    return {"commits": len(commits), "ref": ref, "fix": "git fetch --unshallow origin main",
+            "reason": f"the clone is shallow and cut main's history ({len(commits)} commits of {ref}): "
+                      "run `git fetch --unshallow origin main`"}
+
+
 def main_ref(root: Path) -> str | None:
     """origin/main, else main; None when neither resolves. Never HEAD: a branch's own `Story:`
     trailers would count as done (INV-005)."""
@@ -770,6 +829,7 @@ def collect(root: Path) -> dict:
     if ref:
         trailers = git(root, "log", ref, "--format=%(trailers:key=Story,valueonly,separator=%x2C)")
         done = {s.strip() for line in trailers.splitlines() for s in line.split(",") if s.strip()}
+    gap = history_gap(root, ref) if ref else None
     first_commit = (git(root, "log", "--reverse", "--format=%h %s").splitlines() or [""])[0] if has_commits else ""
 
     stories = []
@@ -789,6 +849,8 @@ def collect(root: Path) -> dict:
         waiting = [d for d in s["depends_on"] if d not in done]
         if s["id"] in done:
             s["status"] = "done"
+        elif gap:  # LEDGER-001: not proven done, and the history can't prove it is not
+            s["status"], s["reason"] = "unknown", gap["reason"]
         elif waiting:
             s["status"], s["waits"] = "blocked", waiting
         elif s["gaps"]:
@@ -988,6 +1050,7 @@ def collect(root: Path) -> dict:
         "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
         "harness": harness, "plugin_version": plugin_version, "credit": credit,
         "profile": profile, "local_env": local_env, "drift": drift, "no_main": bool(has_commits and stories and not ref),
+        "history_gap": gap,
     }
 
 
@@ -1040,8 +1103,10 @@ def next_step(s: dict, lang: str) -> dict:
                 "detail": plural(t, "next_build_d", len(same), wave=first["wave"], ids=story_ids(same)),
                 "command": f"/keelokit:build-story {first['id']}", "anchor": "stage-build"}
     if s["stories"] and any(x["status"] != "done" for x in s["stories"]):
-        return {"title": t["next_blocked"], "detail": t["next_blocked_d"], "command": "/keelokit",
-                "anchor": "stage-backlog"}
+        unknown = bool(s["history_gap"])  # LEDGER-001: the stories may be done, not blocked
+        return {"title": t["next_unknown" if unknown else "next_blocked"],
+                "detail": t["next_unknown_d" if unknown else "next_blocked_d"],
+                "command": "git fetch --unshallow origin main" if unknown else "/keelokit", "anchor": "stage-backlog"}
     last_story = max((e["date"] for e in s["history"] if e["kind"] == "story"), default="")
     last_bb = max((b["date"] for b in s["bugbashes"]), default="")
     if s["stories"] and last_story and last_bb < last_story:
@@ -1069,8 +1134,8 @@ def waiting_on_user(s: dict, lang: str) -> list[dict]:
               for g in s["gaps"] if g["blocking"]]
     if s["errors"]:
         items.append({"text": plural(t, "wait_errors", s["errors"]), "anchor": "health"})
-    if s["no_main"]:
-        items.append({"text": t["wait_no_main"], "anchor": "stage-build"})
+    if s["no_main"] or (s["history_gap"] and s["stories"]):
+        items.append({"text": t["wait_no_main" if s["no_main"] else "wait_history_unknown"], "anchor": "stage-build"})
     for b in s["bugbashes"]:
         pending = [f for f in b["findings"] if f["status"].lower().startswith(("pending", "pendiente"))]
         if pending:
@@ -1368,6 +1433,7 @@ details[open]>summary .chev{transform:rotate(225deg) translateY(-2px)}
 .pill.todo{color:var(--idle);background:var(--idle-soft)}
 .pill.ready{color:var(--accent);background:var(--accent-soft)}
 .pill.blocked,.pill.gap{color:var(--bad);background:var(--bad-soft)}
+.pill.unk{color:var(--attn);background:var(--attn-soft)}
 .sea .pill.review{color:var(--ember);background:#353346}
 .sea .pill.current{color:var(--board);background:#2E3C48}
 .sea .pill.done{color:var(--reef);background:#1A3C5F}
@@ -1696,6 +1762,7 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
         "done": t["story_done"], "ready": t["story_ready"],
         "blocked": t["story_blocked"].format(deps=", ".join(st.get("waits", []))),
         "gap": t["story_gap"].format(gaps=", ".join(st["gaps"])),
+        "unknown": t["story_unknown"],
     }[status]
     link = ext_link(links.href(st["path"]), links, t, st["path"])
     build = f'<div class="acts">{ask(t["act_build_one"], "/keelokit:build-story " + st["id"], True)}</div>' if status == "ready" else ""
@@ -1704,7 +1771,7 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
     anchor = f' id="story-{view}-{esc(st["id"])}"' if view else ""
     return (f'<details class="doc story"{anchor}><summary><span class="sid">{esc(st["id"])}</span>'
             f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
-            f'<span class="pill {status}">{esc(label)}</span>{CHEV}</summary>'
+            f'<span class="pill {"unk" if status == "unknown" else status}"{f' title="{esc(t["story_unknown_why"])}"' if status == "unknown" else ""}>{esc(label)}</span>{CHEV}</summary>'
             f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{build}'
             f'{markdown(st["body"], links, st["path"])}</div></details>')
 
@@ -1712,9 +1779,10 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
 def group(title: str, items: list[dict], links: Links, t: dict, open_: bool, note: str = "", action: str = "",
           view: str = "") -> str:
     done = sum(1 for x in items if x["status"] == "done")
-    pct = round(100 * done / len(items)) if items else 0
+    unknown = any(x["status"] == "unknown" for x in items)  # LEDGER-001: no count from a cut history
+    pct = round(100 * done / len(items)) if items and not unknown else 0
     return (f'<details class="group"{" open" if open_ else ""}><summary><span class="gname">{title}</span>'
-            f'<span class="count">{done}/{len(items)}</span><span class="bar"><i style="width:{pct}%"></i></span>{CHEV}</summary>'
+            f'<span class="count">{"?" if unknown else done}/{len(items)}</span><span class="bar"><i style="width:{pct}%"></i></span>{CHEV}</summary>'
             f'<div class="group-body">{f"<p class=muted>{esc(note)}</p>" if note else ""}{action}'
             + "".join(story_row(x, links, t, view) for x in items) + "</div></details>")
 
@@ -1744,8 +1812,10 @@ def backlog_block(s: dict, links: Links, t: dict) -> str:
         for e, goal in s["epics"].items() if e in in_epic)
     epics_doc = doc_block("backlog/epics.md", read(s["root"] / "backlog/epics.md"), links, t) \
         if (s["root"] / "backlog/epics.md").exists() else ""
-    pct = round(100 * done / len(stories))
-    return (f'<div class="toolbar"><strong>{esc(plural(t, "backlog_total", len(stories), done=done))}</strong>'
+    gap = s["history_gap"]
+    pct = 0 if gap else round(100 * done / len(stories))
+    figure = plural(t, "history_unknown", gap["commits"]) if gap else plural(t, "backlog_total", len(stories), done=done)
+    return (f'<div class="toolbar"><strong>{esc(figure)}</strong>'
             f'<span class="bar"><i style="width:{pct}%"></i></span>'
             f'<span class="seg" role="group"><button type="button" data-show="wave" aria-pressed="true">{esc(t["by_wave"])}</button>'
             f'<button type="button" data-show="epic" aria-pressed="false">{esc(t["by_epic"])}</button></span></div>'
@@ -2031,7 +2101,7 @@ def render(s: dict, lang: str, standalone: bool, out_dir: Path, version: str) ->
             f'<details class="stage {state}" id="stage-build"{" open" if building else ""}><summary>'
             f'<span class="n">{n:02d}</span><span class="nm">{esc(t["build_stage"])}</span>'
             f'<span class="pill {state}">{esc(t["st_" + state])}</span>{CHEV}'
-            f'<span class="sum">{esc(plural(t, "sum_build", len(s["stories"]), done=done))}</span></summary>'
+            f'<span class="sum">{esc(plural(t, "history_unknown", s["history_gap"]["commits"]) if s["history_gap"] else plural(t, "sum_build", len(s["stories"]), done=done))}</span></summary>'
             f'<div class="stage-body"><p class="what">{esc(t["build_what"])}</p>{actions}{modes_block(s, t)}{health}</div></details>')
     elif log:
         pill = f'<span class="pill review">{esc(t["st_review"])}</span>' if s["errors"] else ""
@@ -2127,7 +2197,7 @@ OPS_T = {
         "env_missing": ("Falta {n} paso para {env}: {steps}.", "Faltan {n} pasos para {env}: {steps}."),
         "waves": "Olas de desarrollo", "of_stories": "{done} de {total} historias", "backlog": "Backlog completo",
         "wave": "Ola {n}", "wave_done": "terminada", "no_wave": "Sin ola",
-        "s_done": "Hecha", "s_ready": "Lista · copiar", "s_waits": "Espera a {ids}", "s_gap": "Espera respuesta a {gaps}",
+        "s_done": "Hecha", "s_ready": "Lista · copiar", "s_waits": "Espera a {ids}", "s_gap": "Espera respuesta a {gaps}", "s_unknown": "Desconocido", "of_unknown": "avance desconocido (clon shallow)",
         "from_bb": "del bug bash", "from_sec": "de seguridad", "from_feature": "funcionalidad nueva",
         "review": "Para revisar", "review_docs": "Documentos", "approve": "Aprobar", "change": "Pedir cambios",
         "health": "Salud y entornos", "doctor_ok": "Harness sin errores",
@@ -2162,7 +2232,7 @@ OPS_T = {
         "env_missing": ("{n} step left for {env}: {steps}.", "{n} steps left for {env}: {steps}."),
         "waves": "Development waves", "of_stories": "{done} of {total} stories", "backlog": "Whole backlog",
         "wave": "Wave {n}", "wave_done": "done", "no_wave": "No wave",
-        "s_done": "Done", "s_ready": "Ready · copy", "s_waits": "Waits for {ids}", "s_gap": "Waits for an answer to {gaps}",
+        "s_done": "Done", "s_ready": "Ready · copy", "s_waits": "Waits for {ids}", "s_gap": "Waits for an answer to {gaps}", "s_unknown": "Unknown", "of_unknown": "progress unknown (shallow clone)",
         "from_bb": "from a bug bash", "from_sec": "from security", "from_feature": "new feature",
         "review": "Ready for review", "review_docs": "Documents", "approve": "Approve", "change": "Ask for changes",
         "health": "Health and environments", "doctor_ok": "Harness without errors",
@@ -2324,6 +2394,8 @@ def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str
                       ops_btn(o["copy_ask"], "/keelokit:check-health")))
     if s["no_main"]:
         items.append(("", o["k_setup"], "", t["wait_no_main"], "", ""))
+    if s["history_gap"] and s["stories"]:
+        items.append(("", o["k_setup"], "", t["wait_history_unknown"], "", ""))
     hosted = s["profile"] is None or "hosted" in s["profile"]["traits"]
     if hosted:
         for e in s["environments"]:
@@ -2370,7 +2442,10 @@ def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str
             group = waves[w]
             done = sum(1 for x in group if x["status"] == "done")
             bars = "".join(f'<i class="{"d" if x["status"] == "done" else "r" if x["status"] == "ready" else ""}"></i>' for x in group)
-            frac = f'{esc(o["wave_done"])} · {done}/{len(group)}' if done == len(group) else f"{done}/{len(group)}"
+            if any(x["status"] == "unknown" for x in group):
+                frac = f"?/{len(group)}"
+            else:
+                frac = f'{esc(o["wave_done"])} · {done}/{len(group)}' if done == len(group) else f"{done}/{len(group)}"
             lis = []
             for x in group:
                 dot = {"done": "d", "ready": "r"}.get(x["status"], "")
@@ -2385,6 +2460,8 @@ def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str
                     st = f'<span class="st">{esc(o["s_done"])}</span>'
                 elif x["status"] == "ready":
                     st = ops_btn(o["s_ready"], f"/keelokit:build-story {x['id']}", "cp", f"/keelokit:build-story {x['id']}")
+                elif x["status"] == "unknown":
+                    st = f'<span class="st">{esc(o["s_unknown"])}</span>'
                 elif x["status"] == "gap":
                     st = f'<span class="st">{esc(o["s_gap"].format(gaps=", ".join(x["gaps"])))}</span>'
                 else:
@@ -2392,12 +2469,12 @@ def render_ops(s: dict, lang: str, standalone: bool, out_dir: Path, version: str
                 lis.append(f'<li><span class="dot {dot}"></span>{ops_link(links.href(x["path"]), x["id"], "id")}'
                            f'<span class="t">{esc(x["title"])}{tag}</span>{st}</li>')
             label = o["wave"].format(n=w) if w else o["no_wave"]
-            blocks.append(f'<details class="wave"{"" if done == len(group) else " open"}><summary><b>{esc(label)}</b>'
+            blocks.append(f'<details class="wave"{"" if done == len(group) and "?" not in frac else " open"}><summary><b>{esc(label)}</b>'
                           f'<span class="bar">{bars}</span><span class="frac">{frac}</span></summary>'
                           f'<ul class="stories">{"".join(lis)}</ul></details>')
         done_all = sum(1 for x in s["stories"] if x["status"] == "done")
         work += (f'<section class="card sec" aria-labelledby="waves-h"><div class="head"><p class="eyebrow" id="waves-h">{esc(o["waves"])}</p>'
-                 f'<span class="count">{esc(o["of_stories"].format(done=done_all, total=len(s["stories"])))}</span>'
+                 f'<span class="count">{esc(o["of_unknown"] if s["history_gap"] else o["of_stories"].format(done=done_all, total=len(s["stories"])))}</span>'
                  f'{ops_link(links.href("backlog/epics.md"), o["backlog"], "aside")}</div>'
                  f'<div class="waves">{"".join(blocks)}</div></section>')
 

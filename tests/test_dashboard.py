@@ -44,6 +44,11 @@ def sh(cwd: Path, *cmd: str) -> str:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True).stdout
 
 
+def visible_text(html: str) -> str:
+    """What a reader sees: tags, the stylesheet and scripts stripped (a CSS class name is not text)."""
+    return html_lib.unescape(re.sub(r"<[^>]+>", " ", re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)))
+
+
 def dead_links(html: str) -> list[str]:
     """UX-1, the class: every in-page link (the next step, each waiting item, the stage strip, the
     decisions card, the sections' own links) must land on an element the same page renders."""
@@ -802,6 +807,154 @@ class DashboardTest(unittest.TestCase):
         for text in ("Etapa 6 de 6 · Construcción", "Te esperan", "Olas de desarrollo", "Espera a AUTH-002",
                      "del bug bash", "Salud y entornos", "Generar el reporte completo", "24 sep"):
             self.assertIn(esc(text), html)
+
+    def test_LEDGER_001_S4_a_shallow_clone_shows_no_story_as_pending_for_lack_of_history(self):
+        """main: plan, AUTH-001, AUTH-002, AUTH-003, chore, AUTH-004, chore. A --depth 3 clone holds
+        only AUTH-004's trailer: the other three are done, but the clone can't tell."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog")
+        self.context()
+        for sid, wave, deps in (("AUTH-001", 1, ""), ("AUTH-002", 1, ""), ("AUTH-003", 2, '"AUTH-001"'),
+                                ("AUTH-004", 2, ""), ("AUTH-005", 3, '"AUTH-002"'), ("AUTH-006", 3, "")):
+            self.story(sid, wave, deps)
+        self.commit("docs: plan")
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.commit(f"feat: {sid}\n\nStory: {sid}")
+        self.commit("chore: x")
+        self.commit("feat: AUTH-004\n\nStory: AUTH-004")
+        self.commit("chore: y")
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where)
+
+        def clone(name: str, *depth: str) -> Path:
+            subprocess.run(["git", "clone", "-q", *depth, f"file://{self.root}", str(where / name)],
+                           check=True, capture_output=True)
+            return where / name
+
+        full, shallow = clone("full"), clone("shallow", "--depth=3")
+        self.assertEqual(sh(shallow, "git", "rev-parse", "--is-shallow-repository").strip(), "true", "fixture")
+        state = lambda root: json.loads(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--json"))
+        # The full history is as today.
+        self.assertEqual({x["id"]: x["status"] for x in state(full)["stories"]},
+                         {"AUTH-001": "done", "AUTH-002": "done", "AUTH-003": "done", "AUTH-004": "done",
+                          "AUTH-005": "ready", "AUTH-006": "ready"})
+        s = state(shallow)
+        status = {x["id"]: x["status"] for x in s["stories"]}
+        self.assertEqual(status["AUTH-004"], "done", "a trailer in the clone still proves done")
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.assertEqual(status[sid], "unknown", f"{sid} is done on the full history: {status}")
+        self.assertFalse([sid for sid, st in status.items() if st in ("ready", "blocked")],
+                         f"nothing reads as pending for lack of history: {status}")
+        self.assertIn("AUTH-004", s["done"])
+        # The progress figures read unknown, with the reason, on both pages.
+        for page in (self.ops_at(shallow), self.page_at(shallow)):
+            text = visible_text(page)
+            self.assertNotRegex(text, r"\b\d+ of 6 stor", "no progress count read from a cut history")
+            self.assertRegex(text.lower(), r"unknown", "the figure says unknown")
+            self.assertRegex(text.lower(), r"shallow", "and why")
+
+    def ledger_backlog(self, lang: str = "en", merges: bool = False) -> Path:
+        """The S4 backlog (four of six done; main: plan, three Story: commits, chore, AUTH-004, chore),
+        and a temp folder for its clones."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog", lang=lang)
+        self.context()
+        for sid, wave, deps in (("AUTH-001", 1, ""), ("AUTH-002", 1, ""), ("AUTH-003", 2, '"AUTH-001"'),
+                                ("AUTH-004", 2, ""), ("AUTH-005", 3, '"AUTH-002"'), ("AUTH-006", 3, "")):
+            self.story(sid, wave, deps)
+        self.commit("docs: plan")
+        if merges:  # each story one commit on a side branch, merged with --no-ff
+            for sid in ("AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"):
+                sh(self.root, "git", "checkout", "-q", "-b", sid.lower())
+                self.commit(f"feat: {sid}\n\nStory: {sid}")
+                sh(self.root, "git", "checkout", "-q", "main")
+                sh(self.root, "git", "merge", "-q", "--no-ff", "-m", f"Merge {sid}", sid.lower())
+        else:
+            for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+                self.commit(f"feat: {sid}\n\nStory: {sid}")
+            self.commit("chore: x")
+            self.commit("feat: AUTH-004\n\nStory: AUTH-004")
+            self.commit("chore: y")
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where)
+        return where
+
+    def ledger_clone_at(self, where: Path, name: str, *depth: str) -> Path:
+        subprocess.run(["git", "clone", "-q", *depth, f"file://{self.root}", str(where / name)],
+                       check=True, capture_output=True)
+        return where / name
+
+    @staticmethod
+    def ledger_state(root: Path) -> dict:
+        return json.loads(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--json"))
+
+    def test_LEDGER_001_S4_the_spanish_dashboard_shows_no_story_as_pending_for_lack_of_history(self):
+        where = self.ledger_backlog("es")
+        shallow = self.ledger_clone_at(where, "shallow", "--depth=3")
+        status = {x["id"]: x["status"] for x in self.ledger_state(shallow)["stories"]}
+        self.assertEqual(status["AUTH-004"], "done")
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            self.assertEqual(status[sid], "unknown", status)
+        for args in ([], ["--report"]):
+            out = sh(shallow, "python3", str(DASHBOARD), "--root", str(shallow), "--lang", "es", *args).strip()
+            page = Path(out).read_text()
+            text = visible_text(page)
+            self.assertNotRegex(text, r"\b\d+ de 6 historias", "no progress count read from a cut history")
+            self.assertRegex(text.lower(), r"desconocid", "the figure says unknown, in Spanish")
+            self.assertRegex(text.lower(), r"shallow|superficial", "and why")
+            self.assertNotRegex(text, r"(?i)progress unknown|the clone is shallow", "no English in a Spanish page")
+
+    def test_LEDGER_001_S2_a_clone_as_deep_as_main_reads_as_a_full_clone(self):
+        """Breaker: `--depth N` with N = main's commit count lists the ROOT commit in the shallow file;
+        it has no parent, so nothing is cut and the dashboard must read as on a full clone."""
+        where = self.ledger_backlog()
+        n = sh(self.root, "git", "rev-list", "--count", "main").strip()
+        full, deep = self.ledger_clone_at(where, "full"), self.ledger_clone_at(where, "deep", f"--depth={n}")
+        root = sh(deep, "git", "rev-list", "--max-parents=0", "origin/main").split()
+        self.assertTrue(set(root) & set((deep / ".git/shallow").read_text().split()), "fixture: root is the boundary")
+        want, got = self.ledger_state(full), self.ledger_state(deep)
+        self.assertEqual({x["id"]: x["status"] for x in got["stories"]}, {x["id"]: x["status"] for x in want["stories"]})
+        self.assertEqual(sorted(got["done"]), ["AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"])
+        text = visible_text(self.page_at(deep))
+        self.assertIn("4 of 6 stories done", text)
+        self.assertNotRegex(text.lower(), r"shallow|unknown")
+
+    def test_LEDGER_001_S2_a_boundary_on_a_merged_side_commit_whose_parent_main_has_cuts_nothing(self):
+        """Breaker: --no-ff merges cloned as deep as main's first-parent chain list a side commit
+        whose parent is walked from main anyway: nothing is cut, the dashboard reads as a full clone."""
+        where = self.ledger_backlog(merges=True)
+        n = sh(self.root, "git", "rev-list", "--first-parent", "--count", "main").strip()
+        full, deep = self.ledger_clone_at(where, "full"), self.ledger_clone_at(where, "deep", f"--depth={n}")
+        walked = set(sh(deep, "git", "rev-list", "origin/main").split())
+        listed = set((deep / ".git/shallow").read_text().split()) & walked
+        self.assertTrue(listed, "fixture: a boundary on main's history")
+        parents = {q for c in listed for q in sh(self.root, "git", "rev-parse", f"{c}^@").split()}
+        self.assertTrue(parents <= walked, "fixture: every parent of a listed commit is walked from main")
+        want, got = self.ledger_state(full), self.ledger_state(deep)
+        self.assertEqual({x["id"]: x["status"] for x in got["stories"]}, {x["id"]: x["status"] for x in want["stories"]})
+        self.assertEqual(sorted(got["done"]), ["AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"])
+        text = visible_text(self.page_at(deep))
+        self.assertIn("4 of 6 stories done", text)
+        self.assertNotRegex(text.lower(), r"shallow|unknown")
+
+    def test_LEDGER_001_S4_a_spanish_page_has_no_english_reason_in_any_attribute(self):
+        """I18N-1 for the shallow case: a story's unknown reason (a pill's title, a tooltip, an aria
+        label) is in the page's language; only the doctor's quoted log stays in English."""
+        where = self.ledger_backlog("es")
+        shallow = self.ledger_clone_at(where, "shallow", "--depth=3")
+        for args in ([], ["--report"]):
+            page = Path(sh(shallow, "python3", str(DASHBOARD), "--root", str(shallow), "--lang", "es", *args).strip()).read_text()
+            outside_log = re.sub(r'<pre[^>]*\blang="en"[^>]*>.*?</pre>', " ", page, flags=re.S)
+            attrs = " ".join(html_lib.unescape(v) for v in re.findall(r'\s[\w-]+="([^"]*)"', outside_log))
+            for english in ("clone is shallow", "cut main's history", "commits of origin/main", "Progress unknown"):
+                self.assertNotIn(english, attrs, f"English in an attribute of the es page {args}")
+                self.assertNotIn(english, visible_text(outside_log), f"English text in the es page {args}")
+
+    def ops_at(self, root: Path) -> str:
+        return Path(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--lang", "en").strip()).read_text()
+
+    def page_at(self, root: Path) -> str:
+        html = Path(sh(root, "python3", str(DASHBOARD), "--root", str(root), "--report", "--lang", "en").strip()).read_text()
+        self.assert_links_land(html)
+        return html
 
 
 # I18N-2: the headings of the PRD and the reports as someone would write them in each language of

@@ -25,6 +25,7 @@ python3 .keelokit/bin/doctor.py
 | FMT-1: no `eol=lf` in `.gitattributes`, or no `format:check` | Add `* text=auto eol=lf` (then `pnpm format` once, alone in its commit) and the script |
 | FLAKY-1: a timeout or `retries` raised in a test config | Undo it; reproduce the intermittent failure, fix the race, add its row to `docs/escapes.md` |
 | MIG-1: a migration that sorts before main's last, or two stories of a wave adding migrations | Rename the new one with a later timestamp after rebasing (never edit the applied ones); move one story to a later wave |
+| Done state unknown: the clone is shallow and main's history is cut | Never read a count from a shallow clone. Locally run `git fetch --unshallow origin main`; in CI check out with `fetch-depth: 0` (an error there, a warning locally). Then run the doctor again |
 | DEBT-1: a ledger row malformed, "decided" without a recommendation, or reading as "known issue / later" | Fix it or decide it with a recommendation; a missing 'Needs the owner' section is added empty |
 | `verify: CUT` in `status.py`, or a verify that exits 4 (a required tool missing) / 3 (busy machine) | CUT: read the state file's step and the known causes the next red prints; fewer parallel sessions. 4: install the tool, or `KEELOKIT_ALLOW_MISSING=<tool>` knowingly. 3: wait, or `VERIFY_FORCE=1` |
 | "N changed files match no route" | Add a route for that kind of file to `.keelokit/verify-routing.toml` (specific routes first) |
