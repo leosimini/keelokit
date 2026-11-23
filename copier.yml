@@ -26,6 +26,7 @@ _skip_if_exists:
   - docs/prelaunch-debt-ledger.md
   - CHANGELOG.md
   - backlog/*.md
+  - backlog/ledger-corrections.toml
   - README.md
   # Product code: the template's version is only a starting point; it diverges on day one.
   - apps/*/src/**

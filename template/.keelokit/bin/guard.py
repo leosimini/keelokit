@@ -8,6 +8,8 @@ Exit 2 blocks (Claude shows stderr to the agent); exit 1 blocks a git commit. Cl
 call through on any exit but 2, so for Claude the guard ends in exactly 0 or 2: an unknown mode,
 hook input it can't read or a check that fails all block, with the reason on stderr.
 Rules enforced: SEC-1, SEC-2, QA-2, QA-4, DB-1, AGENT-1, REL-1 (.keelokit/harness/rules.toml).
+The ledger's corrections (backlog/ledger-corrections.toml) are the human's like guard-allow.toml: agents
+may not write the file nor run `ledger.py backfill --accept` (docs/ledger.md, "Corrections file").
 
 It is a speed bump for agents, not a sandbox: a determined shell (variables, eval, scripts)
 can get around pattern checks. CI and the git hooks are the backstop.
@@ -251,6 +253,48 @@ def is_registry(path: str) -> bool:
     return bool(path) and rel_posix(path) == REGISTRY
 
 
+CORRECTIONS = "backlog/ledger-corrections.toml"
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+CORRECTIONS_WHY = (f"QA-4: {CORRECTIONS} holds the ledger's approved corrections and is the human's: propose rows "
+                   "with `ledger.py backfill --propose` or `ledger.py correct`; a person accepts them in their terminal")
+ACCEPT_WHY = ("QA-4: `ledger.py backfill --accept` approves ledger corrections and is a person's, in their own "
+              "terminal: propose the rows and ask in chat")
+
+
+def protected_why(target: str) -> str | None:
+    """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's."""
+    if not target:
+        return None
+    name = Path(target).name
+    if is_registry(target) or name == Path(REGISTRY).name:
+        return REGISTRY_WHY
+    if rel_posix(target) == CORRECTIONS or name == Path(CORRECTIONS).name:
+        return CORRECTIONS_WHY
+    return None
+
+
+def runs_accept(cmd: str, depth: int = 0) -> bool:
+    """True when a segment of the command runs `ledger.py backfill --accept`: its words as the shell splits them
+    (quotes removed), and the script a shell runs (`bash -c "…"`, `eval "…"`). A quoted commit message is an
+    argument, not a script, so naming the command there is no run."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        for i, w in enumerate(words):
+            if Path(w).name == "ledger.py" and "backfill" in words[i + 1:] \
+                    and any(x.startswith("--accept") for x in words[i + 1:]):
+                return True
+        shell = next((i for i, w in enumerate(words) if Path(w).name in SHELLS), None)
+        scripts = [words[i + 1] for i in range(len(words) - 1)
+                   if shell is not None and i > shell and re.fullmatch(r"-[a-z]*c[a-z]*", words[i])]
+        scripts += words[1:] if words[:1] == ["eval"] else []
+        if depth < 3 and any(runs_accept(script, depth + 1) for script in scripts):
+            return True
+    return False
+
+
 def toml_str(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -334,6 +378,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why
+    if runs_accept(cmd):
+        return ACCEPT_WHY
     for segment in re.split(r"&&|\|\||;|\|", bare):
         words = segment.split()
         if not words:
@@ -351,8 +397,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                 targets = shlex.split(segment, posix=True)
             except ValueError:
                 targets = words
-            if any(is_registry(t.lstrip(">")) or Path(t.lstrip(">")).name == Path(REGISTRY).name for t in targets):
-                return REGISTRY_WHY
+            if why := next((w for t in targets if (w := protected_why(t.lstrip(">")))), None):
+                return why
             if any(is_env_file(t.lstrip(">")) and not allowed(allow, "SEC-2", t.lstrip(">")) for t in targets):
                 if re.match(r"\s*(rm|touch|ln)\b", segment) and not re.search(r">", segment):  # LOG-3
                     return "SEC-2: .env files are the human's: don't delete, create or link them from the shell; ask in chat"
@@ -364,8 +410,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
         if not WRITE_CMD.search(unquoted(segment)) or re.match(r"\s*cp\s+(-\w+\s+)*\S+\.example\s+\S+\s*$", segment):
             continue
         targets = write_targets(segment)
-        if any(is_registry(t) or Path(t).name == Path(REGISTRY).name for t in targets):
-            return REGISTRY_WHY
+        if why := next((w for t in targets if (w := protected_why(t))), None):
+            return why
         if any(is_env_file(t) and not allowed(allow, "SEC-2", t) for t in targets):
             return ENV_OWN_WHY if re.match(r"\s*(rm|touch|ln)\b", segment) and ">" not in segment else ENV_WHY
     if secret_in(cmd):
@@ -386,8 +432,8 @@ def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
-    if is_registry(path):
-        return REGISTRY_WHY
+    if path and (rel_posix(path) in (REGISTRY, CORRECTIONS)):
+        return protected_why(path)
     if path and is_env_file(path) and not allowed(allow, "SEC-2", path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"
     if path and applied_migration(path):
@@ -446,6 +492,15 @@ def gitleaks(allow: list[dict]) -> int:
         os.unlink(name)
 
 
+def staged_rows(path: str) -> bool:
+    """True unless the staged file is TOML with no [[row]] (an unreadable one counts as having rows)."""
+    blob = subprocess.run(["git", "show", f":{path}"], cwd=ROOT, capture_output=True).stdout
+    try:
+        return bool(tomllib.loads(blob.decode("utf-8")).get("row"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return True
+
+
 def git_pre_commit() -> int:
     staged = subprocess.run(
         ["git", "diff", "--cached", "--name-status", "--no-renames"], cwd=ROOT, capture_output=True, text=True
@@ -461,6 +516,10 @@ def git_pre_commit() -> int:
         if path == REGISTRY and not allow_tamper and not (status == "A" and not allow):
             problems.append(f"QA-4: {path} is changed. If a human decided this, commit with "
                             "`git -c keelokit.allowTamper=true commit …` and say why in the message.")
+        # The template's corrections file (comments only, no [[row]]) may be added; any other change is the human's.
+        if path == CORRECTIONS and not allow_tamper and not (status == "A" and not staged_rows(path)):
+            problems.append(f"QA-4: {path} (the ledger's approved corrections) is changed. If a person accepted "
+                            "these rows, they commit with `git -c keelokit.allowTamper=true commit …`.")
         if is_env_file(path) and status != "D" and not allowed(allow, "SEC-2", path):
             problems.append(f"SEC-2: {path} must not be committed")
         if status in ("M", "D") and applied_migration(path):
