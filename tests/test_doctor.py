@@ -1452,7 +1452,8 @@ class DoctorReadsTheLedgerTest(LedgerRepo, unittest.TestCase):
         r = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--brief"], cwd=repo, env=self.env,
                            capture_output=True, text=True, timeout=120)
         line = next((l for l in r.stdout.splitlines() if "Backlog:" in l), "")
-        unknown = facts["history"] != "complete" or any(s["state"] == "unknown" for s in facts["stories"])
+        known = facts["history"] == "complete" or facts["history"].startswith("snapshot:")
+        unknown = not known or any(s["state"] == "unknown" for s in facts["stories"])
         if unknown:
             self.assertRegex(line, r"Backlog: unknown", r.stdout)
         else:
@@ -1530,6 +1531,16 @@ class DoctorReadsTheLedgerTest(LedgerRepo, unittest.TestCase):
         self.fake_ledger({"schema": 1, "history": "complete", "diffs": None,
                           "stories": [{**story, "branches": 5, "version": 5, "reason": 7}]})
         self.assertIn("Backlog: 1/6 done", self.doctor("--brief").stdout)
+
+    def test_LEDGER_006_S6_ESC_141_a_state_that_is_not_text_is_unknown_never_a_crash(self):
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        for state in ({}, [], 1, None):
+            with self.subTest(state=state):
+                self.fake_ledger({"schema": 1, "history": "complete", "diffs": [],
+                                  "stories": [{"id": "AUTH-001", "state": state}]})
+                self.assertRegex(self.doctor("--brief").stdout, r"Backlog: unknown, ")
+        self.fake_ledger({"schema": True, "history": "complete", "diffs": [], "stories": []})
+        self.assertRegex(self.doctor("--brief").stdout, r"Backlog: unknown, ", "schema true is not schema 1")
 
     def test_LEDGER_006_S2_a_reconstructed_story_skips_TRACE_1_and_INV_1_and_is_listed_apart(self):
         self.write("docs/context/domain.md", "# domain\n\n- [INV-001] [MUST] Sessions expire — class: consistency (S1)\n")
