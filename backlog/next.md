@@ -46,6 +46,8 @@ The SEC ones were decided on 2026-09-28 and are done.
 
 - [ ] **LEDGER-001..015** (waves 5–19): the ledger. Design, decisions for Leo and the launch
   order in `docs/ledger.md`; build one story at a time, starting with LEDGER-001.
+- [ ] **FLEET-001..006** (waves 20–25): lessons from the JOUNA fleet, in `docs/fleet-lessons.md` with the
+  build order (FLEET-001 and 003 right after LEDGER-002).
 
 ## Smaller things
 

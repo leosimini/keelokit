@@ -183,4 +183,5 @@ the skills (evals), deploying web and sites from CI, per-package caching, a Maes
 native mobile journeys, and Stryker's per-test runner once it supports Vitest 5.
 
 Designed and planned, not built: the ledger, one derived record of what is being done and what was
-done, for every session ([ledger.md](ledger.md), epic `LEDGER`).
+done, for every session ([ledger.md](ledger.md), epic `LEDGER`). What the JOUNA fleet learned in November 2026, and where it
+lands: [fleet-lessons.md](fleet-lessons.md), epic `FLEET`.
