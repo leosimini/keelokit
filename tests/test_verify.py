@@ -441,23 +441,19 @@ class MemoryAwareVerifyTest(VerifyFixture):
             self.assertIn(entry["peak_source"][step], {"rss", "cgroup"})
 
     def test_FLEET_001_S2_workers_fit_the_memory_and_the_runner_gets_them(self):
-        """FLEET-001.S2: 6 GB free and 2.3 GB per unit worker last time → --maxWorkers=2 (on 2+ cores) and the line."""
+        """FLEET-001.S2: memory that fits one 2.3 GB unit worker but not two → --maxWorkers=1 and the line, on any number
+        of cores (a figure that fits as many workers as there are cores is left to the runner, so 2 of 2 would hide)."""
         self.commit_change()
         self.seed_peak()
-        r = self.verify(**self.memory(6 * 1024 * 1024))
+        r = self.verify(**self.memory(2400 * 1024))  # 2.3 GB free: 2400 × 0.8 / 2355 < 1, and 2400 ≥ 2355
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        cores = {os.cpu_count() or 1}
-        if hasattr(os, "sched_getaffinity"):
-            cores.add(len(os.sched_getaffinity(0)))
-        expected = {max(1, min(2, c)) for c in cores}
         calls = self.unit_calls()
         self.assertTrue(calls, self.called())
-        self.assertTrue(any(f"--maxWorkers={n}" in c for c in calls for n in expected), calls)
-        self.assertIn("Workers for this machine's memory: unit:", r.stdout)
-        self.assertRegex(r.stdout, r"unit: [12] workers?, 6\.0 GB free, 2\.3 GB each last time")
+        self.assertTrue(all(c.endswith("--maxWorkers=1") for c in calls), calls)
+        self.assertIn("Workers for this machine's memory: unit: 1 worker, 2.3 GB free, 2.3 GB each last time", r.stdout)
         entry = self.history()[-1]
-        self.assertIn(entry["workers"].get("unit"), expected)
-        self.assertIn("6.0 GB free", entry["workers_why"])
+        self.assertEqual(entry["workers"], {"unit": 1})
+        self.assertEqual(entry["workers_why"], "unit: 1 worker, 2.3 GB free, 2.3 GB each last time")
 
     def test_FLEET_001_S3_nothing_fits_stop_in_seconds_with_exit_3(self):
         """FLEET-001.S3: 1.5 GB free and 2.3 GB for one worker → exit 3 before any tool runs, both numbers, the way out."""
