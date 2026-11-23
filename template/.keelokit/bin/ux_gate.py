@@ -11,16 +11,20 @@ verify`, the pre-push hook and CI all stop a branch that fails.
 A branch "changes the interface" when it touches a file matching `ui_paths` that no `exempt_paths`
 glob excuses. It then needs, for every piece under `<evidence_dir>/<piece>/` touched on the
 branch (and at least one): a capture `<surface>-<width>-<theme>-<state>.png` for every configured surface, width and
-theme, and a non-empty `CRITIQUE.md` holding every required section. Or a commit message line
+theme, and a non-empty `CRITIQUE.md` holding every required section and, unless `critique_skills` is
+empty, a `## Skills` section with one `### <skill id>` subsection per listed skill, each with a line
+`Ran: YYYY-MM-DD` and every P0/P1/P2 finding (a list item starting `P1`…) ending `— fixed in <commit or
+file>` or `— decided: <reason>` (docs/ux-quality.md §4). Or a commit message line
 `ux-gate: n/a — <reason>` (reason mandatory); the gate then passes and says so.
 Exit 0 pass or not applicable, 1 fail, 2 cannot tell (no main to compare with)."""
 from __future__ import annotations
 
-import fnmatch
+import datetime
 import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +39,7 @@ DEFAULTS = {
     "critique_file": "CRITIQUE.md",
     "critique_sections": ["Journey", "Design critique", "Consistency and coherence", "Real device"],
     "capture_ext": ["png"],
+    "critique_skills": ["design:design-critique", "design:ux-copy", "design:accessibility-review"],
 }
 MARKER = re.compile(r"(?mi)^ux-gate:\s*n/a\s*[—–-]+\s*(\S.*)$")
 
@@ -73,6 +78,10 @@ def settings() -> tuple[dict, str | None]:
             cfg.update(tomllib.loads(path.read_text()).get("gate", {}))
         except (tomllib.TOMLDecodeError, OSError) as e:
             return cfg, f".keelokit/ux.toml: {e}"
+    skills = cfg["critique_skills"]
+    if not isinstance(skills, list) or not all(isinstance(s, str) and s.strip() for s in skills):
+        return cfg, (".keelokit/ux.toml: critique_skills must be a list of skill ids, like "
+                     '["design:design-critique", "design:ux-copy"] ([] for none), not ' + repr(skills))
     return cfg, None
 
 
@@ -87,6 +96,139 @@ def expected_captures(cfg: dict) -> list[str]:
     """The matrix every piece covers: one capture per surface x width x theme (any state)."""
     themes = cfg["themes"] or [""]
     return [f"{s}-{w}" + (f"-{t}" if t else "") for s in cfg["surfaces"] for w in cfg["widths"].get(s, []) for t in themes]
+
+
+HEADING = re.compile(r"(?m)^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+FENCE = re.compile(r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)?(`{3,}|~{3,})")
+RAN = re.compile(r"(?mi)^[ \t]*(?:[-*+][ \t]+)?[*_]*Ran[*_]*:[*_]*[ \t]*[*_]*(\d{4}-\d{2}-\d{2})\b")
+ITEM = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+(.*)$")
+# What may come before a priority: a task box, emoji or other symbols, bold, a bracket.
+PRIORITY = re.compile(r"(?i)^(?:\[[ xX]\][ \t]*)?[^\w\[(]*[\[(]?(P\d)\b[\])]?[*_:]*(.*)$")
+# A skill's own severity where a priority belongs: a table cell that is only that, or an item that
+# opens with it as a label ("Critical:", "**Major**", "🔴 …"), not a sentence that starts with the word.
+SEVERITY_WORD = r"(?:critical|major|moderate|serious|blocker)"
+SEVERITY_CELL = re.compile(rf"(?i)^\W*{SEVERITY_WORD}\W*$|^\W*[🔴🟠🟡]")
+SEVERITY_HEAD = re.compile(rf"(?i)^\W*(?:{SEVERITY_WORD}|minor|total)\W*$")
+SEVERITY_ITEM = re.compile(rf"(?i)^(?:[*_]+{SEVERITY_WORD}[*_]+|[\[(]?{SEVERITY_WORD}[\])]?[ \t]*[:—–]|\W*[🔴🟠🟡])")
+STARTS_RESOLVED = re.compile(r"(?i)^(?:[—–]|-{1,2})?\s*(?:fixed in\s+\S|decided:\s*\S)")
+# The item ends with a dash, then "fixed in <x>" or "decided: <reason>" (a reason may hold dashes,
+# a "fixed in" may not: whatever follows another dash is not the end).
+RESOLUTION = re.compile(r"(?i)(?:[—–]|(?:^|\s)-{1,2})\s*(?:fixed in\s+(?:(?![—–]|\s-{1,2}\s).)*\S|decided:\s*\S.*)$")
+
+
+def unfenced(text: str) -> str:
+    """The text with fenced code blocks blanked, NFKC-normalized (a fullwidth digit is a digit, a
+    non-breaking space a space): a `# comment` in a code block is not a heading."""
+    out, fence = [], None
+    for line in unicodedata.normalize("NFKC", text).replace("\r\n", "\n").split("\n"):
+        m = FENCE.match(line)
+        if m and m.group(1)[0] == "`" and "`" in line[m.end():]:
+            m = None  # ```code``` inline: a backtick fence's info string holds no backtick
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+            out.append("")
+        elif m:
+            fence = m.group(1)
+            out.append("")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def sections(text: str, name: str) -> list[tuple[int, str]]:
+    """(level, body) of every heading called `name` (any case, backticks or bold around it allowed);
+    a body runs to the next heading of its level or higher."""
+    heads = [(m.start(), m.end(), len(m.group(1)), m.group(2).strip().strip("`*").strip()) for m in HEADING.finditer(text)]
+    out = []
+    for i, (_, end, level, title) in enumerate(heads):
+        if title.lower() == name.lower():
+            stop = next((s for s, _, lv, _ in heads[i + 1:] if lv <= level), len(text))
+            out.append((level, text[end:stop]))
+    return out
+
+
+def resolved(rest: str) -> bool:
+    """A finding is resolved when it ends `— fixed in <x>` or `— decided: <reason>` (`-` or `–` will do)."""
+    return bool(RESOLUTION.search(rest.strip()))
+
+
+def findings(body: str) -> list[tuple[str | None, str, bool]]:
+    """(priority or None, text, resolved) of each finding in a subsection: a list item, joined with
+    the lines indented under it (a wrapped line, a sub-bullet holding the fix), or a table row."""
+    out, lines, i = [], body.split("\n"), 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if line.strip().startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if all(re.fullmatch(r":?-*:?", c) for c in cells):
+                continue
+            at = next((k for k, c in enumerate(cells) if PRIORITY.match(c) and PRIORITY.match(c).group(2).strip() == ""), None)
+            text = " | ".join(c for c in cells if c)
+            after = [c for c in cells[at + 1:] if c] if at is not None else []
+            if at is not None:  # the fix or the decision is the row's last cell
+                out.append((PRIORITY.match(cells[at]).group(1).upper(), text,
+                            bool(after) and bool(STARTS_RESOLVED.match(after[-1]))))
+            elif any(SEVERITY_CELL.match(c) for c in cells) and not all(SEVERITY_HEAD.match(c) for c in cells if c):
+                out.append((None, text, False))  # a row graded by severity (a header of severities is not)
+            continue
+        m = ITEM.match(line)
+        if not m:
+            continue
+        indent, text, subs = len(m.group(1).expandtabs()), m.group(2), []
+        while i < len(lines) and lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) > indent:
+            sub = ITEM.match(lines[i])
+            if sub and PRIORITY.match(sub.group(2)):
+                break  # a finding of its own
+            if sub:
+                subs.append(sub.group(2).strip())  # a sub-bullet: the fix, or a note
+            elif subs:
+                subs[-1] += " " + lines[i].strip()
+            else:
+                text += " " + lines[i].strip()  # a wrapped line
+            i += 1
+        p = PRIORITY.match(text)
+        if p:
+            done = resolved(p.group(2)) or any(STARTS_RESOLVED.match(x) for x in subs)
+            shown = " ".join([f"{p.group(1).upper()}{p.group(2)}".strip(), *subs])
+            out.append((p.group(1).upper(), shown, done))
+        elif SEVERITY_ITEM.match(text):
+            out.append((None, text.strip(), False))
+    return out
+
+
+def skills_problems(text: str, skills: list[str], where: str) -> list[str]:
+    """What the critique's `## Skills` sections lack (FLEET-004): a subsection per skill, its date, and
+    a fix or a decision for every P0, P1 and P2 finding. Every Skills section and every subsection of a
+    skill is read, so a later run is checked like the first. Shape only: the reviewer judges the content."""
+    if not skills:
+        return []
+    found = sections(unfenced(text), "Skills")
+    if not found:
+        return [f'{where} lacks the section "Skills" (one "### <skill id>" subsection per skill the critique ran: '
+                f'{", ".join(skills)}; see docs/ux-quality.md §4)']
+    problems = []
+    for skill in skills:
+        subs = [b for level, body in found for lv, b in sections(body, skill) if lv > level]
+        if not subs:
+            problems.append(f'{where}, Skills: no "### {skill}" subsection (run the skill and record what it found)')
+        for sub in subs:
+            dates = RAN.findall(sub)
+            try:
+                ok = bool(dates) and bool(datetime.date.fromisoformat(dates[0]))
+            except ValueError:
+                ok = False
+            if not ok:
+                problems.append(f'{where}, {skill}: no "Ran: YYYY-MM-DD" line saying when the skill ran')
+            for prio, item, done in findings(sub):
+                item = item if len(item) <= 90 else item[:87] + "…"
+                if prio is None:
+                    problems.append(f'{where}, {skill}: "{item}" has a severity but no priority; write it as P0, P1, P2 or P3')
+                elif prio in ("P0", "P1", "P2") and not done:
+                    problems.append(f'{where}, {skill}: open finding "{item}" — end it with "— fixed in <commit or file>" '
+                                    'or "— decided: <reason>"')
+    return problems
 
 
 def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
@@ -105,6 +247,7 @@ def piece_problems(piece: str, files: list[str], cfg: dict) -> list[str]:
         for sec in cfg["critique_sections"]:
             if not re.search(rf"(?mi)^#+\s*{re.escape(sec)}\b", text):
                 problems.append(f"{piece}: {cfg['critique_file']} lacks the section \"{sec}\"")
+        problems += skills_problems(text, cfg["critique_skills"], f"{piece}: {cfg['critique_file']}")
     return problems
 
 
