@@ -61,6 +61,11 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   whose CI runs gitleaks needs its own `.gitleaks.toml` allowlist for the files it registers. A secret in a shell command line stays blocked whatever the registry says. The doctor
   validates the bounds and lists every active entry. Separately, the guard reads a variable reference
   (`${VAR}`, `$VAR` in capitals, `${{ secrets.X }}`) where a URL's password goes as no secret; a literal still is.
+- `backlog/ledger-corrections.toml` (next to the backlog, but protected like `guard-allow.toml`) — the ledger's
+  approved corrections: `[[row]]` story, commit, kind (`backfill`, `late`, `retract`), evidence, approver, date.
+  Product-owned (`_skip_if_exists`) and the human's: the Claude hook blocks writing it and running
+  `ledger.py backfill --accept`, which also needs a terminal and a confirmation; a commit that changes it needs
+  `keelokit.allowTamper` (the template's comments-only file may be added). Append-only (INV-008).
 
 The process rules that came from long parallel use (CI budget, local gate, sessions, migrations,
 flaky tests, formatting, debt) are listed with their reason and check in [process-rules.md](process-rules.md).
@@ -106,7 +111,13 @@ reverted), `in-version` (the first `v*` tag containing it), `in-staging` and `in
 schema-1 document every other tool reads. With a cut history every state is `unknown` with the reason,
 never a lower one, and the git calls are a fixed number however many stories there are. The design,
 the contracts and the plan are in [ledger.md](ledger.md); `[ledger]` in `.keelokit/state.toml`
-configures it (stories glob, ids from front matter or file names, trunk, `since`).
+configures it (stories glob, ids from front matter or file names, trunk, `since`). History without trailers
+is reconstructed once from `backlog/ledger-corrections.toml`: `ledger.py backfill --propose [--from FILE…]`
+writes candidate rows with a confidence and their evidence (commits and merged branches that name the id, train
+sheets, a `BOARD.md`, Harbor's imported board) to a git-ignored file, `ledger.py correct` proposes one late
+attribution, and a person accepts them with `backfill --accept`; an accepted row makes its story `on-trunk`,
+marked reconstructed. `ledger.py check` lists the differences (`CORRECTION_INVALID`, `CORRECTION_EDITED`), which
+the doctor reports too.
 
 ## Lifecycle
 
