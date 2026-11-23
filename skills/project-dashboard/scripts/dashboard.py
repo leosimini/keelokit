@@ -102,12 +102,12 @@ T = {
         "story_blocked": "Espera a {deps}",
         "story_gap": "Espera respuesta a {gaps}",
         "story_unknown": "Desconocido",
-        "story_unknown_why": "El clon es superficial (shallow): esta historia puede estar terminada. Corré git fetch --unshallow origin main",
-        "history_unknown": ("Avance desconocido: el clon es superficial (shallow) y tiene {n} commit de main. Corré git fetch --unshallow origin main",
-                            "Avance desconocido: el clon es superficial (shallow) y tiene {n} commits de main. Corré git fetch --unshallow origin main"),
+        "story_unknown_why": "El clon es superficial (shallow): esta historia puede estar terminada. Corré python3 .keelokit/bin/ledger.py history --ensure",
+        "history_unknown": ("Avance desconocido: el clon es superficial (shallow) y tiene {n} commit de main. Corré python3 .keelokit/bin/ledger.py history --ensure",
+                            "Avance desconocido: el clon es superficial (shallow) y tiene {n} commits de main. Corré python3 .keelokit/bin/ledger.py history --ensure"),
         "next_unknown": "Traé la historia completa",
-        "next_unknown_d": "El clon es superficial (shallow): una historia sin su marca puede estar terminada. Corré git fetch --unshallow origin main.",
-        "wait_history_unknown": "El clon es superficial (shallow): no se sabe qué historias están terminadas. Corré git fetch --unshallow origin main",
+        "next_unknown_d": "El clon es superficial (shallow): una historia sin su marca puede estar terminada. Corré python3 .keelokit/bin/ledger.py history --ensure.",
+        "wait_history_unknown": "El clon es superficial (shallow): no se sabe qué historias están terminadas. Corré python3 .keelokit/bin/ledger.py history --ensure",
         "story_progress": "En curso",
         "story_unknown_why_ledger": "El registro (ledger.py) no puede decir el estado de esta historia. Corré python3 .keelokit/bin/ledger.py para ver por qué",
         "history_unknown_ledger": "Avance desconocido: el registro (.keelokit/bin/ledger.py) no puede responder. Corré python3 .keelokit/bin/ledger.py para ver por qué",
@@ -347,12 +347,12 @@ T = {
         "story_blocked": "Waits for {deps}",
         "story_gap": "Waits for an answer to {gaps}",
         "story_unknown": "Unknown",
-        "story_unknown_why": "The clone is shallow: this story may be done. Run git fetch --unshallow origin main",
-        "history_unknown": ("Progress unknown: the clone is shallow and has {n} commit of main. Run git fetch --unshallow origin main",
-                            "Progress unknown: the clone is shallow and has {n} commits of main. Run git fetch --unshallow origin main"),
+        "story_unknown_why": "The clone is shallow: this story may be done. Run python3 .keelokit/bin/ledger.py history --ensure",
+        "history_unknown": ("Progress unknown: the clone is shallow and has {n} commit of main. Run python3 .keelokit/bin/ledger.py history --ensure",
+                            "Progress unknown: the clone is shallow and has {n} commits of main. Run python3 .keelokit/bin/ledger.py history --ensure"),
         "next_unknown": "Fetch the full history first",
-        "next_unknown_d": "The clone is shallow: a story without its mark may be done. Run git fetch --unshallow origin main.",
-        "wait_history_unknown": "The clone is shallow: which stories are done is unknown. Run git fetch --unshallow origin main",
+        "next_unknown_d": "The clone is shallow: a story without its mark may be done. Run python3 .keelokit/bin/ledger.py history --ensure.",
+        "wait_history_unknown": "The clone is shallow: which stories are done is unknown. Run python3 .keelokit/bin/ledger.py history --ensure",
         "story_progress": "In progress",
         "story_unknown_why_ledger": "The ledger can't say this story's state. Run python3 .keelokit/bin/ledger.py to see why",
         "history_unknown_ledger": "Progress unknown: the ledger (.keelokit/bin/ledger.py) can't answer. Run python3 .keelokit/bin/ledger.py to see why",
@@ -779,36 +779,42 @@ def cut_commits(run, shas: list[str], known: set[str]) -> bool:
 
 
 ON_TRUNK = ("on-trunk", "in-version", "in-staging", "in-production")
+STATES = {"defined", "ready", "in-progress", "delivered", "unknown", *ON_TRUNK}  # docs/ledger.md, "States"
 
 
-def ledger_read(root: Path, ref: str) -> tuple[dict[str, dict], dict | None]:
+def ledger_read(root: Path, ref: str | None) -> tuple[dict[str, dict] | None, dict | None]:
     """LEDGER-006: the trunk's story records by id from the project's `ledger.py --json` (docs/ledger.md, "The
     principle": one reader, so the page never reads `Story:` trailers for states), and, when the states are
-    unknown, why: kind "shallow" (the ledger reads the history as cut) or "ledger" (no ledger.py, no answer,
-    a story it reads as unknown). Unknown is never shown as a lower state."""
+    unknown, why: kind "shallow" (the ledger reads the history as cut) or "ledger" (no ledger.py, no answer, an
+    answer outside schema 1, a story it reads as unknown). Unknown is never shown as a lower state. None for the
+    records: the ledger found no trunk (exit 2) and there is no main either (the page's "no main")."""
     ledger = root / ".keelokit/bin/ledger.py"
-    commits = len(git(root, "rev-list", ref).split())
-    why = "no .keelokit/bin/ledger.py (/keelokit:harness-upgrade brings it)"
-    if ledger.is_file():
-        try:
-            out = subprocess.run([sys.executable, str(ledger), "--json"], cwd=root, capture_output=True, text=True,
-                                 timeout=120)
-            facts = json.loads(out.stdout) if out.returncode in (0, 1) else None
-            records = {x["id"]: x for x in facts["stories"]
-                       if isinstance(x, dict) and isinstance(x.get("id"), str) and isinstance(x.get("state"), str)}
-            history = facts["history"]
-        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
-            why = "ledger.py could not answer: run python3 .keelokit/bin/ledger.py"
-        else:
-            unknown = next((x for x in records.values() if x["state"] == "unknown"), None)
-            if history != "incomplete" and not unknown:
-                return records, None
-            reason = (unknown or {}).get("reason") or "the history is incomplete"
-            kind = "shallow" if history == "incomplete" else "ledger"
-            return {}, {"kind": kind, "commits": commits, "ref": ref, "reason": reason,
-                        "fix": "python3 .keelokit/bin/ledger.py history --ensure" if kind == "shallow"
-                        else "python3 .keelokit/bin/ledger.py"}
-    return {}, {"kind": "ledger", "commits": commits, "ref": ref, "reason": why, "fix": "python3 .keelokit/bin/ledger.py"}
+    commits = len(git(root, "rev-list", ref).split()) if ref else 0
+    gap = {"kind": "ledger", "commits": commits, "ref": ref, "fix": "python3 .keelokit/bin/ledger.py",
+           "reason": "no .keelokit/bin/ledger.py (/keelokit:harness-upgrade brings it)"}
+    if not ledger.is_file():
+        return {}, gap
+    try:
+        out = subprocess.run([sys.executable, str(ledger), "--json"], cwd=root, capture_output=True, text=True,
+                             timeout=120)
+        facts = json.loads(out.stdout) if out.returncode in (0, 1) else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        out, facts = None, None
+    if out is not None and out.returncode == 2 and ref is None:
+        return None, None
+    stories = facts.get("stories") if isinstance(facts, dict) else None
+    history = facts.get("history") if isinstance(facts, dict) else None
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or not isinstance(history, str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and x.get("state") in STATES for x in stories)):
+        return {}, {**gap, "reason": "ledger.py could not answer: run python3 .keelokit/bin/ledger.py"}
+    unknown = next((x for x in stories if x["state"] == "unknown"), None)
+    if history == "incomplete":
+        return {}, {**gap, "kind": "shallow", "reason": "the history is incomplete",
+                    "fix": "python3 .keelokit/bin/ledger.py history --ensure"}
+    if unknown or (history != "complete" and not history.startswith("snapshot:")):
+        reason = (unknown or {}).get("reason")
+        return {}, {**gap, "reason": reason if isinstance(reason, str) and reason else f"history {history}"}
+    return {x["id"]: x for x in stories}, None
 
 
 def unknown_figure(s: dict, t: dict) -> str:
@@ -863,8 +869,11 @@ def collect(root: Path) -> dict:
     in_git = git(root, "rev-parse", "--is-inside-work-tree").strip() == "true"
     has_commits = bool(git(root, "rev-parse", "--verify", "--quiet", "HEAD").strip()) if in_git else False
     ref = main_ref(root) if has_commits else None
-    records, gap = ledger_read(root, ref) if ref else ({}, None)
+    records, gap = ledger_read(root, ref) if has_commits else ({}, None)
+    no_trunk = records is None  # the ledger found no trunk, and there is no main
+    records = records or {}
     done = {sid for sid, x in records.items() if x["state"] in ON_TRUNK}
+    by_path = {x["path"]: x for x in records.values() if isinstance(x.get("path"), str)}
     first_commit = (git(root, "log", "--reverse", "--format=%h %s").splitlines() or [""])[0] if has_commits else ""
 
     stories = []
@@ -883,15 +892,16 @@ def collect(root: Path) -> dict:
     for s in stories:
         # States are the ledger's. A story file not on the trunk yet (a plan on a branch, no commit yet) has
         # no record there: ready or blocked by its dependencies' ledger states.
-        rec = records.get(s["id"])
+        rec = by_path.get(s["path"]) or records.get(s["id"])  # by file, so any `[ledger] id_from` matches
         waiting = [d for d in s["depends_on"] if d not in done]
-        s["version"] = rec.get("version") if rec else None
-        s["branches"] = [b for b in (rec or {}).get("branches") or [] if isinstance(b, str)]
-        if s["id"] in done:
+        s["version"] = rec.get("version") if rec and isinstance(rec.get("version"), str) else None
+        s["branches"] = [b for b in rec.get("branches") if isinstance(b, str)] \
+            if rec and isinstance(rec.get("branches"), list) else []
+        if rec and rec["state"] in ON_TRUNK:
             s["status"] = "done"
         elif gap:  # LEDGER-001: not proven done, and the history can't prove it is not
             s["status"], s["reason"], s["unknown_kind"] = "unknown", gap["reason"], gap["kind"]
-        elif rec and rec["state"] == "in-progress":
+        elif rec and rec["state"] in ("in-progress", "delivered"):
             s["status"] = "progress"
         elif rec and rec["state"] != "ready" or not rec and waiting:
             s["status"], s["waits"] = "blocked", waiting
@@ -1091,7 +1101,7 @@ def collect(root: Path) -> dict:
         "adrs": adrs, "bugbashes": bugbashes, "history": history, "security": security,
         "environments": environments, "has_deploy": bool(deploy), "survey": survey, "mapping": mapping,
         "harness": harness, "plugin_version": plugin_version, "credit": credit,
-        "profile": profile, "local_env": local_env, "drift": drift, "no_main": bool(has_commits and stories and not ref),
+        "profile": profile, "local_env": local_env, "drift": drift, "no_main": bool(has_commits and stories and no_trunk),
         "history_gap": gap,
     }
 
@@ -1148,8 +1158,7 @@ def next_step(s: dict, lang: str) -> dict:
         unknown = bool(s["history_gap"])  # LEDGER-001: the stories may be done, not blocked
         return {"title": t[unknown_key(s, "next_unknown") if unknown else "next_blocked"],
                 "detail": t[unknown_key(s, "next_unknown_d") if unknown else "next_blocked_d"],
-                "command": ("git fetch --unshallow origin main" if s["history_gap"]["kind"] == "shallow"
-                            else s["history_gap"]["fix"]) if unknown else "/keelokit", "anchor": "stage-backlog"}
+                "command": s["history_gap"]["fix"] if unknown else "/keelokit", "anchor": "stage-backlog"}
     last_story = max((e["date"] for e in s["history"] if e["kind"] == "story"), default="")
     last_bb = max((b["date"] for b in s["bugbashes"]), default="")
     if s["stories"] and last_story and last_bb < last_story:
@@ -1814,9 +1823,11 @@ def story_row(st: dict, links: Links, t: dict, view: str = "") -> str:
     deps = (f'<p class="muted">{esc(t["depends"])}: ' + ", ".join(f"<code>{esc(d)}</code>" for d in st["depends_on"]) + "</p>") \
         if st["depends_on"] else ""
     anchor = f' id="story-{view}-{esc(st["id"])}"' if view else ""
+    why_key = "story_unknown_why" + ("_ledger" if st.get("unknown_kind") == "ledger" else "")
+    why = f' title="{esc(t[why_key])}"' if status == "unknown" else ""
     return (f'<details class="doc story"{anchor}><summary><span class="sid">{esc(st["id"])}</span>'
             f'<span class="stitle">{esc(st["title"])}</span><span class="epic">{esc(st["epic"])}</span>'
-            f'<span class="pill {"unk" if status == "unknown" else status}"{f' title="{esc(t["story_unknown_why" + ("_ledger" if st.get("unknown_kind") == "ledger" else "")])}"' if status == "unknown" else ""}>{esc(label)}</span>{CHEV}</summary>'
+            f'<span class="pill {"unk" if status == "unknown" else status}"{why}>{esc(label)}</span>{CHEV}</summary>'
             f'<div class="md">{f"<p>{link}</p>" if link else ""}{deps}{build}'
             f'{markdown(st["body"], links, st["path"])}</div></details>')
 

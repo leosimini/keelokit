@@ -93,8 +93,8 @@ Its card has the state, earlier attempts (`Dropped:`) and why they stopped, the 
 `Story:`/`Part-of:` commits, escape rows and bug-bash findings that name it, corrections and the branches
 of any other session on it. Read what it says before step 2: a finding or an abandoned attempt changes
 the contract. A story already `on-trunk` or later is not built again; one `in-progress` on another
-branch is someone else's: pick another or say so; `unknown` means the history is cut
-(`ledger.py history --ensure`), never "not started".
+branch is someone else's: pick another or say so; `unknown` is never "not started": `ledger.py` says
+why (a cut history: `ledger.py history --ensure`).
 
 A story that brings something new into the project — its first migration, a new app, a deploy
 config, personal data, payments — updates `traits` in `.keelokit/profile.toml` in the same change;

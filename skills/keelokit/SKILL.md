@@ -31,7 +31,7 @@ Answer three things, in this order, in at most ten lines:
    | Blocking context gaps | Ask the gap questions (owner = the user) and update `docs/context/` |
    | Several sessions or worktrees running, or the user asks how they are doing | `/keelokit:coordinate` (`python3 .keelokit/bin/status.py`) |
    | The CI of main is red or cancelled twice in a row (`python3 .keelokit/bin/ci.py health`) | `ci.py jobs` for the failing job and step; fix before starting stories |
-   | Story states `unknown` (the ledger can't read the history) | `python3 .keelokit/bin/ledger.py history --ensure`, then route again; never treat unknown as not done |
+   | Story states `unknown` | `python3 .keelokit/bin/ledger.py` says why (a cut history: `ledger.py history --ensure`); fix it, then route again; never treat unknown as not done |
    | Stories ready | Propose `/keelokit:build-story` on the first ready story (or N of the same wave): `python3 .keelokit/bin/ledger.py next` lists them, without the ones in progress elsewhere |
    | A wave just finished, or a release is near | Propose `/keelokit:check-bugbash` |
    | A wave is done and its bug bash is clean | Propose `/keelokit:ship-release` (and `/keelokit:check-security` before the first production release) |

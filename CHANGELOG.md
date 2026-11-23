@@ -3,13 +3,13 @@
 ## Unreleased
 
 - **The doctor, the dashboard, `status.py` and the skills read the ledger (LEDGER-006).** Story states come from
-  `ledger.py --json` alone, so every tool gives the same answer. The doctor's done count is the ledger's (reverts
-  and approved corrections included); stories done only by a correction row are listed as *Reconstructed* and
+  `ledger.py --json` alone, so every tool gives the same answer, whatever `[ledger]` configures (trunk, story
+  files, ids). The doctor's done count is the ledger's (reverts and approved corrections included); stories done only by a correction row are listed as *Reconstructed* and
   skipped by TRACE-1 and INV-1, which they predate; "Next ready stories" leaves out work in progress elsewhere.
   The dashboard shows the version a story is in and marks *In progress* the stories with `Part-of:` commits on
   another machine's branch; `status.py` lists them. When the ledger can't answer (a cut history, no
   `.keelokit/bin/ledger.py`), all three say unknown, never a lower count — in a shallow clone that now includes
-  stories whose `Story:` commit is visible. `build-story` reads `ledger.py show <ID>` before its contract and
+  stories whose `Story:` commit is visible, and the fix they name is `ledger.py history --ensure`. `build-story` reads `ledger.py show <ID>` before its contract and
   writes what was decided and left out in the `Story:` commit's body; `coordinate` checks a landing with `show`,
   `ship-release` lists a version's stories with `ledger.py --release`, and `plan-backlog`, `keelokit`,
   `check-health` and `project-report` read states from the ledger. Upgrading: `harness-upgrade` brings

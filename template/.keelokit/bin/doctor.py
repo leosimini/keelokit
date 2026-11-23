@@ -808,35 +808,47 @@ def check_escapes() -> int:
 
 
 ON_TRUNK = ("on-trunk", "in-version", "in-staging", "in-production")
+STATES = {"defined", "ready", "in-progress", "delivered", "unknown", *ON_TRUNK}  # docs/ledger.md, "States"
 
 
-def ledger_states() -> tuple[dict[str, dict], str | None]:
+def ledger_states() -> tuple[dict[str, dict] | None, str | None]:
     """LEDGER-006: the trunk's story records by id, from `ledger.py --json` (docs/ledger.md, "The principle":
     one reader, so the doctor never reads `Story:` trailers itself), and why the states are unknown, or None.
-    Unknown when the ledger is missing or cannot answer, the history is incomplete, or any story is unknown:
-    never a lower state. A repo with no commit yet has nothing on the trunk."""
+    Unknown when the ledger is missing or cannot answer, its answer is not schema 1 as documented, the history
+    is incomplete, or any story is unknown: never a lower state. A repo with no commit yet has nothing on the
+    trunk. None for the records: the ledger found no trunk (exit 2) and there is no main either."""
     if not git("rev-parse", "--verify", "--quiet", "HEAD").strip():
         return {}, None
     ledger = ROOT / ".keelokit/bin/ledger.py"
     if not ledger.is_file():
         return {}, "no .keelokit/bin/ledger.py to read story states from (`/keelokit:harness-upgrade` brings it)"
-    why = ""
     try:
         out = subprocess.run([sys.executable, str(ledger), "--json"], cwd=ROOT, capture_output=True, text=True,
                              timeout=120)
-        why = (out.stderr.strip().splitlines() or [""])[-1].removeprefix("Keelokit: ")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {}, f"ledger.py could not answer ({e.__class__.__name__})"
+    why = (out.stderr.strip().splitlines() or [""])[-1].removeprefix("Keelokit: ")
+    if out.returncode == 2 and main_ref() is None:
+        return None, None
+    try:
         facts = json.loads(out.stdout) if out.returncode in (0, 1) else None
-        records = {s["id"]: s for s in facts["stories"] if isinstance(s, dict) and isinstance(s.get("id"), str)
-                   and isinstance(s.get("state"), str)}
-        history = facts["history"]
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+    except ValueError:
+        facts = None
+    stories = facts.get("stories") if isinstance(facts, dict) else None
+    history = facts.get("history") if isinstance(facts, dict) else None
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or not isinstance(history, str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and x.get("state") in STATES for x in stories)):
         return {}, f"ledger.py could not answer ({why or 'run `python3 .keelokit/bin/ledger.py`'})"
-    unknown = [s for s in records.values() if s["state"] == "unknown"]
+    records = {x["id"]: x for x in stories}
+    unknown = [x for x in stories if x["state"] == "unknown"]
     if history == "incomplete" or unknown:
-        reason = next((s.get("reason") for s in unknown if isinstance(s.get("reason"), str) and s.get("reason")), None)
-        reason = reason or next((d.get("detail") for d in facts.get("diffs", []) if isinstance(d, dict)
+        diffs = facts.get("diffs") if isinstance(facts.get("diffs"), list) else []
+        reason = next((x["reason"] for x in unknown if isinstance(x.get("reason"), str) and x["reason"]), None)
+        reason = reason or next((d["detail"] for d in diffs if isinstance(d, dict)
                                  and d.get("code") == "HISTORY_INCOMPLETE" and isinstance(d.get("detail"), str)), None)
         return {}, reason or "the ledger reads the history as incomplete (run `python3 .keelokit/bin/ledger.py`)"
+    if history != "complete" and not history.startswith("snapshot:"):
+        return {}, f"the ledger's history is {history!r} (run `python3 .keelokit/bin/ledger.py`)"
     return records, None
 
 
@@ -937,18 +949,22 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             errors.append(f"{rel}: remove 'status' — status comes from git")
         if sid in stories:
             errors.append(f"{rel}: duplicate id {sid}")
+        meta["_path"] = rel.as_posix()
         stories[sid] = meta
-    records: dict[str, dict] = {}
-    gap = None
-    if stories and main_ref() is None:
-        if git("rev-parse", "--verify", "--quiet", "HEAD").strip():
-            errors.append(NO_MAIN.format(what="count done stories from"))
-    elif stories:
-        records, gap = ledger_states()
-    # States come from the ledger; a story file not on the trunk yet (a plan on a branch) has no record there:
-    # not done, and ready once every dependency is on the trunk by the ledger.
-    done = {sid for sid in stories if records.get(sid, {}).get("state") in ON_TRUNK}
-    reconstructed = sorted(sid for sid in done if records[sid].get("reconstructed") is True)
+    records, gap = ledger_states() if stories else ({}, None)
+    if records is None:  # no trunk for the ledger, and no main: as before, nothing counts as done
+        errors.append(NO_MAIN.format(what="count done stories from"))
+        records = {}
+    # States come from the ledger (its ids and files, whatever `[ledger]` configures). A story file is matched
+    # to its record by path, else by id; one not on the trunk yet (a plan on a branch) has no record: not done,
+    # and ready once every dependency is on the trunk by the ledger.
+    by_path = {r["path"]: r for r in records.values() if isinstance(r.get("path"), str)}
+    rec = {sid: by_path.get(m["_path"]) or records.get(sid) for sid, m in stories.items()}
+    on_trunk = {i for i, r in records.items() if r["state"] in ON_TRUNK}
+    done = {sid for sid, r in rec.items() if r and r["state"] in ON_TRUNK}
+    reconstructed = sorted(i for i in on_trunk if records[i].get("reconstructed") is True)
+    matched = {r["id"] for r in rec.values() if r}
+    done_count, total = len(on_trunk), len(records) + sum(1 for r in rec.values() if not r)
     if gap:
         if os.environ.get("CI"):
             errors.append(f"done state unknown: {gap} (CI: checkout with `fetch-depth: 0`)")
@@ -997,7 +1013,7 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             clashes.append(f"stories {a} and {b} share wave {stories[a].get('wave')} and critical area {', '.join(sorted(shared))} — critical work goes one story at a time" + maybe)
     # Reconstructed stories (done by an approved correction row) predate TRACE-1 and INV-1: they skip both
     # and are listed apart (docs/ledger.md, decision 5).
-    checked = done - set(reconstructed)
+    checked = {sid for sid in done if rec[sid].get("reconstructed") is not True}
     corpus = cited_titles() if checked else ""
     # One pass over the titles, not one search per done story (NFR-1): every `<text>.S<n>` citation
     # (.S1 must not match .S10), keyed by the text's last characters at each length a done id has.
@@ -1015,14 +1031,18 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
         unproven = [i for i in stories[sid].get("invariants", []) if not proven[i]]
         if unproven:
             errors.append(f"story {sid} is done but no active test title cites invariant {', '.join(unproven)} (INV-1)")
+    waves = {sid: m.get("wave", 99) for sid, m in stories.items()}
     ready = [] if gap else [
         sid for sid, m in stories.items()
-        if (records[sid]["state"] == "ready" if sid in records
-            else all(d in done for d in m.get("depends_on", [])))
+        if (rec[sid]["state"] == "ready" if rec[sid] else all(d in on_trunk for d in m.get("depends_on", [])))
     ]
-    ready.sort(key=lambda s: (stories[s].get("wave", 99), s))
-    return {"total": len(stories), "done": done, "ready": ready, "stories": stories, "unknown": gap,
-            "reconstructed": reconstructed}
+    for i, r in ([] if gap else records.items()):  # ready on the trunk, its file not checked out here
+        if r["state"] == "ready" and i not in matched:
+            ready.append(i)
+            waves[i] = r["wave"] if isinstance(r.get("wave"), int) and not isinstance(r.get("wave"), bool) else 99
+    ready.sort(key=lambda s: (waves[s], s))
+    return {"total": total, "done": done, "done_count": done_count, "ready": ready, "stories": stories,
+            "unknown": gap, "reconstructed": reconstructed}
 
 
 # ── Process checks: CI budget, the verify map, formatting, migrations, flaky tests, the debt ledger ──
@@ -1440,7 +1460,7 @@ def main() -> int:
         print("Keelokit:", f"gate pending → {pending}" if pending else "all gates approved")
         print(f"Context gaps: {gaps} ({blocking} blocking) · "
               + (f"Backlog: unknown, {backlog['unknown']}" if backlog["unknown"]
-                 else f"Backlog: {len(backlog['done'])}/{backlog['total']} done"))
+                 else f"Backlog: {backlog['done_count']}/{backlog['total']} done"))
         if backlog["ready"]:
             print("Next ready stories:", ", ".join(backlog["ready"][:3]))
         if profile is not None:
@@ -1459,7 +1479,7 @@ def main() -> int:
               + (f" · not applicable: {', '.join(not_applicable)}" if not_applicable else ""))
     print(f"  Invariants: {len(invariants)} · Critical areas: {len(areas)} · Escapes logged: {escapes}")
     print((f"  Backlog: unknown, {backlog['unknown']}" if backlog["unknown"]
-           else f"  Backlog: {len(backlog['done'])}/{backlog['total']} done")
+           else f"  Backlog: {backlog['done_count']}/{backlog['total']} done")
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))
     if backlog["reconstructed"]:
         print(f"  Reconstructed (approved corrections; TRACE-1 and INV-1 skip them): {', '.join(backlog['reconstructed'])}")

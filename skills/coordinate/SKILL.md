@@ -32,7 +32,7 @@ the rest of this skill is for `direct`.
    yourself (the ledger reads reverts, corrections and the history's gaps). **A session that ends well
    does not message you; don't wait for a message, check the card.** "Done" without that state is not
    done: send it back to land (rebase, `pnpm verify`, push) or land it yourself. An `unknown` state is
-   not "not landed": complete the history (`ledger.py history --ensure`) and ask again.
+   not "not landed": `ledger.py` says why (a cut history: `ledger.py history --ensure`); fix it and ask again.
 3. CI of main red, or two runs in a row without a green: stop starting stories; `python3
    .keelokit/bin/ci.py jobs` says which job and step; fix that first.
 4. Wait with one `until` loop on one condition, never with repeated polling.
