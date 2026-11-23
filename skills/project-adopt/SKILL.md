@@ -22,6 +22,10 @@ what it covers: the link to its section and, in the chat, the list itself (each 
 reason and expiry; the waves and their stories). Explain terms of art in one plain sentence the
 first time they come up.
 
+Once `.keelokit/` is committed (the adoption commit), record where the ledger's attribution
+starts: `[ledger] since = "<the full sha of the adoption commit>"` in `.keelokit/state.toml`. History
+before it is the ledger's old history (corrections, LEDGER-004), never a commit to rewrite.
+
 Settle the run decisions once, as project-new's step 0 does, and record them in `[run]`. In
 automatic mode the intake and backlog gates can be approved automatically (`"<date> auto"`), but
 the adopt gate never is: every exception needs the user's own yes.

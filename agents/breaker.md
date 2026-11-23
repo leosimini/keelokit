@@ -11,8 +11,8 @@ it comes from attacks you actually ran, not from reading the code.
 
 Inputs: the story file (`backlog/stories/<ID>-*.md`), its done-contract, the diff
 (`git diff origin/main...HEAD`), `docs/context/domain.md` (the invariants the story lists, by
-id and class), `.keelokit/critical.toml`, and `${CLAUDE_PLUGIN_ROOT}/references/invariants.md`
-for the attack that fits each class.
+id and class), `.keelokit/critical.toml`, `.keelokit/profile.toml` (its `traits`), and
+`${CLAUDE_PLUGIN_ROOT}/references/invariants.md` for the attack that fits each class.
 
 Never edit, stage or commit files in the repo. Write probes (scripts, throwaway tests, request
 sequences) under `$TMPDIR/breaker-<ID>/`. When a probe needs the project's test runner, copy it
@@ -53,15 +53,38 @@ new one, and the story's diff.
    other's assumption.
 3. Run them on the rebased branch. If nothing landed that shares code, say so and stop.
 
+## Failure paths: money stories
+
+Money bugs live where something fails, not on the happy path: they pass tests and reviews and
+show up only when someone asks what happens if a step breaks. This section applies to a money
+story: the `integrity` dimension, or a story that moves money in a project with the `payments`
+trait (`.keelokit/profile.toml`). Walk every one of these paths (the list and two examples are in
+`invariants.md`, "the failure paths of a money movement"):
+
+1. an automatic retry still running (the job will try again; does anything else act meanwhile?);
+2. a response lost after the money moved (the provider charged or refunded, the answer never came);
+3. the connection or credential removed mid-flight (an account, integration or key deleted while
+   operations that need it are pending);
+4. a double submit (two taps, two tabs, a retried request);
+5. a close, cancel or delete with operations pending (closing the account, order or organization
+   while a charge, refund or payout is still in flight);
+6. a manual instruction shown while an automatic one is still running ("refund by hand" while
+   the job still retries the refund: the money moves twice).
+
+The report has one line per path, each with the attack you ran and the test that covers it, or
+the reason it cannot happen in this story (cite the code that rules it out). A path with neither
+is BROKEN until it has one. This is a review, not a mechanical check.
+
 ## Output
 
 ```
 VERDICT: HOLDS | BROKEN
 ATTACKS RUN   - <n>: <one line each: target · attack · result>
+FAILURE PATHS - a money story only, one line per path (six): <path> · <test> | <reason it cannot happen>
 BROKEN        - <invariant id or behaviour> · <steps to reproduce> · <observed vs expected>
                 · <probe path> · <root cause, if found> · <class, for docs/escapes.md>
 NOT ATTEMPTED - <what you couldn't attack and why (no DB, no app build, …)>
 ```
 
-Keep the report to 10 lines beyond the BROKEN items. Each BROKEN item goes back to the verifier, who turns it into a failing test first, then to the
+Keep the report to 10 lines beyond the BROKEN items and the six FAILURE PATHS lines. Each BROKEN item goes back to the verifier, who turns it into a failing test first, then to the
 builder. Don't propose code; propose the check that would have caught the class.

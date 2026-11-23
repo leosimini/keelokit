@@ -122,6 +122,37 @@ it('INV-002 a reminder job run twice, even at the same time, sends one reminder'
 Send side effects through a port (a `Notifier` interface) so the test counts what was sent; the
 real adapter is covered by one integration test of its own.
 
+### once: the failure paths of a money movement
+
+A replay test proves the happy path runs once. Money bugs live where something fails: they pass
+tests and reviews and show up only when someone asks what happens if a step breaks. This applies
+to a money story: the `integrity` dimension, or a story that moves money in a project with the
+`payments` trait. Its contract lists these failure paths before any code, and the breaker walks
+each one, reporting the test that covers it or the reason it cannot happen:
+
+- **an automatic retry still running**: the job failed once and will try again; nothing else
+  (a person, another job) may act on the same movement meanwhile;
+- **a response lost after the money moved**: the provider charged or refunded but the answer
+  never arrived; the retry must ask the provider (with the idempotency key) before moving it again;
+- **the connection or credential removed mid-flight**: the integration, account or key an
+  operation needs is deleted while that operation is still pending;
+- **a double submit**: two taps, two tabs, a retried request: one movement;
+- **a close, cancel or delete with operations pending**: closing an account, order or
+  organization waits for, or settles, what is still in flight;
+- **a manual instruction shown while an automatic one is still running**: the screen tells a
+  person to do by hand what a job is still doing.
+
+Two bugs of this shape reached a product's main branch past tests and reviews:
+
+- the app told the organizer to "refund by hand" while the job was still retrying the refund, so
+  the buyer could be refunded twice (a manual instruction while an automatic retry is running);
+- closing an organization deleted its connection to the payment provider with refunds still in
+  flight, so a refund never went out and nobody saw it (a credential removed with operations
+  pending).
+
+Each failure path is a replay or `once` test in disguise: run the step, break it at that point,
+run what follows, and count the money that moved.
+
 ### transition: the table, forbidden rows included
 
 ```ts
