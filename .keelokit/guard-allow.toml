@@ -2,4 +2,5 @@
 rule = "SEC-1"
 path = "apps/mobile/google-services.json"
 reason = "Firebase key, public by design"
-approver = ""
+approver = "Leo"
+expires = "2000-01-01"
