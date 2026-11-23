@@ -166,9 +166,9 @@ def verify_line(common: Path) -> str:
 
 
 def workers_line(common: Path) -> str:
-    """The workers the last verify that planned some chose, and why ("integration: 2 workers, 5.1 GB free, ..."); '' when none."""
+    """The workers the last verify chose and why ("integration: 2 workers, 5.1 GB free, ..."); '' when it planned none."""
     try:
-        history = (common / "keelokit-verify.history").read_text().splitlines()
+        history = (common / "keelokit-verify.history").read_text(errors="replace").splitlines()
     except OSError:
         return ""
     for raw in reversed(history):
@@ -176,8 +176,7 @@ def workers_line(common: Path) -> str:
             why = json.loads(raw).get("workers_why")
         except (ValueError, AttributeError):
             continue
-        if why:
-            return f"verify workers: {why}"
+        return f"verify workers: {why}" if why else ""
     return ""
 
 
