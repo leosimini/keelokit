@@ -12,3 +12,9 @@ mode = "auto"        # Leo delegated coordination and decisions to the coordinat
                      # it goes on alone and stops only where a person is required (see docs/ledger.md)
 build = "serial"     # one story at a time: most stories touch the guard, the doctor or the dashboard
 decided = "2026-09-28"
+
+[ledger]
+# Attribution is required from this commit on: the merge of the ledger's merge-attribution fix (#19).
+# Before it, main holds hand-made history, the ESC-090 junk commits and trailers written outside the
+# last paragraph; corrections (backfill) cover what matters there, `since` keeps it out of `check`.
+since = "8be093f1c2bcabcbb2adedc0354a149f9b6b8344"
