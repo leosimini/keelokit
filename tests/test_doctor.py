@@ -1456,7 +1456,80 @@ class DoctorReadsTheLedgerTest(LedgerRepo, unittest.TestCase):
         if unknown:
             self.assertRegex(line, r"Backlog: unknown", r.stdout)
         else:
-            self.assertEqual(self.backlog_count(line), (len(self.on_trunk(facts)), len(facts["stories"])), r.stdout)
+            # ESC-135: only the done count; the total also counts story files of this checkout not yet on the
+            # trunk (a plan branch), which the ledger does not list.
+            self.assertEqual(self.backlog_count(line)[0], len(self.on_trunk(facts)), r.stdout)
+
+    def test_LEDGER_006_S1_ESC_138_a_trunk_other_than_main_is_the_ledgers_trunk(self):
+        self.write(".keelokit/state.toml", '[ledger]\ntrunk = "develop"\n')
+        self.commit("chore: the trunk is develop\n\nNo-story: docs")
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        self.git("branch", "-m", "main", "develop")
+        want = self.on_trunk(self.ledger())
+        self.assertEqual(want, {"AUTH-001"}, "fixture")
+        r = self.doctor("--brief")
+        self.assertEqual(self.backlog_count(r.stdout)[0], 1, r.stdout)
+        self.assertNotIn("no main or origin/main", self.doctor().stdout)
+
+    def test_LEDGER_006_S1_ESC_139_the_done_count_is_the_ledgers_whatever_its_stories_config(self):
+        """`[ledger] id_from = "filename"` and `stories` elsewhere: the ledger's ids and files, not the doctor's."""
+        text = STORY.format(id="AUTH-0001", wave=1, touches='"apps/auth-001/"')
+        (self.root / "backlog/stories/AUTH-001-x.md").write_text(text)
+        self.write(".keelokit/state.toml", '[ledger]\nid_from = "filename"\n')
+        self.commit("chore: ids from file names\n\nNo-story: docs")
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        self.assertIn("AUTH-001", self.on_trunk(self.ledger()), "fixture")
+        out = self.doctor("--brief").stdout
+        self.assertEqual(self.backlog_count(out)[0], len(self.on_trunk(self.ledger())), out)
+        # Stories in another folder: the doctor's backlog checks don't read them, its count still is the ledger's.
+        self.write(".keelokit/state.toml", '[ledger]\nstories = "roadmap/*.md"\n')
+        self.write("roadmap/AUTH-009-x.md", STORY.format(id="AUTH-009", wave=1, touches='"apps/auth-009/"'))
+        self.commit("chore: roadmap\n\nNo-story: docs")
+        self.commit("feat: auth nine\n\nWhy.\n\nStory: AUTH-009")
+        self.assertEqual(self.on_trunk(self.ledger()), {"AUTH-009"}, "fixture")
+        out = self.doctor("--brief").stdout
+        self.assertEqual(self.backlog_count(out)[0], 1, out)
+
+    def test_LEDGER_006_S1_ESC_139_a_branch_behind_the_trunk_counts_what_the_ledger_counts(self):
+        """A plan branch cut before AUTH-007 landed: AUTH-007's file is not checked out, yet it is done, and a
+        new story that depends on it is ready (never a lower state than the ledger's)."""
+        base = self.git("rev-parse", "HEAD").strip()
+        self.write("backlog/stories/AUTH-007-x.md", STORY.format(id="AUTH-007", wave=1, touches='"apps/auth-007/"'))
+        self.commit("feat: auth seven\n\nWhy.\n\nStory: AUTH-007")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.git("checkout", "-q", "-b", "plan", base)
+        self.write("backlog/stories/AUTH-008-x.md",
+                   STORY.format(id="AUTH-008", wave=0, touches='"apps/auth-008/"').replace("depends_on = []", 'depends_on = ["AUTH-007"]'))
+        self.commit("docs: plan AUTH-008\n\nNo-story: docs")
+        out = self.doctor("--brief").stdout
+        self.assertEqual(self.backlog_count(out)[0], len(self.on_trunk(self.ledger())), out)
+        self.assertIn("AUTH-008", out.split("Next ready stories:")[1], out)
+
+    def fake_ledger(self, facts: object) -> None:
+        self.write(".keelokit/bin/ledger.py", f"import sys\nsys.stdout.write({json.dumps(json.dumps(facts))})\n")
+
+    def test_LEDGER_006_S6_ESC_140_odd_ledger_json_is_unknown_never_a_crash(self):
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        story = {"id": "AUTH-001", "state": "on-trunk", "branches": [], "version": None, "reconstructed": False}
+        cases = {
+            "diffs null": {"schema": 1, "history": "incomplete", "stories": [], "diffs": None},
+            "stories an object": {"schema": 1, "history": "complete", "stories": {}, "diffs": []},
+            "another schema": {"schema": 5, "history": "complete", "stories": [story], "diffs": []},
+            "a state it doesn't know": {"schema": 1, "history": "complete", "diffs": [],
+                                        "stories": [{**story, "state": "frobbed"}]},
+            "no history": {"schema": 1, "stories": [story], "diffs": []},
+            "a list": [],
+        }
+        for why, facts in cases.items():
+            with self.subTest(why):
+                self.fake_ledger(facts)
+                for args in (["--brief"], []):
+                    r = self.doctor(*args)
+                    self.assertRegex(r.stdout, r"Backlog: unknown, ", r.stdout)
+        # Odd values in fields the doctor doesn't need don't make it unknown, nor crash it.
+        self.fake_ledger({"schema": 1, "history": "complete", "diffs": None,
+                          "stories": [{**story, "branches": 5, "version": 5, "reason": 7}]})
+        self.assertIn("Backlog: 1/6 done", self.doctor("--brief").stdout)
 
     def test_LEDGER_006_S2_a_reconstructed_story_skips_TRACE_1_and_INV_1_and_is_listed_apart(self):
         self.write("docs/context/domain.md", "# domain\n\n- [INV-001] [MUST] Sessions expire — class: consistency (S1)\n")
