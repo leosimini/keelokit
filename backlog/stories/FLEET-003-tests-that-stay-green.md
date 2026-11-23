@@ -74,3 +74,28 @@ Scenario: [S6] A generated project gets them
 ## Definition of done
 `scripts/verify.sh` and `scripts/test-template.sh` green, every scenario covered by a test titled with its
 id, a CHANGELOG line, `Story: FLEET-003` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-23
+- **New projects only.** The arch-specs ship in `template/packages/shared/src/arch/` (byte-identical copies of
+  `references/arch-specs/*.ts`, checked by a test) and run with the shared package's tests in `pnpm verify`.
+  `copier.yml` excludes that folder on `copier update` (`_copier_operation == 'update'`): an existing project that
+  already breaks a rule would turn red, and its `packages/shared/package.json` (product-owned) lacks `@types/node`.
+  The product owns them once generated; later template fixes to them do not reach existing projects (copy from
+  `references/arch-specs/`). `flaky.sh` and the `tsconfig.build.json` exclude do arrive by update.
+- `touches` grew by the template copies, shared's `package.json.jinja` (`@types/node`) and `tsconfig.build.json`
+  (keeps `src/arch` out of `dist`). `_walk.ts` carries `/// <reference types="node" />` because TypeScript 6 adds
+  no types by default.
+- `flaky.sh` gained `--seed` (run r gets `FLAKY_SEED=S+r-1`), a `failed:` line per failing run with seed, zone,
+  stress and load average, decimal-only numbers and a refusal of unknown zones.
+- Arch-spec scope: test files plus sources and JSON under e2e, fixtures, __fixtures__, __tests__, __mocks__, mocks,
+  test, tests, testing, test-utils; hidden folders, `tmp` and symlinks are never walked; a line that pins the clock
+  (`setSystemTime`, Playwright `clock.install`) may hold a literal date.
+- Escapes ESC-053..055 (flaky.sh false green on input parsing; walker isolation; arch-spec coverage gaps) could not
+  be committed to `docs/escapes.md`: the guard's SEC-1 flags the existing ESC-052 row (an example URL) whenever the
+  file is staged. The rows are recorded here until a human allow-lists ESC-052 or rewords it:
+  ESC-053 consistency — tests/test_scripts.py `FLEET_003_S5_counts_and_seeds_are_decimal_never_octal`,
+  `FLEET_003_S5_an_unknown_zone_is_refused_before_any_run`; ESC-054 isolation — no-literal-dates
+  `FLEET-003.S2 the walker skips hidden and tmp folders and never follows a symlink`; ESC-055 consistency — the
+  fixture tests in references/arch-specs/*.arch.test.ts.
+- Not done: the rest of `claude/orquestador-y-verify`; the closed-routes registry itself (rule 11 is a rule for
+  projects, not code in the template); no mechanical check for rule 11.
