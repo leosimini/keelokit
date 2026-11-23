@@ -4,7 +4,7 @@ epic = "AUTH"
 title = "t"
 wave = 1
 depends_on = []
-touches = ["apps/api/"]
+touches = ["apps/api/src/auth/"]
 dimensions = ["api"]
 +++
 ```gherkin
