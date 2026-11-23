@@ -274,7 +274,7 @@ CORRECTIONS_NAME = Path(CORRECTIONS).name
 WRITE_ALL = {"tee", "mv", "rm", "truncate", "touch", "shred", "unlink", "patch"}
 WRITE_LAST = {"cp", "install", "ln", "rsync", "scp"}
 GIT_WRITES = {"checkout", "restore", "mv", "rm", "apply", "reset", "stash"}
-INTERPRETERS = re.compile(r"(?:python[0-9.]*|perl|ruby|node|php|deno|bun)")
+INTERPRETERS = re.compile(r"(?:python[0-9.]*|perl|ruby|node|php|deno)")
 REDIRECT = re.compile(r"(?<![<>])(?:[0-9]|&)?>{1,2}\|?\s*['\"]?([^\s;&|<>()'\"]+)")
 PREFIXES = {"sudo", "env", "nohup", "command", "nice", "time"}
 
