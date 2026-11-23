@@ -1,6 +1,5 @@
 [[allow]]
-reason = "razón"
 rule = "SEC-1"
-path = "apps/mobile/google-services.json"
+path = "apps/mobile/google-services.json\u0000"
 reason = "Firebase key, public by design"
 approver = "Leo"
