@@ -74,7 +74,9 @@ SCENARIO_RE = re.compile(r"(?im)^\s*(?:scenario|escenario)[^:\n]*:\s*\[(S\d+)\]"
 TEST_FILE_RE = re.compile(r"(\.(test|spec)\.[cm]?[jt]sx?$)|(/e2e/.*\.[jt]s$)")
 # Python tests (unittest, pytest): test_*.py or *_test.py, under the folders TITLE_DIRS walks.
 PY_TEST_FILE_RE = re.compile(r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
-TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test")  # tests/ and test/: Python files only
+TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test", "template")  # tests/ and test/: Python files only
+# template/: Keelokit's own repo only (this copy is not shipped). A scenario covered by a TypeScript test the
+# template ships (e.g. packages/shared/src/arch) runs in CI inside the generated project (scripts/test-template.sh).
 # Folders of installed code: never read for titles (third-party test files, and slow).
 VENDORED = {"node_modules", ".venv", "venv", "site-packages", "__pycache__", ".tox", ".nox"}
 # A Python test's name cites ids with underscores: test_AUTH_001_S1_works → "test AUTH-001.S1 works".
