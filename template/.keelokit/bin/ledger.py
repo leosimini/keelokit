@@ -1012,10 +1012,39 @@ def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict) -> d
     if len(matches) != 1:
         return base
     held = set(first_reach(graph, [matches[0]]))
-    by_sha = {c["sha"]: c for c in log}
     in_range = [c for c in log if c["sha"] not in held]
-    loose = sum(1 for c in in_range if not c["attributed"] and not by_sha[arrival_of[c["sha"]]]["attributed"])
+    covered = attributed_in_range(log, in_range, graph, arrival_of, held)
+    loose = sum(1 for c in in_range if c["sha"] not in covered)
     return {**base, "commits": loose, "ratio": loose / len(in_range) if in_range else 0.0}
+
+
+def reach_until(graph: dict, tips, stop: set) -> set:
+    """The commits reachable from `tips` that are not in `stop` (the walk does not cross them)."""
+    stack, found = list(tips), set()
+    while stack:
+        sha = stack.pop()
+        if sha not in stop and sha not in found:
+            found.add(sha)
+            stack.extend(graph.get(sha, ()))
+    return found
+
+
+def attributed_in_range(log: list[dict], in_range: list[dict], graph: dict, arrival_of: dict, held: set) -> set:
+    """The commits of `in_range` that are attributed (docs/ledger.md, "Trailers"): by their own Story:/Part-of:/
+    No-story:, by the first-parent merge that brought them having one, or, for a merge with none, by every
+    non-merge commit it brings in (reachable from its other parents, not from its first; commits before `since`
+    left out) being attributed so; a merge that brings nothing new is attributed."""
+    by_sha = {c["sha"]: c for c in log}
+    base = {c["sha"] for c in in_range if c["attributed"] or by_sha[arrival_of[c["sha"]]]["attributed"]}
+    covered = set(base)
+    for c in in_range:
+        if c["sha"] in base or len(c["parents"]) < 2:
+            continue
+        mainline = reach_until(graph, c["parents"][:1], held)
+        brought = reach_until(graph, c["parents"][1:], held | mainline)
+        if all(sha in base for sha in brought if len(graph.get(sha, ())) < 2):
+            covered.add(c["sha"])
+    return covered
 
 
 def ledger_facts(state: dict) -> dict:
@@ -2139,16 +2168,22 @@ def attribution_diffs(ctx: dict) -> list[dict]:
             add("UNKNOWN_STORY", c, f"Story:/Part-of: {', '.join(map(repr, junk))} is not an id (EPIC-NNN)")
     if in_range is None:
         return diffs
-    by_sha, arrival = {c["sha"]: c for c in log}, ctx["placed"][0]
+    in_shas = {c["sha"] for c in in_range}
+    held = {sha for sha in graph if sha not in in_shas}
+    covered = attributed_in_range(log, in_range, graph, ctx["placed"][0], held)
+    where = ("the only one where git reads trailers; put it in the same final paragraph as the other trailers, with no "
+             "blank line between them")
     for c in reversed(in_range):
         lost = [i for key, i in SQUASHED_TRAILER.findall(c["message"]) if key.lower() == "story" and i not in c["story"]]
-        if lost and (c["attributed"] or by_sha[arrival[c["sha"]]]["attributed"]):
-            add("SQUASH_LOST_TRAILERS", c, f"its body has Story: {', '.join(sorted(set(lost)))}, which git does not "
-                "read as a trailer (a squash that lost its branch's trailers)")
-        if not c["attributed"] and not by_sha[arrival[c["sha"]]]["attributed"]:
+        if lost and c["sha"] in covered:
+            add("SQUASH_LOST_TRAILERS", c, f"its Story: {', '.join(sorted(set(lost)))} line is outside the "
+                f"message's last paragraph, {where}")
+        if c["sha"] not in covered:
             if SQUASHED_TRAILER.search(c["message"]):
-                add("SQUASH_LOST_TRAILERS", c, "its body has Story:/Part-of: lines git does not read as trailers "
-                    "(a squash that lost its branch's trailers)")
+                add("SQUASH_LOST_TRAILERS", c, "its Story:/Part-of: line is outside the message's last paragraph, "
+                    f"{where}")
+            elif len(c["parents"]) > 1:
+                add("UNATTRIBUTED", c, "a merge with no Story:, Part-of: or No-story: that brings commits without one")
             else:
                 add("UNATTRIBUTED", c, "no Story:, Part-of: or No-story:, and no merge that brings it has one")
         bad = [v for v in trailer_values(c["trailers"], "No-story") if v.strip() and category(v) not in cfg["no_story"]]
