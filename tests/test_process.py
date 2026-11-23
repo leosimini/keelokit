@@ -278,5 +278,171 @@ class VerifyLockTest(unittest.TestCase):
         self.assertFalse(self.lock.exists(), res.stdout + res.stderr)
 
 
+REPO = Path(__file__).resolve().parents[1]
+
+# FLEET-005: the six failure paths of a money story, by the key phrase each must carry wherever the
+# list appears (agents/breaker.md, references/invariants.md, and build-story when it spells them out).
+FAILURE_PATHS = {
+    "an automatic retry still running": "retry still running",
+    "a response lost after the money moved": "response lost",
+    "the connection or credential removed mid-flight": "credential removed",
+    "a double submit": "double submit",
+    "a close, cancel or delete with operations pending": "operations pending",
+    "a manual instruction shown while an automatic one is still running": "manual instruction",
+}
+
+
+def _norm(text: str) -> str:
+    """Lowercase, hyphens and backticks dropped, whitespace collapsed (phrases may wrap lines)."""
+    return " ".join(text.lower().replace("-", " ").replace("`", "").split())
+
+
+def _section(text: str, heading_pattern: str) -> str:
+    """The markdown section whose heading matches the regex, up to the next heading of the same or a
+    higher level (headings inside code fences don't count). Empty when no heading matches."""
+    import re
+    lines, fence, start, level = text.splitlines(), False, None, 0
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        m = None if fence else re.match(r"^(#{1,6})\s+(.*)$", line)
+        if not m:
+            continue
+        if start is None:
+            if re.search(heading_pattern, m.group(2), re.I):
+                start, level = i, len(m.group(1))
+        elif len(m.group(1)) <= level:
+            return "\n".join(lines[start:i])
+    return "" if start is None else "\n".join(lines[start:])
+
+
+def _items(text: str) -> list[str]:
+    """Top-level-or-nested list items (`- `, `* `, `1. `) with their continuation lines."""
+    import re
+    items: list[str] = []
+    for line in text.splitlines():
+        if re.match(r"^\s*([-*]|\d+\.)\s+", line):
+            items.append(line)
+        elif items and line.strip() and not line.lstrip().startswith("#"):
+            items[-1] += " " + line
+        elif not line.strip() and items:
+            items.append("")
+    return [i for i in items if i]
+
+
+def _code_block_after(text: str, heading_pattern: str) -> str:
+    sec = _section(text, heading_pattern)
+    parts = sec.split("```")
+    return parts[1] if len(parts) > 2 else ""
+
+
+class MoneyFailurePathsTest(unittest.TestCase):
+    """FLEET-005: a money story's breaker walks every failure path, and its copy cannot make anyone
+    move money twice (docs/fleet-lessons.md, lesson 9)."""
+
+    def read(self, rel: str) -> str:
+        return (REPO / rel).read_text()
+
+    def assertAllPathsInDistinctItems(self, section: str, where: str):
+        items = [_norm(i) for i in _items(section)]
+        for name, phrase in FAILURE_PATHS.items():
+            hits = [i for i in items if phrase in i]
+            self.assertTrue(hits, f"{where}: no list item names '{name}' (key phrase '{phrase}')")
+        owners = {phrase: next(n for n, i in enumerate(items) if phrase in i) for phrase in FAILURE_PATHS.values()}
+        self.assertEqual(len(set(owners.values())), len(FAILURE_PATHS),
+                         f"{where}: each failure path needs its own list item, got {owners}")
+
+    # S1 — agents/breaker.md: a section whose heading mentions "failure path(s)".
+    def breaker_section(self) -> str:
+        sec = _section(self.read("agents/breaker.md"), r"failure path")
+        self.assertTrue(sec, "agents/breaker.md has no heading mentioning 'failure path'")
+        return sec
+
+    def test_FLEET_005_S1_breaker_lists_the_six_failure_paths(self):
+        self.assertAllPathsInDistinctItems(self.breaker_section(), "agents/breaker.md failure-path section")
+
+    def test_FLEET_005_S1_breaker_applies_them_to_integrity_and_payments_stories(self):
+        sec = _norm(self.breaker_section())
+        self.assertIn("integrity", sec)
+        self.assertIn("payments", sec)
+
+    def test_FLEET_005_S1_breaker_requires_one_line_per_path_with_a_test_or_a_reason(self):
+        sec = _norm(self.breaker_section())
+        self.assertIn("one line per", sec)
+        self.assertIn("test", sec)
+        self.assertIn("reason", sec)
+        self.assertIn("cannot happen", sec)
+
+    def test_FLEET_005_S1_breaker_output_has_a_place_for_failure_path_lines(self):
+        block = _norm(_code_block_after(self.read("agents/breaker.md"), r"^output$"))
+        self.assertTrue(block, "agents/breaker.md: no code block under '## Output'")
+        self.assertIn("failure path", block)
+
+    # S2 — agents/reviewer.md's COPY-1 item, and the `copy` row of references/dimensions.md.
+    def test_FLEET_005_S2_reviewer_copy_item_asks_about_moving_money_twice_or_not_at_all(self):
+        items = [_norm(i) for i in _items(self.read("agents/reviewer.md")) if "COPY-1" in i]
+        self.assertTrue(items, "agents/reviewer.md: no list item cites COPY-1")
+        item = items[0]
+        self.assertIn("near money", item)
+        self.assertIn("move money twice", item)
+        self.assertIn("not at all", item)
+
+    def test_FLEET_005_S2_dimensions_copy_row_carries_the_money_question(self):
+        rows = [_norm(l) for l in self.read("references/dimensions.md").splitlines() if l.startswith("| `copy` |")]
+        self.assertEqual(len(rows), 1, "references/dimensions.md: expected one `copy` row")
+        self.assertIn("move money twice", rows[0])
+        self.assertIn("not at all", rows[0])
+
+    # S3 — skills/build-story/SKILL.md, step "## 2. Contract" (it runs before "## 3. Acceptance tests first").
+    def contract(self) -> str:
+        text = self.read("skills/build-story/SKILL.md")
+        sec = _section(text, r"^2\. Contract")
+        self.assertTrue(sec, "build-story: no '## 2. Contract' section")
+        self.assertLess(text.index(sec), text.index("## 3. Acceptance tests first"))
+        return sec
+
+    def test_FLEET_005_S3_contract_lists_a_money_storys_failure_paths(self):
+        sec = self.contract()
+        items = [_norm(i) for i in _items(sec) if "failure path" in _norm(i)]
+        self.assertTrue(items, "build-story contract: no item about failure paths")
+        item = items[0]
+        self.assertIn("money", item)
+        spelled_out = all(p in _norm(sec) for p in FAILURE_PATHS.values())
+        self.assertTrue(spelled_out or "invariants.md" in item or "breaker.md" in item,
+                        "the failure-path item must spell out the six paths or point at the list in "
+                        "invariants.md / breaker.md")
+
+    def test_FLEET_005_S3_contract_says_money_decisions_are_reversible_and_new_ones_wait(self):
+        items = [_norm(i) for i in _items(self.contract()) if "reversible" in _norm(i)]
+        self.assertTrue(items, "build-story contract: no item about reversible money decisions")
+        item = items[0]
+        self.assertIn("money", item)
+        self.assertTrue("told" in item or "tell" in item, "the person is told")
+        self.assertIn("waits for the person", item)
+
+    # S4 — references/invariants.md: a failure-path section tied to `once` and replay, with two examples.
+    def invariants_section(self) -> str:
+        sec = _section(self.read("references/invariants.md"), r"failure path")
+        self.assertTrue(sec, "references/invariants.md has no heading mentioning 'failure path'")
+        return sec
+
+    def test_FLEET_005_S4_invariants_has_the_six_paths_under_once_and_replay(self):
+        sec = self.invariants_section()
+        self.assertAllPathsInDistinctItems(sec, "references/invariants.md failure-path section")
+        self.assertIn("once", _norm(sec))
+        self.assertIn("replay", _norm(sec))
+
+    def test_FLEET_005_S4_invariants_has_two_anonymized_examples(self):
+        sec = _norm(self.invariants_section())
+        self.assertIn("refund by hand", sec)
+        self.assertIn("retrying", sec)
+        self.assertIn("connection", sec)
+        self.assertIn("in flight", sec)
+        whole = self.read("references/invariants.md").lower()
+        self.assertNotIn("jouna", whole)
+        self.assertNotIn("mercado pago", whole)
+
+
 if __name__ == "__main__":
     unittest.main()
