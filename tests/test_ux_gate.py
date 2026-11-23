@@ -9,7 +9,20 @@ from pathlib import Path
 
 GATE = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/ux_gate.py"
 DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
-CRITIQUE = "# Journey\nok\n# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n"
+FOUR = "# Journey\nok\n# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n"
+SKILLS = ("design:design-critique", "design:ux-copy", "design:accessibility-review")
+
+
+def skills_section(skills=SKILLS, findings=None, ran="Ran: 2026-11-23"):
+    """A `## Skills` section with one `### <skill id>` subsection per skill (FLEET-004)."""
+    findings = findings or {}
+    out = "## Skills\n"
+    for s in skills:
+        out += f"### {s}\n{ran}\n" + "".join(f"- {f}\n" for f in findings.get(s, [])) + "\n"
+    return out
+
+
+CRITIQUE = FOUR + skills_section()
 
 
 def sh(cwd, *cmd):
@@ -172,6 +185,117 @@ class UxGateTest(unittest.TestCase):
         out = sh(self.root, "python3", ".keelokit/bin/doctor.py").stdout
         self.assertIn("UX-3: ux-gate:", out)
         self.assertIn("ERROR", out)
+
+    # ── FLEET-004: the critique comes from the design skills ──
+
+    def ui_change(self, critique):
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.evidence(critique=critique)
+        self.commit("feat: home")
+        return self.gate()
+
+    def test_fleet_004_s1_no_skills_section_fails(self):
+        """FLEET-004.S1: the four sections and no "## Skills" fail, naming the missing skills."""
+        code, out = self.ui_change(FOUR)
+        self.assertEqual(code, 1, out)
+        self.assertIn('lacks the section "Skills"', out)
+        for s in SKILLS:
+            self.assertIn(s, out)
+
+    def test_fleet_004_s2_a_missing_skill_fails_naming_it(self):
+        """FLEET-004.S2: a Skills section without design:ux-copy fails naming it, and only it."""
+        code, out = self.ui_change(FOUR + skills_section(("design:design-critique", "design:accessibility-review")))
+        self.assertEqual(code, 1, out)
+        self.assertIn('no "### design:ux-copy" subsection', out)
+        self.assertNotIn("### design:design-critique", out)
+        self.assertNotIn("### design:accessibility-review", out)
+
+    def test_fleet_004_s3_an_open_p1_fails_naming_it(self):
+        """FLEET-004.S3: a P1 neither fixed nor decided fails, naming the finding and its skill."""
+        findings = {"design:ux-copy": ["P1 The refund amount is not shown before closing",
+                                       "P2 Button says Submit — fixed in a1b2c3d",
+                                       "P3 Title could be shorter"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("design:ux-copy", out)
+        self.assertIn("P1 The refund amount is not shown before closing", out)
+        self.assertNotIn("Button says Submit", out)  # fixed
+        self.assertNotIn("Title could be shorter", out)  # a P3 needs no decision
+
+    def test_fleet_004_s3_an_open_p2_and_a_resolution_mid_line_fail(self):
+        """FLEET-004.S3: a P2 open fails too, and "fixed in" must end the item, not sit in its middle."""
+        findings = {"design:design-critique": ["P2 Two tab bars in Settings",
+                                               "P1 Says fixed in the title — but nothing was done"],
+                    "design:accessibility-review": ["P2 Contrast — fixed in"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P2 Two tab bars in Settings", out)
+        self.assertIn("P1 Says fixed in the title", out)
+        self.assertIn("P2 Contrast", out)  # "fixed in" with nothing after it names nothing
+
+    def test_fleet_004_s3_an_undated_skill_fails(self):
+        """FLEET-004.S3: each subsection says when the skill ran (`Ran: YYYY-MM-DD`, a real date)."""
+        code, out = self.ui_change(FOUR + skills_section(ran="Ran: soon"))
+        self.assertEqual(code, 1, out)
+        self.assertIn('design:ux-copy: no "Ran: YYYY-MM-DD" line', out)
+        code, out = self.ui_change(FOUR + skills_section(ran="Ran: 2026-13-40"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("Ran: YYYY-MM-DD", out)
+
+    def test_fleet_004_s4_a_complete_section_passes(self):
+        """FLEET-004.S4: three dated subsections, every P1 and P2 fixed or decided, pass."""
+        findings = {"design:design-critique": ["P1 Refund amount missing — fixed in apps/web/src/close.tsx",
+                                               "P2 Two tab bars — decided: one bar, the latest critique wins"],
+                    "design:ux-copy": ["P2 Vague CTA — fixed in 4f5e6d7", "P3 Shorter title"],
+                    "design:accessibility-review": []}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 piece(s)", out)
+
+    def test_fleet_004_s4_subsections_end_at_the_next_heading(self):
+        """FLEET-004.S4: a subsection is read up to the next heading: a heading after the Skills
+        section, or a skill named only in another skill's text, does not count as its subsection."""
+        text = FOUR + "## Skills\n### design:design-critique\nRan: 2026-11-23\nsee design:ux-copy\n" \
+               "### design:accessibility-review\nRan: 2026-11-23\n## Notes\n### design:ux-copy\nRan: 2026-11-23\n"
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 1, out)
+        self.assertIn('no "### design:ux-copy" subsection', out)
+
+    def test_fleet_004_s5_the_projects_list_rules(self):
+        """FLEET-004.S5: critique_skills = ["design:design-critique"] requires only that subsection;
+        an empty list requires no Skills section at all."""
+        base = '[gate]\nsurfaces = ["desktop"]\nthemes = ["light"]\n'
+        self.write(".keelokit/ux.toml", base + 'critique_skills = ["design:design-critique"]\n[gate.widths]\ndesktop = [1280]\n')
+        code, out = self.ui_change(FOUR + skills_section(("design:design-critique",)))
+        self.assertEqual(code, 0, out)
+        self.write(".keelokit/ux.toml", base + 'critique_skills = []\n[gate.widths]\ndesktop = [1280]\n')
+        self.write("apps/web/src/home.tsx", "export const a = 2\n")
+        self.evidence(critique=FOUR)
+        self.commit("feat: home again")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_fleet_004_s5_without_the_key_the_defaults_apply(self):
+        """FLEET-004.S5: an adopted project whose ux.toml lacks critique_skills gets the three defaults."""
+        out = sh(self.root, "python3", ".keelokit/bin/ux_gate.py", "--config").stdout
+        self.assertIn("critique_skills = " + str(list(SKILLS)), out)
+
+    def test_fleet_004_s5_the_shipped_ux_toml_lists_the_defaults(self):
+        """FLEET-004.S5: template/.keelokit/ux.toml carries critique_skills with the three defaults."""
+        import tomllib
+        shipped = tomllib.loads((GATE.parents[1] / "ux.toml").read_text())["gate"]
+        self.assertEqual(shipped["critique_skills"], list(SKILLS))
+
+    def test_fleet_004_s6_na_still_passes_and_the_doctor_reports_it(self):
+        """FLEET-004.S6: `ux-gate: n/a — <reason>` passes with no Skills section and the doctor warns."""
+        self.write(".keelokit/bin/doctor.py", DOCTOR.read_text())
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.commit("refactor: rename\n\nux-gate: n/a — pure rename, no visual change")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+        self.assertIn("n/a — pure rename", out)
+        doc = sh(self.root, "python3", ".keelokit/bin/doctor.py").stdout
+        self.assertIn("UX-3: ux-gate: n/a — pure rename", doc)
 
 
 if __name__ == "__main__":
