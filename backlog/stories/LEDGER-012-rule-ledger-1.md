@@ -25,8 +25,9 @@ enforced_by = ["git-hook:commit-msg", "git-hook:pre-push", "ci:checks", "script:
 The doctor checks those enforcers are alive: `commit-msg`, `prepare-commit-msg` and `pre-push` present
 and executable in `.githooks/` and `core.hooksPath` pointing there; the CI step of LEDGER-010 present; the
 `ledger-snapshot` job present unless `snapshot = ""`; the corrections file valid. It prints the share of
-unattributed commits since `since` and, after 14 days in a row with zero (and zero error differences)
-under `warn`, recommends `enforce = "block"`. It never changes `enforce` itself. A dated exception in
+unattributed commits since `since` and, under `warn`, after 3 days in a row with zero (and zero error
+differences, at least 20 commits in the window), recommends `enforce = "block"`. `project-new` writes
+`enforce = "block"`; `project-adopt` writes `warn` (decision 6 in docs/ledger.md). It never changes `enforce` itself. A dated exception in
 `exceptions.toml` turns the rule off, as for any rule.
 
 The CHANGELOG entry of the release that ships phase 2 has `### Upgrading from 0.15.x`: run
@@ -50,7 +51,7 @@ Scenario: [S2] The CI step missing
   Then the doctor reports it
 
 Scenario: [S3] The recommendation
-  Given enforce = "warn" and 14 days of trunk history with zero unattributed commits and zero errors
+  Given enforce = "warn" and 3 days of trunk history, with at least 20 commits, zero unattributed and zero errors
   Then the doctor recommends enforce = "block" and does not change it
 
 Scenario: [S4] An exception

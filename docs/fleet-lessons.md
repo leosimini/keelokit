@@ -58,7 +58,8 @@ ledger's phase 0 (both are small), before the ledger's phase 1:
 3. LEDGER phase 1 (003, 004, 015, 005, 006, 007) → Keelokit 0.15.0, with FLEET-001 and 003.
 4. FLEET-002, FLEET-004, FLEET-005, then LEDGER phase 2 (008–012), then FLEET-006 (it touches the agent
    brief after LEDGER-007 and 008) → Keelokit 0.16.0.
-5. Harbor: HRB-4 and HRB-5 can go with HRB-1 (they do not need the ledger); HRB-6, 7, 8 after.
+5. Harbor: HRB-4 and HRB-5 do not need the ledger and start at once, in parallel with Keelokit; HRB-1, 2, 3
+   after Keelokit 0.16.0; HRB-6, 7, 8 after. Swarm's SWM-1..3 start at once, in parallel.
 
 The `FLEET` stories carry waves 20 to 25 so no wave shares a file with another story; the order to build
 is the list above, not the wave numbers.
