@@ -3540,5 +3540,62 @@ class LedgerDelegatedResumeTest(LedgerDelegatedAcceptCase):
         self.assertEqual(len(corrections_rows(repo)), 1)
 
 
+# ── LEDGER-015, review round 2 (ESC-120: delegated rows re-decided against the right approval and trunk) ──
+
+
+class LedgerDelegatedTrunkModeTest(LedgerCase):
+    """ESC-120 (G2): a delegated row counts only when it is approved under its review's recorded approval and, when
+    the trunk's current mode is mixed, under the trunk's current approval too: a review that records "delegated"
+    cannot take a critical story past a project that keeps critical stories for the person."""
+
+    def forged(self, trunk_mode: str) -> GitRepo:
+        repo, c = build_delegated(self.tmp, approval(trunk_mode))
+        commit_harness(repo, "chore: corrections\n\nNo-story: ledger", {
+            f"{REVIEWS}/rforge.json": review_text("rforge", [review_row("UXC-303", c["UXC-303"], model="claude-opus-4")],
+                                                  mode="delegated"),
+            CORR: corrections(delegated_row("UXC-303", c["UXC-303"], "rforge"))})
+        repo.publish()
+        return repo
+
+    def test_LEDGER_015_D6_ESC_120_INV_005_a_review_recorded_delegated_does_not_pass_a_critical_story_in_a_mixed_project(self):
+        repo = self.forged("mixed")
+        data = ledger_check(self, repo)
+        self.assertIn("rforge", details(data, "CORRECTION_INVALID"), data["diffs"])
+        self.assertIs(self.stories(repo)["UXC-303"]["reconstructed"], False)
+
+    def test_LEDGER_015_D6_ESC_120_the_same_review_counts_while_the_trunk_delegates(self):
+        repo = self.forged("delegated")
+        data = ledger_check(self, repo)
+        self.assertNotIn("rforge", details(data, "CORRECTION_INVALID"), data["diffs"])
+        s = self.stories(repo)["UXC-303"]
+        self.assertEqual((s["reconstructed"], s["reconstructed_by"]), (True, "delegated"))
+
+
+class LedgerDelegatedAsOfArrivalTest(LedgerCase):
+    """ESC-120 (G4): a delegated row's `critical` flag and its story's `touches` are read from the trunk as it was at
+    the first-parent commit where the row first appeared, not from the tip: a later critical area or a later change
+    of the story's paths does not void an honest approval (the forgery, a row committed while the story was already
+    critical, stays invalid: LedgerDelegatedRowValidityTest's rcrit)."""
+
+    def test_LEDGER_015_D6_ESC_120_INV_005_a_later_critical_area_or_touches_change_keeps_an_approved_row(self):
+        repo, c = build_delegated(self.tmp, approval("mixed"))
+        commit_harness(repo, "chore: delegated review r1\n\nNo-story: ledger", {
+            f"{REVIEWS}/r1.json": review_text("r1", [review_row("UXC-301", c["UXC-301"])], mode="mixed"),
+            CORR: corrections(delegated_row("UXC-301", c["UXC-301"], "r1"))})
+        repo.publish()
+        later = {"a critical area now covers its paths":
+                 {CRITICAL: CRITICAL_TOML + '\n[[area]]\nname = "login"\nwhy = "w"\npaths = ["apps/api/login/"]\n'},
+                 "its touches moved elsewhere":
+                 {"backlog/stories/UXC-301-s.md": story15("UXC-301", ("apps/api/elsewhere/",))}}
+        for why, files in later.items():
+            with self.subTest(why):
+                commit_harness(repo, f"chore: {why}\n\nNo-story: docs", files)
+                repo.publish()
+                data = ledger_check(self, repo)
+                self.assertNotIn("r1", details(data, "CORRECTION_INVALID"), data["diffs"])
+                s = self.stories(repo)["UXC-301"]
+                self.assertEqual((s["reconstructed"], s["reconstructed_by"]), (True, "delegated"))
+
+
 if __name__ == "__main__":
     unittest.main()

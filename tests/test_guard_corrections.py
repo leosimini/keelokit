@@ -260,6 +260,17 @@ def review_json(decision: str | None = "approved", b: str | None = "yes", skepti
     return json.dumps(data)
 
 
+def branch(repo: Path, name: str, state: str) -> None:
+    """A local branch `name` off HEAD whose committed .keelokit/state.toml is `state`; the work tree is left as it was."""
+    for cmd in (["git", "checkout", "-q", "-b", name], None, ["git", "add", "-f", STATE],
+                ["git", "commit", "-qm", f"state on {name}", "--no-verify", "--allow-empty"], ["git", "checkout", "-q", "-"]):
+        if cmd is None:
+            (repo / STATE).write_text(state)
+            continue
+        run = sh(repo, *cmd)
+        assert run.returncode == 0, f"fixture: {' '.join(cmd)}\n{run.stderr}"
+
+
 class GuardApprovalModeTest(unittest.TestCase):
     """LEDGER-015: [ledger.approval] in .keelokit/state.toml is the person's (S1): the Claude hook blocks a tool edit
     that changes it and any shell write to state.toml, and a commit that changes it needs keelokit.allowTamper. The
@@ -511,16 +522,24 @@ class GuardApprovalRound1Test(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assert_blocked(self.run_claude("Bash", command=cmd), "QA-4")
 
-    def test_LEDGER_015_S1_ESC_112_INV_002_an_edit_that_moves_the_trunk_is_blocked(self):
+    def test_LEDGER_015_S1_ESC_112_INV_002_an_edit_that_moves_the_trunk_to_a_branch_that_delegates_is_blocked(self):
+        """G3 (round 2, a contract change of F3): moving the trunk is blocked only when the [ledger.approval] committed
+        at the new trunk differs from the current trunk's; the reason names the trunk."""
         self.commit_trunk({STATE: '[run]\nnote = "x"\n'})
+        branch(self.repo, "evil", '[ledger.approval]\nmode = "delegated"\n')
+        branch(self.repo, "develop", '[run]\nnote = "x"\n')
         self.assert_blocked(self.run_claude("Edit", file_path=STATE, old_string='note = "x"',
-                                            new_string='note = "x"\n\n[ledger]\ntrunk = "evil"'), "QA-4")
-        self.assert_blocked(self.run_claude("Write", file_path=STATE, content='[harbor]\ntrunk = "dev"\n'), "QA-4")
+                                            new_string='note = "x"\n\n[ledger]\ntrunk = "evil"'), "QA-4", "evil")
+        self.assert_blocked(self.run_claude("Write", file_path=STATE, content='[harbor]\ntrunk = "evil"\n'), "evil")
         self.assert_passes(self.run_claude("Write", file_path=STATE,
                                            content='[run]\nnote = "x"\n\n[ledger]\ntrunk = "main"\n'))
+        self.assert_passes(self.run_claude("Write", file_path=STATE,
+                                           content='[run]\nnote = "x"\n\n[harbor]\ntrunk = "develop"\n'))
         self.commit_trunk({STATE: '[ledger]\ntrunk = "main"\n'})
         self.assert_blocked(self.run_claude("Edit", file_path=STATE, old_string='trunk = "main"',
-                                            new_string='trunk = "develop"'), "QA-4")
+                                            new_string='trunk = "evil"'), "evil")
+        self.assert_passes(self.run_claude("Edit", file_path=STATE, old_string='trunk = "main"',
+                                           new_string='trunk = "develop"'))
 
     def test_LEDGER_015_S1_ESC_113_INV_002_an_edit_whose_old_string_is_not_in_the_file_counts_as_a_change(self):
         self.commit_trunk({STATE: approval_toml("mixed")})
@@ -587,6 +606,44 @@ class GuardApprovalRound1Test(unittest.TestCase):
                 self.assertNotIn("Traceback", run.stderr)
                 self.assertEqual(run.returncode, expected, run.stderr)
                 sh(self.repo, "git", "rm", "-q", "--cached", "--ignore-unmatch", CORRECTIONS, REVIEW)
+
+
+class GuardHardLinkTest(unittest.TestCase):
+    """LEDGER-015 review round 2 (ESC-119, G1): hard links and cp's link forms are aliases of a protected file too."""
+
+    setUp = test_guard.GuardTest.setUp
+    tearDown = test_guard.GuardTest.tearDown
+    env = test_guard.GuardRegistryTest.env
+    run_claude = test_guard.GuardRegistryTest.run_claude
+    stage = test_guard.GuardRegistryTest.stage
+    assert_blocked = GuardCorrectionsTest.assert_blocked
+    commit_trunk = GuardApprovalModeTest.commit_trunk
+    assert_passes = GuardApprovalModeTest.assert_passes
+
+    def test_LEDGER_015_S1_ESC_119_INV_002_link_and_cp_link_forms_naming_a_protected_file_are_blocked(self):
+        for f in (STATE, CORRECTIONS):
+            for cmd in [f"link {f} h.toml", f"cp -l {f} h.toml", f"cp --link {f} h.toml", f"cp -s {f} h.toml",
+                        f"cp --symbolic-link {f} h.toml", f"cp -al {f} h.toml"]:
+                with self.subTest(cmd=cmd):
+                    self.assert_blocked(self.run_claude("Bash", command=cmd), "QA-4")
+
+    def test_LEDGER_015_S1_ESC_119_INV_002_a_tool_write_to_a_hard_link_is_judged_as_its_target(self):
+        self.commit_trunk({STATE: approval_toml(None), CORRECTIONS: CORRECTIONS_HEADER})
+        branch(self.repo, "evil", approval_toml("delegated"))
+        os.link(self.repo / STATE, self.repo / "h.toml")
+        os.link(self.repo / CORRECTIONS, self.repo / "h2.toml")
+        for path in ["h.toml", str(self.repo / "h.toml")]:
+            with self.subTest(path=path, what="approval"):
+                self.assert_blocked(self.run_claude("Write", file_path=path, content=approval_toml("delegated")),
+                                    "[ledger.approval]")
+            with self.subTest(path=path, what="trunk"):
+                self.assert_blocked(self.run_claude("Edit", file_path=path, old_string='trunk = "main"',
+                                                    new_string='trunk = "evil"'), "QA-4")
+            with self.subTest(path=path, what="corrections"):
+                self.assert_blocked(self.run_claude("Write", file_path=path.replace("h.toml", "h2.toml"),
+                                                    content=CORRECTIONS_HEADER + CORRECTION_ROW), "QA-4")
+        self.assert_passes(self.run_claude("Edit", file_path="h.toml", old_string='trunk = "main"',
+                                           new_string='trunk = "main"\nstale_days = 9'))
 
 
 if __name__ == "__main__":
