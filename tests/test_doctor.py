@@ -1367,6 +1367,39 @@ class DoctorCorrectionsTest(unittest.TestCase):
         self.assertNotIn("CORRECTION_", self.doctor_ci().stdout)
 
 
+
+class DoctorDelegatedCorrectionsTest(unittest.TestCase):
+    """LEDGER-015 (D11): the doctor's code is unchanged; its CORRECTION_* reporting covers delegated rows: a row with
+    approver delegated:<run> and no committed review file approving it is a doctor ERROR, a backed one is clean."""
+
+    setUp = DoctorCorrectionsTest.setUp
+    write = DoctorCorrectionsTest.write
+    git = DoctorCorrectionsTest.git
+    commit = DoctorCorrectionsTest.commit
+    doctor_ci = DoctorCorrectionsTest.doctor_ci
+
+    def delegated(self, review: dict | None) -> None:
+        self.write(".keelokit/state.toml", '[ledger.approval]\nmode = "delegated"\n')
+        if review is not None:
+            self.write(".keelokit/ledger-reviews/r1.json", json.dumps(review))
+        row = correction_row(self.login).replace('approver = "Leo"', 'approver = "delegated:r1"')
+        self.write(CORRECTIONS, "# Ledger corrections (append-only).\n" + row)
+        self.commit("chore: delegated review r1\n\nNo-story: ledger")
+
+    def test_LEDGER_015_D11_INV_005_an_unbacked_delegated_row_is_a_doctor_error(self):
+        self.delegated(None)
+        r = self.doctor_ci()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^\s*ERROR\b.*CORRECTION_INVALID.*r1")
+
+    def test_LEDGER_015_D11_a_delegated_row_backed_by_its_review_file_is_clean(self):
+        row = {"story": "UXC-113", "commit": self.login, "kind": "backfill", "evidence": "train sheet 18",
+               "confidence": "medium", "critical": False, "title": "t", "path": "backlog/stories/UXC-113-a.md",
+               "judge_a": {"verdict": "yes", "reason": "S1"}, "judge_b": {"verdict": "yes", "reason": "S1"},
+               "skeptic": {"refuted": False, "reason": "in scope"}, "decision": "approved"}
+        self.delegated({"schema": 1, "run": "r1", "mode": "delegated", "rows": [row], "dropped": []})
+        self.assertNotIn("CORRECTION_", self.doctor_ci().stdout)
+
 # pnpm 10's own commands (`pnpm help --all`), minus start and test, which run the package script.
 PNPM_COMMANDS = {
     "add", "dedupe", "fetch", "import", "i", "install", "it", "install-test", "ln", "link", "prune", "rb", "rebuild",

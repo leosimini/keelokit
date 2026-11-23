@@ -103,7 +103,7 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
 - The corrections file is read from the trunk's tree, like the stories: a row counts once it is committed to the
   trunk. A row is invalid (`CORRECTION_INVALID`, ignored) when a field is missing or not text, the kind is not
   `backfill`/`late`/`retract`, the commit is not a full sha reachable from the trunk, the story does not exist, the
-  approver is empty or `delegated:…` (only LEDGER-015's modes allow that), the date is not YYYY-MM-DD, or a retract
+  approver is empty or `delegated:…` (only LEDGER-015's modes allow that: since LEDGER-015 such a row counts when its run's review file on the trunk approves it, see that story's addendum), the date is not YYYY-MM-DD, or a retract
   has no earlier active row of the same story and commit. An unquoted TOML date is read as its text. Invalid TOML is
   one diff and no row counts.
 - An active row whose commit is not reverted makes a story with no live `Story:` commit `on-trunk` (or higher, from

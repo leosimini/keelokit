@@ -9,7 +9,10 @@ call through on any exit but 2, so for Claude the guard ends in exactly 0 or 2: 
 hook input it can't read or a check that fails all block, with the reason on stderr.
 Rules enforced: SEC-1, SEC-2, QA-2, QA-4, DB-1, AGENT-1, REL-1 (.keelokit/harness/rules.toml).
 The ledger's corrections (backlog/ledger-corrections.toml) are the human's like guard-allow.toml: agents
-may not write the file nor run `ledger.py backfill --accept` (docs/ledger.md, "Corrections file").
+may not write the file nor run `ledger.py backfill --accept` (docs/ledger.md, "Corrections file"). Who approves
+them is the `[ledger.approval]` table of .keelokit/state.toml, the person's too: agents may not change it, and
+only when the trunk's committed table delegates the approval may an agent run `backfill --accept --delegated
+<run>` (with the run's verdicts in .keelokit/ledger-reviews/<run>.json) and commit the rows it wrote.
 
 It is a speed bump for agents, not a sandbox: a determined shell (variables, eval, scripts)
 can get around pattern checks. CI and the git hooks are the backstop.
@@ -293,10 +296,19 @@ def corrections_write(cmd: str) -> bool:
     it. A read (`cat <file> 2>/dev/null`, `sed -n`, `find -name`), `git add` or a message that names it passes.
     A command that writes it without naming it (`git checkout feat -- .`, `git apply`) is past this speed bump:
     the pre-commit hook still refuses the commit."""
+    return named_write(cmd, CORRECTIONS_NAME)
+
+
+def named_write(cmd: str, name: str) -> bool:
+    """True when a segment writes a file of this name (lowercase), read as corrections_write reads a command."""
+    def names_it(word: str) -> bool:
+        value = word.split("=", 1)[-1] if "=" in word else word
+        return bool(value) and Path(value).name.lower() == name
+
     for segment in segments(cmd):
-        if CORRECTIONS_NAME not in segment.lower():
+        if name not in segment.lower():
             continue
-        if any(is_corrections(t) for t in REDIRECT.findall(segment)):
+        if any(names_it(t) for t in REDIRECT.findall(segment)):
             return True
         try:
             words = shlex.split(segment, posix=True)
@@ -308,25 +320,29 @@ def corrections_write(cmd: str) -> bool:
             continue
         head, args = Path(words[0]).name, words[1:]
         plain = [a for a in args if not a.startswith("-")]
-        if head in WRITE_ALL and any(is_corrections(a) for a in args):
+        if head in WRITE_ALL and any(names_it(a) for a in args):
             return True
-        if head in WRITE_LAST and plain and is_corrections(plain[-1]):
+        if head in WRITE_LAST and plain and names_it(plain[-1]):
             return True
-        if head == "dd" and any(a.startswith("of=") and is_corrections(a) for a in args):
+        aliasing = head in ("ln", "link") or (head == "cp" and any(
+            a in ("--link", "--symbolic-link") or re.fullmatch(r"-[a-zA-Z]*[ls][a-zA-Z]*", a) for a in args))
+        if aliasing and any(names_it(a) for a in args):  # an alias (link, cp -l/-s) of the file is a way to write it
+            return True
+        if head == "dd" and any(a.startswith("of=") and names_it(a) for a in args):
             return True
         if head in ("sed", "perl") and any(re.fullmatch(r"-[a-zA-Z]*i\S*", a) for a in args) \
-                and any(is_corrections(a) for a in args):
+                and any(names_it(a) for a in args):
             return True
         if head == "git":
             rest = list(args)
             while rest and rest[0].startswith("-"):
                 rest = rest[2:] if rest[0] in ("-C", "-c") else rest[1:]
             sub = rest[0] if rest else ""
-            if sub in GIT_WRITES and any(is_corrections(a) for a in rest[1:]):
+            if sub in GIT_WRITES and any(names_it(a) for a in rest[1:]):
                 return True
             outputs = [a for a in rest if a.startswith("--output=")] + \
                 [rest[i + 1] for i in range(len(rest) - 1) if rest[i] in ("--output", "-o")]
-            if any(is_corrections(o) for o in outputs):
+            if any(names_it(o) for o in outputs):
                 return True
         if INTERPRETERS.fullmatch(head) and any(a in ("-c", "-e", "-E", "-r") for a in args):
             return True
@@ -339,30 +355,227 @@ RUNS_INPUT = re.compile(r"\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh|scri
 
 
 def runs_accept(cmd: str, depth: int = 0) -> bool:
-    """True when a segment of the command runs `ledger.py backfill --accept`: its words as the shell splits them
-    (quotes removed), and the script a shell runs (`bash -c "…"`, `eval "…"`). A quoted commit message is an
-    argument, not a script, so naming the command there is no run."""
+    """True when a segment of the command runs a person's ledger command (accept_problem)."""
+    return accept_problem(cmd, depth) is not None
+
+
+def accept_problem(cmd: str, depth: int = 0) -> str | None:
+    """Why the command may not run, when a segment runs `ledger.py backfill --accept` or `ledger.py review
+    --reject-sample`: its words as the shell splits them (quotes removed), and the script a shell runs
+    (`bash -c "…"`, `eval "…"`). A quoted commit message is an argument, not a script, so naming the command there
+    is no run. The one exception: `python3 <path>/ledger.py backfill --accept --delegated <run>`, word for word,
+    when the trunk's committed [ledger.approval] delegates and the run's review file holds the verdicts."""
     for segment in segments(cmd):
         try:
             words = shlex.split(segment, posix=True)
         except ValueError:
             words = segment.split()
+        delegated = False
         for i, w in enumerate(words):
-            if Path(w).name == "ledger.py" and "backfill" in words[i + 1:] \
-                    and any(x.startswith("--accept") for x in words[i + 1:]):
-                return True
+            if Path(w).name != "ledger.py":
+                continue
+            rest = words[i + 1:]
+            if "review" in rest and any(x.startswith("--reject-sample") for x in rest):
+                return REJECT_WHY
+            if "backfill" in rest and any(x.startswith("--accept") for x in rest):
+                exact = rest[:3] == ["backfill", "--accept", "--delegated"] and len(rest) == 4 and \
+                    all(re.fullmatch(r"(?:\S*/)?python[0-9.]*", x) for x in words[:i]) and len(words[:i]) <= 1 \
+                    and rel_posix(w) == ".keelokit/bin/ledger.py" and not CHDIR.search(unquoted(cmd))
+                if not exact:
+                    return ACCEPT_WHY
+                if why := delegated_gate(rest[3]):
+                    return why
+                delegated = True
+        if delegated:
+            continue
         # A wrapper that runs it from a string (script -c, tmux, xargs, `| sh`): the words as one text, unless the
         # segment only prints text (a commit message, a PR body, an echo) that nothing runs.
         text = words and Path(words[0]).name in TEXT_CMDS and not RUNS_INPUT.search(cmd)
-        if words and not text and re.search(r"ledger\.py\b.*\bbackfill\b.*--accept", " ".join(words), re.S):
-            return True
+        joined = " ".join(words)
+        if words and not text and re.search(r"ledger\.py\b.*\breview\b.*--reject-sample", joined, re.S):
+            return REJECT_WHY
+        if words and not text and re.search(r"ledger\.py\b.*\bbackfill\b.*--accept", joined, re.S):
+            return ACCEPT_WHY
         shell = next((i for i, w in enumerate(words) if Path(w).name in SHELLS), None)
         scripts = [words[i + 1] for i in range(len(words) - 1)
                    if shell is not None and i > shell and re.fullmatch(r"-[a-z]*c[a-z]*", words[i])]
         scripts += words[1:] if words[:1] == ["eval"] else []
-        if depth < 3 and any(runs_accept(script, depth + 1) for script in scripts):
+        if depth < 3:
+            for script in scripts:
+                if why := accept_problem(script, depth + 1):
+                    return ACCEPT_WHY if why != REJECT_WHY else why
+    return None
+
+
+# ── approval modes (docs/ledger.md, "Approval modes"): the [ledger.approval] table is the person's ──
+STATE = ".keelokit/state.toml"
+REVIEWS = ".keelokit/ledger-reviews"
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+APPROVAL_WHY = ("QA-4: the [ledger.approval] table of .keelokit/state.toml says who approves the ledger's corrections "
+                "and is the person's: ask in chat; they change it and commit with "
+                "`git -c keelokit.allowTamper=true commit`")
+STATE_SHELL_WHY = ("QA-4: don't write .keelokit/state.toml from the shell: edit it with the Edit tool (its "
+                   "[ledger.approval] table is the person's)")
+REJECT_WHY = ("QA-4: `ledger.py review --reject-sample` sends a delegated run back and is a person's, in their own "
+              "terminal: tell them which sample row is wrong")
+DELEGATED_OFF_WHY = ("QA-4: `ledger.py backfill --accept --delegated` needs the trunk's .keelokit/state.toml to "
+                     "delegate approval ([ledger.approval] mode = \"delegated\" or \"mixed\", a person's commit); "
+                     "otherwise a person accepts the rows in their terminal")
+
+
+def approval_of(text: str | bytes | None):
+    """The `ledger.approval` value of a state.toml text; None when absent or the text is not TOML."""
+    try:
+        if text is None:
+            return None
+        data = tomllib.loads(text.decode("utf-8") if isinstance(text, bytes) else text)
+    except Exception:  # bad TOML or bytes: no table counts, as ledger.py reads it
+        return None
+    ledger = data.get("ledger")
+    return ledger.get("approval") if isinstance(ledger, dict) else None
+
+
+def delegates(table) -> bool:
+    return isinstance(table, dict) and table.get("mode") in ("delegated", "mixed")
+
+
+def git_bytes(*args: str) -> bytes | None:
+    """stdout of a git call, or None when it fails."""
+    out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True)
+    return out.stdout if out.returncode == 0 else None
+
+
+def trunk_approval(trunk: str | None = None):
+    """The [ledger.approval] table of the trunk's committed state.toml (origin/<trunk>, else the local branch), the
+    one ledger.py honours; the trunk is [ledger] trunk, else [harbor] trunk, else main (or the one given)."""
+    if trunk is None:
+        try:
+            trunk = trunk_of((ROOT / STATE).read_bytes())
+        except OSError:
+            trunk = "main"
+    if trunk.startswith("-") or git_bytes("check-ref-format", f"refs/heads/{trunk}") is None:
+        return None
+    for ref in (f"refs/remotes/origin/{trunk}", f"refs/heads/{trunk}"):
+        sha = git_bytes("rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
+        if sha:
+            return approval_of(git_bytes("show", f"{sha.decode().strip()}:{STATE}"))
+    return None
+
+
+def review_data(text: str | bytes | None, run: str) -> dict | None:
+    """A review file for this run (an object with run and a list of rows), or None when it is not one."""
+    try:
+        data = json.loads(text.decode("utf-8") if isinstance(text, bytes) else text) if text is not None else None
+    except Exception:
+        return None
+    ok = isinstance(data, dict) and data.get("run") == run and isinstance(data.get("rows"), list)
+    return data if ok else None
+
+
+def review_rows(text: str | bytes | None, run: str) -> list | None:
+    """The rows of a review file for this run, or None when it is not one."""
+    data = review_data(text, run)
+    return data["rows"] if data else None
+
+
+def verdicts_missing(row) -> bool:
+    """True when a review row lacks judge A's or judge B's verdict, or the skeptic's after two yeses."""
+    if not isinstance(row, dict):
+        return True
+    a, b = (row.get(k).get("verdict") if isinstance(row.get(k), dict) else None for k in ("judge_a", "judge_b"))
+    if a not in ("yes", "no") or b not in ("yes", "no"):
+        return True
+    skeptic = row.get("skeptic")
+    return a == b == "yes" and not (isinstance(skeptic, dict) and isinstance(skeptic.get("refuted"), bool))
+
+
+def approved_in(row: dict, rows: list) -> bool:
+    """The review rows hold this corrections row (story, commit, kind) approved: decision approved, both judges yes
+    and the skeptic's refutation failed."""
+    for r in rows:
+        if not isinstance(r, dict) or (r.get("story"), r.get("commit"), r.get("kind")) != \
+                (row.get("story"), row.get("commit"), row.get("kind")):
+            continue
+        a, b, s = (r.get(k) if isinstance(r.get(k), dict) else {} for k in ("judge_a", "judge_b", "skeptic"))
+        if r.get("decision") == "approved" and a.get("verdict") == b.get("verdict") == "yes" and s.get("refuted") is False:
             return True
     return False
+
+
+def delegated_gate(run: str) -> str | None:
+    """Why an agent may not run `backfill --accept --delegated <run>`, or None: the trunk's committed table
+    delegates, and the run's review file in the work tree has every row's verdicts."""
+    if not RUN_ID.fullmatch(run):
+        return ACCEPT_WHY
+    if not delegates(trunk_approval()):
+        return DELEGATED_OFF_WHY
+    try:
+        rows = review_rows((ROOT / REVIEWS / f"{run}.json").read_bytes(), run)
+    except OSError:
+        rows = None
+    if not rows or any(verdicts_missing(r) for r in rows):
+        return (f"QA-4: `backfill --accept --delegated {run}` needs {REVIEWS}/{run}.json with judge A's and judge "
+                "B's verdicts for every row, and the skeptic's where both said yes")
+    return None
+
+
+def state_after(tool: str, args: dict, rel: str) -> str | None:
+    """The text state.toml would have after this tool call (None: the call cannot be read, so it counts as a
+    change)."""
+    try:
+        current = (ROOT / rel).read_text(encoding="utf-8")
+    except OSError:
+        current = ""
+    if tool == "Write":
+        return args.get("content") if isinstance(args.get("content"), str) else None
+    edits = [args] if tool == "Edit" else args.get("edits") if tool == "MultiEdit" else None
+    if not isinstance(edits, list):
+        return None
+    text = current
+    for e in edits:
+        old, new = (e.get("old_string"), e.get("new_string")) if isinstance(e, dict) else (None, None)
+        if not isinstance(old, str) or not isinstance(new, str):
+            return None
+        if old and old in text:
+            text = text.replace(old, new) if e.get("replace_all") else text.replace(old, new, 1)
+        elif not old:
+            text = new + text
+        else:  # the tool may match it another way (quotes normalised): the result is unknown
+            return None
+    return text
+
+
+def trunk_of(text: str | bytes | None) -> str:
+    """The trunk a state.toml text names ([ledger] trunk, else [harbor] trunk, else main), as ledger.py reads it."""
+    try:
+        data = tomllib.loads(text.decode("utf-8") if isinstance(text, bytes) else text) if text is not None else {}
+    except Exception:
+        data = {}
+    for table in ("ledger", "harbor"):
+        t = data.get(table)
+        if isinstance(t, dict) and isinstance(t.get("trunk"), str) and t["trunk"].strip():
+            return t["trunk"].strip()
+    return "main"
+
+
+TRUNK_WHY = ("QA-4: that edit of .keelokit/state.toml moves the trunk from {old} to {new}, whose committed "
+             "[ledger.approval] differs, and who approves the ledger's corrections is the person's call: ask in chat")
+
+
+def state_problem(tool: str, args: dict, rel: str) -> str | None:
+    """Why this edit of state.toml is the person's: it changes [ledger.approval], or moves the trunk to a branch whose
+    committed table differs (the approval is read from the trunk's committed file); None for any other edit."""
+    try:
+        current = (ROOT / rel).read_text(encoding="utf-8")
+    except OSError:
+        current = None
+    after = state_after(tool, args, rel)
+    if after is None or approval_of(after) != approval_of(current):
+        return APPROVAL_WHY
+    old, new = trunk_of(current), trunk_of(after)
+    if old != new and trunk_approval(old) != trunk_approval(new):
+        return TRUNK_WHY.format(old=old, new=new)
+    return None
 
 
 def toml_str(value: str) -> str:
@@ -448,10 +661,12 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why
-    if runs_accept(cmd):
-        return ACCEPT_WHY
+    if why := accept_problem(cmd):
+        return why
     if corrections_write(cmd):
         return CORRECTIONS_WHY
+    if named_write(cmd, Path(STATE).name):
+        return STATE_SHELL_WHY
     for segment in re.split(r"&&|\|\||;|\|", bare):
         words = segment.split()
         if not words:
@@ -499,15 +714,34 @@ def edit_payload(tool: str, args: dict) -> tuple[str, list[str]]:
     return path, [p for p in parts if isinstance(p, str) and p]
 
 
+def real_rel(path: str) -> str | None:
+    """The repo-relative POSIX path a tool really writes: symlinks resolved, a relative path taken from the root,
+    and a hard link to a protected file read as that file (the same inode)."""
+    try:
+        real = ((ROOT / path) if not Path(path).is_absolute() else Path(path)).resolve()
+        if real.is_file():
+            for protected in (STATE, CORRECTIONS, REGISTRY):
+                target = ROOT / protected
+                if target.is_file() and os.path.samefile(real, target):
+                    return protected
+        norm = real.relative_to(ROOT.resolve()).as_posix()
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return norm
+
+
 def tool_problem(tool: str, args: dict) -> str | None:
     allow = committed_registry()
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
-    if path and rel_posix(path) == REGISTRY:
+    names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
+    if REGISTRY in names:
         return REGISTRY_WHY
-    if path and (rel_posix(path) or "").lower() == CORRECTIONS:
+    if CORRECTIONS in {n.lower() for n in names}:
         return CORRECTIONS_WHY
+    if STATE in {n.lower() for n in names} and (why := state_problem(tool, args, STATE)):
+        return why
     if path and is_env_file(path) and not allowed(allow, "SEC-2", path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"
     if path and applied_migration(path):
@@ -575,6 +809,55 @@ def staged_rows(path: str) -> bool:
         return True
 
 
+def delegated_append() -> bool:
+    """True when the staged corrections file is a delegated review's append: HEAD's state.toml delegates (and the
+    staged table is the same), the staged file is HEAD's plus rows, and every new row has approver
+    `delegated:<run>` with the staged review file of that run showing it approved."""
+    head_table = approval_of(git_bytes("show", f"HEAD:{STATE}"))
+    if not delegates(head_table) or approval_of(git_bytes("show", f":{STATE}")) != head_table:
+        return False
+    head, staged = git_bytes("show", f"HEAD:{CORRECTIONS}") or b"", git_bytes("show", f":{CORRECTIONS}")
+    if staged is None or not staged.startswith(head):
+        return False
+    try:
+        old = tomllib.loads(head.decode("utf-8")).get("row", []) if head else []
+        rows = tomllib.loads(staged.decode("utf-8")).get("row", [])
+    except Exception:
+        return False
+    if not isinstance(old, list) or not isinstance(rows, list) or rows[:len(old)] != old or len(rows) <= len(old):
+        return False
+    for row in rows[len(old):]:
+        approver = row.get("approver") if isinstance(row, dict) else None
+        if not isinstance(approver, str) or not approver.strip().lower().startswith("delegated:"):
+            return False
+        run = approver.strip()[len("delegated:"):].strip()
+        if not RUN_ID.fullmatch(run) or row.get("kind") not in ("backfill", "late"):
+            return False
+        review = review_data(git_bytes("show", f":{REVIEWS}/{run}.json"), run)
+        if not review or review.get("mode") != head_table.get("mode") or not approved_in(row, review["rows"]) \
+                or not any(redecided(r, review) for r in review["rows"] if isinstance(r, dict) and
+                           (r.get("story"), r.get("commit"), r.get("kind")) ==
+                           (row.get("story"), row.get("commit"), row.get("kind"))):
+            return False
+    return True
+
+
+def redecided(r: dict, review: dict) -> bool:
+    """The recorded facts of a review row (critical, confidence, the verdict models) and the recorded mode and
+    human_for still give `approved`, as ledger.py decides."""
+    reasons = review.get("human_for")
+    reasons = [h for h in ("critical", "disagreement", "low-confidence") if h in reasons] \
+        if isinstance(reasons, list) else ["critical", "disagreement", "low-confidence"]
+    if review.get("mode") == "mixed" and ((r.get("critical") is not False and "critical" in reasons)
+                                         or (r.get("confidence") == "low" and "low-confidence" in reasons)):
+        return False
+    if review.get("mode") == "delegated" and r.get("critical") is not False and not all(
+            isinstance(r.get(k), dict) and "opus" in str(r[k].get("model", "")).lower()
+            for k in ("judge_a", "judge_b", "skeptic")):
+        return False
+    return review.get("mode") in ("delegated", "mixed")
+
+
 def git_pre_commit() -> int:
     staged = subprocess.run(
         ["git", "diff", "--cached", "--name-status", "--no-renames"], cwd=ROOT, capture_output=True, text=True
@@ -591,9 +874,16 @@ def git_pre_commit() -> int:
             problems.append(f"QA-4: {path} is changed. If a human decided this, commit with "
                             "`git -c keelokit.allowTamper=true commit …` and say why in the message.")
         # The template's corrections file (comments only, no [[row]]) may be added; any other change is the human's.
-        if path == CORRECTIONS and not allow_tamper and not (status == "A" and not staged_rows(path)):
+        if path == CORRECTIONS and not allow_tamper and not (status == "A" and not staged_rows(path)) \
+                and not delegated_append():
             problems.append(f"QA-4: {path} (the ledger's approved corrections) is changed. If a person accepted "
                             "these rows, they commit with `git -c keelokit.allowTamper=true commit …`.")
+        if path == STATE and not allow_tamper and \
+                approval_of(None if status == "D" else git_bytes("show", f":{STATE}")) != \
+                approval_of(git_bytes("show", f"HEAD:{STATE}")):
+            problems.append(f"QA-4: the [ledger.approval] table of {STATE} is changed: who approves the ledger's "
+                            "corrections is the person's call. If they decided it, they commit with "
+                            "`git -c keelokit.allowTamper=true commit …`.")
         if is_env_file(path) and status != "D" and not allowed(allow, "SEC-2", path):
             problems.append(f"SEC-2: {path} must not be committed")
         if status in ("M", "D") and applied_migration(path):

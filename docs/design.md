@@ -145,6 +145,7 @@ run cut short resumes where it stopped.
 | Workflow | Started by | Shape |
 |---|---|---|
 | `check-bugbash-flow` | `check-bugbash` | plan → lenses (≤ N at once) → a skeptic reproduces each finding (two for P0/P1) → completeness critic, more rounds while it finds gaps → merge by root cause → fixes one at a time, each checked by another agent, undone if rejected → report |
+| `ledger-review-flow` | `check-health` (the person delegated the approval of ledger corrections in `[ledger.approval]`) | `ledger.py review --filter` (no model) → judge A and judge B per row, independently (≤ N at once; Opus for a critical story in `delegated`) → a skeptic tries to refute each row both approved → the verdicts go to `.keelokit/ledger-reviews/<run>.json`, `ledger.py backfill --accept --delegated <run>` decides and writes the approved rows as `delegated:<run>`, one commit → report with the person's queue and a sample |
 
 The skill stays the way in, and the fallback: it prepares what needs the person (scope, what to
 say), starts the workflow when the session can run one, and afterwards asks the pending
