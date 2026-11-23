@@ -109,9 +109,12 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
 - An active row whose commit is not reverted makes a story with no live `Story:` commit `on-trunk` (or higher, from
   that commit's tags and deploys), `reconstructed: true`, with the new per-story key `correction` (kind, commit,
   evidence, approver, date). A live `Story:` commit wins over rows. Several active rows: the oldest by arrival.
-- Append-only (INV-008) compares every version of the file on the trunk's first-parent chain with the tip: a row of
-  an earlier version (as a whole table) missing from the tip is `CORRECTION_EDITED`, named where it first was;
-  removing the file counts. Two git calls whatever the number of versions. Reading never fetches: in a partial clone
+- Append-only (INV-008) compares every version of the file on the trunk's first-parent chain, and the version each
+  parent of a first-parent merge had (a "foxtrot" merge turns the old trunk into a second parent, ESC-094), with the
+  tip: the rows of an earlier version (as whole tables) must still be in the tip in the same order (a subsequence,
+  ESC-095), else `CORRECTION_EDITED`, named where the row first was; removing the file or making it invalid TOML
+  counts. Versions inside a branch that never were a merge parent are not read, so a PR that fixes its own new row
+  before merging is no edit. A fixed number of git calls whatever the number of versions. Reading never fetches: in a partial clone
   (what `history --ensure` leaves) earlier versions are often absent, so the check says `CORRECTION_UNCHECKED`
   (warning, new code added to docs/ledger.md) and the CI's full clone checks it.
 - `ledger.py check [--json]` exists in a first form: the diffs, exit 1 on an error-level one, 0 on warnings only.
@@ -124,14 +127,26 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
   and the commit that added the story's file. Trains are found by a `Convoy: N` trailer, `train|tren|convoy N` in
   the subject, or a merge of `convoy/N`, `train/N`, `train-N`; in an evidence file by those words, `T<N>`, or a
   Markdown table row whose first cell is the number (BOARD.md, and the rows Harbor keeps in its imported board).
-- `backfill --accept` needs a terminal on stdin and stdout and a `y` to the question, so an agent's shell cannot run
-  it even past the guard; it refuses everything when one proposed row is invalid, skips a row already active, ignores
+- `backfill --accept` needs a terminal on stdin and stdout, no `CLAUDECODE` in the environment (Claude Code's own
+  shell sets it) and a `y` to the question. These are speed bumps, like the guard: a pty wrapper (`script`) gave a
+  terminal (ESC-092), so the guard also blocks any segment that runs the command from a string. The backstop is the
+  commit, which needs `keelokit.allowTamper`. It refuses everything when one proposed row is invalid, skips a row already active, ignores
   any approver or date in the proposed file (the approver is `git config user.name`, the date today), appends
   without rewriting a byte, and removes the proposed file. `correct` appends a `late` row to the proposed file.
+- The guard blocks any shell segment that names the corrections file (in any case: a case-insensitive disk writes
+  the same file) unless it is a read (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `wc`, `diff`, `ls`, `stat`, or
+  `git diff/log/show/blame/status/grep/ls-files` without a redirect), so `git checkout … -- <file>`, `install` and
+  `python3 -c "open(…)"` are blocked too (ESC-096). Propose also leaves out revert commits and a commit's own
+  `Part-of:` ids (ESC-093). A date must be a calendar date.
 - The plugin's PreToolUse hook that denies `backfill --accept` is the guard (`hooks/hooks.json` already sends every
   Bash call to it), so `hooks/hooks.json` is unchanged. The pre-commit hook lets the template's comments-only file be
   added without `keelokit.allowTamper`, as it does for `guard-allow.toml`.
 - `.gitignore` (this repo's) joined the touches: Leo runs the backfill here, and the proposed file must stay out.
+- The guard's tests are in `tests/test_guard_corrections.py` (joined the touches), not `tests/test_guard.py`: that file
+  holds secret-shaped fixtures the pre-commit SEC-1 scan refuses, so no commit can touch it until a person adds a
+  SEC-1 entry for it to `.keelokit/guard-allow.toml` (ESC-091, for the coordinator).
+
+Escape rows ESC-091..096 are in docs/escapes.md (one review and attack round: reviewer and breaker).
 
 Measured on this repo (480 commits, 41 stories): `backfill --propose` proposes 8 rows, all `low` (bodies of docs
 commits that mention stories not built yet: for the person to delete), none from the junk commits of ESC-090.

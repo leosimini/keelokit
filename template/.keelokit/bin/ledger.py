@@ -474,20 +474,7 @@ def read_blobs(shas: list[str], trunk_sha: str) -> dict[str, bytes | None]:
     if not unique:
         return {}
     absent = missing_objects(trunk_sha) & set(unique) if is_partial_clone() else set()
-    present = [sha for sha in unique if sha not in absent]
-    out = git_read(["cat-file", "--batch"], "".join(f"{s}\n" for s in present).encode()) if present else b""
-    blobs, pos = dict.fromkeys(absent), 0
-    for sha in present:
-        end = out.find(b"\n", pos)
-        head = out[pos:end].split() if end >= 0 else []
-        if len(head) < 2:
-            raise LedgerError("git cat-file gave an unexpected answer")
-        if head[1] == b"missing":
-            blobs[sha], pos = None, end + 1
-            continue
-        size = int(head[2])
-        blobs[sha], pos = out[end + 1:end + 1 + size], end + 1 + size + 1
-    return blobs
+    return {**dict.fromkeys(absent), **cat_blobs([sha for sha in unique if sha not in absent])}
 
 
 def front_matter(text: str) -> tuple[dict | None, str]:
@@ -920,7 +907,7 @@ def read_all(state: dict) -> dict:
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
-                                    else None, set(placed[0]))
+                                    else None, set(placed[0]), graph)
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
                                       cfg["stale_days"], time.time(), corrections)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
@@ -961,6 +948,14 @@ def row_key(row) -> str:
     return json.dumps({k: plain_value(v) for k, v in row.items()}, sort_keys=True, default=str)
 
 
+def valid_date(text: str) -> bool:
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
 def row_problem(row, story_ids: set | None, reachable: set) -> str | None:
     """Why a row cannot count, or None. `story_ids` None: some story file is unreadable, so any id may exist."""
     if not isinstance(row, dict):
@@ -979,8 +974,8 @@ def row_problem(row, story_ids: set | None, reachable: set) -> str | None:
         return f"no story {values['story']}"
     if values["approver"].strip().lower().startswith("delegated:"):
         return "a delegated approver needs [ledger.approval] (LEDGER-015); this project approves by a person"
-    if not ISO_DATE.fullmatch(values["date"]):
-        return f"date {values['date']!r} is not YYYY-MM-DD"
+    if not ISO_DATE.fullmatch(values["date"]) or not valid_date(values["date"]):
+        return f"date {values['date']!r} is not a YYYY-MM-DD date"
     return None
 
 
@@ -1025,9 +1020,30 @@ def file_versions(trunk_sha: str) -> list[tuple[str, str | None]]:
     return versions
 
 
+def merge_parent_versions(trunk_sha: str, merges: set[str]) -> list[tuple[str, str]]:
+    """(merge, blob) for the file as each parent of a merge on the trunk's first-parent chain had it, when the
+    merge changed it: a row on the trunk that a merge drops (a "foxtrot" merge, where the old trunk becomes the
+    second parent) is still seen. One log of every commit that touched the file, each merge against each parent."""
+    if not merges:
+        return []
+    out = git_read(["log", "--full-history", "--diff-merges=separate", "--format=%x00%H", "--raw", "--no-abbrev",
+                    "--no-renames", trunk_sha, "--", f":(literal){CORRECTIONS}"]).decode(errors="replace")
+    found = []
+    for chunk in out.split("\0")[1:]:
+        lines = chunk.strip("\n").split("\n")
+        sha = lines[0].strip()
+        if sha not in merges:
+            continue
+        for line in lines[1:]:
+            fields = line.split("\t")[0].split() if line.startswith(":") else []
+            if len(fields) >= 5 and not fields[4].startswith("A") and set(fields[2]) != {"0"}:
+                found.append((sha, fields[2]))
+    return found
+
+
 def absent_versions(trunk_sha: str) -> set[str]:
     """Blobs of the file's versions this partial clone lacks: one walk that prints `?<sha>` instead of fetching."""
-    out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", "--first-parent", trunk_sha,
+    out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", trunk_sha,
                     "--", f":(literal){CORRECTIONS}"])
     return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
 
@@ -1052,15 +1068,18 @@ def cat_blobs(shas: list[str]) -> dict[str, bytes | None]:
     return blobs
 
 
-def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set) -> dict:
+def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, graph: dict | None = None) -> dict:
     """The corrections file as the trunk has it: active rows, diffs (CORRECTION_INVALID, CORRECTION_EDITED,
     CORRECTION_UNCHECKED) and `unreadable` (a reason, when the tip's version is absent from a partial clone).
     Two git calls (three in a partial clone) whatever the number of versions."""
     result = {"active": [], "diffs": [], "unreadable": None}
     versions = file_versions(trunk_sha)
-    if not versions:
+    chain = first_parent_chain(graph, trunk_sha) if graph else []
+    extra = merge_parent_versions(trunk_sha, {c for c in chain if len(graph.get(c, ())) > 1})
+    if not versions and not extra:
         return result
-    blobs = [b for _, b in versions if b]
+    versions = versions or [(trunk_sha, None)]  # never on the first-parent chain: the tip has no file
+    blobs = [b for _, b in versions if b] + [b for _, b in extra]
     absent = absent_versions(trunk_sha) & set(blobs) if is_partial_clone() else set()
     contents = {**cat_blobs([b for b in blobs if b not in absent]), **dict.fromkeys(absent)}
     tip_commit, tip_blob = versions[0]
@@ -1070,16 +1089,15 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set) -> 
             result["unreadable"] = f"{CORRECTIONS} cannot be read from the trunk's tree (a partial clone lacks it)"
             return result
         rows, why = parse_rows(contents[tip_blob])
-        if why:
+        if why:  # no row counts, and every earlier row is gone from what can be read
             result["diffs"].append({"level": "error", "code": "CORRECTION_INVALID", "detail": f"{CORRECTIONS}: {why}"})
-            return result
-        tip_rows = rows
-        result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS)
-    kept: dict[str, int] = {}
-    for row in tip_rows:
-        kept[row_key(row)] = kept.get(row_key(row), 0) + 1
+        else:
+            tip_rows = rows
+            result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS)
+    tip_keys = [row_key(row) for row in tip_rows]
     unchecked, reported = 0, set()
-    for commit, blob in reversed(versions[1:]):  # oldest first: a row is named where it first was
+    # Oldest first, so a row is named where it first was; then the versions merges' parents had.
+    for commit, blob in [*reversed(versions[1:]), *extra]:
         if blob is None:
             continue
         if contents.get(blob) is None:
@@ -1088,17 +1106,20 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set) -> 
         rows, why = parse_rows(contents[blob])
         if why:
             continue
-        counts: dict[str, int] = {}
+        pos = 0  # each earlier row must still be there, in the same order (a subsequence of the tip)
         for row in rows:
             key = row_key(row)
-            counts[key] = counts.get(key, 0) + 1
-            if counts[key] > kept.get(key, 0) and key not in reported:
+            nxt = next((j for j in range(pos, len(tip_keys)) if tip_keys[j] == key), None)
+            if nxt is not None:
+                pos = nxt + 1
+                continue
+            if key not in reported:
                 reported.add(key)
                 story, sha = (row.get("story"), str(row.get("commit"))[:12]) if isinstance(row, dict) else ("?", "?")
                 result["diffs"].append({
                     "level": "error", "code": "CORRECTION_EDITED",
                     "detail": f"{CORRECTIONS}: the row for {story} at {sha} was on the trunk in {commit[:7]} and "
-                              f"{'changed or disappeared' if tip_blob else 'disappeared with the file'} "
+                              f"{'changed, moved or disappeared' if tip_blob else 'disappeared with the file'} "
                               f"(append-only, INV-008: cancel a row with a retract row)"})
     if unchecked:
         result["diffs"].append({"level": "warning", "code": "CORRECTION_UNCHECKED",
@@ -1139,7 +1160,7 @@ def train_commits(log: list[dict], reverted: dict) -> dict[int, list[str]]:
     convoy/N or train/N."""
     trains: dict[int, list[str]] = {}
     for c in log:
-        if reverted.get(c["sha"]):
+        if reverted.get(c["sha"]) or c["reverts"]:
             continue
         subject = c["message"].split("\n", 1)[0]
         numbers = {int(n) for n in CONVOY_TRAILER.findall(c["message"])} | {int(n) for n in TRAIN_WORD.findall(subject)}
@@ -1204,10 +1225,10 @@ def proposals(ctx: dict, sources: list[str]) -> list[dict]:
             found[sid][sha] = (confidence, evidence)
 
     for c in ctx["log"]:
-        if c["no_story"] or reverted.get(c["sha"]):
+        if c["no_story"] or c["reverts"] or reverted.get(c["sha"]):
             continue
         subject, _, body = c["message"].partition("\n")
-        skip = set(c["story"]) | adds.get(c["sha"], set())
+        skip = set(c["story"]) | set(c["part_of"]) | adds.get(c["sha"], set())
         in_subject = set(ID_TOKEN.findall(subject))
         for sid in (in_subject | set(ID_TOKEN.findall(body))) & open_ids - skip:
             where = "subject" if sid in in_subject else "body"
@@ -1288,8 +1309,9 @@ def cmd_correct(state: dict, commit: str, story: str, evidence: str) -> int:
 def cmd_accept(state: dict) -> int:
     """A person, in their terminal (the `human` approval mode): the proposed rows, shown and confirmed, are
     appended to the corrections file with the person's name and today's date; nothing else is rewritten."""
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("Keelokit: `backfill --accept` is for a person in their own terminal (no terminal here); "
+    if os.environ.get("CLAUDECODE") or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("Keelokit: `backfill --accept` is for a person in their own terminal (no terminal here, or Claude "
+              "Code's shell); "
               "an agent proposes rows and never accepts them.", file=sys.stderr)
         return 1
     user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
