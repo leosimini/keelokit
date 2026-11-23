@@ -25,7 +25,8 @@ READS_NEXT = re.compile(r"\$\{?2\b")
 LEADING = {"scripts/test-template.sh": ['["api"]']}
 # Commands a script could reach once parsing is done; each shim logs its call and fails.
 # Scripts outside scripts/ that find their own folder and can be run from anywhere.
-SELF_CONTAINED = {"template/.keelokit/bin/run-local.sh", "template/scripts/verify.sh"}
+SELF_CONTAINED = {"template/.keelokit/bin/run-local.sh", "template/scripts/verify.sh",
+                  "template/.keelokit/bin/flaky.sh"}
 SHIMS = ["uvx", "copier", "pnpm", "npm", "npx", "claude", "gh"]
 
 
@@ -159,6 +160,102 @@ class AuditTest(unittest.TestCase):
                 text = (ROOT / rel).read_text()
                 self.assertIn("python3 .keelokit/bin/audit.py", text)
                 self.assertNotIn("pnpm audit", text)
+
+
+class StableTestsTest(unittest.TestCase):
+    """FLEET-003: the stable-tests rules reach main, flaky.sh reproduces an intermittent red with
+    its seed, zone and load, and the arch-specs ship to generated projects byte for byte."""
+    FLAKY = ROOT / "template/.keelokit/bin/flaky.sh"
+    FAILED = re.compile(r"^failed:.*\brun=(\d+) seed=(\d+) tz=(\S+) stress=(\d+) loadavg=([\d.]+|\?)", re.M)
+    # Fails only where the local date differs from the UTC date at a fixed instant: 2026-11-23 12:30
+    # UTC is already the 24th in Auckland (UTC+13), the same day in UTC.
+    CLOCK_EDGE = ("import calendar, sys, time; t = calendar.timegm((2026, 11, 23, 12, 30, 0)); "
+                  "sys.exit(time.strftime('%F', time.localtime(t)) != time.strftime('%F', time.gmtime(t)))")
+
+    def flaky(self, *args):
+        env = {**os.environ, "TZ": "UTC"}
+        return subprocess.run(["bash", str(self.FLAKY), *args], capture_output=True, text=True,
+                              env=env, cwd=ROOT, stdin=subprocess.DEVNULL, timeout=120)
+
+    def test_FLEET_003_S1_the_rules_are_on_main_and_cited(self):
+        """FLEET-003.S1: stable-tests.md numbers rules 1 to 11; 10 is deterministic test data,
+        11 an absence asserted in one registry; the verifier, reviewer and build-story cite it."""
+        text = (ROOT / "references/stable-tests.md").read_text()
+        rules, current = {}, None
+        for line in text.splitlines():
+            m = re.match(r"^(\d+)\.\s+(.*)", line)
+            if m:
+                current = int(m.group(1))
+                rules[current] = m.group(2)
+            elif current is not None and line.startswith((" ", "\t")):
+                rules[current] += " " + line.strip()
+            elif line.strip() and not line.startswith((" ", "\t")):
+                current = None
+        self.assertEqual(sorted(rules), list(range(1, 12)), "rules are not numbered 1 to 11")
+        self.assertRegex(rules[10].lower(), r"determinis")
+        self.assertRegex(rules[11].lower(), r"absen")
+        self.assertRegex(rules[11].lower(), r"registry|one place")
+        for rel in ("agents/verifier.md", "agents/reviewer.md", "skills/build-story/SKILL.md"):
+            with self.subTest(rel):
+                self.assertIn("stable-tests.md", (ROOT / rel).read_text())
+
+    def test_FLEET_003_S5_flaky_reports_the_runs_that_fail_at_a_clock_edge(self):
+        """FLEET-003.S5: three runs each in the default zone, UTC and Auckland; only Auckland's fail,
+        and each is reported with its run, seed, zone, stress and load; exit 1."""
+        r = self.flaky("-n", "3", "--stress", "1", "--tz", "UTC Pacific/Auckland", "--",
+                       "python3", "-c", self.CLOCK_EDGE)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        failed = self.FAILED.findall(out)
+        self.assertEqual(len(failed), 3, out)
+        self.assertEqual(len(re.findall(r"^failed:", out, re.M)), 3, out)
+        for run, seed, tz, stress, _load in failed:
+            self.assertEqual(tz, "Pacific/Auckland", out)
+            self.assertEqual(stress, "1", out)
+            self.assertEqual(int(seed), int(run), f"seed defaults to 1 + run - 1\n{out}")
+        self.assertEqual(len({run for run, *_ in failed}), 3, out)
+
+    def test_FLEET_003_S5_a_command_that_always_passes_exits_0(self):
+        """FLEET-003.S5: no failing run, no `failed:` line, exit 0."""
+        r = self.flaky("-n", "2", "--stress", "1", "--tz", "UTC Pacific/Auckland", "--", "true")
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertNotRegex(out, r"(?m)^failed:")
+
+    def test_FLEET_003_S5_each_run_gets_its_own_seed_and_seed_shifts_them(self):
+        """FLEET-003.S5: FLAKY_SEED is S + run - 1 (S = 1 by default, --seed sets it), FLAKY_RUN the run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "runs.log"
+            cmd = ["sh", "-c", f'echo "$FLAKY_RUN $FLAKY_SEED" >>"{log}"']
+            r = self.flaky("-n", "3", "--", *cmd)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(log.read_text().split("\n")[:-1], ["1 1", "2 2", "3 3"])
+            log.unlink()
+            r = self.flaky("-n", "3", "--seed", "100", "--", *cmd)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(log.read_text().split("\n")[:-1], ["1 100", "2 101", "3 102"])
+
+    def test_FLEET_003_S5_a_usage_error_exits_2(self):
+        """FLEET-003.S5: no command, or a count that is not a number, is a usage error."""
+        for args in (["-n", "3"], ["-n", "3", "--"], ["-n", "abc", "--", "true"],
+                     ["--stress", "x", "--", "true"], ["--seed", "x", "--", "true"]):
+            with self.subTest(args=args):
+                r = self.flaky(*args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_FLEET_003_S6_the_template_ships_the_arch_specs_byte_for_byte(self):
+        """FLEET-003.S6: every file in references/arch-specs/ but README.md is in the template's
+        packages/shared/src/arch/, identical, so a generated project's verify runs them."""
+        src = ROOT / "references/arch-specs"
+        dst = ROOT / "template/packages/shared/src/arch"
+        names = sorted(f.name for f in src.iterdir() if f.is_file() and f.name != "README.md")
+        for spec in ("no-literal-dates", "no-sleeps-in-specs", "no-random-test-data", "no-inherited-git-env"):
+            self.assertIn(f"{spec}.arch.test.ts", names)
+        self.assertIn("_walk.ts", names)
+        for name in names:
+            with self.subTest(name):
+                self.assertTrue((dst / name).is_file(), f"{dst / name} is missing")
+                self.assertEqual((dst / name).read_bytes(), (src / name).read_bytes(), f"{name} differs")
 
 
 if __name__ == "__main__":

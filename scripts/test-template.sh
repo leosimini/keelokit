@@ -149,6 +149,20 @@ fi
 export KEELOKIT_ALLOW_MISSING="${KEELOKIT_ALLOW_MISSING:-gitleaks semgrep}"
 pnpm verify --all
 
+# The arch-specs ran inside verify, green on the template's own code; a planted date must turn them red.
+step 'FLEET-003.S6 arch-specs run in verify and catch a planted literal date'
+for spec in no-literal-dates no-sleeps-in-specs no-random-test-data no-inherited-git-env; do
+  [ -f "packages/shared/src/arch/$spec.arch.test.ts" ] || { echo "missing arch-spec $spec" >&2; exit 1; }
+done
+planted=packages/shared/src/planted.test.ts
+printf '%s\n' "import { expect, it } from 'vitest';" "it('is due', () => expect('2031-05-01').toBeTruthy());" >"$planted"
+if out=$(pnpm --filter ./packages/shared test 2>&1); then
+  echo 'a planted literal date passed the arch-specs' >&2; exit 1
+fi
+grep -qF "$planted:2" <<<"$out" || { printf 'the arch-spec did not name %s:2\n%s\n' "$planted" "$out" >&2; exit 1; }
+rm "$planted"
+pnpm --filter ./packages/shared test >/dev/null
+
 # MUT-1 must bite: the template's critical example passes, and the same code under a suite that
 # can't fail is rejected.
 step 'Mutation testing (critical code)'
