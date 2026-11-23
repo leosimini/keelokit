@@ -1,0 +1,10 @@
+[[allow]]
+rule = "SEC-2"
+path = "apps/api/.env.production"
+reason = "placeholders the deploy guide names"
+approver = "Leo"
+[[allow]]
+rule = "SEC-2"
+reason = "Firebase key, public by design"
+approver = "Leo"
+glob = "infra/03-env-templates/*.env"
