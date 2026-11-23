@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **The API's dependency audit is green again.** `effect` up to 3.22.0 has a high ReDoS advisory (GHSA-7589-6fvf-x4pw)
+  and every Prisma 7 release pins `effect` 3.20.0 through `@prisma/config`, so a generated project with the `api` app
+  failed SEC-3 with no code change. `pnpm-workspace.yaml` now overrides `@prisma/config>effect` to `^3.22.1` (still 3.x,
+  which `@prisma/config` expects). The file is the template's, so a generated project gets the override from
+  `/keelokit:harness-upgrade` (its `pnpm install` updates the lockfile). An adopted repo (`mode=harness`) owns its
+  dependencies: if its audit shows the same advisory, add the override itself.
+
 ## 0.14.0 — 2026-11-16
 
 - **Product quality is part of the harness: the interface and the journeys (UX-2..UX-5).** A project with the `ui`
