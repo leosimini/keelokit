@@ -1,1 +1,1 @@
-allow = 'x'
+allow = [1, 2]
