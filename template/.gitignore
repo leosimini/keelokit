@@ -21,3 +21,4 @@ __pycache__
 .local-dev/
 .eslintcache
 ci-timings/
+.keelokit/ledger-corrections.proposed.toml

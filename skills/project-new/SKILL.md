@@ -144,6 +144,8 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
    template itself is wrong, say so: it must be fixed in Keelokit.
 4. First commit, of everything (`git add -A`: `pnpm-lock.yaml` included, or `pnpm verify` can't
    compare it with origin/main): `chore: skeleton from Keelokit v<version>`.
+   Then record where the ledger's attribution starts: `[ledger] since = "<the full sha of that first
+   commit>"` in `.keelokit/state.toml` (`git rev-parse HEAD`), committed with the next change.
    With a `mobile` app, the template writes `[local]` in `.keelokit/profile.toml` and a
    `run:local` script: mention that `/keelokit:run-local` (or `pnpm run:local`) launches the app and
    its API on a phone or a simulator, and offer it once the skeleton is green.

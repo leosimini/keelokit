@@ -106,5 +106,25 @@ class WorkflowsTest(unittest.TestCase):
                     self.assertIn(name, names)
 
 
+    def test_LEDGER_015_S10_the_ledger_review_flow_is_well_formed(self):
+        """LEDGER-015.S10: the delegated review of corrections: Filter (ledger.py, no model), two independent judges,
+        a skeptic, Decide (ledger.py computes the decision and writes the rows), Report. Critical rows in delegated
+        mode are judged by 'opus', judge B may run on args.modelB, the sample comes from ledger.py (a hash of the run),
+        never from randomness, and repository text reaches agents through data()."""
+        path = ROOT / "workflows/ledger-review-flow.js"
+        self.assertTrue(path.is_file(), "workflows/ledger-review-flow.js exists")
+        self.assertIn(path, WORKFLOWS)
+        meta = meta_of(path)
+        self.assertEqual(meta["name"], "ledger-review-flow")
+        self.assertEqual({p["title"] for p in meta["phases"]}, {"Filter", "Judge", "Refute", "Decide", "Report"})
+        _, body = split(path)
+        code = re.sub(r"//[^\n]*", "", body)
+        for needed in ("review --filter", "backfill --accept --delegated", "'opus'", "args.modelB", "maxParallel",
+                       "function data("):
+            with self.subTest(needed=needed):
+                self.assertIn(needed, code)
+        for banned in (r"Math\.random", r"Date\.now", r"new Date\("):
+            self.assertNotRegex(code, banned)
+
 if __name__ == "__main__":
     unittest.main()

@@ -74,7 +74,9 @@ SCENARIO_RE = re.compile(r"(?im)^\s*(?:scenario|escenario)[^:\n]*:\s*\[(S\d+)\]"
 TEST_FILE_RE = re.compile(r"(\.(test|spec)\.[cm]?[jt]sx?$)|(/e2e/.*\.[jt]s$)")
 # Python tests (unittest, pytest): test_*.py or *_test.py, under the folders TITLE_DIRS walks.
 PY_TEST_FILE_RE = re.compile(r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
-TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test")  # tests/ and test/: Python files only
+TITLE_DIRS = ("apps", "packages", "e2e", "tests", "test", "template")  # tests/ and test/: Python files only
+# template/: Keelokit's own repo only (this copy is not shipped). A scenario covered by a TypeScript test the
+# template ships (e.g. packages/shared/src/arch) runs in CI inside the generated project (scripts/test-template.sh).
 # Folders of installed code: never read for titles (third-party test files, and slow).
 VENDORED = {"node_modules", ".venv", "venv", "site-packages", "__pycache__", ".tox", ".nox"}
 # A Python test's name cites ids with underscores: test_AUTH_001_S1_works → "test AUTH-001.S1 works".
@@ -604,6 +606,28 @@ def check_guard_allow() -> None:
                         f"{e['reason']} (approved by {e['approver']})")
 
 
+def check_corrections() -> None:
+    """The ledger's corrections (backlog/ledger-corrections.toml): ledger.py checks them (docs/ledger.md,
+    "Corrections file") and the doctor reports its CORRECTION_* differences: errors stay errors."""
+    ledger = ROOT / ".keelokit/bin/ledger.py"
+    if not ledger.is_file():
+        return
+    why = ""
+    try:
+        out = subprocess.run([sys.executable, str(ledger), "check", "--json"], cwd=ROOT, capture_output=True,
+                             text=True, timeout=60)
+        why = (out.stderr.strip().splitlines() or [""])[-1]
+        diffs = json.loads(out.stdout)["diffs"] if out.returncode in (0, 1) else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        diffs = None
+    if not isinstance(diffs, list):
+        warnings.append(f"ledger: the corrections could not be checked ({why or 'run `python3 .keelokit/bin/ledger.py check`'})")
+        return
+    for d in diffs:
+        if isinstance(d, dict) and str(d.get("code", "")).startswith("CORRECTION_"):
+            (errors if d.get("level") == "error" else warnings).append(f"{d['code']}: {d.get('detail', '')}")
+
+
 def drift_text(trait: str, seen: str | None) -> str:
     return DRIFT_SEEN.format(trait=trait, seen=seen) if seen else DRIFT_MISSING.format(trait=trait)
 
@@ -1079,6 +1103,7 @@ def main() -> int:
     profile = load_profile()
     check_rules(rules, check_exceptions(set(rules)), profile)
     check_guard_allow()
+    check_corrections()
     gaps, blocking = check_context()
     invariants = check_invariants()
     areas, _ = load_critical()
