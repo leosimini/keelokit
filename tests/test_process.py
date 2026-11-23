@@ -522,5 +522,40 @@ class MoneyFailurePathsTest(unittest.TestCase):
                                 f"{rel} points at invariants.md section \"{quoted}\", which no heading carries")
 
 
+class SkillsReadTheLedgerTest(unittest.TestCase):
+    """LEDGER-006: the skills ask `ledger.py` for story states instead of reading `Story:` trailers in git log
+    themselves (docs/ledger.md, "The principle": one reader; INV-005 lives in the ledger)."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def read(self, rel: str) -> str:
+        return " ".join((self.ROOT / rel).read_text(encoding="utf-8").split())
+
+    def test_LEDGER_006_S4_ship_release_lists_a_versions_stories_with_release(self):
+        text = self.read("skills/ship-release/SKILL.md")
+        self.assertIn("ledger.py --release", text)
+
+    def test_LEDGER_006_S5_build_story_asks_the_ledger_before_the_contract_and_writes_a_body(self):
+        raw = (self.ROOT / "skills/build-story/SKILL.md").read_text(encoding="utf-8")
+        contract = raw.index("## 2. Contract")
+        show = raw.find("ledger.py show <ID>")
+        self.assertTrue(0 <= show < contract, "build-story runs `ledger.py show <ID>` before the contract")
+        land = " ".join(raw[raw.index("## 7. Land"):].split())
+        self.assertRegex(land, r"(?i)body", "step 7 says the Story: commit carries a body")
+        self.assertRegex(land, r"(?i)decided", "the body says what was decided")
+        self.assertRegex(land, r"(?i)left out", "and what was left out")
+
+    def test_LEDGER_006_every_reader_skill_names_the_ledger(self):
+        wants = {"skills/coordinate/SKILL.md": "ledger.py show", "skills/plan-backlog/SKILL.md": "ledger.py",
+                 "skills/keelokit/SKILL.md": "ledger.py", "skills/check-health/SKILL.md": "ledger.py",
+                 "skills/project-report/SKILL.md": "ledger.py", "skills/ship-release/SKILL.md": "ledger.py --release",
+                 "skills/build-story/SKILL.md": "ledger.py show"}
+        for rel, want in wants.items():
+            self.assertIn(want, self.read(rel), rel)
+        # No skill finds a landing by reading `Story:` trailers in git log itself.
+        for rel in wants:
+            self.assertNotRegex(self.read(rel), r"git log[^.]*`Story: <ID>`", rel)
+
+
 if __name__ == "__main__":
     unittest.main()

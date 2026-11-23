@@ -104,8 +104,9 @@ tracked, every invariant with an id and a class), critical areas (their paths ex
 backlog (well-formed stories, declared dimensions, scenario ids, no two stories of a wave
 touching the same paths or the same critical area, a story in a critical area declaring
 `integrity` and its invariants, every scenario and invariant of a done story cited by an active
-test title) and the escape log (every row names the check it left). A story is done when a
-commit on `main` carries `Story: <ID>`.
+test title) and the escape log (every row names the check it left). A story's state is the
+ledger's (`ledger.py --json`, below): done when it is `on-trunk` or later; a story done only by a
+correction row is listed apart as reconstructed, and TRACE-1 and INV-1 skip it.
 
 `doctor --scope <ID>` checks one branch before review: files outside `touches`, a critical area
 the story didn't declare, and acceptance tests edited outside a `test(<ID>): …` commit.
@@ -143,6 +144,16 @@ attempts (`Dropped:` commits on any origin branch, also in `--json` as `attempts
 next` lists the ready stories nobody works on, by wave and id; `ledger.py --release vX.Y.Z` the stories whose
 commit is in that tag and not in the previous version tag.
 
+One reader: the doctor, the dashboard and `status.py` take story states from `ledger.py --json` and compute
+none of their own, so they never disagree (LEDGER-006). The doctor's done count is the ledger's `on-trunk` or
+later; the dashboard shows a story's version and work in progress on another machine (`Part-of:` commits on an
+origin branch); `status.py` lists the stories in progress on branches not checked out here. When the ledger
+can't answer (a cut history, a story it reads as unknown, no `ledger.py`) all three say unknown, never a lower
+state. A story file not on the trunk yet (a plan on a branch) has no ledger record: not done, and ready once its
+dependencies are. The skills ask the same commands: `build-story` reads `ledger.py show <ID>` before its
+contract and writes the why in its `Story:` commit's body, `coordinate` checks a landing with `show`,
+`ship-release` lists a version's stories with `--release`.
+
 ## Lifecycle
 
 | Stage | Skill | Human decides |
@@ -179,7 +190,7 @@ decisions come back as results. Conversations (intake, PRD, stack, setup, releas
 name, phases that match, no clock or randomness, a body that parses.
 
 The dashboard (`skills/project-dashboard/`) is how the human follows all of this: a script reads
-`.keelokit/state.toml`, `docs/`, `backlog/` and the `Story:` trailers and renders two pages from
+`.keelokit/state.toml`, `docs/`, `backlog/` and the ledger's story states (`ledger.py --json`) and renders two pages from
 the same state. The **dashboard** is short and operational (next step, what waits, waves, health)
 and live: its shell — design and code, no project data — is published once as an Artifact with a
 database, and every refresh writes one data document (`dash/ops`) from a file with ArtifactData,

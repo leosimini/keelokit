@@ -4,7 +4,7 @@ This is the design of the ledger and the plan to build it. Built so far: complet
 (LEDGER-001, LEDGER-002), `ledger.py`'s states from git, its summary and `--json` (LEDGER-003), and the
 corrections file with `backfill`, `correct`, a first `check` and the doctor's report of it (LEDGER-004), the
 delegated review of corrections (LEDGER-015), and `show`, `next`, `--release` and every code of `check`
-(LEDGER-005); the decisions each took are in its story's addendum. The rest does not exist yet: [design.md](design.md)
+(LEDGER-005), and the doctor, the dashboard, `status.py` and the skills reading it (LEDGER-006); the decisions each took are in its story's addendum. The rest does not exist yet: [design.md](design.md)
 describes Keelokit as it is. Each story in
 `backlog/stories/LEDGER-*.md` cites the section of this file it implements; a story that needs
 something this file does not say adds it here first.
