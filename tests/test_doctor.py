@@ -17,6 +17,7 @@ from pathlib import Path
 
 DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
 DASHBOARD = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
+LEDGER = DOCTOR.with_name("ledger.py")
 
 CI = """\
 name: CI
@@ -68,6 +69,7 @@ class DoctorTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.write(".keelokit/bin/doctor.py", DOCTOR.read_text())
+        self.write(".keelokit/bin/ledger.py", LEDGER.read_text())  # LEDGER-006: the doctor's story states
         self.write(".github/workflows/ci.yml", CI)
         self.write("eslint.config.mjs", "rules: { 'no-explicit-any': 'error', 'no-console': 'off' }")
         for f in ("product", "domain", "constraints", "environments"):
@@ -1276,7 +1278,6 @@ class DoctorTest(unittest.TestCase):
 
 
 # ── LEDGER-004: the doctor reports the ledger's CORRECTION_* differences (S5, S6) ──
-LEDGER = DOCTOR.with_name("ledger.py")
 CORRECTIONS = "backlog/ledger-corrections.toml"
 
 
@@ -1285,9 +1286,8 @@ def correction_row(commit: str, story: str = "UXC-113", evidence: str = "train s
             'approver = "Leo"\ndate = "2026-11-25"\n')
 
 
-class DoctorCorrectionsTest(unittest.TestCase):
-    """With .keelokit/bin/ledger.py present, the doctor runs `ledger.py check --json`: a CORRECTION_* error
-    is a doctor ERROR prefixed with its code, so `--ci` exits 1 (S5 append-only, INV-008; S6 invalid rows)."""
+class LedgerRepo:
+    """A repo with the doctor and ledger.py, git isolated from the user's config (a mixin of TestCases)."""
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -1334,6 +1334,12 @@ class DoctorCorrectionsTest(unittest.TestCase):
         self.write(CORRECTIONS, "# Ledger corrections (append-only).\n" + "".join(rows))
         self.commit("chore: corrections\n\nNo-story: ledger")
 
+
+
+class DoctorCorrectionsTest(LedgerRepo, unittest.TestCase):
+    """With .keelokit/bin/ledger.py present, the doctor runs `ledger.py check --json`: a CORRECTION_* error
+    is a doctor ERROR prefixed with its code, so `--ci` exits 1 (S5 append-only, INV-008; S6 invalid rows)."""
+
     def test_LEDGER_004_S5_INV_008_the_doctor_reports_an_edited_row(self):
         self.corrections(correction_row(self.login))
         self.assertNotIn("CORRECTION_", self.doctor_ci().stdout, "a valid row is no difference")
@@ -1366,6 +1372,149 @@ class DoctorCorrectionsTest(unittest.TestCase):
         self.corrections(correction_row(self.login, story="NOPE-9"))
         self.assertNotIn("CORRECTION_", self.doctor_ci().stdout)
 
+
+
+class DoctorReadsTheLedgerTest(LedgerRepo, unittest.TestCase):
+    """LEDGER-006: the doctor takes story states from `ledger.py --json` (docs/ledger.md, "The principle":
+    one reader). INV-005: a story is on the trunk iff a `Story:` commit reachable from the trunk, or an
+    approved correction, names it and no revert of that commit is on the trunk."""
+
+    def setUp(self):
+        super().setUp()
+        for sid, wave in (("AUTH-001", 1), ("AUTH-002", 1), ("AUTH-003", 2), ("AUTH-004", 2), ("AUTH-005", 3)):
+            self.write(f"backlog/stories/{sid}-x.md", STORY.format(id=sid, wave=wave, touches=f'"apps/{sid.lower()}/"'))
+        self.write("apps/api/a.test.ts", "".join(f"it('{s}.S1 ok', () => {{}})\nit('{s}.S10 ok', () => {{}})\n"
+                                              for s in ("UXC-113", "AUTH-001", "AUTH-002", "AUTH-004")))
+        self.commit("docs: plan AUTH\n\nNo-story: docs")
+
+    def doctor(self, *args: str) -> subprocess.CompletedProcess:
+        r = subprocess.run(["python3", ".keelokit/bin/doctor.py", *args], cwd=self.root, env=self.env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        return r
+
+    def ledger(self, root: Path | None = None) -> dict:
+        r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "--json"], cwd=root or self.root, env=self.env,
+                           capture_output=True, text=True, timeout=120)
+        return json.loads(r.stdout)
+
+    def on_trunk(self, facts: dict) -> set[str]:
+        return {s["id"] for s in facts["stories"]
+                if s["state"] in ("on-trunk", "in-version", "in-staging", "in-production")}
+
+    def varied_history(self) -> None:
+        """AUTH-001 by trailer, in v1.0.0; AUTH-002 by trailer then reverted; AUTH-003 by an accepted
+        backfill row only, AUTH-005 too; AUTH-004 in progress on an origin branch."""
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        self.git("tag", "v1.0.0")
+        self.write("apps/auth-002/x.ts", "export {}\n")
+        two = self.commit("feat: auth two\n\nWhy.\n\nStory: AUTH-002")
+        self.git("revert", "--no-edit", two)
+        old = self.commit("feat: auth three, before trailers")
+        self.corrections(correction_row(old, story="AUTH-003"), correction_row(old, story="AUTH-005"))
+        self.git("checkout", "-q", "-b", "auth-004")
+        self.commit("feat: auth four, half\n\nPart-of: AUTH-004")
+        self.git("update-ref", "refs/remotes/origin/auth-004", "HEAD")
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "auth-004")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+
+    def backlog_count(self, out: str) -> tuple[int, int] | None:
+        m = re.search(r"Backlog: (\d+)/(\d+) done", out)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    def test_LEDGER_006_S1_INV_005_the_doctors_done_count_is_the_ledgers(self):
+        self.varied_history()
+        facts = self.ledger()
+        self.assertEqual(facts["history"], "complete", "fixture")
+        want = self.on_trunk(facts)
+        self.assertEqual(want, {"AUTH-001", "AUTH-003", "AUTH-005"}, "fixture")
+        brief = self.doctor("--brief").stdout
+        self.assertEqual(self.backlog_count(brief), (len(want), len(facts["stories"])), brief)
+        full = self.doctor().stdout
+        self.assertEqual(self.backlog_count(full), (len(want), len(facts["stories"])), full)
+        # The reverted story is not done, so it is not checked by TRACE-1 either way; the in-progress one
+        # is neither done nor offered as ready (the ledger's `ready` excludes work under way elsewhere).
+        ready = re.search(r"Next ready stories: (.*)", brief)
+        self.assertIsNotNone(ready, brief)
+        self.assertNotIn("AUTH-004", ready.group(1), brief)
+        self.assertIn("AUTH-002", ready.group(1), "a reverted story is ready again: " + brief)
+
+    def test_LEDGER_006_S1_on_this_repo_the_doctor_and_the_ledger_agree(self):
+        """'Given any repo': Keelokit's own checkout, whatever its depth (a cut history: both say unknown)."""
+        repo = Path(__file__).resolve().parents[1]
+        facts = self.ledger(repo)
+        r = subprocess.run(["python3", ".keelokit/bin/doctor.py", "--brief"], cwd=repo, env=self.env,
+                           capture_output=True, text=True, timeout=120)
+        line = next((l for l in r.stdout.splitlines() if "Backlog:" in l), "")
+        unknown = facts["history"] != "complete" or any(s["state"] == "unknown" for s in facts["stories"])
+        if unknown:
+            self.assertRegex(line, r"Backlog: unknown", r.stdout)
+        else:
+            self.assertEqual(self.backlog_count(line), (len(self.on_trunk(facts)), len(facts["stories"])), r.stdout)
+
+    def test_LEDGER_006_S2_a_reconstructed_story_skips_TRACE_1_and_INV_1_and_is_listed_apart(self):
+        self.write("docs/context/domain.md", "# domain\n\n- [INV-001] [MUST] Sessions expire — class: consistency (S1)\n")
+        text = STORY.format(id="AUTH-005", wave=3, touches='"apps/auth-005/"')
+        text = text.replace('dimensions = ["api"]', 'dimensions = ["api", "integrity"]\ninvariants = ["INV-001"]')
+        self.write("backlog/stories/AUTH-005-x.md", text)
+        self.commit("docs: AUTH-005 keeps INV-001\n\nNo-story: docs")
+        old = self.commit("feat: auth three and five, before trailers")
+        self.corrections(correction_row(old, story="AUTH-003"), correction_row(old, story="AUTH-005"))
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        facts = {s["id"]: s for s in self.ledger()["stories"]}
+        self.assertTrue(facts["AUTH-003"]["reconstructed"] and facts["AUTH-005"]["reconstructed"], "fixture")
+        r = self.doctor()
+        for sid in ("AUTH-003", "AUTH-005"):
+            self.assertNotRegex(r.stdout, rf"story {sid} is done but no active test title", r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^  Reconstructed \(.*\): AUTH-003, AUTH-005$", r.stdout)
+        self.assertEqual(self.backlog_count(r.stdout)[0], 2, r.stdout)
+        # A story done by its own trailer is still held to TRACE-1.
+        self.write("apps/api/a.test.ts", "it('UXC-113.S1 ok', () => {})\nit('UXC-113.S10 ok', () => {})\n")
+        self.commit("test: drop AUTH-001's titles\n\nNo-story: docs")
+        self.assertIn("story AUTH-001 is done but no active test title cites AUTH-001.S1, AUTH-001.S10 (TRACE-1)",
+                      self.doctor().stdout)
+
+    def test_LEDGER_006_S6_a_cut_history_is_unknown_never_a_lower_count(self):
+        self.varied_history()
+        self.commit("chore: a\n\nNo-story: docs")
+        self.commit("chore: b\n\nNo-story: docs")
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where, True)
+        subprocess.run(["git", "clone", "-q", "--depth=2", f"file://{self.root}", str(where / "c")],
+                       check=True, capture_output=True, env=self.env)
+        clone = where / "c"
+        self.assertEqual(self.ledger(clone)["history"], "incomplete", "fixture")
+        for args in (["--brief"], []):
+            r = subprocess.run(["python3", ".keelokit/bin/doctor.py", *args], cwd=clone, env=self.env,
+                               capture_output=True, text=True, timeout=120)
+            self.assertRegex(r.stdout, r"Backlog: unknown, ", r.stdout)
+            self.assertNotRegex(r.stdout, r"\b\d+/\d+ done", r.stdout)
+            self.assertNotIn("Next ready stories", r.stdout)
+            self.assertNotIn("is done but", r.stdout, "no story counts as done from a cut history")
+
+    def test_LEDGER_006_S6_without_an_answer_from_the_ledger_the_backlog_is_unknown(self):
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        (self.root / ".keelokit/bin/ledger.py").unlink()
+        r = self.doctor("--brief")
+        self.assertRegex(r.stdout, r"Backlog: unknown, .*ledger\.py", r.stdout)
+        self.assertNotRegex(r.stdout, r"\b\d+/\d+ done", r.stdout)
+        self.write(".keelokit/bin/ledger.py", "import sys\nprint('not json')\n")
+        r = self.doctor("--brief")
+        self.assertRegex(r.stdout, r"Backlog: unknown, .*ledger\.py", r.stdout)
+
+    def test_LEDGER_006_a_story_not_on_the_trunk_yet_is_neither_done_nor_counted_by_the_ledger(self):
+        """A plan on a branch (stories not yet on the trunk): the ledger does not know them, so they are not
+        done; they are ready when every dependency is on the trunk by the ledger."""
+        self.commit("feat: auth one\n\nWhy.\n\nStory: AUTH-001")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.git("checkout", "-q", "-b", "plan")
+        self.write("backlog/stories/AUTH-006-x.md",
+                   STORY.format(id="AUTH-006", wave=1, touches='"apps/auth-006/"').replace("depends_on = []", 'depends_on = ["AUTH-001"]'))
+        self.commit("docs: plan AUTH-006\n\nStory: AUTH-006")
+        r = self.doctor("--brief")
+        self.assertIn("Backlog: 1/7 done", r.stdout)
+        self.assertIn("AUTH-006", r.stdout.split("Next ready stories:")[1])
 
 
 class DoctorDelegatedCorrectionsTest(unittest.TestCase):
