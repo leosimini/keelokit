@@ -5,7 +5,8 @@ title = "t"
 wave = 1
 depends_on = []
 touches = ["apps/api/src/pay/"]
-dimensions = ["api"]
+dimensions = ["api", "integrity"]
+invariants = ["INV-001"]
 +++
 ```gherkin
 Scenario: [S1] works
