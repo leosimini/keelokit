@@ -262,40 +262,80 @@ ACCEPT_WHY = ("QA-4: `ledger.py backfill --accept` approves ledger corrections a
 
 
 def protected_why(target: str) -> str | None:
-    """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's.
-    The corrections file's name counts in any case: a case-insensitive disk writes the same file."""
-    if not target:
-        return None
-    name = Path(target).name
-    if is_registry(target) or name == Path(REGISTRY).name:
+    """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's: the
+    registry. The corrections file has its own, narrower reading of a command (corrections_write)."""
+    if target and (is_registry(target) or Path(target).name == Path(REGISTRY).name):
         return REGISTRY_WHY
-    if (rel_posix(target) or "").lower() == CORRECTIONS or name.lower() == Path(CORRECTIONS).name:
-        return CORRECTIONS_WHY
     return None
 
 
-# Commands that only read: a segment naming the corrections file is let through only when it is one of these.
-READERS = {"cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "diff", "file", "stat", "ls"}
-GIT_READERS = {"diff", "log", "show", "blame", "status", "grep", "ls-files"}
+CORRECTIONS_NAME = Path(CORRECTIONS).name
+# Command words that write every file they name, or only their last argument (the destination).
+WRITE_ALL = {"tee", "mv", "rm", "truncate", "touch", "shred", "unlink", "patch"}
+WRITE_LAST = {"cp", "install", "ln", "rsync", "scp"}
+GIT_WRITES = {"checkout", "restore", "mv", "rm", "apply", "reset", "stash"}
+INTERPRETERS = re.compile(r"(?:python[0-9.]*|perl|ruby|node|php|deno|bun)")
+REDIRECT = re.compile(r"(?<![<>])(?:[0-9]|&)?>{1,2}\|?\s*['\"]?([^\s;&|<>()'\"]+)")
+PREFIXES = {"sudo", "env", "nohup", "command", "nice", "time"}
 
 
-def names_corrections(cmd: str) -> bool:
-    """True when a segment that is not a plain read names the corrections file (any case), by any command:
-    `git checkout … -- <file>`, `install`, `python3 -c "open(…)"` write it without a redirect."""
+def is_corrections(word: str) -> bool:
+    """The word names the corrections file, in any case (a case-insensitive disk writes the same file); an option's
+    value counts (`--output=<file>`, `of=<file>`)."""
+    value = word.split("=", 1)[-1] if "=" in word else word
+    return bool(value) and Path(value).name.lower() == CORRECTIONS_NAME
+
+
+def corrections_write(cmd: str) -> bool:
+    """True when a segment writes the corrections file: a redirect to it, a command that writes the files it names
+    (tee, mv, rm, …) or its destination (cp, install, …), `sed -i`/`perl -i` on it, git commands that write the
+    work tree (`checkout … -- <file>`, `restore`, `rm`, `--output=<file>`), or inline code (`python3 -c`) that names
+    it. A read (`cat <file> 2>/dev/null`, `sed -n`, `find -name`), `git add` or a message that names it passes.
+    A command that writes it without naming it (`git checkout feat -- .`, `git apply`) is past this speed bump:
+    the pre-commit hook still refuses the commit."""
     for segment in segments(cmd):
-        if Path(CORRECTIONS).name not in segment.lower():
+        if CORRECTIONS_NAME not in segment.lower():
             continue
+        if any(is_corrections(t) for t in REDIRECT.findall(segment)):
+            return True
         try:
             words = shlex.split(segment, posix=True)
         except ValueError:
             words = segment.split()
-        if not words or not any(Path(CORRECTIONS).name in w.lower() for w in words):
+        while words and (words[0] in PREFIXES or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])):
+            words = words[1:]
+        if not words:
             continue
-        sub = next((w for w in words[1:] if not w.startswith("-")), "") if words[0] == "git" else ""
-        reads = words[0] in READERS or (words[0] == "git" and sub in GIT_READERS and not re.search(r"[<>]", segment))
-        if not reads or (words[0] in READERS and ">" in segment):
+        head, args = Path(words[0]).name, words[1:]
+        plain = [a for a in args if not a.startswith("-")]
+        if head in WRITE_ALL and any(is_corrections(a) for a in args):
+            return True
+        if head in WRITE_LAST and plain and is_corrections(plain[-1]):
+            return True
+        if head == "dd" and any(a.startswith("of=") and is_corrections(a) for a in args):
+            return True
+        if head in ("sed", "perl") and any(re.fullmatch(r"-[a-zA-Z]*i\S*", a) for a in args) \
+                and any(is_corrections(a) for a in args):
+            return True
+        if head == "git":
+            rest = list(args)
+            while rest and rest[0].startswith("-"):
+                rest = rest[2:] if rest[0] in ("-C", "-c") else rest[1:]
+            sub = rest[0] if rest else ""
+            if sub in GIT_WRITES and any(is_corrections(a) for a in rest[1:]):
+                return True
+            outputs = [a for a in rest if a.startswith("--output=")] + \
+                [rest[i + 1] for i in range(len(rest) - 1) if rest[i] in ("--output", "-o")]
+            if any(is_corrections(o) for o in outputs):
+                return True
+        if INTERPRETERS.fullmatch(head) and any(a in ("-c", "-e", "-E", "-r") for a in args):
             return True
     return False
+
+
+# A text command may name the accept command (a message, a PR body) unless its output goes to something that runs it.
+TEXT_CMDS = {"git", "gh", "echo", "printf"}
+RUNS_INPUT = re.compile(r"\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh|script|xargs|tmux|unbuffer|eval|source)\b")
 
 
 def runs_accept(cmd: str, depth: int = 0) -> bool:
@@ -312,8 +352,9 @@ def runs_accept(cmd: str, depth: int = 0) -> bool:
                     and any(x.startswith("--accept") for x in words[i + 1:]):
                 return True
         # A wrapper that runs it from a string (script -c, tmux, xargs, `| sh`): the words as one text, unless the
-        # segment is git's (a commit message that names the command).
-        if words and words[0] != "git" and re.search(r"ledger\.py\b.*\bbackfill\b.*--accept", " ".join(words), re.S):
+        # segment only prints text (a commit message, a PR body, an echo) that nothing runs.
+        text = words and Path(words[0]).name in TEXT_CMDS and not RUNS_INPUT.search(cmd)
+        if words and not text and re.search(r"ledger\.py\b.*\bbackfill\b.*--accept", " ".join(words), re.S):
             return True
         shell = next((i for i, w in enumerate(words) if Path(w).name in SHELLS), None)
         scripts = [words[i + 1] for i in range(len(words) - 1)
@@ -409,7 +450,7 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
             return why
     if runs_accept(cmd):
         return ACCEPT_WHY
-    if names_corrections(cmd):
+    if corrections_write(cmd):
         return CORRECTIONS_WHY
     for segment in re.split(r"&&|\|\||;|\|", bare):
         words = segment.split()
@@ -463,8 +504,10 @@ def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
-    if path and (rel_posix(path) == REGISTRY or (rel_posix(path) or "").lower() == CORRECTIONS):
-        return protected_why(path)
+    if path and rel_posix(path) == REGISTRY:
+        return REGISTRY_WHY
+    if path and (rel_posix(path) or "").lower() == CORRECTIONS:
+        return CORRECTIONS_WHY
     if path and is_env_file(path) and not allowed(allow, "SEC-2", path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"
     if path and applied_migration(path):

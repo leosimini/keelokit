@@ -110,11 +110,13 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
   that commit's tags and deploys), `reconstructed: true`, with the new per-story key `correction` (kind, commit,
   evidence, approver, date). A live `Story:` commit wins over rows. Several active rows: the oldest by arrival.
 - Append-only (INV-008) compares every version of the file on the trunk's first-parent chain, and the version each
-  parent of a first-parent merge had (a "foxtrot" merge turns the old trunk into a second parent, ESC-094), with the
+  parent of every merge reachable from the trunk had (a "foxtrot" merge turns the old trunk into a second parent,
+  even nested under another merge: ESC-094, ESC-098), with the
   tip: the rows of an earlier version (as whole tables) must still be in the tip in the same order (a subsequence,
   ESC-095), else `CORRECTION_EDITED`, named where the row first was; removing the file or making it invalid TOML
   counts. Versions inside a branch that never were a merge parent are not read, so a PR that fixes its own new row
-  before merging is no edit. A fixed number of git calls whatever the number of versions. Reading never fetches: in a partial clone
+  before merging is no edit; a branch that merges the trunk in and then fixes its own new row is flagged (the way
+  out, in docs/ledger.md: put the row back and retract it). A fixed number of git calls whatever the number of versions. Reading never fetches: in a partial clone
   (what `history --ensure` leaves) earlier versions are often absent, so the check says `CORRECTION_UNCHECKED`
   (warning, new code added to docs/ledger.md) and the CI's full clone checks it.
 - `ledger.py check [--json]` exists in a first form: the diffs, exit 1 on an error-level one, 0 on warnings only.
@@ -133,10 +135,14 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
   commit, which needs `keelokit.allowTamper`. It refuses everything when one proposed row is invalid, skips a row already active, ignores
   any approver or date in the proposed file (the approver is `git config user.name`, the date today), appends
   without rewriting a byte, and removes the proposed file. `correct` appends a `late` row to the proposed file.
-- The guard blocks any shell segment that names the corrections file (in any case: a case-insensitive disk writes
-  the same file) unless it is a read (`cat`, `less`, `head`, `tail`, `grep`, `rg`, `wc`, `diff`, `ls`, `stat`, or
-  `git diff/log/show/blame/status/grep/ls-files` without a redirect), so `git checkout … -- <file>`, `install` and
-  `python3 -c "open(…)"` are blocked too (ESC-096). Propose also leaves out revert commits and a commit's own
+- The guard reads what a shell segment writes and blocks it when that is the corrections file, in any case (a
+  case-insensitive disk writes the same file): a redirect to it, the files `tee`/`mv`/`rm`/`truncate`/`touch`/`patch`
+  name, the destination of `cp`/`install`/`ln`/`rsync`, `dd of=`, `sed -i`/`perl -i` on it, git's work-tree writes
+  (`checkout`, `restore`, `rm`, `mv`, `apply`, `reset`, `stash` naming it, `--output=`), and inline code
+  (`python3 -c`, `perl -e`, …) that names it (ESC-096). Reads, `git add`, messages and the template's own file pass
+  (ESC-097). A command that writes it without naming it (`git checkout feat -- .`, `git apply rows.patch`) passes
+  this speed bump; the pre-commit hook still refuses the commit. Text commands (`git`, `gh`, `echo`, `printf`) may
+  name the accept command unless their output is piped into something that runs it. Propose also leaves out revert commits and a commit's own
   `Part-of:` ids (ESC-093). A date must be a calendar date.
 - The plugin's PreToolUse hook that denies `backfill --accept` is the guard (`hooks/hooks.json` already sends every
   Bash call to it), so `hooks/hooks.json` is unchanged. The pre-commit hook lets the template's comments-only file be
@@ -146,7 +152,9 @@ Decided (smallest option consistent with docs/ledger.md; the coordinator's deleg
   holds secret-shaped fixtures the pre-commit SEC-1 scan refuses, so no commit can touch it until a person adds a
   SEC-1 entry for it to `.keelokit/guard-allow.toml` (ESC-091, for the coordinator).
 
-Escape rows ESC-091..096 are in docs/escapes.md (one review and attack round: reviewer and breaker).
+Escape rows ESC-091..098 are in docs/escapes.md (two review and attack rounds: a reviewer, a breaker twice; no
+third round was run). Known speed-bump limits left as they are: writes that do not name the file, and an agent that
+strips CLAUDECODE and wraps accept in a script it wrote; the allowTamper commit is the backstop for both.
 
 Measured on this repo (480 commits, 41 stories): `backfill --propose` proposes 8 rows, all `low` (bodies of docs
 commits that mention stories not built yet: for the person to delete), none from the junk commits of ESC-090.
