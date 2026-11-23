@@ -1,4 +1,5 @@
 [[allow]]
 rule = "SEC-1"
 path = "apps/mobile/google-services.json"
+reason = ""
 approver = "Leo"
