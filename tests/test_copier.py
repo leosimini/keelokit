@@ -215,5 +215,27 @@ class OwnershipTest(unittest.TestCase):
                 self.assertIn(word, shipped)
 
 
+    def test_LEDGER_004_S8_INV_003_the_corrections_file_is_product_owned_and_ships_commented(self):
+        """LEDGER-004.S8: backlog/ledger-corrections.toml is the product's (an update never rewrites the rows a
+        person approved, INV-003), the template ships it as comments only (no row, a header that documents
+        the format) and the proposed file is git-ignored."""
+        import tomllib
+        text = (ROOT / "copier.yml").read_text()
+        skip = text[text.index("_skip_if_exists:"):]
+        self.assertIn("backlog/ledger-corrections.toml", re.findall(r"^\s*- \"?([^\s#\"]+)", skip, re.M))
+        shipped = (ROOT / "template/backlog/ledger-corrections.toml").read_text()
+        self.assertEqual(tomllib.loads(shipped), {})
+        for line in shipped.splitlines():
+            with self.subTest(line=line):
+                self.assertTrue(not line.strip() or line.lstrip().startswith("#"), "only comments")
+        for word in ["[[row]]", "story", "commit", "kind", "backfill", "late", "retract", "evidence", "approver",
+                     "date", "allowTamper"]:
+            with self.subTest(word=word):
+                self.assertIn(word, shipped)
+        ignored = [line.strip() for line in (ROOT / "template/.gitignore").read_text().splitlines()]
+        self.assertTrue({".keelokit/ledger-corrections.proposed.toml", "/.keelokit/ledger-corrections.proposed.toml"}
+                        & set(ignored), "template/.gitignore ignores the proposed file")
+
+
 if __name__ == "__main__":
     unittest.main()
