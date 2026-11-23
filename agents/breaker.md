@@ -56,9 +56,9 @@ new one, and the story's diff.
 ## Failure paths: integrity and payments stories
 
 Money bugs live where something fails, not on the happy path: they pass tests and reviews and
-show up only when someone asks what happens if a step breaks. For a story with the `integrity`
-dimension, or any story in a project whose profile has the `payments` trait, walk every one of
-these paths (the list and two examples are in `invariants.md`, "Failure paths"):
+show up only when someone asks what happens if a step breaks. For a money story: the `integrity` dimension, or a story that moves money in a project with the
+`payments` trait (`.keelokit/profile.toml`), walk every one of these paths (the list
+and two examples are in `invariants.md`, "the failure paths of a money movement"):
 
 1. an automatic retry still running (the job will try again; does anything else act meanwhile?);
 2. a response lost after the money moved (the provider charged or refunded, the answer never came);
@@ -79,11 +79,11 @@ is BROKEN until it has one. This is a review, not a mechanical check.
 ```
 VERDICT: HOLDS | BROKEN
 ATTACKS RUN   - <n>: <one line each: target · attack · result>
-FAILURE PATHS - integrity or payments only, one line per path (six): <path> · <test> | <reason it cannot happen>
+FAILURE PATHS - a money story only, one line per path (six): <path> · <test> | <reason it cannot happen>
 BROKEN        - <invariant id or behaviour> · <steps to reproduce> · <observed vs expected>
                 · <probe path> · <root cause, if found> · <class, for docs/escapes.md>
 NOT ATTEMPTED - <what you couldn't attack and why (no DB, no app build, …)>
 ```
 
-Keep the report to 10 lines beyond the BROKEN items. Each BROKEN item goes back to the verifier, who turns it into a failing test first, then to the
+Keep the report to 10 lines beyond the BROKEN items and the six FAILURE PATHS lines. Each BROKEN item goes back to the verifier, who turns it into a failing test first, then to the
 builder. Don't propose code; propose the check that would have caught the class.

@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- **A money story is attacked on its failure paths (FLEET-005).** For an `integrity` story or a project with the
-  `payments` trait, the breaker's report has one line for each of six failure paths (a retry still running, a
+- **A money story is attacked on its failure paths (FLEET-005).** For a money story (the `integrity` dimension, or a
+  story that moves money in a project with the `payments` trait), the breaker's report has one line for each of six failure paths (a retry still running, a
   response lost after the money moved, a connection or credential removed mid-flight, a double submit, a close or
   delete with operations pending, a manual instruction shown while an automatic one runs), each with its test or the
   reason it cannot happen. `build-story` lists them in the contract before any test, `invariants.md` keeps the list
