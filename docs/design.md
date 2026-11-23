@@ -61,6 +61,11 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   whose CI runs gitleaks needs its own `.gitleaks.toml` allowlist for the files it registers. A secret in a shell command line stays blocked whatever the registry says. The doctor
   validates the bounds and lists every active entry. Separately, the guard reads a variable reference
   (`${VAR}`, `$VAR` in capitals, `${{ secrets.X }}`) where a URL's password goes as no secret; a literal still is.
+- `backlog/ledger-corrections.toml` (next to the backlog, but protected like `guard-allow.toml`) — the ledger's
+  approved corrections: `[[row]]` story, commit, kind (`backfill`, `late`, `retract`), evidence, approver, date.
+  Product-owned (`_skip_if_exists`) and the human's: the Claude hook blocks writing it and running
+  `ledger.py backfill --accept`, which also needs a terminal and a confirmation; a commit that changes it needs
+  `keelokit.allowTamper` (the template's comments-only file may be added). Append-only (INV-008).
 
 The process rules that came from long parallel use (CI budget, local gate, sessions, migrations,
 flaky tests, formatting, debt) are listed with their reason and check in [process-rules.md](process-rules.md).
@@ -96,6 +101,24 @@ testing measures exactly that (MUT-1); everywhere else it is the reviewer's and 
 job, and what `/keelokit:check-bugbash` tightens when a bug gets through. The guard is a speed
 bump for agents, not a sandbox; the git hooks and CI are the backstop.
 
+## The ledger
+
+`ledger.py` derives every story's state from git and stores nothing written by hand: `defined` (the
+file is on the trunk), `ready` (its dependencies are on the trunk), `in-progress` (`Part-of:` commits on
+an origin branch not on the trunk), `on-trunk` (a `Story:` commit reachable from the trunk and not
+reverted), `in-version` (the first `v*` tag containing it), `in-staging` and `in-production`
+(`origin/deploy/*`). `ledger.py` prints a summary of at most ten lines; `ledger.py --json` is the
+schema-1 document every other tool reads. With a cut history every state is `unknown` with the reason,
+never a lower one, and the git calls are a fixed number however many stories there are. The design,
+the contracts and the plan are in [ledger.md](ledger.md); `[ledger]` in `.keelokit/state.toml`
+configures it (stories glob, ids from front matter or file names, trunk, `since`). History without trailers
+is reconstructed once from `backlog/ledger-corrections.toml`: `ledger.py backfill --propose [--from FILE…]`
+writes candidate rows with a confidence and their evidence (commits and merged branches that name the id, train
+sheets, a `BOARD.md`, Harbor's imported board) to a git-ignored file, `ledger.py correct` proposes one late
+attribution, and a person accepts them with `backfill --accept`; an accepted row makes its story `on-trunk`,
+marked reconstructed. `ledger.py check` lists the differences (`CORRECTION_INVALID`, `CORRECTION_EDITED`), which
+the doctor reports too.
+
 ## Lifecycle
 
 | Stage | Skill | Human decides |
@@ -122,6 +145,7 @@ run cut short resumes where it stopped.
 | Workflow | Started by | Shape |
 |---|---|---|
 | `check-bugbash-flow` | `check-bugbash` | plan → lenses (≤ N at once) → a skeptic reproduces each finding (two for P0/P1) → completeness critic, more rounds while it finds gaps → merge by root cause → fixes one at a time, each checked by another agent, undone if rejected → report |
+| `ledger-review-flow` | `check-health` (the person delegated the approval of ledger corrections in `[ledger.approval]`) | `ledger.py review --filter` (no model) → judge A and judge B per row, independently (≤ N at once; Opus for a critical story in `delegated`) → a skeptic tries to refute each row both approved → the verdicts go to `.keelokit/ledger-reviews/<run>.json`, `ledger.py backfill --accept --delegated <run>` decides and writes the approved rows as `delegated:<run>`, one commit → report with the person's queue and a sample |
 
 The skill stays the way in, and the fallback: it prepares what needs the person (scope, what to
 say), starts the workflow when the session can run one, and afterwards asks the pending

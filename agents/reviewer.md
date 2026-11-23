@@ -35,7 +35,10 @@ Check, in this order:
    Also flag dimensions the diff touches but the story didn't declare.
 6. **Copy vs behaviour (COPY-1)**: every promise the new text makes (a time, an amount, "we'll
    notify you", "you can undo", "free") points to code that keeps it and a test that proves it.
-   A promise with neither is BLOCKING: the screen lies.
+   A promise with neither is BLOCKING: the screen lies. Of every text near money (a charge, a
+   refund, a payout, a balance, an instruction to pay or refund), ask: can this text lead someone
+   to move money twice, or not at all? "Refund by hand" while a job still retries the refund, or
+   "refunded" before the provider confirmed it, is BLOCKING.
 7. **House and local rules**: anything a check would miss (review-enforced rules like ARCH-1,
    DEP-1).
 8. **Product design (UX-2..4, interface changes only)**: open the captures and `CRITIQUE.md`

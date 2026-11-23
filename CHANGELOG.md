@@ -14,6 +14,44 @@
   `critique_skills = [...]` under `[gate]` in `.keelokit/ux.toml` (`[]`, with the reason in a comment, when no
   design skills are available). A piece is checked when a branch that changes the interface touches it, so
   critiques already on main are not re-read until then.
+- **Corrections can be approved by agents, when the person delegates it (LEDGER-015).** `[ledger.approval]` in
+  `.keelokit/state.toml` (`mode = "human"`, the default, `"delegated"` or `"mixed"`) says who approves the rows a
+  backfill proposes. With delegation, `/keelokit:ledger-review-flow` runs `ledger.py review --filter` (a mechanical
+  filter that drops rows whose commit is off the trunk or whose diff touches none of the story's paths), two
+  independent judges per row and a skeptic that tries to refute what both approved; `ledger.py backfill --accept
+  --delegated <run>` decides from those verdicts, writes the approved rows as `approver = "delegated:<run>"` and
+  keeps every verdict in `.keelokit/ledger-reviews/<run>.json`. In `mixed`, critical stories, low confidence and
+  disagreements go to the person; in `delegated` a doubtful row stays pending (`PENDING_REVIEW`). `ledger.py`
+  shows *reconstructed (person)* or *(delegated)*, a delegated row counts only while its review file shows it
+  approved, and `ledger.py review --reject-sample <run>` lets the person send a whole run back. The table is the
+  person's: the guard blocks agents from changing it and a commit that does needs `keelokit.allowTamper`.
+- **The ledger reconstructs the history that has no trailers, with evidence a person approves.**
+  `ledger.py backfill --propose [--from FILE…]` writes candidate rows, each with a confidence and its evidence
+  (commits and merged branches that name the story, train sheets, a `BOARD.md`, Harbor's imported board), to
+  `.keelokit/ledger-corrections.proposed.toml`; `ledger.py correct <commit> --story <ID> --evidence "…"` proposes
+  one late attribution. A person reviews them and runs `ledger.py backfill --accept` in their terminal, which
+  appends them to `backlog/ledger-corrections.toml` with their name and the date; an accepted row makes its story
+  `on-trunk`, marked reconstructed, and a `retract` row cancels one. The file is the person's: the guard blocks
+  agents from writing it or accepting, a commit that changes it needs `keelokit.allowTamper`, and it is
+  append-only. `ledger.py check` and the doctor report an invalid row (`CORRECTION_INVALID`) and a changed or
+  removed one (`CORRECTION_EDITED`). New projects get the file with its format in comments; `harness-upgrade`
+  adds it to existing ones.
+- **A money story is attacked on its failure paths (FLEET-005).** For a money story (the `integrity` dimension, or a
+  story that moves money in a project with the `payments` trait), the breaker's report has one line for each of six
+  failure paths (a retry still running, a response lost after the money moved, a connection or credential removed
+  mid-flight, a double submit, a close or delete with operations pending, a manual instruction shown while an
+  automatic one runs), each with its test or the reason it cannot happen. `build-story` lists them in the contract
+  before any test, `invariants.md` keeps the list under `once` with two real examples, and the reviewer's COPY-1
+  asks of every text near money whether it can lead someone to move money twice, or not at all.
+- **`ledger.py` says where every story stands, from git alone.** `python3 .keelokit/bin/ledger.py` prints a
+  summary of at most ten lines and `ledger.py --json` the whole ledger (schema 1): each story `defined`, `ready`,
+  `in-progress` (with its branch, and `stale` after `[ledger] stale_days`), `on-trunk` (with the commit and an
+  approximate date), `in-version`, `in-staging` or `in-production`, and `reverted` when a revert of its `Story:`
+  commit is on the trunk. A shallow clone that cuts the history makes every state `unknown` with the reason, never a
+  lower one. `[ledger]` in `.keelokit/state.toml` sets the stories glob, ids from front matter or file names, the
+  trunk and `since`; new and adopted projects get `since` written. Nothing reads it yet: the doctor and the dashboard
+  move to it in a later release.
+- **`pnpm verify` no longer passes a git hook's `GIT_DIR` to the tests.** Run by the pre-push hook in a linked worktree, it handed every test an absolute `GIT_DIR`, and a test's throwaway repo acted on the real one (commits, config, even a push). `scripts/verify.sh` now drops the inherited `GIT_*` variables first; `harness-upgrade` brings it to existing projects.
 - **A session that starts in a shallow clone completes the trunk's history (main by default) before the doctor reads it.** The SessionStart
   hook runs `ledger.py history --ensure` (commits only, 20 s at most); offline or slower than the cap it says so in one
   line and goes on, with `git fetch --unshallow origin <trunk>` as the fix.

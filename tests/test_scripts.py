@@ -293,3 +293,100 @@ class StableTestsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CleanGitEnvTest(unittest.TestCase):
+    """ESC-090: a git hook exports GIT_DIR (absolute in a linked worktree), GIT_INDEX_FILE and friends. The
+    verify the pre-push hook runs passed them to every test, whose throwaway repos then committed to the real
+    repository and pushed fixtures to origin's main. Both verify.sh scripts drop them before any git call."""
+
+    VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX", "GIT_NAMESPACE")
+    SCRIPTS = ("scripts/verify.sh", "template/scripts/verify.sh")
+
+    def unset_line(self, script):
+        lines = (ROOT / script).read_text().splitlines()
+        code = [(i, ln) for i, ln in enumerate(lines) if ln.strip() and not ln.lstrip().startswith("#")]
+        unset = next(((i, ln) for i, ln in code if ln.startswith("unset GIT_DIR")), None)
+        self.assertIsNotNone(unset, f"{script} has no `unset GIT_DIR …` line")
+        first_git = next(i for i, ln in code if re.search(r"(^|[\s;&|(`$])git\s", ln))
+        self.assertLess(unset[0], first_git, f"{script} calls git before it drops the inherited GIT_* variables")
+        return unset[1]
+
+    def test_ESC_090_both_verify_scripts_drop_every_inherited_git_variable_before_any_git_call(self):
+        for script in self.SCRIPTS:
+            with self.subTest(script=script):
+                line = self.unset_line(script)
+                env = {**os.environ, **{v: "/nowhere" for v in self.VARS}}
+                out = subprocess.run(["bash", "-c", f"{line}\nenv"], env=env, capture_output=True, text=True,
+                                     check=True).stdout
+                left = [v for v in self.VARS if re.search(rf"(?m)^{v}=", out)]
+                self.assertEqual(left, [], f"{script} keeps {left}")
+
+    def test_ESC_090_a_test_repo_run_under_a_worktree_hook_env_no_longer_writes_to_the_real_repo(self):
+        line = self.unset_line("scripts/verify.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            real, wt, scratch = Path(tmp, "real"), Path(tmp, "wt"), Path(tmp, "scratch")
+            ident = ["-c", "user.name=T", "-c", "user.email=t@e.x"]
+            clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            run = lambda *a, cwd=None, env=clean: subprocess.run(a, cwd=cwd, env=env, capture_output=True,
+                                                                  text=True, check=True).stdout.strip()
+            run("git", "init", "-q", "-b", "main", str(real))
+            run("git", *ident, "commit", "-q", "--allow-empty", "-m", "real", cwd=real)
+            run("git", "worktree", "add", "-q", str(wt), "-b", "side", cwd=real)
+            before = run("git", "rev-parse", "main", cwd=real)
+            # What git exports to a hook in a linked worktree: an absolute GIT_DIR.
+            hook_env = {**clean, "GIT_DIR": run("git", "rev-parse", "--absolute-git-dir", cwd=wt)}
+            scratch.mkdir()
+            fixture = (f"git init -q -b main . && git {' '.join(ident)} commit -q --allow-empty -m fixture "
+                       f"&& git config user.name T")
+            # Without the scrub the fixture lands in the real repo's worktree branch (the incident) …
+            subprocess.run(["bash", "-c", fixture], cwd=scratch, env=hook_env, capture_output=True, text=True)
+            self.assertNotEqual(run("git", "log", "-1", "--format=%s", "side", cwd=real), "real",
+                                "the reproduction no longer reaches the real repo: the test proves nothing")
+            run("git", "config", "--local", "--unset", "user.name", cwd=real)
+            # … with it, the fixture stays in its own repo and the real one is untouched.
+            run("git", "update-ref", "refs/heads/side", before, cwd=real)
+            scratch2 = Path(tmp, "scratch2")
+            scratch2.mkdir()
+            subprocess.run(["bash", "-c", f"{line}\n{fixture}"], cwd=scratch2, env=hook_env, check=True,
+                           capture_output=True, text=True)
+            self.assertEqual(run("git", "rev-parse", "side", cwd=real), before)
+            self.assertEqual(run("git", "rev-parse", "main", cwd=real), before)
+            leaked = subprocess.run(["git", "config", "--local", "--get", "user.name"], cwd=real, env=clean,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(leaked.returncode, 0, "the fixture's identity reached the real repo's config")
+            self.assertEqual(run("git", "log", "-1", "--format=%s", cwd=scratch2), "fixture")
+
+
+class UnitShardTest(unittest.TestCase):
+    """CI runs the unit suite in shards (scripts/unit_shard.py): no test file may be left out or run twice."""
+
+    def shard(self, *args):
+        return subprocess.run(["python3", str(ROOT / "scripts/unit_shard.py"), *args], capture_output=True, text=True)
+
+    def test_every_test_file_is_in_exactly_one_shard_and_the_split_is_stable(self):
+        files = sorted(p.stem for p in (ROOT / "tests").glob("test_*.py"))
+        for k in (1, 2, 3):
+            with self.subTest(shards=k):
+                got = [self.shard(str(n), str(k)).stdout.split() for n in range(1, k + 1)]
+                flat = [m for s in got for m in s]
+                self.assertEqual(sorted(flat), files)
+                self.assertEqual(len(flat), len(set(flat)))
+                self.assertEqual(got, [self.shard(str(n), str(k)).stdout.split() for n in range(1, k + 1)])
+
+    def test_the_ci_workflow_runs_every_shard_it_asks_for(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        m = re.search(r"shard: \[([\d, ]+)\]", ci)
+        self.assertIsNotNone(m, "the unit job has no shard matrix")
+        shards = [int(x) for x in m.group(1).split(",")]
+        call = re.search(r"unit_shard\.py \$\{\{ matrix\.shard \}\} (\d+)", ci)
+        self.assertIsNotNone(call)
+        self.assertEqual(shards, list(range(1, int(call.group(1)) + 1)))
+
+    def test_a_bad_shard_is_a_usage_error(self):
+        for args in ([], ["0", "2"], ["3", "2"], ["x", "2"]):
+            with self.subTest(args=args):
+                r = self.shard(*args)
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("usage", r.stderr)
