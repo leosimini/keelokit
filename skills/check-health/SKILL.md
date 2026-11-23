@@ -66,6 +66,29 @@ path, for SEC-1 or SEC-2 only. That file is the human's: the guard blocks agents
 tell the user which entry to add (rule, path or glob, reason, approver) and they commit it with
 `git -c keelokit.allowTamper=true commit`. The doctor lists every active entry.
 
+## Who approves the ledger's corrections
+
+Correction rows (`backlog/ledger-corrections.toml`, from `ledger.py backfill --propose` or `correct`) are
+approved the way the person chose once, in `[ledger.approval]` of `.keelokit/state.toml`
+(docs/ledger.md, "Approval modes"):
+
+| `mode` | Who approves | What the person does |
+|---|---|---|
+| `human` (the default, no table) | The person, row by row: `ledger.py backfill --accept` in their terminal | Reviews every row |
+| `delegated` | Agents: run `/keelokit:ledger-review-flow` | Nothing required; checks the sample if they want |
+| `mixed` (recommended with critical areas) | Agents for the clear rows; the person for what `human_for` lists (`critical`, `disagreement`, `low-confidence`) | Accepts only that queue, left in the proposed file |
+
+The table is the person's, like the corrections file: the guard blocks agents from changing it, a commit
+that changes it needs `git -c keelokit.allowTamper=true commit`, and only the trunk's committed table
+counts. Never change it yourself; tell the user what the modes mean and let them commit it. In a
+delegated review the proposer never approves its own rows: two judges must agree and a skeptic must fail
+to refute; a row the mechanical filter drops is never approved. A disagreement goes to the person
+(`mixed`) or stays pending (`delegated`, `PENDING_REVIEW` in `ledger.py check`). Each delegated row says
+`approver = "delegated:<run>"`, its verdicts are in `.keelokit/ledger-reviews/<run>.json`, and `ledger.py`
+lists the story as *reconstructed (delegated)*. With `sample` above 0 the run ends with a few rows for the
+person to check; a wrong one sends the whole run back with `ledger.py review --reject-sample <run>`, which
+only the person runs.
+
 ## Registering an exception
 
 Only with the user's explicit approval in chat. Add to `.keelokit/exceptions.toml`: `rule`,
