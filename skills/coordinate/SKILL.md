@@ -27,10 +27,12 @@ the rest of this skill is for `direct`.
 
 1. `python3 .keelokit/bin/status.py`: worktrees, branches with commits not on `origin/main`, the
    verify lock, the CI of main (a cancelled run is not green) and the backlog, in ten lines.
-2. For each session that says it finished: `git fetch origin main && git log origin/main --oneline`
-   and find its commit (`Story: <ID>` trailer). **A session that ends well does not message you; don't wait for
-   a message, check the hash.** "Done" without a commit on main is not done: send it back to land
-   (rebase, `pnpm verify`, push) or land it yourself.
+2. For each session that says it finished: `git fetch origin main && python3 .keelokit/bin/ledger.py show <ID>`.
+   Landed means the card's state is `on-trunk` or later, with its commit hash; never grep `git log`
+   yourself (the ledger reads reverts, corrections and the history's gaps). **A session that ends well
+   does not message you; don't wait for a message, check the card.** "Done" without that state is not
+   done: send it back to land (rebase, `pnpm verify`, push) or land it yourself. An `unknown` state is
+   not "not landed": `ledger.py` says why (a cut history: `ledger.py history --ensure`); fix it and ask again.
 3. CI of main red, or two runs in a row without a green: stop starting stories; `python3
    .keelokit/bin/ci.py jobs` says which job and step; fix that first.
 4. Wait with one `until` loop on one condition, never with repeated polling.
