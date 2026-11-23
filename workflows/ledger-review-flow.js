@@ -21,7 +21,7 @@ export const meta = {
 
 const A = args || {}
 const WORKER = A.model || 'sonnet'
-const MODEL_B = A.modelB || WORKER
+const MODEL_B = (args && args.modelB) || WORKER
 const MODEL_SKEPTIC = A.modelSkeptic || WORKER
 const MAX = Number.isFinite(A.maxParallel) && A.maxParallel > 0 ? A.maxParallel : 4
 
