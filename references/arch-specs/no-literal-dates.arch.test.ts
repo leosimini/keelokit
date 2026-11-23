@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,5 +61,49 @@ describe('no-literal-dates on fixtures', () => {
     put('src/history.test.ts', ["const launch = '2031-05-01';"]);
     put('src/report.test.ts', ["const fixed = '2031-05-01'; // arch-allow: the format under test"]);
     expect(literalDates(dir, { 'src/history.test.ts': 'historic dates' })).toEqual([]);
+  });
+
+  it('FLEET-003.S2 Date.UTC with a year of this era fails; a line that pins the clock passes', () => {
+    put('src/renewal.test.ts', [
+      'const due = new Date(Date.UTC(2031, 0, 1));',
+      "vi.setSystemTime(new Date('2026-03-29T00:30:00Z'));",
+      "await page.clock.install({ time: new Date('2031-05-01T08:00:00') });",
+      "await page.clock.setFixedTime('2031-05-01T10:00:00');",
+    ]);
+    expect(literalDates(dir)).toEqual(['src/renewal.test.ts:1']);
+  });
+
+  it('FLEET-003.S2 helper folders are scanned, and the JSON fixtures in them', () => {
+    const date = ["export const due = '2031-05-01';"];
+    for (const helper of ['testing', 'test-utils', '__mocks__', 'mocks', '__fixtures__']) {
+      put(`src/${helper}/data.ts`, date);
+    }
+    put('e2e/fixtures/plans.json', ['{ "renewal": "2031-05-01" }']);
+    expect(literalDates(dir).sort()).toEqual([
+      'e2e/fixtures/plans.json:1',
+      'src/__fixtures__/data.ts:1',
+      'src/__mocks__/data.ts:1',
+      'src/mocks/data.ts:1',
+      'src/test-utils/data.ts:1',
+      'src/testing/data.ts:1',
+    ]);
+  });
+
+  it('FLEET-003.S2 the walker skips hidden and tmp folders and never follows a symlink', () => {
+    const date = ["const due = '2031-05-01';"];
+    put('src/a.test.ts', date);
+    put('.claude/worktrees/x/src/a.test.ts', date);
+    put('tmp/a.test.ts', date);
+    put('packages/web/tmp/a.test.ts', date);
+    const outside = mkdtempSync(join(tmpdir(), 'arch-outside-'));
+    try {
+      writeFileSync(join(outside, 'b.test.ts'), date[0] + '\n');
+      symlinkSync(outside, join(dir, 'src/linked'));
+      symlinkSync(join(dir, 'missing.test.ts'), join(dir, 'src/dangling.test.ts'));
+      symlinkSync('.', join(dir, 'src/loop'));
+      expect(literalDates(dir)).toEqual(['src/a.test.ts:1']);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

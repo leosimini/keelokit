@@ -66,4 +66,28 @@ describe('no-sleeps-in-specs on fixtures', () => {
     ]);
     expect(sleepsInSpecs(dir)).toEqual([]);
   });
+
+  it('FLEET-003.S4 every spelling of a fixed wait fails', () => {
+    put('src/debounce.test.ts', [
+      "import { setTimeout } from 'node:timers/promises';",
+      'await setTimeout(500);',
+      'await sleep(DEBOUNCE_MS);',
+      'await delay(ms);',
+      'await new Promise<void>((resolve) => {',
+      '  setTimeout(() => resolve(), 500);',
+      '});',
+      'cy.wait(1000);',
+      "execSync('sleep 1');",
+    ]);
+    expect(sleepsInSpecs(dir)).toEqual([2, 3, 4, 6, 8, 9].map((n) => `src/debounce.test.ts:${n}`));
+  });
+
+  it('FLEET-003.S4 a timeout guard in a Promise.race and waitFor pass', () => {
+    put('src/guard.test.ts', [
+      "const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000));",
+      'await Promise.race([work, timeout]);',
+      'await waitFor(() => expect(outbox.items).toHaveLength(1));',
+    ]);
+    expect(sleepsInSpecs(dir)).toEqual([]);
+  });
 });
