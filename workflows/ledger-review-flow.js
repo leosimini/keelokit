@@ -153,7 +153,7 @@ if (!reviewRows.length) {
 const review = { schema: 1, run: RUN, rows: reviewRows, dropped: filtered.dropped }
 const decided = await agent(
   `Write the review file of the delegated review ${RUN} and let ledger.py decide. ${UNTRUSTED}
-1. If \`git log --oneline -1 -- .keelokit/ledger-reviews/${RUN}.json\` shows a commit, this step already ran: return ok true, that commit, and output "already decided".
+1. If \`git log --oneline -1 -- .keelokit/ledger-reviews/${RUN}.json\` shows a commit, this step already ran: return ok true, that commit, and output "already decided". If .keelokit/ledger-reviews/${RUN}.json exists and its rows already have a "decision" key, ledger.py already decided this run: skip steps 2 and 3 (never rewrite that file) and go to step 4, with output "decided earlier".
 2. Write exactly this JSON (and nothing else) to .keelokit/ledger-reviews/${RUN}.json:\n${data(review)}
 3. Run \`python3 .keelokit/bin/ledger.py backfill --accept --delegated ${RUN}\`. If it is refused (by ledger.py or by the Keelokit guard), stop: return ok false with its message. Never edit backlog/ledger-corrections.toml, .keelokit/state.toml or the review file by hand, and never work around a refusal.
 4. Commit .keelokit/ledger-reviews/${RUN}.json and backlog/ledger-corrections.toml (when it changed) together, without --no-verify, with the message "chore(ledger): delegated review ${RUN}" and, as the last paragraph, "No-story: harness — delegated review of ledger corrections, run ${RUN}". Do not push.
