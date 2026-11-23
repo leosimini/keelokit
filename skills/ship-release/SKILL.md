@@ -22,8 +22,9 @@ environment: the release is the tag, the notes and publishing the package where 
 - For a launch (the first production release): `python3 .keelokit/bin/doctor.py --launch` exits 0 —
   `docs/prelaunch-debt-ledger.md` has every finding fixed or decided with a recommendation, and
   nothing under "Needs the owner" is still `needed`. A "known issue" is not a decision (DEBT-1).
-- Nothing half-done: every story merged since the last tag has its `Story:` trailer; a wave that
-  is only partly done is fine — say which stories are in and which wait.
+- Nothing half-done: every story merged since the last tag is `on-trunk` in the ledger
+  (`python3 .keelokit/bin/ledger.py`), and `ledger.py check` reports nothing unattributed; a wave
+  that is only partly done is fine — say which stories are in and which wait.
 - With a UI (profile trait `ui`): the release walk-through is done (UX-5, `docs/ux-quality.md` §6) —
   the candidate on staging, every journey, every surface and theme, before the owner is told it is
   ready. Any P0 or P1 stops the release until fixed or the owner decides; list what it found
@@ -37,8 +38,10 @@ environment: the release is the tag, the notes and publishing the package where 
 ## 2. What goes in, and the version
 
 `git describe --tags --abbrev=0` (none → first release, `v0.1.0`, or `v1.0.0` if the user calls
-it a public launch). Since that tag: the `Story:` trailers (titles from `backlog/stories/`),
-`fix(…)` commits (bug bash ids in them), and migrations.
+it a public launch). Since that tag: the stories the ledger has `on-trunk` and in no version yet
+(`python3 .keelokit/bin/ledger.py --json`: `state`, `title`; never your own reading of `Story:`
+trailers), `fix(…)` commits (bug bash ids in them), and migrations. The version's list of stories is
+`ledger.py --release vX.Y.Z` once the tag exists (step 4); a past version's, the same with its tag.
 
 - **major** — something users or other systems rely on changes or goes away: a breaking API
   contract (`packages/shared`), a migration that needs manual steps, a removed feature.
@@ -75,8 +78,12 @@ sets it up.
 
 On a clear yes:
 ```bash
-git commit -am "release: vX.Y.Z" && git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin main vX.Y.Z
+git commit -am "release: vX.Y.Z" && git tag -a vX.Y.Z -m "vX.Y.Z"
+python3 .keelokit/bin/ledger.py --release vX.Y.Z   # the version's stories, from the local tag
+git push origin main vX.Y.Z
 ```
+The notes name exactly the stories `ledger.py --release` lists. If they differ, push nothing: `git tag -d
+vX.Y.Z`, fix the notes and show them again.
 Mobile apps: bump `version` in the app config and let EAS number the build; store submissions stay
 with the human (AGENT-1).
 

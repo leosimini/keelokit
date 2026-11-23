@@ -7,7 +7,8 @@ description: Turn a product's context and PRD into a backlog — epics, stories 
 
 Inputs: `docs/context/*`, `docs/prd.md`, and the code if it exists. Output: `backlog/epics.md`
 and `backlog/stories/<ID>-<slug>.md` in the format of `backlog/README.md`. Status is never
-written: a story is done when a commit on `main` carries the trailer `Story: <ID>`.
+written: the ledger derives it (`python3 .keelokit/bin/ledger.py --json`, INV-005); a story is done
+when its state is `on-trunk` or later.
 
 ## 1. Epics
 
@@ -47,8 +48,9 @@ Anything in the PRD's "out" list never becomes a story.
 ## 3. Consolidate (always, and when re-planning)
 
 - Merge duplicates and overlapping stories; keep the lower id.
-- Stories already done (`Story:` trailer on main) are never edited, renumbered or deleted;
-  changes to done work become new stories.
+- Stories already done (`on-trunk` or later in `python3 .keelokit/bin/ledger.py`) are never edited,
+  renumbered or deleted; changes to done work become new stories. While the ledger says `unknown`,
+  treat every story as possibly done: complete the history (`ledger.py history --ensure`) first.
 - Every PRD in-scope line is covered by at least one story; every story traces to one.
 
 ## 4. Prioritise and wave

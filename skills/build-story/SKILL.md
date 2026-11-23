@@ -88,6 +88,14 @@ define or a new invariant (steps 2), a third failed review round (step 5), and a
 execution protocol reserves for the human. `mode = "step"`: report after each story (or each
 batch) and wait for the user.
 
+Before the contract, ask the ledger about each story you picked: `python3 .keelokit/bin/ledger.py show <ID>`.
+Its card has the state, earlier attempts (`Dropped:`) and why they stopped, the bodies of earlier
+`Story:`/`Part-of:` commits, escape rows and bug-bash findings that name it, corrections and the branches
+of any other session on it. Read what it says before step 2: a finding or an abandoned attempt changes
+the contract. A story already `on-trunk` or later is not built again; one `in-progress` on another
+branch is someone else's: pick another or say so; `unknown` means the history is cut
+(`ledger.py history --ensure`), never "not started".
+
 A story that brings something new into the project — its first migration, a new app, a deploy
 config, personal data, payments — updates `traits` in `.keelokit/profile.toml` in the same change;
 the doctor warns when the code shows a trait the profile lacks.
@@ -169,15 +177,20 @@ builder.
    through the step 5.4 loop.
 2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
    runs it with the seal, which skips the repeat only for this exact, unchanged commit).
-3. Commit with the trailer that closes the story, as the message's last line:
+3. Commit with the trailer that closes the story, as the message's last paragraph, and a body: what
+   was decided and what was left out (`ledger.py show` gives it to the next session that asks why):
    ```
    feat(auth): sign up with email
+
+   Decided: the confirmation link expires after 24 h (the story left it open; recorded in the
+   addendum). Left out: resending the link, which AUTH-007 covers.
 
    Story: AUTH-003
    ```
 4. If the result differs from the story, append `## Addendum — <date>` to the story file.
 5. Push and merge per the project's flow; production deploys stay with the human. The story is
-   landed only when `git log origin/main` shows its commit: report that hash, never "done" alone.
+   landed only when `python3 .keelokit/bin/ledger.py show <ID>` says `on-trunk` (or later) with its
+   commit: report that hash, never "done" alone.
    With `[landing] policy = "convoy"` in `.keelokit/state.toml`, push the branch only, never main:
    the agent brief's convoy landing. Verify the branch with a plain `pnpm verify` (step 2: the scope
    of `--since origin/main`, but sealed, so the branch push doesn't repeat it); report the branch,
