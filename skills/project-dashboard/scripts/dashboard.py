@@ -789,7 +789,7 @@ def ledger_read(root: Path, ref: str | None) -> tuple[dict[str, dict] | None, di
     answer outside schema 1, a story it reads as unknown). Unknown is never shown as a lower state. None for the
     records: the ledger found no trunk (exit 2) and there is no main either (the page's "no main")."""
     ledger = root / ".keelokit/bin/ledger.py"
-    commits = len(git(root, "rev-list", ref).split()) if ref else 0
+    commits = len(git(root, "rev-list", ref).split()) if ref else 0  # the trunk's own count is set below
     gap = {"kind": "ledger", "commits": commits, "ref": ref, "fix": "python3 .keelokit/bin/ledger.py",
            "reason": "no .keelokit/bin/ledger.py (/keelokit:harness-upgrade brings it)"}
     if not ledger.is_file():
@@ -804,11 +804,14 @@ def ledger_read(root: Path, ref: str | None) -> tuple[dict[str, dict] | None, di
         return None, None
     stories = facts.get("stories") if isinstance(facts, dict) else None
     history = facts.get("history") if isinstance(facts, dict) else None
-    if (not isinstance(stories, list) or facts.get("schema") != 1 or not isinstance(history, str)
-            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and x.get("state") in STATES for x in stories)):
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or isinstance(facts.get("schema"), bool) or not isinstance(history, str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and isinstance(x.get("state"), str) and x["state"] in STATES for x in stories)):
         return {}, {**gap, "reason": "ledger.py could not answer: run python3 .keelokit/bin/ledger.py"}
     unknown = next((x for x in stories if x["state"] == "unknown"), None)
     if history == "incomplete":
+        sha = facts.get("trunk_sha")
+        if not ref and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{7,64}", sha):
+            gap["commits"] = len(git(root, "rev-list", sha).split())  # a trunk other than main
         return {}, {**gap, "kind": "shallow", "reason": "the history is incomplete",
                     "fix": "python3 .keelokit/bin/ledger.py history --ensure"}
     if unknown or (history != "complete" and not history.startswith("snapshot:")):
@@ -873,7 +876,10 @@ def collect(root: Path) -> dict:
     no_trunk = records is None  # the ledger found no trunk, and there is no main
     records = records or {}
     done = {sid for sid, x in records.items() if x["state"] in ON_TRUNK}
-    by_path = {x["path"]: x for x in records.values() if isinstance(x.get("path"), str)}
+    by_path: dict[str, dict] = {}
+    for x in records.values():  # the first record of a path wins, as in the ledger's sorted read
+        if isinstance(x.get("path"), str):
+            by_path.setdefault(x["path"], x)
     first_commit = (git(root, "log", "--reverse", "--format=%h %s").splitlines() or [""])[0] if has_commits else ""
 
     stories = []
@@ -887,6 +893,24 @@ def collect(root: Path) -> dict:
             "depends_on": list(meta.get("depends_on", [])),
             "gaps": sorted(set(GAP_REF_RE.findall(body)) & open_gaps),
             "path": path.relative_to(root).as_posix(), "body": body, "origin": str(meta.get("origin", "")),
+        })
+    # The ledger's stories with no file here (`[ledger] stories` elsewhere, or a branch behind the trunk) are
+    # listed too, from their records: the page counts what the ledger counts (one reader).
+    matched = {(by_path.get(x["path"]) or records.get(x["id"]) or {}).get("id") for x in stories}
+    for rec in records.values():
+        if rec["id"] in matched:
+            continue
+        rel = rec["path"] if isinstance(rec.get("path"), str) else ""
+        meta, body = split_story(read(root / rel)) if rel and (root / rel).is_file() else ({}, "")
+        wave = rec.get("wave")
+        stories.append({
+            "id": rec["id"], "title": rec["title"] if isinstance(rec.get("title"), str) else "",
+            "epic": rec["epic"] if isinstance(rec.get("epic"), str) else "",
+            "wave": wave if isinstance(wave, int) and not isinstance(wave, bool) else 0,
+            "depends_on": [d for d in meta.get("depends_on", []) if isinstance(d, str)]
+            if isinstance(meta.get("depends_on"), list) else [],
+            "gaps": sorted(set(GAP_REF_RE.findall(body)) & open_gaps), "path": rel, "body": body,
+            "origin": str(meta.get("origin", "")),
         })
     by_id = {s["id"]: s for s in stories}
     for s in stories:

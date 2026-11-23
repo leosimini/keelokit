@@ -836,8 +836,8 @@ def ledger_states() -> tuple[dict[str, dict] | None, str | None]:
         facts = None
     stories = facts.get("stories") if isinstance(facts, dict) else None
     history = facts.get("history") if isinstance(facts, dict) else None
-    if (not isinstance(stories, list) or facts.get("schema") != 1 or not isinstance(history, str)
-            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and x.get("state") in STATES for x in stories)):
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or isinstance(facts.get("schema"), bool) or not isinstance(history, str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and isinstance(x.get("state"), str) and x["state"] in STATES for x in stories)):
         return {}, f"ledger.py could not answer ({why or 'run `python3 .keelokit/bin/ledger.py`'})"
     records = {x["id"]: x for x in stories}
     unknown = [x for x in stories if x["state"] == "unknown"]
