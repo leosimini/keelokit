@@ -46,7 +46,11 @@ Check, in this order:
    not the diff: criteria S1–S6 and states T1–T5, one word for one thing across surfaces,
    theme components and tokens only, every screen with a way out, going back keeps what was
    entered, the same task the same way on each surface, and the critique's "Real device"
-   list against the code. An open critique finding, a screen that looks unfinished, an
+   list against the code. In the critique's `## Skills` section (`docs/ux-quality.md` §4), every
+   P1 and P2 is really fixed where it says (open the commit or file) or decided with a reason a
+   product designer would accept; a section that reads as written by hand rather than by the
+   skills, or a later critique that contradicts an earlier one without saying so, is BLOCKING.
+   An open critique finding, a screen that looks unfinished, an
    inconsistency with a neighbouring piece, or a `ux-gate: n/a` whose reason is false is BLOCKING.
 9. **Tests**: do they fail if the behaviour breaks? Tests that only assert mocks were called, or
    snapshot everything, don't count. Check every new or changed test against the eleven rules of

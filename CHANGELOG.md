@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The design critique comes from the design skills, and the UX gate checks it (FLEET-004).** `CRITIQUE.md`
+  gains a `## Skills` section: one `### <skill id>` subsection per skill in `critique_skills` (new in
+  `.keelokit/ux.toml`; defaults `design:design-critique`, `design:ux-copy`, `design:accessibility-review`), each
+  with `Ran: YYYY-MM-DD` and its findings by priority, every P1 and P2 ending `— fixed in <commit or file>` or
+  `— decided: <reason>`. The gate fails naming the missing skill or quoting the open finding; `ux-gate: n/a`
+  works as before. A session without the skills asks the coordinator, who runs them in a subagent on a `wip/`
+  branch; a later critique says whether it confirms or contradicts the earlier one; the reviewer checks every
+  P1 and P2; and `docs/ux-quality.md` adds one navigation component per section of the app. `ux.toml` is
+  product-owned, so an existing project gets the three defaults without the key: to change the list, add
+  `critique_skills = [...]` under `[gate]` in `.keelokit/ux.toml` (`[]`, with the reason in a comment, when no
+  design skills are available). A piece is checked when a branch that changes the interface touches it, so
+  critiques already on main are not re-read until then.
 - **`ledger.py show`, `next`, `--release` and a complete `check` (LEDGER-005).** `ledger.py show <ID>` answers
   "where is this story and why did it end up that way" in at most 60 lines (`--full` for the rest): state and
   date, commits with subject, body and `Claude-Session:`, the story file's addendum headings, rows of

@@ -75,3 +75,21 @@ Scenario: [S6] n/a still works
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line with how
 an adopted project updates `ux.toml`, `Story: FLEET-004` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-23
+- **Shape decided by the coordinator:** `### <skill id>` per skill under `## Skills`, a `Ran: YYYY-MM-DD`
+  line (a real date), findings as list items starting with their priority, every P1 and P2 ending
+  `— fixed in <commit or file>` or `— decided: <reason>`. The parse is documented in `docs/ux-quality.md` §4.
+- **P0 counts too.** The gate asks a fix or decision for P0 as well as P1 and P2 (a P0 is worse than a P1);
+  the skills' own scale is mapped in the doc (Critical → P1, P0 when the journey breaks; Moderate/Major → P2;
+  Minor → P3), and an item or table row graded only by a severity label is refused until it has a priority.
+- **Every run is read.** Review and breaker found the first draft read only the first `Skills` section and
+  the first subsection of a skill, so a later critique (which this story asks for) carried an open P1 past
+  the gate (ESC-070), and that findings written as task boxes, `[P2]`, tables or wrapped lines escaped or
+  were wrongly refused (ESC-071). The gate now reads every Skills section and subsection, skips fenced code,
+  accepts a table row (fix in its last cell) and a wrapped item or a sub-bullet holding the fix.
+- **`critique_skills` is checked:** anything but a list of skill ids is an error naming the key. Without the
+  key (an adopted project) the three defaults apply; `[]` drops the section.
+- Doc-only parts as written: the coordinator's subagent on a `wip/` branch (coordinate, build-story), a later
+  critique confirms or contradicts the earlier one, one navigation component per section of the app, and
+  the reviewer's check of every P1 and P2.
