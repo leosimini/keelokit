@@ -1,3 +1,1 @@
-| Environment | Purpose | URL |
-|---|---|---|
-| staging | main | s.shop.app |
+# environments
