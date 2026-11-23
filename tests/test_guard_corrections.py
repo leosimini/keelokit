@@ -150,5 +150,48 @@ class GuardCorrectionsTest(unittest.TestCase):
                 sh(self.repo, "git", "rm", "-q", "--cached", CORRECTIONS)
 
 
+    # Review round 1 (ESC-092, ESC-096): what got past the first guard
+
+    def test_LEDGER_004_S3_ESC_092_accept_through_a_pty_wrapper_or_another_shell_is_blocked(self):
+        """A segment whose words, quotes removed, hold `ledger.py … backfill … --accept` in order is blocked
+        unless it is a git command (a commit message)."""
+        for cmd in ['echo y | script -qec "python3 .keelokit/bin/ledger.py backfill --accept" /dev/null',
+                    "script -qc 'python3 .keelokit/bin/ledger.py backfill --accept' /dev/null",
+                    "unbuffer python3 .keelokit/bin/ledger.py backfill --accept",
+                    "tmux new -d 'python3 .keelokit/bin/ledger.py backfill --accept'",
+                    "xargs python3 .keelokit/bin/ledger.py <<< 'backfill --accept'",
+                    "echo 'python3 .keelokit/bin/ledger.py backfill --accept' | sh"]:
+            with self.subTest(cmd=cmd):
+                self.assert_blocked(self.run_claude("Bash", command=cmd))
+
+    def test_LEDGER_004_S3_ESC_092_a_commit_message_propose_and_a_grep_still_pass(self):
+        for cmd in ['git commit -m "docs: ledger.py backfill --accept needs a person"',
+                    "python3 .keelokit/bin/ledger.py backfill --propose",
+                    "grep -n accept .keelokit/bin/ledger.py"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd), 0)
+
+    def test_LEDGER_004_S3_ESC_096_every_segment_naming_the_file_that_is_no_read_is_blocked(self):
+        f = CORRECTIONS
+        for cmd in [f"git checkout feat -- {f}", f"git restore --source=feat {f}",
+                    f"python3 -c \"open('{f}','a').write('x')\"", f"install -m644 /tmp/x {f}",
+                    "echo x >> backlog/Ledger-Corrections.toml", "cp /tmp/x BACKLOG/LEDGER-CORRECTIONS.TOML"]:
+            with self.subTest(cmd=cmd):
+                self.assert_blocked(self.run_claude("Bash", command=cmd), "QA-4")
+
+    def test_LEDGER_004_S3_ESC_096_a_write_tool_on_the_file_in_another_case_is_blocked(self):
+        for path in ["backlog/Ledger-Corrections.toml", str(self.repo / "backlog/LEDGER-corrections.toml")]:
+            with self.subTest(path=path):
+                self.assert_blocked(self.run_claude("Write", file_path=path, content=CORRECTION_ROW), "QA-4")
+
+    def test_LEDGER_004_S3_ESC_096_reads_still_pass(self):
+        self.commit_file(CORRECTIONS_HEADER)
+        f = CORRECTIONS
+        for cmd in [f"cat {f}", f"grep -n UXC {f}", f"git diff {f}", f"git log -p -- {f}", f"head -5 {f}",
+                    f"wc -l {f}", f"git show HEAD:{f}", f"git blame {f}", f"ls -l {f}"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
