@@ -4045,6 +4045,7 @@ class LedgerRound1Test(LedgerCase):
         repo.plan("A-1", "A-2")
         repo.publish()
         clone = self.tmp / "partial"
+        repo.run(["git", "-C", str(repo.bare), "config", "uploadpack.allowfilter", "true"], self.tmp)
         repo.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{repo.bare}", str(clone)], self.tmp)
         part = GitRepo(self.tmp, existing=clone)
         r = part.ledger("next")
