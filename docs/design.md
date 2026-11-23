@@ -37,6 +37,13 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `verify-map.toml` — which `pnpm verify` step runs each CI job; the doctor keeps them in step.
   `verify-routing.toml` — which files need which steps; `red-causes.toml` — the project's known causes of a red.
   `bin/verify_tools.py` plans, times and diagnoses; `scripts/verify.sh` keeps the run state, the seal and the history.
+  The memory plan (FLEET-001): each step's peak memory goes into the history (`peak_mb`: the cgroup's `memory.peak`
+  when the step can run in a cgroup of its own, else the largest resident size of one process, which is one worker's);
+  before the first tool runs, `verify_tools.py workers` reads the memory available (`MemAvailable` or the cgroup's
+  limit, the lower) and gives each test step `min(cores, available × 0.8 / peak per worker)` workers, at least 1,
+  through the runner's own flag (`--maxWorkers`, `--workers`). `[verify] memory_per_worker_mb` overrides the measure.
+  A step whose one worker needs more than is available stops the run in seconds with exit 3, like a busy machine
+  (`VERIFY_FORCE=1` runs it with 1 worker); with no measure and no override, or no `/proc` (macOS), nothing changes.
 - `harness/agent-brief.md` — the one page every parallel session is told to read.
 - `[landing] policy` in `state.toml` — how finished work reaches main. `direct` (the default, and
   what an absent key means): each session rebases, verifies and pushes main itself. `convoy`: each

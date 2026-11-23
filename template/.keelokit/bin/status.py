@@ -24,6 +24,7 @@ if sys.version_info < (3, 11):
     print(f"Keelokit needs Python 3.11+ (found {sys.version.split()[0]}).")
     sys.exit(1)
 
+import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
@@ -164,6 +165,22 @@ def verify_line(common: Path) -> str:
     return f"verify: last {st.get('state')} (exit {st.get('rc')}) on {head}, {st.get('level')}"
 
 
+def workers_line(common: Path) -> str:
+    """The workers the last verify that planned some chose, and why ("integration: 2 workers, 5.1 GB free, ..."); '' when none."""
+    try:
+        history = (common / "keelokit-verify.history").read_text().splitlines()
+    except OSError:
+        return ""
+    for raw in reversed(history):
+        try:
+            why = json.loads(raw).get("workers_why")
+        except (ValueError, AttributeError):
+            continue
+        if why:
+            return f"verify workers: {why}"
+    return ""
+
+
 def main() -> int:
     if sys.argv[1:2] == ["title"]:
         return title(sys.argv[2:])
@@ -207,6 +224,9 @@ def main() -> int:
         lines.append("CI of main: " + ((res.stdout.strip().splitlines() or [res.stderr.strip() or "unknown"])[0]))
 
     lines.append(verify_line(lock.parent))
+    why = workers_line(lock.parent)
+    if why:
+        lines.append(why)
 
     brief = subprocess.run([sys.executable, str(BIN / "doctor.py"), "--brief"], cwd=ROOT, capture_output=True, text=True)
     lines += [l for l in brief.stdout.strip().splitlines()[:3]]
