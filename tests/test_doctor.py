@@ -1077,16 +1077,19 @@ class DoctorTest(unittest.TestCase):
                         self.assertRegex(cmd, r"^(\{DOCTOR_CMD\}|python3 \.keelokit/bin/\w+\.py\b|git |chmod \+x )", cmd)
 
     # ── LEDGER-001: an incomplete (shallow) history reads unknown, never a lower count ──
-    def ledger_origin(self, critical: bool = False) -> None:
+    def ledger_origin(self, critical: bool = False, migrations: bool = False) -> None:
         """Six stories, four done (AUTH-001..004), on main as: plan, AUTH-001, AUTH-002, AUTH-003,
         chore, AUTH-004, chore. A `--depth 3` clone keeps only the last three commits, so only
         AUTH-004's trailer is in it. `critical`: AUTH-001 and AUTH-002 share wave 1, a path and a
-        critical area without 'integrity' (fine once done), and AUTH-004 lacks its S10 citation."""
+        critical area without 'integrity' (fine once done), and AUTH-004 lacks its S10 citation.
+        `migrations`: AUTH-001 and AUTH-002 (wave 1) each add migrations (fine once done)."""
         self.rules()
         layout = {"AUTH-001": (1, "apps/api/a1/"), "AUTH-002": (1, "apps/api/a1/" if critical else "apps/api/a2/"),
                   "AUTH-003": (2, "apps/api/a3/"), "AUTH-004": (2, "apps/api/a4/"),
                   "AUTH-005": (3, "apps/api/a5/"), "AUTH-006": (3, "apps/api/a6/")}
         for sid, (wave, path) in layout.items():
+            if migrations and sid in ("AUTH-001", "AUTH-002"):
+                path += "migrations/"
             self.write(f"backlog/stories/{sid}-a.md", STORY.format(id=sid, wave=wave, touches=f'"{path}"'))
             self.write(f"{path}x.ts", "export {}\n")
         if critical:
@@ -1178,6 +1181,32 @@ class DoctorTest(unittest.TestCase):
         self.assertTrue(any(l.strip().startswith("warn") and "AUTH-001" in l and "unknown" in l.lower() for l in lines), out)
         # A story proven done (its trailer is in the clone) is still checked by TRACE-1.
         self.assertIn("story AUTH-004 is done but no active test title cites AUTH-004.S10 (TRACE-1)", out)
+
+    def test_LEDGER_001_S2_a_clone_as_deep_as_main_reads_as_a_full_clone(self):
+        """Breaker: `--depth N` with N = main's commit count lists the ROOT commit in the shallow file.
+        The root has no parent, so nothing is cut: the history is complete and reads as today."""
+        self.ledger_origin()
+        n = int(sh(self.root, "git", "rev-list", "--count", "main").strip())
+        clone = self.ledger_clone(n)
+        root = sh(clone, "git", "rev-list", "--max-parents=0", "origin/main").split()
+        shallow = (clone / ".git/shallow").read_text().split()
+        self.assertTrue(set(root) & set(shallow), "fixture: the root commit is the shallow boundary")
+        self.assertEqual(sh(clone, "git", "rev-list", "--count", "origin/main").strip(), str(n), "fixture: all of main")
+        brief = self.ledger_doctor(clone, "--brief").stdout
+        self.assertIn("Context gaps: 0 (0 blocking) · Backlog: 4/6 done", brief.splitlines(), brief)
+        self.assertIn("Next ready stories: AUTH-005, AUTH-006", brief.splitlines(), brief)
+        ci = self.ledger_doctor(clone, "--ci", ci=True)
+        self.assertNotRegex(ci.stdout.lower(), r"shallow|unknown|fetch-depth", ci.stdout)
+        self.assertIn("  Backlog: 4/6 done · next: AUTH-005, AUTH-006", ci.stdout.splitlines(), ci.stdout)
+        self.assertEqual(ci.returncode, 0, ci.stdout)
+
+    def test_LEDGER_001_S5_two_maybe_done_stories_adding_migrations_in_one_wave_warn_not_error(self):
+        self.ledger_origin(migrations=True)
+        out = self.ledger_doctor(self.ledger_clone(3), "--ci").stdout
+        lines = out.splitlines()
+        self.assertFalse([l for l in lines if l.strip().startswith("ERROR") and "MIG-1" in l], out)
+        self.assertTrue(any(l.strip().startswith("warn") and "MIG-1" in l and "AUTH-001" in l and "unknown" in l.lower()
+                            for l in lines), out)
 
     def test_LEDGER_001_INV_005_done_comes_from_main_only_when_main_s_history_is_complete(self):
         self.ledger_origin()
