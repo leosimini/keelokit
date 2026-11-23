@@ -46,7 +46,10 @@ Check, in this order:
    list against the code. An open critique finding, a screen that looks unfinished, an
    inconsistency with a neighbouring piece, or a `ux-gate: n/a` whose reason is false is BLOCKING.
 9. **Tests**: do they fail if the behaviour breaks? Tests that only assert mocks were called, or
-   snapshot everything, don't count. When the story touches a critical area, read the survivors
+   snapshot everything, don't count. Check every new or changed test against the eleven rules of
+   `${CLAUDE_PLUGIN_ROOT}/references/stable-tests.md`: shared data, a sleep, a literal date or the
+   real clock, inherited `GIT_*`, random test data, an absence asserted outside the project's
+   registry. Each is BLOCKING: it is the next intermittent red that stops a train. When the story touches a critical area, read the survivors
    of `pnpm mutation` (MUT-1); each one is a behaviour no test pins down.
 
 Read `dimensions.md` and `invariants.md` only for the dimensions and invariant classes the story declares. Run `pnpm lint`, `pnpm typecheck` and the tests of the touched packages; don't trust claims.
