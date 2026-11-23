@@ -130,19 +130,20 @@ Decided (smallest option consistent with the story and docs/ledger.md; the coord
   is `human`; `human_for` defaults to all three reasons (an explicit `[]` stays empty); `sample` is a number in
   [0, 1], 0.05 by default.
 - The table is protected three ways (S1): the Claude hook blocks an Edit/Write/MultiEdit/NotebookEdit of state.toml
-  that changes the parsed `ledger.approval` value in any spelling, or the effective trunk (`[ledger] trunk`, else
-  `[harbor] trunk`, else main: moving the trunk moves where the table is read; ESC-112), or whose `old_string` is
+  that changes the parsed `ledger.approval` value in any spelling, or moves the effective trunk (`[ledger] trunk`, else
+  `[harbor] trunk`, else main) to a branch whose committed table differs (ESC-112; `/harbor:adopt` writing a trunk
+  whose table is the same passes), or whose `old_string` is
   not in the file (ESC-113); it blocks every shell write that names a file `state.toml` (the corrections file's
-  reading of a command, ESC-096) and every `ln` naming state.toml or the corrections file (ESC-111); a tool write
-  through a symlink is judged as its target (ESC-110, which also closed the same hole for the corrections file and
+  reading of a command, ESC-096) and every `ln`, `link`, `cp -l`/`-s` naming state.toml or the corrections file (ESC-111, ESC-119); a tool
+  write through a symlink or to a hard link is judged as its target (ESC-110, ESC-119, which also closed the same hole for the corrections file and
   the registry from before this story). The pre-commit hook refuses a staged change of the table (added, removed,
   changed, made invalid, the file deleted) without `keelokit.allowTamper`. Other edits of state.toml pass.
 - `ledger.py review --filter` prints JSON (run, mode, human_for, sample, rows with `critical`, dropped with the reason)
   and writes nothing. The run id is `r` + 12 hex of a sha256 of the trunk sha and the kept rows: no clock. Dropped:
   a field missing, kind not backfill/late, commit not a full sha on the trunk, an unknown or unreadable story, a
   story already on the trunk, a duplicate of an active row or of an earlier row, the commit's diff (a merge's against
-  its first parent, one `git log` for all rows) touching none of the story's `touches`, and a row an earlier review
-  left to the person or pending (ESC-116: judging again until both say yes would launder a disagreement).
+  its first parent, one `git log` for all rows) touching none of the story's `touches`, and a row an earlier review (on the
+  trunk, or in the work tree: failing toward the person) left to the person or pending (ESC-116: judging again until both say yes would launder a disagreement).
   `critical`: the story's touches meet a path of the trunk's critical.toml, or it declares `integrity`; an unreadable
   critical.toml makes every story critical.
 - The review file `.keelokit/ledger-reviews/<run>.json` holds the rows with `judge_a`/`judge_b` (`verdict`, `reason`,
@@ -159,10 +160,11 @@ Decided (smallest option consistent with the story and docs/ledger.md; the coord
   sha256(run + story + commit).
 - A `delegated:<run>` row counts only when the trunk's review file of that run recorded mode delegated or mixed,
   holds the row approved by both judges with the refutation failed, ledger.py re-decides it as approved from the
-  recorded mode, human_for, confidence and models with `critical` recomputed from the trunk, and the commit's diff
-  touches the story's paths; a delegated `retract` never counts (ESC-114). Else `CORRECTION_INVALID`, naming the run.
-  So a project without delegation behaves as in LEDGER-004 (S9). A critical area added later turns the delegated rows
-  it covers invalid in `mixed`: the person then accepts them (on purpose: they asked to keep critical stories).
+  recorded mode, human_for, confidence and models (and, when the trunk's mode is now mixed, under the trunk's mode too:
+  a review cannot record a looser mode than the person keeps, ESC-120), with `critical` and the story's `touches` read
+  from the trunk tree where the row first arrived, and the commit's diff touches the story's paths; a delegated `retract` never counts (ESC-114). Else `CORRECTION_INVALID`, naming the run.
+  So a project without delegation behaves as in LEDGER-004 (S9). A critical area added later, or a story's touches
+  edited later, never turns an approved row invalid (ESC-120).
 - The pre-commit hook lets an agent commit the corrections file without allowTamper only when HEAD's table delegates
   (and the staged one is the same), the staged file is HEAD's plus whole new rows (earlier tables unchanged), every
   new row is a backfill/late with approver `delegated:<run>`, and the staged review file of that run recorded HEAD's
@@ -189,6 +191,7 @@ Decided (smallest option consistent with the story and docs/ledger.md; the coord
 Known speed-bump limits, as for every QA-4 protection: commits that skip pre-commit (`git stash`, `commit-tree`,
 cherry-pick, rebase) and writes that name no protected file; a review file is the agents' own record, so a forged
 one that is consistent passes the hook, and the backstop is git (author, verdicts), the sample and the person's
-merge. Review and attack: a reviewer and a breaker (round 1, findings ESC-110..118 reproduced and fixed); round 2 below
-if it found anything.
+merge. Review and attack: a reviewer and a breaker, two rounds (round 1: ESC-110..118; round 2: ESC-119, ESC-120 and two
+regressions of round 1's fixes, the retroactive critical check and the blocked Harbor trunk), each finding reproduced
+by the verifier as a failing test and fixed. No third round was run (build-story caps it at two).
 
