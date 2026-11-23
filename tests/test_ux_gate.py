@@ -226,12 +226,14 @@ class UxGateTest(unittest.TestCase):
         """FLEET-004.S3: a P2 open fails too, and "fixed in" must end the item, not sit in its middle."""
         findings = {"design:design-critique": ["P2 Two tab bars in Settings",
                                                "P1 Says fixed in the title — but nothing was done"],
-                    "design:accessibility-review": ["P2 Contrast — fixed in"]}
+                    "design:accessibility-review": ["P2 Contrast — fixed in",
+                                                    "P2 Focus order — fixed in the plan — not yet done"]}
         code, out = self.ui_change(FOUR + skills_section(findings=findings))
         self.assertEqual(code, 1, out)
         self.assertIn("P2 Two tab bars in Settings", out)
         self.assertIn("P1 Says fixed in the title", out)
         self.assertIn("P2 Contrast", out)  # "fixed in" with nothing after it names nothing
+        self.assertIn("P2 Focus order", out)  # something after the resolution: it is not the end
 
     def test_fleet_004_s3_an_undated_skill_fails(self):
         """FLEET-004.S3: each subsection says when the skill ran (`Ran: YYYY-MM-DD`, a real date)."""
@@ -245,8 +247,8 @@ class UxGateTest(unittest.TestCase):
     def test_fleet_004_s4_a_complete_section_passes(self):
         """FLEET-004.S4: three dated subsections, every P1 and P2 fixed or decided, pass."""
         findings = {"design:design-critique": ["P1 Refund amount missing — fixed in apps/web/src/close.tsx",
-                                               "P2 Two tab bars — decided: one bar, the latest critique wins"],
-                    "design:ux-copy": ["P2 Vague CTA — fixed in 4f5e6d7", "P3 Shorter title"],
+                                               "P2 Two tab bars — decided: one bar – the latest critique wins"],
+                    "design:ux-copy": ["P2 Vague CTA - fixed in 4f5e6d7", "P3 Shorter title", "**P0** Crash -- fixed in b8c9d0e"],
                     "design:accessibility-review": []}
         code, out = self.ui_change(FOUR + skills_section(findings=findings))
         self.assertEqual(code, 0, out)
