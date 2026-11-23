@@ -7,6 +7,14 @@
     verify_tools.py record FILE RESULT RC HEAD LEVEL STEPS FAILED LOG
                                                 append one JSON line of this run to FILE
                                                 (the rest comes from VERIFY_* variables, see cmd_record)
+    verify_tools.py workers HISTORY --steps "unit integration ..." [--cores N] [--force]
+                                                how many test workers fit the memory this machine has: a line
+                                                of "step=N" pairs, then one sentence per step; exit 3 (and why)
+                                                when even one worker of a step would be killed for memory
+    verify_tools.py measure OUT STEP -- CMD ARGS...   (or the words of CMD in $VERIFY_MEASURE_ARGV, 0x1f-ended)
+                                                run CMD and append "STEP<TAB>MB<TAB>source" to OUT: the most
+                                                memory it used (the exit code is CMD's; a failure to measure
+                                                never fails CMD)
     verify_tools.py steps LIST | --list         check step names (comma list) / print every name
     verify_tools.py rerun HISTORY --head SHA --base SHA --scope TEXT --level LEVEL
                                                 "steps|inherited|red head|proven packages": what
@@ -33,6 +41,11 @@ Each file takes the FIRST route that matches (specific routes go first); a chang
 its files' steps plus `always`. A file no route knows runs EVERYTHING
 (unknown goes up, never down), and `--all` is every step: any plan is a subset of it. Without the
 file, or when anything fails, the plan is `all` (the behaviour before routing existed).
+`workers` reads the memory available (MemAvailable, or the cgroup's memory.max minus memory.current when a
+container limits it, whichever is lower) and the peak per worker the last runs recorded in the history (or
+[verify] memory_per_worker_mb in .keelokit/state.toml, a number or a table step → number), and gives each
+test step min(cores, available × 0.8 / peak) workers, at least 1. A step that has no peak and no override
+is left as it is. KEELOKIT_MEMINFO and KEELOKIT_CGROUP_DIR point it at other files (tests; empty = no cgroup).
 `causes` reads .keelokit/red-causes.toml: [[cause]] pattern (regex), look (what to check first).
 """
 import sys
@@ -299,6 +312,244 @@ def in_a_package(path: str) -> bool:
     return False
 
 
+# FLEET-001: workers that fit the machine's memory, and the peak each step used.
+WORKER_STEPS = ["unit", "integration", "e2e", "e2e-stack"]  # the steps whose test runners take a number of workers
+MEMORY_SHARE = 0.8  # of what is available: the rest is for the OS, the database and the other tools
+
+
+def own_cgroup_dir(proc_self_cgroup: Path, cgroup_root: Path) -> Path | None:
+    """The cgroup (v2) this process lives in, as a folder under cgroup_root; None when there is none."""
+    try:
+        lines = proc_self_cgroup.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("0::"):
+            folder = cgroup_root / line[3:].strip().lstrip("/")
+            return folder if folder.is_dir() else None
+    return None
+
+
+def read_int(path: Path) -> int | None:
+    try:
+        return int(path.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def memory_available_mb(meminfo: Path, cgroup_dir: Path | None) -> tuple[int, str] | None:
+    """(MB available, where the figure comes from): MemAvailable, or what is left under the cgroup's
+    memory.max, whichever is lower. None when neither can be read (macOS: nothing is planned)."""
+    found: list[tuple[int, str]] = []
+    try:
+        m = re.search(r"^MemAvailable:\s+(\d+)\s*kB", meminfo.read_text(), re.M)
+        if m:
+            found.append((int(m.group(1)) // 1024, "MemAvailable"))
+    except OSError:
+        pass
+    if cgroup_dir is not None:
+        limit, used = read_int(cgroup_dir / "memory.max"), read_int(cgroup_dir / "memory.current")
+        if limit is not None and used is not None:  # "max" (no limit) does not parse: not a figure
+            found.append((max(0, (limit - used) // 2**20), "cgroup memory.max"))
+    return min(found, key=lambda f: f[0]) if found else None
+
+
+def workers_for(available_mb: int, per_worker_mb: float, cores: int) -> int:
+    """As many workers as fit in 80% of the available memory, no more than the cores, at least one."""
+    return max(1, min(cores, int(available_mb * MEMORY_SHARE / per_worker_mb)))
+
+
+def per_worker_peaks(history_lines: list[str], cores: int) -> dict[str, float]:
+    """MB one worker used, per step, from the last history line that measured the step (red or green).
+    A resident size ("rss") is already one worker's; a cgroup's is the whole step's, shared by its workers."""
+    peaks: dict[str, float] = {}
+    for line in history_lines:
+        try:
+            entry = json.loads(line)
+            peak_mb, source = entry["peak_mb"], entry["peak_source"]
+            if not isinstance(peak_mb, dict) or not isinstance(source, dict):
+                continue
+        except (ValueError, KeyError, TypeError):
+            continue
+        workers = entry.get("workers") if isinstance(entry.get("workers"), dict) else {}
+        for step, mb in peak_mb.items():
+            if isinstance(mb, bool) or not isinstance(mb, (int, float)) or mb <= 0:
+                continue
+            if source.get(step) == "rss":
+                peaks[step] = float(mb)
+            elif source.get(step) == "cgroup":
+                n = workers.get(step)
+                n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else max(1, cores - 1)
+                peaks[step] = mb / n
+    return peaks
+
+
+def memory_override(state_toml: Path) -> int | dict[str, int] | None:
+    """[verify] memory_per_worker_mb in state.toml: a positive number for every test step, or a table step → number."""
+    try:
+        value = tomllib.loads(state_toml.read_text())["verify"]["memory_per_worker_mb"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+    def good(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if good(value):
+        return value
+    if isinstance(value, dict):
+        table = {k: v for k, v in value.items() if good(v)}
+        return table or None
+    return None
+
+
+def gb(mb: float) -> str:
+    return f"{mb / 1024:.1f} GB"
+
+
+def memory_plan(steps: list[str], available: tuple[int, str] | None, peaks: dict[str, float], override, cores: int,
+                force: bool = False) -> tuple[dict[str, int], list[str], str | None]:
+    """(workers per step, one sentence per step, why the run must not start or None). Only the test steps in
+    `steps` count, and only those with a figure (the override, else the last measure) that memory limits, that is,
+    fewer workers fit than there are cores: the rest keep today's workers. A step whose one worker needs more than is available is refused, unless `force` (then 1 worker)."""
+    workers: dict[str, int] = {}
+    lines: list[str] = []
+    if available is None:
+        return workers, lines, None
+    free, source = available
+    for step in (s for s in WORKER_STEPS if s in steps):
+        mine = override.get(step) if isinstance(override, dict) else override
+        per_worker, basis = (mine, "[verify] memory_per_worker_mb") if mine else (peaks.get(step), "last time")
+        if not per_worker:
+            continue
+        basis_text = f"{gb(per_worker)} each" + (f" ({basis})" if mine else f" {basis}")
+        if per_worker > free:
+            if not force:
+                return {}, [], (f"verify will not start: {step} needs {gb(per_worker)} for one worker ({'last run' if not mine else basis}) "
+                                f"and {gb(free)} is available ({source}); it would be killed for memory halfway. "
+                                "Free memory, or VERIFY_FORCE=1 runs it with 1 worker.")
+            workers[step] = 1
+            lines.append(f"{step}: 1 worker (VERIFY_FORCE=1), {gb(free)} free, {basis_text}: it may be killed for memory")
+            continue
+        if free * MEMORY_SHARE / per_worker >= cores:
+            continue  # memory is not what limits this step: the runner keeps its own default
+        n = workers_for(free, per_worker, cores)
+        workers[step] = n
+        lines.append(f"{step}: {n} worker{'s' if n != 1 else ''}, {gb(free)} free, {basis_text}")
+    return workers, lines, None
+
+
+def usable_cores() -> int:
+    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+
+
+def cmd_workers(args: list[str]) -> int:
+    history = args[0] if args else ""
+    try:
+        lines = Path(history).read_text().splitlines()
+    except OSError:
+        lines = []
+    cores = int(option(args, "--cores", "0") or 0) or usable_cores()
+    meminfo = Path(os.environ.get("KEELOKIT_MEMINFO") or "/proc/meminfo")
+    if "KEELOKIT_CGROUP_DIR" in os.environ:
+        cgroup = Path(os.environ["KEELOKIT_CGROUP_DIR"]) if os.environ["KEELOKIT_CGROUP_DIR"] else None
+    else:
+        cgroup = own_cgroup_dir(Path("/proc/self/cgroup"), Path("/sys/fs/cgroup"))
+    workers, text, refusal = memory_plan(option(args, "--steps").split(), memory_available_mb(meminfo, cgroup),
+                                         per_worker_peaks(lines, cores), memory_override(ROOT / ".keelokit/state.toml"), cores,
+                                         force="--force" in args)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 3
+    print(" ".join(f"{s}={n}" for s, n in workers.items()))
+    for line in text:
+        print(line)
+    return 0
+
+
+def peak_from_rusage(maxrss: int, platform: str) -> int:
+    """ru_maxrss in MB: bytes on macOS, kilobytes elsewhere."""
+    return max(1, maxrss // (2**20 if platform == "darwin" else 1024))
+
+
+def child_cgroup(name: str) -> Path | None:
+    """A fresh cgroup under this process's own, when the kernel lets us (it has memory.peak); else None."""
+    own = own_cgroup_dir(Path("/proc/self/cgroup"), Path("/sys/fs/cgroup"))
+    if own is None:
+        return None
+    mine = own / f"keelokit-verify-{name}-{os.getpid()}"
+    try:
+        mine.mkdir()
+    except OSError:
+        return None
+    if (mine / "memory.peak").is_file():
+        return mine
+    try:
+        mine.rmdir()
+    except OSError:
+        pass
+    return None
+
+
+def cmd_measure(args: list[str]) -> int:
+    """Run the command after `--`; its exit code is ours. Afterwards, the peak it used goes to OUT: the cgroup's
+    memory.peak when the command could run in a cgroup of its own, else the largest resident size of one of its
+    processes. When nothing can be measured nothing is written, and the command's result is never touched."""
+    if len(args) >= 4 and args[2] == "--":
+        out, step, cmd = args[0], args[1], args[3:]
+    elif len(args) == 2 and os.environ.get("VERIFY_MEASURE_ARGV"):  # verify.sh: keeps long command lines out of ps
+        out, step, cmd = args[0], args[1], os.environ["VERIFY_MEASURE_ARGV"].split("\x1f")[:-1]
+    else:
+        print("usage: verify_tools.py measure OUT STEP -- CMD ARGS...", file=sys.stderr)
+        return 2
+    if not cmd:
+        return 2
+    os.environ.pop("VERIFY_MEASURE_ARGV", None)  # the command must not inherit its own line
+    cgroup = None
+    try:
+        cgroup = child_cgroup(re.sub(r"\W", "_", step))
+    except Exception:  # measuring is a courtesy: never the reason a step fails
+        pass
+    started = os.environ.pop("VERIFY_MEASURE_STARTED", None)
+    if started:  # tells verify.sh the command was started here, so it is not run a second time
+        try:
+            Path(started).touch()
+        except OSError:
+            pass
+    try:
+        child = subprocess.Popen(cmd)
+    except OSError as e:
+        print(f"{cmd[0]}: {e.strerror}", file=sys.stderr)
+        return 127 if isinstance(e, FileNotFoundError) else 126
+    if cgroup is not None:
+        try:
+            (cgroup / "cgroup.procs").write_text(str(child.pid))
+        except OSError:
+            try:
+                cgroup.rmdir()
+            except OSError:
+                pass
+            cgroup = None
+    _, status, usage = os.wait4(child.pid, 0)
+    child.returncode = 0  # reaped here, not by Popen
+    peak, source = None, ""
+    try:
+        if cgroup is not None:
+            raw = read_int(cgroup / "memory.peak")
+            if raw:
+                peak, source = max(1, raw // 2**20), "cgroup"
+            try:
+                cgroup.rmdir()
+            except OSError:
+                pass
+        if peak is None:
+            peak, source = peak_from_rusage(usage.ru_maxrss, sys.platform), "rss"
+        with open(out, "a", encoding="utf-8") as f:
+            f.write(f"{step}\t{peak}\t{source}\n")
+    except Exception:
+        pass
+    return os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+
+
 def cmd_record(args: list[str]) -> int:
     """One JSON line per run. Besides the arguments, from the environment: VERIFY_BASE (the base's sha),
     VERIFY_PLANNED / VERIFY_PASSED / VERIFY_FAILED_STEPS (step names), VERIFY_SCOPE (the --packages /
@@ -308,7 +559,8 @@ def cmd_record(args: list[str]) -> int:
     compared with a ref given by --since, not origin/main), and for a narrowed
     rerun VERIFY_INHERITED (passes kept from the red run), VERIFY_PROVEN_PACKAGES (where those were proven),
     VERIFY_RERUN_OF (the first red run of the chain) and VERIFY_COMPOSITE_OF (the same head, when the runs
-    together sealed the commit)."""
+    together sealed the commit). VERIFY_PEAKS names a file of "step<TAB>MB<TAB>source" lines (`measure`'s),
+    VERIFY_WORKERS the "step=N" pairs the memory plan chose and VERIFY_WORKERS_WHY its sentences, joined by "; "."""
     file, result, rc, head, level, steps, failed, log = (args + [""] * 8)[:8]
     env = os.environ.get
     try:
@@ -320,6 +572,18 @@ def cmd_record(args: list[str]) -> int:
         name, _, folder = pair.partition("=")
         if folder and folder not in step_packages.setdefault(name, []):
             step_packages[name].append(folder)
+    peak_mb: dict[str, int] = {}
+    peak_source: dict[str, str] = {}
+    try:
+        measured = Path(env("VERIFY_PEAKS", "")).read_text().splitlines() if env("VERIFY_PEAKS") else []
+    except OSError:
+        measured = []
+    for l in measured:
+        name, _, rest = l.partition("\t")
+        mb, _, source = rest.partition("\t")
+        if name and mb.isdigit() and source and int(mb) > peak_mb.get(name, 0):
+            peak_mb[name], peak_source[name] = int(mb), source
+    planned_workers = {n: int(c) for n, _, c in (p.partition("=") for p in env("VERIFY_WORKERS", "").split()) if c.isdigit()}
     packages = sorted({relative(l) for l in env("VERIFY_PACKAGES", "").splitlines() if l.strip()})
     entry = {
         "t": int(time.time()), "head": head, "base": env("VERIFY_BASE", ""), "level": level, "result": result,
@@ -339,6 +603,8 @@ def cmd_record(args: list[str]) -> int:
         "packages": packages,
         "step_packages": step_packages,
         "causes": [cid for cid, _ in causes_in(text)] if result != "pass" else [],
+        "peak_mb": peak_mb, "peak_source": peak_source,
+        "workers": planned_workers, "workers_why": env("VERIFY_WORKERS_WHY", ""),
     }
     with open(file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -793,6 +1059,10 @@ def main() -> int:
         return cmd_record(a[1:])
     if a[0] == "steps":
         return cmd_steps(a[1:])
+    if a[0] == "workers":
+        return cmd_workers(a[1:])
+    if a[0] == "measure":
+        return cmd_measure(a[1:])
     if a[0] == "rerun":
         return cmd_rerun(a[1:])
     if a[0] == "covers":

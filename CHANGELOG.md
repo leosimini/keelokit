@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The verify fits its test workers to the memory the machine has.** It records each step's peak memory in
+  `keelokit-verify.history`, starts the unit, integration and e2e runners with as many workers as fit in what is
+  free (or in the container's cgroup limit), says so, and stops in seconds with exit 3 when even one worker would be
+  killed for memory (`VERIFY_FORCE=1` runs it anyway); `[verify] memory_per_worker_mb` in `.keelokit/state.toml`
+  overrides the measure, and `status` shows the workers chosen. An existing project runs `/keelokit:harness-upgrade`.
 - **A session that starts in a shallow clone completes the trunk's history (main by default) before the doctor reads it.** The SessionStart
   hook runs `ledger.py history --ensure` (commits only, 20 s at most); offline or slower than the cap it says so in one
   line and goes on, with `git fetch --unshallow origin <trunk>` as the fix.

@@ -33,7 +33,8 @@
 #
 # What it leaves in the git directory (docs/verify.md): keelokit-verify.state (running / pass / fail,
 # the step and the pid, so a run that was cut is noticed), .log (the whole output), .seal (the commit
-# that passed), .history (one JSON line per run). Exit codes decide, never log text:
+# that passed), .history (one JSON line per run, with the peak memory of each step and the workers the
+# memory plan chose), .peaks (what the steps' commands used, this run). Exit codes decide, never log text:
 # a verify killed by a signal exits non-zero and says so.
 #
 # Tools the CI uses must exist here too: a missing gitleaks or semgrep fails the run, because a
@@ -88,6 +89,8 @@ log="$common/keelokit-verify.log"
 state="$common/keelokit-verify.state"
 seal="$common/keelokit-verify.seal"
 history="$common/keelokit-verify.history"
+peaks="$common/keelokit-verify.peaks"
+mem_pairs='' mem_why='' w_unit='' w_integration='' w_e2e='' w_stack=''
 tools=.keelokit/bin/verify_tools.py
 
 # Unknown names are an error, never ignored: a typo would verify less than asked and say nothing.
@@ -198,12 +201,29 @@ skip() { # a step this change doesn't call for
   say "▷ $1 — not needed for this change"
 }
 
+# measured CMD…: CMD through `measure` (its exit code is CMD's). If measure never started it (no usable
+# python, say), CMD runs here: measuring is a courtesy and must not stop a step from running.
+measured() {
+  rm -f "$peaks.started"
+  local mrc=0
+  # The command's words travel in the environment (0x1f-ended): `ps` and the log show `measure`, not a long spec list.
+  VERIFY_MEASURE_STARTED="$peaks.started" VERIFY_MEASURE_ARGV=$(printf '%s\037' "$@") python3 "$tools" measure "$peaks" "$current_id" || mrc=$?
+  if [ -e "$peaks.started" ]; then return "$mrc"; fi
+  "$@"
+}
+
 # run [--must] CMD…: output to the terminal and the log; killable by a signal; with --keep-going a
 # red is recorded and the run goes on (unless the step is a prerequisite: --must).
 run() {
   must=false
   [ "${1:-}" = --must ] && { must=true; shift; }
-  { "$@" 2>&1 | tee -a "$log"; } &
+  # An external command goes through `measure`, which records the memory it used and passes its exit code on;
+  # a shell function (fmt_changed, zones_run) can't be measured.
+  if [ -f "$tools" ] && [ "$(type -t "$1")" = file ]; then
+    { measured "$@" 2>&1 | tee -a "$log"; } &
+  else
+    { "$@" 2>&1 | tee -a "$log"; } &
+  fi
   child=$!
   rc=0
   wait "$child" || rc=$?
@@ -238,6 +258,7 @@ finish() {
     printf '%s' "$steps_log" | python3 "$tools" table 2>/dev/null || true
     [ "$rc" -eq 0 ] || python3 "$tools" causes "$log" 2>/dev/null || true
     $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_RERUN_OF=${rerun_from:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_INT_REPORT=${int_reports:-} VERIFY_NARROWED=${int_narrowed:-false} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
+      VERIFY_PEAKS=$peaks VERIFY_WORKERS=$mem_pairs VERIFY_WORKERS_WHY=$mem_why \
       VERIFY_SCOPE=${explicit_scope_text:-} VERIFY_PACKAGES=${pkg_list:-} VERIFY_STEP_PACKAGES=${step_packages:-} \
       VERIFY_PARTIAL=$partial VERIFY_CLEAN=$clean_at_start VERIFY_SINCE=$since python3 "$tools" record "$history" "$([ "$rc" -eq 0 ] && echo pass || echo fail)" "$rc" "$head_sha" \
       "$($requested_all && echo all || echo changed)" "$steps_log" "$failed" "$log" 2>/dev/null || true
@@ -273,6 +294,7 @@ if ! $preflight; then
   pwd >"$lock/where"
 fi
 : >"$log"
+: >"$peaks"
 trap finish EXIT
 trap 'on_signal TERM 143' TERM
 trap 'on_signal INT 130' INT
@@ -358,6 +380,33 @@ for s in $(python3 "$tools" steps --list 2>/dev/null); do
   ! $rerun_narrowed || { only_saved=$only; only=; if want "$s"; then plan_full="${plan_full:-}$s "; fi; only=$only_saved; }
 done
 ! $rerun_narrowed || planned=${plan_full:-}
+
+# Test workers that fit the memory this machine has (FLEET-001): from the peak per worker the last runs
+# recorded, or [verify] memory_per_worker_mb. Before the first tool runs: a step whose one worker can't fit
+# stops the run in seconds (exit 3, like a busy machine) instead of an hour-long run ending in a kill.
+mem_steps=
+for s in unit integration e2e e2e-stack; do want "$s" && mem_steps="$mem_steps$s "; done
+if [ -z "$mem_steps" ] && $requested_all && ! $since && want clock; then mem_steps="unit "; fi # clock reruns the unit tests
+mem_force=
+[ "${VERIFY_FORCE:-}" != 1 ] || mem_force=--force
+if [ -n "$mem_steps" ] && [ -f "$tools" ]; then
+  mem_rc=0
+  mem_out=$(python3 "$tools" workers "$history" --steps "$mem_steps" ${mem_force:+"$mem_force"}) || mem_rc=$?
+  [ "$mem_rc" -ne 3 ] || exit 3
+  if [ "$mem_rc" -eq 0 ] && [ -n "$mem_out" ]; then
+    mem_pairs=$(printf '%s\n' "$mem_out" | sed -n 1p)
+    mem_why=$(printf '%s\n' "$mem_out" | sed 1d | awk '{ printf "%s%s", (n++ ? "; " : ""), $0 }')
+    for pair in $mem_pairs; do
+      case ${pair%%=*} in
+        unit) w_unit=${pair#*=} ;;
+        integration) w_integration=${pair#*=} ;;
+        e2e) w_e2e=${pair#*=} ;;
+        e2e-stack) w_stack=${pair#*=} ;;
+      esac
+    done
+    [ -z "$mem_why" ] || say "Workers for this machine's memory: $mem_why"
+  fi
+fi
 
 if want secrets && need_tool gitleaks '`brew install gitleaks`'; then
   step secrets 'Secret scan (gitleaks)'
@@ -476,7 +525,7 @@ fi
 
 if want unit; then
   step unit 'Unit tests'
-  run pnpm "${scope[@]}" --if-present run test
+  run pnpm "${scope[@]}" --if-present run test ${w_unit:+"--maxWorkers=$w_unit"}
 else skip 'Unit tests'; fi
 
 # The unit tests this change adds or edits, again at the clocks where date code breaks: month and year
@@ -550,15 +599,15 @@ if $db && want integration && affected apps/api; then
     say "Integration: only the specs that failed${int_related:+, the ones the fix changed and those related to it} (--rerun-failed)."
     int_reports=$int_specs_json int_narrowed=true
     # shellcheck disable=SC2086 # one spec path per word
-    run pnpm --filter ./apps/api exec vitest run --config vitest.integration.config.ts --reporter=default --reporter=json "--outputFile.json=$int_specs_json" ${int_specs#@}
+    run pnpm --filter ./apps/api exec vitest run --config vitest.integration.config.ts ${w_integration:+"--maxWorkers=$w_integration"} --reporter=default --reporter=json "--outputFile.json=$int_specs_json" ${int_specs#@}
     if [ -n "$int_related" ]; then
       int_reports="$int_reports $int_related_json"
       # shellcheck disable=SC2086
-      run pnpm --filter ./apps/api exec vitest related --run --config vitest.integration.config.ts --passWithNoTests --reporter=default --reporter=json "--outputFile.json=$int_related_json" $int_related
+      run pnpm --filter ./apps/api exec vitest related --run --config vitest.integration.config.ts --passWithNoTests ${w_integration:+"--maxWorkers=$w_integration"} --reporter=default --reporter=json "--outputFile.json=$int_related_json" $int_related
     fi
   else
     int_reports=$int_all_json
-    run pnpm --filter ./apps/api test:integration --reporter=default --reporter=json "--outputFile.json=$int_all_json"
+    run pnpm --filter ./apps/api test:integration ${w_integration:+"--maxWorkers=$w_integration"} --reporter=default --reporter=json "--outputFile.json=$int_all_json"
   fi
 fi
 
@@ -568,13 +617,13 @@ if want build; then
 else skip 'Build'; fi
 if want e2e; then
   step e2e 'End-to-end journeys'
-  run pnpm "${scope[@]}" --if-present run e2e
+  run pnpm "${scope[@]}" --if-present run e2e ${w_e2e:+"--workers=$w_e2e"}
 else skip 'End-to-end journeys'; fi
 if $db; then
   for app in $stack_apps; do
     step e2e-stack "End-to-end on the real stack ($app)"
     step_packages="${step_packages}e2e-stack=${app#./} "
-    run pnpm --filter "$app" run e2e:stack
+    run pnpm --filter "$app" run e2e:stack ${w_stack:+"--workers=$w_stack"}
   done
 fi
 
@@ -600,7 +649,7 @@ fi
 if $requested_all && ! $since && want clock; then
   if command -v faketime >/dev/null; then
     step clock 'Clock a year ahead (date bombs)'
-    FAKETIME_DONT_FAKE_MONOTONIC=1 run faketime -f '+365d' pnpm "${scope[@]}" --if-present run test
+    FAKETIME_DONT_FAKE_MONOTONIC=1 run faketime -f '+365d' pnpm "${scope[@]}" --if-present run test ${w_unit:+"--maxWorkers=$w_unit"}
   else
     echo '(faketime not installed — the date-bomb rerun is skipped here; the nightly CI runs it.)'
   fi
