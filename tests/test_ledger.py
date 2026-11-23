@@ -5,12 +5,14 @@ Everything runs against real git with local remotes (file:// and a refused http 
 network. The slow server is git's own `remote.origin.uploadpack` (a `sleep` in front of
 git-upload-pack); the server that rejects --filter is a `git` wrapper first on PATH that logs its
 argv. Each git call runs with a clean environment: no proxy, no global or system config."""
+import http.server
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 import uuid
@@ -75,6 +77,9 @@ class LedgerHistoryTest(unittest.TestCase):
         path.write_text(textwrap.dedent(text))
 
     def commit(self, message: str) -> None:
+        # Every commit changes churn.txt: a commits-only (blob:none) fetch really leaves old blobs out.
+        self.n_commits = getattr(self, "n_commits", 0) + 1
+        self.write("churn.txt", f"version {self.n_commits}: {message.splitlines()[0]}\n")
         self.git(self.origin, "add", "-A")
         self.git(self.origin, "commit", "-qm", message, "--allow-empty")
 
@@ -141,10 +146,12 @@ class LedgerHistoryTest(unittest.TestCase):
     def fetches(log: Path) -> list[str]:
         return [line for line in log.read_text().splitlines() if re.search(r"(^|\s)fetch(\s|$)", line)]
 
-    def ledger(self, clone: Path, *args: str, path: str | None = None, timeout: float = 45) -> tuple[subprocess.CompletedProcess, float]:
+    def ledger(self, clone: Path, *args: str, path: str | None = None, timeout: float = 45,
+               extra_env: dict | None = None) -> tuple[subprocess.CompletedProcess, float]:
         script = clone / ".keelokit/bin/ledger.py"
         self.assertTrue(script.exists(), "template/.keelokit/bin/ledger.py does not exist yet")
         env = clean_env(self.tmp, path or self.env["PATH"])
+        env.update(extra_env or {})
         start = time.monotonic()
         try:
             r = subprocess.run(["python3", ".keelokit/bin/ledger.py", *args], cwd=clone, env=env,
@@ -375,6 +382,119 @@ class LedgerHistoryTest(unittest.TestCase):
         self.git(clone, "remote", "remove", "origin")
         r, _ = self.ledger(clone, "history", "--ensure")
         self.assertIn("no origin: history incomplete", self.one_line(r))
+
+    # ── round 2: what review and the breaker found (each reproduced before the fix) ──
+    def assert_partial_clone_sound(self, clone: Path) -> None:
+        """Old blobs are missing on purpose, and git can still read every commit: the promisor
+        config that lets it fetch them on demand is there."""
+        self.assertEqual(self.git(clone, "config", "--get", "remote.origin.promisor", check=False).strip(), "true",
+                         "the promisor config of a working partial clone was removed")
+        self.assertEqual(self.git(clone, "config", "--get", "remote.origin.partialclonefilter", check=False).strip(),
+                         "blob:none")
+        oldest = self.git(clone, "rev-list", "--max-parents=0", "HEAD").split()[0]
+        show = subprocess.run(["git", "show", f"{oldest}:churn.txt"], cwd=clone, env=self.env,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(show.returncode, 0, show.stderr)
+        self.assertIn("version 1:", show.stdout)
+        for args in (["log", "-p"], ["fsck"]):
+            r = subprocess.run(["git", *args], cwd=clone, env=self.env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, f"git {' '.join(args)}: {r.stderr[-500:]}")
+            self.assertNotRegex(r.stderr, r"(?m)^(fatal|error|missing)", f"git {' '.join(args)}")
+
+    def test_LEDGER_002_S1_a_filtered_fetch_that_worked_keeps_the_partial_clone_readable(self):
+        """Review: the cleanup meant for an IGNORED filter also ran after a filter the server
+        honoured (GitHub's case): promisor config gone, old blobs missing, `git log -p` fatal."""
+        self.git(self.origin, "config", "uploadpack.allowFilter", "true")
+        clone = self.clone(3)
+        r, _ = self.ledger(clone, "history", "--ensure")
+        self.assertIn("history completed", self.one_line(r))
+        self.assertFalse(self.shallow(clone))
+        self.assert_partial_clone_sound(clone)
+
+    def test_LEDGER_002_S1_a_clone_that_was_already_partial_keeps_its_config(self):
+        self.git(self.origin, "config", "uploadpack.allowFilter", "true")
+        clone = self.tmp / "partial"
+        self.git(self.tmp, "clone", "-q", "--depth=3", "--filter=blob:none", f"file://{self.origin}", str(clone))
+        self.assertTrue(self.shallow(clone), "fixture")
+        r, _ = self.ledger(clone, "history", "--ensure")
+        self.assertIn("history completed", self.one_line(r))
+        self.assertFalse(self.shallow(clone))
+        self.assert_partial_clone_sound(clone)
+
+    def test_LEDGER_002_S1_a_single_branch_clone_of_another_branch_gets_the_trunk(self):
+        """Breaker: `clone --depth 1 -b side --single-branch` never created origin/main, and the line
+        gave HEAD's count as main's, so the doctor still could not count."""
+        self.git(self.origin, "branch", "side", "main~2")  # before AUTH-004: HEAD's history alone says 3/6
+        clone = self.tmp / "side"
+        self.git(self.tmp, "clone", "-q", "--depth=1", "-b", "side", "--single-branch", f"file://{self.origin}", str(clone))
+        self.assertTrue(self.shallow(clone), "fixture")
+        r, _ = self.ledger(clone, "history", "--ensure")
+        line = self.one_line(r)
+        main_count = self.git(self.origin, "rev-list", "--count", "main").strip()
+        self.assertIn(f"history completed ({main_count} commits of main)", line)
+        self.assertEqual(self.git(clone, "rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False).strip(),
+                         self.git(self.origin, "rev-parse", "main").strip(), "origin/main is where the doctor counts")
+        self.assertIn("Context gaps: 0 (0 blocking) · Backlog: 4/6 done", self.doctor_brief(clone).splitlines())
+
+    def test_LEDGER_002_S1_nfr_a_server_asking_for_credentials_never_prompts(self):
+        """Breaker: GIT_TERMINAL_PROMPT=0 does not stop GIT_ASKPASS, SSH_ASKPASS or core.askPass; a
+        hook that runs a credential helper may block or leak. An http origin answering 401."""
+        class Unauthorized(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="x"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Unauthorized)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        clone = self.clone(3)
+        self.git(clone, "remote", "set-url", "origin", f"http://127.0.0.1:{server.server_port}/x.git")
+        asked = self.tmp / "askpass.log"
+        askpass = self.tmp / "askpass.sh"
+        askpass.write_text(f'#!/bin/sh\necho "$*" >> "{asked}"\necho secret\n')
+        askpass.chmod(0o755)
+        self.git(clone, "config", "core.askPass", str(askpass))
+        r, elapsed = self.ledger(clone, "history", "--ensure",
+                                 extra_env={"GIT_ASKPASS": str(askpass), "SSH_ASKPASS": str(askpass),
+                                            "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": ":0"})
+        line = self.one_line(r)
+        self.assertFalse(asked.exists(), f"a credential prompt ran: {asked.read_text() if asked.exists() else ''}")
+        self.assertIn("fetch failed: history incomplete", line, "an auth error is not 'offline'")
+        self.assertNotIn("offline", line)
+        self.assertLess(elapsed, 15)
+        self.assertTrue(self.shallow(clone))
+
+    def test_LEDGER_002_S2_a_failure_that_is_not_the_network_is_not_called_offline(self):
+        """Review: every failed fetch said 'offline', a stale .git/shallow.lock too."""
+        clone = self.clone(3)
+        (clone / ".git/shallow.lock").write_text("")
+        r, _ = self.ledger(clone, "history", "--ensure")
+        line = self.one_line(r)
+        self.assertIn("fetch failed: history incomplete (", line)
+        self.assertIn("shallow.lock", line, "git's reason is in the line")
+        self.assertNotIn("offline", line)
+        self.assertIn("git fetch --unshallow origin main", line)
+        self.assertTrue(self.shallow(clone))
+
+    def test_LEDGER_002_S4_dx_an_infinite_or_nan_cap_is_the_default_and_the_trunk_is_named(self):
+        """Breaker: TOML accepts inf and nan; int(inf) crashed into the catch-all, whose message
+        always said `main` whatever the trunk."""
+        self.git(self.origin, "branch", "develop", "main")
+        for value in ("inf", "+inf", "nan", "-inf"):
+            with self.subTest(value=value):
+                clone = self.clone(3, f"clone-{value.replace('+', 'p').replace('-', 'm')}")
+                self.state(clone, f'[ledger]\ntrunk = "develop"\nhistory_seconds = {value}\n')
+                r, _ = self.ledger(clone, "history", "--ensure")
+                line = self.one_line(r)
+                self.assertNotIn("origin main", line, "the configured trunk is develop")
+                self.assertRegex(line, r"^Keelokit: history completed \(\d+ commits of develop\)")
+                self.assertFalse(self.shallow(clone))
 
     def test_LEDGER_002_nfr_the_two_copies_are_identical(self):
         self.assertTrue(LEDGER.exists(), "template/.keelokit/bin/ledger.py does not exist yet")
