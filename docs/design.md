@@ -117,8 +117,9 @@ writes candidate rows with a confidence and their evidence (commits and merged b
 sheets, a `BOARD.md`, Harbor's imported board) to a git-ignored file, `ledger.py correct` proposes one late
 attribution, and a person accepts them with `backfill --accept`; an accepted row makes its story `on-trunk`,
 marked reconstructed. `ledger.py check [--ci] [--json]` lists every difference with its level (the corrections'
-`CORRECTION_*`, which the doctor reports too; from `[ledger] since` on, `UNKNOWN_STORY`, `UNATTRIBUTED`,
-`BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS`, errors under `enforce = "block"`; and the warnings
+`CORRECTION_*`, which the doctor reports too; `UNKNOWN_STORY` (every trunk commit, or from `[ledger] since` on
+when it is set) and, from `since` on, `UNATTRIBUTED`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS`,
+errors under `enforce = "block"`; and the warnings
 `STALE_BRANCH`, `DONE_TWICE`, `SNAPSHOT_BEHIND`, `PENDING_REVIEW`) and exits 1 only on an error. `ledger.py show
 <ID> [--full]` gathers a story's why where it already lives, in at most 60 lines: its state and date, its commits
 with their subjects, bodies and `Claude-Session:`, the story file's *Addendum* headings, the rows of
