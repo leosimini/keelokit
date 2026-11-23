@@ -125,10 +125,10 @@ real adapter is covered by one integration test of its own.
 ### once: the failure paths of a money movement
 
 A replay test proves the happy path runs once. Money bugs live where something fails: they pass
-tests and reviews and show up only when someone asks what happens if a step breaks. For a money story: the `integrity` dimension, or a story that moves money in a project with the
-`payments` trait, the contract lists these
-failure paths before any code, and the breaker walks each one, reporting the test that covers it
-or the reason it cannot happen:
+tests and reviews and show up only when someone asks what happens if a step breaks. This applies
+to a money story: the `integrity` dimension, or a story that moves money in a project with the
+`payments` trait. Its contract lists these failure paths before any code, and the breaker walks
+each one, reporting the test that covers it or the reason it cannot happen:
 
 - **an automatic retry still running**: the job failed once and will try again; nothing else
   (a person, another job) may act on the same movement meanwhile;
