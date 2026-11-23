@@ -96,6 +96,18 @@ testing measures exactly that (MUT-1); everywhere else it is the reviewer's and 
 job, and what `/keelokit:check-bugbash` tightens when a bug gets through. The guard is a speed
 bump for agents, not a sandbox; the git hooks and CI are the backstop.
 
+## The ledger
+
+`ledger.py` derives every story's state from git and stores nothing written by hand: `defined` (the
+file is on the trunk), `ready` (its dependencies are on the trunk), `in-progress` (`Part-of:` commits on
+an origin branch not on the trunk), `on-trunk` (a `Story:` commit reachable from the trunk and not
+reverted), `in-version` (the first `v*` tag containing it), `in-staging` and `in-production`
+(`origin/deploy/*`). `ledger.py` prints a summary of at most ten lines; `ledger.py --json` is the
+schema-1 document every other tool reads. With a cut history every state is `unknown` with the reason,
+never a lower one, and the git calls are a fixed number however many stories there are. The design,
+the contracts and the plan are in [ledger.md](ledger.md); `[ledger]` in `.keelokit/state.toml`
+configures it (stories glob, ids from front matter or file names, trunk, `since`).
+
 ## Lifecycle
 
 | Stage | Skill | Human decides |

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`ledger.py` says where every story stands, from git alone.** `python3 .keelokit/bin/ledger.py` prints a
+  summary of at most ten lines and `ledger.py --json` the whole ledger (schema 1): each story `defined`, `ready`,
+  `in-progress` (with its branch, and `stale` after `[ledger] stale_days`), `on-trunk` (with the commit and an
+  approximate date), `in-version`, `in-staging` or `in-production`, and `reverted` when a revert of its `Story:`
+  commit is on the trunk. A shallow clone that cuts the history makes every state `unknown` with the reason, never a
+  lower one. `[ledger]` in `.keelokit/state.toml` sets the stories glob, ids from front matter or file names, the
+  trunk and `since`; new and adopted projects get `since` written. Nothing reads it yet: the doctor and the dashboard
+  move to it in a later release.
 - **A session that starts in a shallow clone completes the trunk's history (main by default) before the doctor reads it.** The SessionStart
   hook runs `ledger.py history --ensure` (commits only, 20 s at most); offline or slower than the cap it says so in one
   line and goes on, with `git fetch --unshallow origin <trunk>` as the fix.
