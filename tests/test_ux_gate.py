@@ -9,7 +9,20 @@ from pathlib import Path
 
 GATE = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/ux_gate.py"
 DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
-CRITIQUE = "# Journey\nok\n# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n"
+FOUR = "# Journey\nok\n# Design critique\nok\n## Consistency and coherence\nok\n## Real device\nok\n"
+SKILLS = ("design:design-critique", "design:ux-copy", "design:accessibility-review")
+
+
+def skills_section(skills=SKILLS, findings=None, ran="Ran: 2026-11-23"):
+    """A `## Skills` section with one `### <skill id>` subsection per skill (FLEET-004)."""
+    findings = findings or {}
+    out = "## Skills\n"
+    for s in skills:
+        out += f"### {s}\n{ran}\n" + "".join(f"- {f}\n" for f in findings.get(s, [])) + "\n"
+    return out
+
+
+CRITIQUE = FOUR + skills_section()
 
 
 def sh(cwd, *cmd):
@@ -172,6 +185,212 @@ class UxGateTest(unittest.TestCase):
         out = sh(self.root, "python3", ".keelokit/bin/doctor.py").stdout
         self.assertIn("UX-3: ux-gate:", out)
         self.assertIn("ERROR", out)
+
+    # ── FLEET-004: the critique comes from the design skills ──
+
+    def ui_change(self, critique):
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.evidence(critique=critique)
+        self.commit("feat: home")
+        return self.gate()
+
+    def test_fleet_004_s1_no_skills_section_fails(self):
+        """FLEET-004.S1: the four sections and no "## Skills" fail, naming the missing skills."""
+        code, out = self.ui_change(FOUR)
+        self.assertEqual(code, 1, out)
+        self.assertIn('lacks the section "Skills"', out)
+        for s in SKILLS:
+            self.assertIn(s, out)
+
+    def test_fleet_004_s2_a_missing_skill_fails_naming_it(self):
+        """FLEET-004.S2: a Skills section without design:ux-copy fails naming it, and only it."""
+        code, out = self.ui_change(FOUR + skills_section(("design:design-critique", "design:accessibility-review")))
+        self.assertEqual(code, 1, out)
+        self.assertIn('no "### design:ux-copy" subsection', out)
+        self.assertNotIn("### design:design-critique", out)
+        self.assertNotIn("### design:accessibility-review", out)
+
+    def test_fleet_004_s3_an_open_p1_fails_naming_it(self):
+        """FLEET-004.S3: a P1 neither fixed nor decided fails, naming the finding and its skill."""
+        findings = {"design:ux-copy": ["P1 The refund amount is not shown before closing",
+                                       "P2 Button says Submit — fixed in a1b2c3d",
+                                       "P3 Title could be shorter"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("design:ux-copy", out)
+        self.assertIn("P1 The refund amount is not shown before closing", out)
+        self.assertNotIn("Button says Submit", out)  # fixed
+        self.assertNotIn("Title could be shorter", out)  # a P3 needs no decision
+
+    def test_fleet_004_s3_an_open_p2_and_a_resolution_mid_line_fail(self):
+        """FLEET-004.S3: a P2 open fails too, and "fixed in" must end the item, not sit in its middle."""
+        findings = {"design:design-critique": ["P2 Two tab bars in Settings",
+                                               "P1 Says fixed in the title — but nothing was done"],
+                    "design:accessibility-review": ["P2 Contrast — fixed in",
+                                                    "P2 Focus order — fixed in the plan — not yet done"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P2 Two tab bars in Settings", out)
+        self.assertIn("P1 Says fixed in the title", out)
+        self.assertIn("P2 Contrast", out)  # "fixed in" with nothing after it names nothing
+        self.assertIn("P2 Focus order", out)  # something after the resolution: it is not the end
+
+    def test_fleet_004_s3_an_undated_skill_fails(self):
+        """FLEET-004.S3: each subsection says when the skill ran (`Ran: YYYY-MM-DD`, a real date)."""
+        code, out = self.ui_change(FOUR + skills_section(ran="Ran: soon"))
+        self.assertEqual(code, 1, out)
+        self.assertIn('design:ux-copy: no "Ran: YYYY-MM-DD" line', out)
+        code, out = self.ui_change(FOUR + skills_section(ran="Ran: 2026-13-40"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("Ran: YYYY-MM-DD", out)
+
+    def test_fleet_004_s4_a_complete_section_passes(self):
+        """FLEET-004.S4: three dated subsections, every P1 and P2 fixed or decided, pass."""
+        findings = {"design:design-critique": ["P1 Refund amount missing — fixed in apps/web/src/close.tsx",
+                                               "P2 Two tab bars — decided: one bar – the latest critique wins"],
+                    "design:ux-copy": ["P2 Vague CTA - fixed in 4f5e6d7", "P3 Shorter title", "**P0** Crash -- fixed in b8c9d0e"],
+                    "design:accessibility-review": []}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 piece(s)", out)
+
+    def test_fleet_004_s4_subsections_end_at_the_next_heading(self):
+        """FLEET-004.S4: a subsection is read up to the next heading: a heading after the Skills
+        section, or a skill named only in another skill's text, does not count as its subsection."""
+        text = FOUR + "## Skills\n### design:design-critique\nRan: 2026-11-23\nsee design:ux-copy\n" \
+               "### design:accessibility-review\nRan: 2026-11-23\n## Notes\n### design:ux-copy\nRan: 2026-11-23\n"
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 1, out)
+        self.assertIn('no "### design:ux-copy" subsection', out)
+
+    def test_fleet_004_s5_the_projects_list_rules(self):
+        """FLEET-004.S5: critique_skills = ["design:design-critique"] requires only that subsection;
+        an empty list requires no Skills section at all."""
+        base = '[gate]\nsurfaces = ["desktop"]\nthemes = ["light"]\n'
+        self.write(".keelokit/ux.toml", base + 'critique_skills = ["design:design-critique"]\n[gate.widths]\ndesktop = [1280]\n')
+        code, out = self.ui_change(FOUR + skills_section(("design:design-critique",)))
+        self.assertEqual(code, 0, out)
+        self.write(".keelokit/ux.toml", base + 'critique_skills = []\n[gate.widths]\ndesktop = [1280]\n')
+        self.write("apps/web/src/home.tsx", "export const a = 2\n")
+        self.evidence(critique=FOUR)
+        self.commit("feat: home again")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_fleet_004_s5_without_the_key_the_defaults_apply(self):
+        """FLEET-004.S5: an adopted project whose ux.toml lacks critique_skills gets the three defaults."""
+        out = sh(self.root, "python3", ".keelokit/bin/ux_gate.py", "--config").stdout
+        self.assertIn("critique_skills = " + str(list(SKILLS)), out)
+
+    def test_fleet_004_s5_the_shipped_ux_toml_lists_the_defaults(self):
+        """FLEET-004.S5: template/.keelokit/ux.toml carries critique_skills with the three defaults."""
+        import tomllib
+        shipped = tomllib.loads((GATE.parents[1] / "ux.toml").read_text())["gate"]
+        self.assertEqual(shipped["critique_skills"], list(SKILLS))
+
+    def test_fleet_004_s6_na_still_passes_and_the_doctor_reports_it(self):
+        """FLEET-004.S6: `ux-gate: n/a — <reason>` passes with no Skills section and the doctor warns."""
+        self.write(".keelokit/bin/doctor.py", DOCTOR.read_text())
+        self.write("apps/web/src/home.tsx", "export const a = 1\n")
+        self.commit("refactor: rename\n\nux-gate: n/a — pure rename, no visual change")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+        self.assertIn("n/a — pure rename", out)
+        doc = sh(self.root, "python3", ".keelokit/bin/doctor.py").stdout
+        self.assertIn("UX-3: ux-gate: n/a — pure rename", doc)
+
+    # ── FLEET-004 review round 1 (ESC-070, ESC-071) ──
+
+    def test_fleet_004_s3_a_later_run_of_a_skill_is_read_too(self):
+        """FLEET-004.S3 (ESC-070): a second subsection for a skill, or a second Skills section (a later
+        critique), is read like the first: its open P1 fails."""
+        later = "### design:design-critique\nRan: 2026-11-30\n- P1 New finding still open\n"
+        code, out = self.ui_change(FOUR + skills_section() + later)
+        self.assertEqual(code, 1, out)
+        self.assertIn("P1 New finding still open", out)
+        code, out = self.ui_change(FOUR + skills_section() + "## Skills\n" + later.replace("open", "open again"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P1 New finding still open again", out)
+
+    def test_fleet_004_s3_a_skills_heading_elsewhere_does_not_hide_the_section(self):
+        """FLEET-004.S3 (ESC-070): a product's own "Skills" heading earlier in the file is not taken
+        for the section, and a fenced example is not either."""
+        text = FOUR.replace("## Real device\nok\n", "## Real device\n### Skills\nthe Skills screen\n") \
+            + "```markdown\n## Skills\n### design:ux-copy\nRan: 2026-11-23\n```\n" + skills_section(
+                findings={"design:ux-copy": ["P1 Open after the example"]})
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 1, out)
+        self.assertIn("P1 Open after the example", out)
+        self.assertNotIn('no "### design:', out)
+
+    def test_fleet_004_s3_a_heading_in_a_code_block_does_not_end_a_subsection(self):
+        """FLEET-004.S3 (ESC-071): a `# comment` inside a fenced block is not a heading."""
+        findings = {"design:accessibility-review": ["P3 see below", "```sh\n# repro\nnpx thing\n```", "P2 Hidden after the fence"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P2 Hidden after the fence", out)
+
+    def test_fleet_004_s3_findings_in_other_spellings_are_read(self):
+        """FLEET-004.S3 (ESC-071): a task box, brackets, lower case, a fullwidth digit or a table row with
+        its priority is a finding; a severity word with no priority is refused."""
+        findings = {"design:ux-copy": ["[ ] P1 Task box open", "[P2] Bracketed open", "p1 lower case open",
+                                       "P\uff11 Fullwidth open"],
+                    "design:design-critique": ["| Finding | Priority | Fix |", "|---|---|---|",
+                                               "| Table row open | P1 | — |",
+                                               "| Table row done | P2 | fixed in a1b2c3d |"],
+                    "design:accessibility-review": ["| Contrast too low | 🔴 Critical | raise it |"]}
+        text = FOUR + skills_section(findings=findings).replace("- |", "|").replace("- ```", "```")
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 1, out)
+        for want in ("Task box open", "Bracketed open", "lower case open", "Fullwidth open", "Table row open"):
+            self.assertIn(want, out)
+        self.assertNotIn("Table row done", out)
+        self.assertIn("Contrast too low", out)
+        self.assertIn("priority", out)
+
+    def test_fleet_004_s4_wrapped_items_and_bold_dates_pass(self):
+        """FLEET-004.S4 (ESC-071): an item wrapped over lines, or with its fix on a sub-bullet, is one
+        finding; `**Ran**: date` is a date. A spaced hyphen after "fixed in x" still ends it."""
+        findings = {"design:design-critique": ["P1 Closing does not say how much is refunded,\n  which matters "
+                                               "on annual plans — fixed in a1b2c3d",
+                                               "P2 Two tab bars\n  - decided: one bar"]}
+        text = FOUR + skills_section(findings=findings).replace("Ran: 2026-11-23", "**Ran**: 2026-11-23", 1)
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 0, out)
+        code, out = self.ui_change(FOUR + skills_section(findings={"design:ux-copy": ["P2 Label — fixed in the plan - not yet"]}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P2 Label", out)
+
+    def test_fleet_004_s5_a_critique_skills_that_is_not_a_list_is_refused(self):
+        """FLEET-004.S5: critique_skills must be a list of skill ids; anything else is an error that says so."""
+        for bad in ('"design:design-critique"', "[1]", "false"):
+            self.write(".keelokit/ux.toml", f'[gate]\ncritique_skills = {bad}\n')
+            r = sh(self.root, "python3", ".keelokit/bin/ux_gate.py")
+            self.assertEqual(r.returncode, 1, bad)
+            self.assertIn("critique_skills must be a list of skill ids", r.stdout + r.stderr)
+            self.assertNotIn("Traceback", r.stdout + r.stderr)
+
+    def test_fleet_004_s4_natural_layouts_pass(self):
+        """FLEET-004.S4 (review round 2): a table with the fix in its last cell, a note on a sub-bullet
+        under a fixed item, a count table of severities, a plain item that opens with a severity word
+        and a bold date are not findings left open."""
+        findings = {"design:design-critique": ["| Priority | Finding | Fix |", "|---|---|---|",
+                                               "| P1 | Refund not shown | fixed in a1b2c3d |",
+                                               "| P2 | Two tab bars | decided: one bar |"],
+                    "design:accessibility-review": ["| Critical | Major | Minor |", "|---|---|---|", "| 0 | 0 | 0 |",
+                                                    "Major flows checked: signup, close"],
+                    "design:ux-copy": ["P1 Refund not shown — fixed in a1b2c3d\n  - captures in before/close.png",
+                                       "Critical path covered by the journey above"]}
+        text = FOUR + skills_section(findings=findings).replace("- |", "|").replace("Ran: 2026-11-23", "Ran: **2026-11-23**", 1)
+        code, out = self.ui_change(text)
+        self.assertEqual(code, 0, out)
+
+    def test_fleet_004_s3_inline_backticks_do_not_open_a_fence(self):
+        """FLEET-004.S3 (review round 2): an item opening with ```code``` is not a fence that hides what follows."""
+        findings = {"design:ux-copy": ["```Pay``` has no label — fixed in a1b2", "P1 Focus ring missing"]}
+        code, out = self.ui_change(FOUR + skills_section(findings=findings))
+        self.assertEqual(code, 1, out)
+        self.assertIn("P1 Focus ring missing", out)
 
 
 if __name__ == "__main__":

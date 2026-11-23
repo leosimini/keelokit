@@ -144,12 +144,18 @@ the tests that kill them (MUT-1).
 
 Read `docs/ux-quality.md` and `.keelokit/ux.toml`. Before the review, the verifier (mode B's
 screenshots start here) saves the captures the matrix asks for under
-`<evidence_dir>/<ID>/` and a design specialist writes `CRITIQUE.md` there: run
-`design:design-critique`, `design:ux-copy` and `design:accessibility-review` (and `impeccable`
-when installed) on the captures, or, with none installed, have the `reviewer` apply the criteria
-one by one. Fix what it finds, recapture, repeat until nothing is open. A change nobody can see
-goes with a commit line `ux-gate: n/a — <reason>` instead. `doctor` (UX-3) fails the branch
-otherwise.
+`<evidence_dir>/<ID>/` and a design specialist writes `CRITIQUE.md` there. The critique comes
+from the design skills, run from the start on the captures: every skill in `critique_skills`
+(`.keelokit/ux.toml`; defaults `design:design-critique`, `design:ux-copy`,
+`design:accessibility-review`), and `impeccable` when installed. Following a skill's framework by
+hand does not count. Each skill gets a `### <skill id>` subsection under `## Skills` with
+`Ran: YYYY-MM-DD` and its findings by priority; every P1 and P2 ends `— fixed in <commit or file>`
+or `— decided: <reason>` (`docs/ux-quality.md` §4). A session without the skills pushes the
+captures and asks the coordinator, who runs them in a subagent on a `wip/` branch touching only
+`CRITIQUE.md`; take that section in and answer each finding. A critique of a screen that already
+had one says whether it confirms or contradicts the earlier one. Fix what it finds, recapture,
+repeat until nothing is open. A change nobody can see goes with a commit line
+`ux-gate: n/a — <reason>` instead. `doctor` (UX-3) fails the branch otherwise.
 
 ## 5. Review and attack — before landing
 

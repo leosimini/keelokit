@@ -40,7 +40,11 @@ the rest of this skill is for `direct`.
 ## Integrating interface work
 
 Before accepting a branch that changes interface files, run `python3 .keelokit/bin/ux_gate.py`:
-no captures or critique means back to its session (UX-3). When several pieces touch one journey,
+no captures or critique means back to its session (UX-3). A session without the design skills
+asks you for its critique: from its pushed captures, run a short subagent with the skills in
+`critique_skills` (`.keelokit/ux.toml`) on a `wip/<ID>-critique` branch cut from the piece's branch,
+touching only the piece's `CRITIQUE.md` and writing its `## Skills` section (`docs/ux-quality.md` §4);
+send the session the branch and let the piece take the section in and answer every P1 and P2. When several pieces touch one journey,
 walk that journey across them once they are all in (`docs/ux-quality.md` §6, UX-4).
 
 ## Report to the user
