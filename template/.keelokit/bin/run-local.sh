@@ -2145,14 +2145,17 @@ build_ok_in_log() { # <target> <log>
 # The native build. The saved fingerprint is dropped first and written only after the build
 # succeeded and the app is installed, so a failed or interrupted build never leaves a stale one.
 native_build() { # <target> <id> <installed-check function> <step> <command...>
-  local target=$1 id=$2 check=$3 step=$4 fp ver rc watcher
+  local target=$1 id=$2 check=$3 step=$4 fp ver rc watcher stop tries st
   shift 4
   fp=$(fingerprint)
   ver=$(app_version)
   init_state || return 1
   state_clear "$target" "$id"
+  stop="$LOG/$step.watcher-stop"
+  rm -f "$stop"
   (
     for _ in $(seq 2000); do
+      [ ! -e "$stop" ] || exit 0
       sleep 5
       if [ -f "$LOG/$step.log" ] && build_ok_in_log "$target" "$LOG/$step.log" && "$check" && [ -n "$fp" ]; then
         state_set "$target" "$id" "$fp" "$ver"
@@ -2163,8 +2166,20 @@ native_build() { # <target> <id> <installed-check function> <step> <command...>
   watcher=$!
   launch "$step" "$@"
   rc=$?
-  kill "$watcher" 2>/dev/null
+  # The watcher can miss a TERM that arrives before it has reset the TERM trap it inherits from this shell, and
+  # would then poll for 2000 x 5 s: say it again until it is gone (a zombie is gone), and leave a stop file it
+  # reads on its next round in case `ps` can't tell.
+  : >"$stop"
+  tries=0
+  while [ "$tries" -lt 50 ]; do
+    kill "$watcher" 2>/dev/null || break
+    st=$(ps -o stat= -p "$watcher" 2>/dev/null) || break
+    case $st in Z* | '') break ;; esac
+    sleep 0.1
+    tries=$((tries + 1))
+  done
   wait "$watcher" 2>/dev/null
+  rm -f "$stop"
   if [ "$rc" = 0 ] && [ -n "$fp" ] && build_ok_in_log "$target" "$LOG/$step.log" && "$check"; then
     state_set "$target" "$id" "$fp" "$ver"
   fi
