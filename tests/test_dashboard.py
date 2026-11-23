@@ -21,6 +21,8 @@ from unittest import mock
 
 DASHBOARD = Path(__file__).resolve().parents[1] / "skills/project-dashboard/scripts/dashboard.py"
 DOCTOR = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/doctor.py"
+LEDGER = DOCTOR.with_name("ledger.py")
+STATUS = DOCTOR.with_name("status.py")
 
 STORY = """\
 +++
@@ -807,6 +809,88 @@ class DashboardTest(unittest.TestCase):
         for text in ("Etapa 6 de 6 · Construcción", "Te esperan", "Olas de desarrollo", "Espera a AUTH-002",
                      "del bug bash", "Salud y entornos", "Generar el reporte completo", "24 sep"):
             self.assertIn(esc(text), html)
+
+    # LEDGER-006: the dashboard and status.py take story states from `ledger.py --json` (one reader).
+    def ledger_fixture(self) -> None:
+        """AUTH-001 done and in v1.0.0; AUTH-002 in progress on an origin branch pushed from elsewhere (no
+        local branch, no worktree); AUTH-003 waits for AUTH-002; AUTH-004 ready."""
+        self.gates("intake", "product", "stack", "skeleton", "backlog")
+        self.context()
+        for rel, src in ((".keelokit/bin/ledger.py", LEDGER), (".keelokit/bin/doctor.py", DOCTOR), (".keelokit/bin/status.py", STATUS)):
+            self.write(rel, src.read_text())
+        self.story("AUTH-001", 1)
+        self.story("AUTH-002", 1)
+        self.story("AUTH-003", 2, '"AUTH-002"')
+        self.story("AUTH-004", 1)
+        self.commit("chore: skeleton")
+        self.commit("feat: sign up\n\nWhy.\n\nStory: AUTH-001")
+        sh(self.root, "git", "tag", "v1.0.0")
+        sh(self.root, "git", "checkout", "-q", "-b", "elsewhere")
+        self.commit("feat: sign in, half\n\nPart-of: AUTH-002")
+        sh(self.root, "git", "update-ref", "refs/remotes/origin/auth-002", "HEAD")
+        sh(self.root, "git", "checkout", "-q", "main")
+        sh(self.root, "git", "branch", "-q", "-D", "elsewhere")
+        sh(self.root, "git", "update-ref", "refs/remotes/origin/main", "main")
+
+    def status_py(self, root: Path | None = None) -> str:
+        root = root or self.root
+        env = {**os.environ, "KEELOKIT_STATUS_OFFLINE": "1"}
+        return subprocess.run(["python3", ".keelokit/bin/status.py", "--no-ci"], cwd=root, env=env,
+                              capture_output=True, text=True, timeout=120).stdout
+
+    def test_LEDGER_006_S3_the_dashboard_shows_another_machines_work_in_progress(self):
+        self.ledger_fixture()
+        s = self.state()
+        status = {x["id"]: x["status"] for x in s["stories"]}
+        self.assertEqual(status, {"AUTH-001": "done", "AUTH-002": "progress", "AUTH-003": "blocked", "AUTH-004": "ready"})
+        two = next(x for x in s["stories"] if x["id"] == "AUTH-002")
+        self.assertEqual(two["branches"], ["auth-002"])
+        self.assertEqual(s["next"]["command"], "/keelokit:build-story AUTH-004", "work under way elsewhere is not offered")
+        for page in (self.ops("--lang", "en"), self.page("--lang", "en")):
+            self.assertIn("In progress", visible_text(page))
+        self.assertIn("En curso", visible_text(self.ops("--lang", "es")))
+
+    def test_LEDGER_006_S3_status_py_adds_work_in_progress_on_other_machines(self):
+        self.ledger_fixture()
+        out = self.status_py()
+        self.assertIn("in progress elsewhere (ledger): AUTH-002 (auth-002)", out)
+        # A branch checked out in a local worktree is already listed with the worktrees.
+        tree = Path(tempfile.mkdtemp()) / "wt"
+        self.addCleanup(shutil.rmtree, tree.parent, True)
+        sh(self.root, "git", "worktree", "add", "-q", str(tree), "-b", "auth-002", "origin/auth-002")
+        self.assertIn("in progress elsewhere (ledger): none", self.status_py())
+
+    def test_LEDGER_006_the_dashboard_shows_the_version_a_story_is_in(self):
+        self.ledger_fixture()
+        one = next(x for x in self.state()["stories"] if x["id"] == "AUTH-001")
+        self.assertEqual((one["status"], one["version"]), ("done", "v1.0.0"))
+        self.assertIn("Done · v1.0.0", visible_text(self.page("--lang", "en")))
+
+    def test_LEDGER_006_S6_unknown_stays_unknown_in_the_dashboard_the_doctor_and_status_py(self):
+        self.ledger_fixture()
+        self.commit("chore: a\n\nNo-story: docs")
+        self.commit("chore: b\n\nNo-story: docs")
+        where = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, where, True)
+        subprocess.run(["git", "clone", "-q", "--depth=2", f"file://{self.root}", str(where / "c")],
+                       check=True, capture_output=True)
+        clone = where / "c"
+        status = {x["id"]: x["status"] for x in self.ledger_state(clone)["stories"]}
+        self.assertEqual(set(status.values()), {"unknown"}, status)
+        brief = sh(clone, "python3", ".keelokit/bin/doctor.py", "--brief")
+        self.assertIn("Backlog: unknown, ", brief)
+        out = self.status_py(clone)
+        self.assertIn("Backlog: unknown, ", out)
+        self.assertRegex(out, r"in progress elsewhere \(ledger\): unknown", out)
+
+    def test_LEDGER_006_S6_without_ledger_py_every_story_is_unknown(self):
+        self.ledger_fixture()
+        (self.root / ".keelokit/bin/ledger.py").unlink()
+        s = self.state()
+        self.assertEqual({x["status"] for x in s["stories"]}, {"unknown"}, s["stories"])
+        text = visible_text(self.ops("--lang", "en"))
+        self.assertNotRegex(text, r"\b\d+ of 4 stor", "no count without the ledger")
+        self.assertIn("ledger.py", text)
 
     def test_LEDGER_001_S4_a_shallow_clone_shows_no_story_as_pending_for_lack_of_history(self):
         """main: plan, AUTH-001, AUTH-002, AUTH-003, chore, AUTH-004, chore. A --depth 3 clone holds
