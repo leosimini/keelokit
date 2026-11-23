@@ -107,12 +107,14 @@ What the gate reads (`.keelokit/bin/ux_gate.py`), and nothing more (fenced code 
   case, backticks or bold allowed), for each skill in `critique_skills`; a heading's body runs to the next
   heading of its level or higher;
 - in each of those subsections, a line `Ran: YYYY-MM-DD` with a real date (a leading `- ` or bold is fine);
-- each list item (`-`, `*`, `+`, `1.` or `1)`, with its indented continuation lines) whose first word is a
-  priority (`P1`, `**P1**`, `[P1]`, `- [ ] P1`…), and each table row with a cell that is only a priority:
-  when it is `P0`, `P1` or `P2`, it ends with a dash (`—`, `–` or `-`) and `fixed in <something>` or
-  `decided: <reason>`; nothing but the reason may follow (in a table, the cells after the priority hold it);
-- an item or a cell that starts with a severity (Critical, Major, Moderate, Serious, Blocker, 🔴🟠🟡) and
-  has no priority is refused: give it one.
+- each list item (`-`, `*`, `+`, `1.` or `1)`, with the lines indented under it) whose first word is a
+  priority (`P1`, `**P1**`, `[P1]`, `- [ ] P1`…): when it is `P0`, `P1` or `P2`, its text ends with a dash
+  (`—`, `–` or `-`) and `fixed in <something>` or `decided: <reason>` (nothing but the reason may follow),
+  or a sub-bullet under it starts `fixed in <something>` or `decided: <reason>`; other sub-bullets are notes;
+- each table row with a cell that is only a priority: for `P0`, `P1` and `P2` the row's last cell starts
+  `fixed in <something>` or `decided: <reason>`;
+- an item that opens with a severity label (`Critical:`, `**Major**`, 🔴🟠🟡…) or a row graded by one, with
+  no priority, is refused: give it one. A header row of severities (a count table) is not a finding.
 
 The gate's message names the missing skill or quotes the open finding. Like the rest of the gate it checks
 the shape, not that a skill truly ran or that a fix is real: the reviewer checks that (`agents/reviewer.md`).
