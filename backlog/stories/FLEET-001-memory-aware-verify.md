@@ -73,3 +73,26 @@ Scenario: [S6] A cgroup limit counts
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, `docs/design.md` mentions
 the memory plan, a CHANGELOG line, `Story: FLEET-001` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-23
+What was built differs from the text above in these points (decided while building, found by the review,
+the breaker and the verifier):
+- **Which steps.** Workers are planned and refused only for `unit` (and the date-bomb `clock` rerun, which
+  takes unit's number) and `integration` (only when `apps/api` exists). The e2e scripts build in the same
+  command (`vite build`, `expo export`, the API build), so their peak is the build's, not a Playwright
+  worker's: e2e and e2e-stack peaks are recorded, never planned or refused on.
+- **The figure.** `peak_mb` per step comes from the step's own child cgroup v2 (`memory.peak`) where the
+  verify's cgroup allows one, else from the largest process of the step's tree (`wait4`'s maximum resident
+  size, the same figure as `/usr/bin/time -f %M`, without needing that binary). The per-worker figure is the
+  most seen in the last 10 runs that measured the step, so a narrowed rerun or a small `--packages` run
+  can't erase the real peak. Non-finite or absurd figures (over 1 TB) are skipped.
+- **Free memory.** A cgroup v2 limit adds back the cgroup's reclaimable cache (`inactive_file`); cgroup v1
+  limits are not read.
+- **Only when memory is the limit.** A step whose workers would be `cores` anyway keeps today's command and
+  says nothing, so a measured peak never adds flags on a machine with room.
+- **Per machine.** A planned unit step also runs its packages one at a time (`--workspace-concurrency=1`),
+  or pnpm's four packages at once would multiply the workers by four.
+- **A refusal is not a red run.** Exit 3 leaves no history line, like a busy machine. `VERIFY_FORCE=1` runs
+  the step with 1 worker.
+- **Also fixed while landing:** `run-local.sh`'s native build watcher could miss its TERM and poll for
+  2000 × 5 s (a test hung 90 s in a pre-push run); it now stops by a stop file within one round.
