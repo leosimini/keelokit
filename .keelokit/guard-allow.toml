@@ -1,5 +1,5 @@
 [[allow]]
 rule = "SEC-1"
-path = "apps/mobile/google-services.jso?"
+path = "apps/mobile/google-services.[j]son"
 reason = "Firebase key, public by design"
 approver = "Leo"
