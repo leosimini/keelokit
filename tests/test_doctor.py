@@ -1754,8 +1754,10 @@ class DoctorInputContractTest(unittest.TestCase):
 
     def run_doctor(self, root: Path, *args: str) -> tuple[int, str]:
         """`python3 .keelokit/bin/doctor.py <args>` in `root`, in this process (compiled once: it's fast)."""
-        out, argv = io.StringIO(), sys.argv
+        out, argv, ci = io.StringIO(), sys.argv, os.environ.pop("CI", None)
         sys.argv = ["doctor.py", *args]
+        # As a local run: these fixtures carry no ledger.py (LEDGER-006: the backlog then reads unknown, which CI
+        # makes an error); what they test is the doctor's reading of each input, the same with CI or without.
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                 exec(self.code, {"__name__": "__main__", "__file__": str(root / ".keelokit/bin/doctor.py")})
@@ -1764,6 +1766,8 @@ class DoctorInputContractTest(unittest.TestCase):
             code = e.code
         finally:
             sys.argv = argv
+            if ci is not None:
+                os.environ["CI"] = ci
         return code, out.getvalue()
 
     @staticmethod
