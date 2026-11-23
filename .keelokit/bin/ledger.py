@@ -254,8 +254,8 @@ class LedgerError(Exception):
     """A fact could not be read: the run ends with exit 2 and this reason, never a partial answer."""
 
 
-def git_read(args: list[str], data: bytes | None = None) -> bytes:
-    """stdout of one git call (LC_ALL=C, no prompts); LedgerError when it cannot run or fails."""
+def git_read(args: list[str], data: bytes | None = None, ok: tuple = (0,)) -> bytes:
+    """stdout of one git call (LC_ALL=C, no prompts); LedgerError when it cannot run or exits outside `ok`."""
     kwargs = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     try:
         r = subprocess.run(["git", *NOPROMPT, *READ_CONFIG, *args], cwd=ROOT,
@@ -263,7 +263,7 @@ def git_read(args: list[str], data: bytes | None = None) -> bytes:
                            capture_output=True, **kwargs)
     except OSError as e:
         raise LedgerError(f"cannot run git ({e})") from e
-    if r.returncode:
+    if r.returncode not in ok:
         raise LedgerError(f"git {args[0]} failed: {last_error(r.stderr.decode(errors='replace'))}")
     return r.stdout
 
@@ -410,22 +410,31 @@ def missing_objects(trunk_sha: str) -> set[str]:
     return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
 
 
+def is_partial_clone() -> bool:
+    """True when the repository has a promisor remote (a `--filter` clone): only there can an object be absent
+    by design. One `git config` call; exit 1 means no such key."""
+    out = git_read(["config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"], ok=(0, 1))
+    return bool(out.strip())
+
+
 def read_blobs(shas: list[str], trunk_sha: str) -> dict[str, bytes | None]:
-    """Contents of blobs by sha in one `cat-file --batch`; None for one the clone lacks (never fetched)."""
+    """Contents of blobs by sha in one `cat-file --batch`; None for one the clone lacks. In a partial clone
+    the absent ones are found first (a tree walk) so `cat-file` never tries to fetch them."""
     unique = sorted(set(shas))
     if not unique:
         return {}
-    absent = missing_objects(trunk_sha)
+    absent = missing_objects(trunk_sha) & set(unique) if is_partial_clone() else set()
     present = [sha for sha in unique if sha not in absent]
     out = git_read(["cat-file", "--batch"], "".join(f"{s}\n" for s in present).encode()) if present else b""
-    blobs, pos = {sha: None for sha in absent & set(unique)}, 0
+    blobs, pos = dict.fromkeys(absent), 0
     for sha in present:
         end = out.find(b"\n", pos)
         head = out[pos:end].split() if end >= 0 else []
         if len(head) < 2:
             raise LedgerError("git cat-file gave an unexpected answer")
         if head[1] == b"missing":
-            raise LedgerError(f"git cat-file lost the object {sha}")
+            blobs[sha], pos = None, end + 1
+            continue
         size = int(head[2])
         blobs[sha], pos = out[end + 1:end + 1 + size], end + 1 + size + 1
     return blobs
@@ -484,8 +493,9 @@ def build_story(path: str, content: bytes | None, id_from: str) -> dict | None:
             "path": path, "unreadable": False}
 
 
-def read_stories(trunk_sha: str, cfg: dict) -> list[dict]:
-    """The stories of the trunk's tree: `ls-tree` and one `cat-file --batch`; a duplicate id keeps the first path."""
+def read_stories(trunk_sha: str, cfg: dict) -> tuple[list[dict], list[str]]:
+    """(the stories of the trunk's tree, the paths of the story files that could not be read): `ls-tree` and
+    one `cat-file --batch`. A duplicate id keeps the first path, but a readable file beats an unreadable one."""
     pattern = glob_regex(cfg["stories"])
     found = []
     for rec in git_read(["ls-tree", "-r", "-z", "--full-tree", trunk_sha]).decode(errors="replace").split("\0"):
@@ -495,12 +505,14 @@ def read_stories(trunk_sha: str, cfg: dict) -> list[dict]:
             found.append((path, fields[2]))
     found.sort()
     blobs = read_blobs([sha for _, sha in found], trunk_sha)
-    stories = {}
+    stories, unreadable = {}, []
     for path, sha in found:
         story = build_story(path, blobs[sha], cfg["id_from"])
-        if story and story["id"] not in stories:
+        unreadable += [path] if blobs[sha] is None else []
+        old = stories.get(story["id"]) if story else None
+        if story and (old is None or old["unreadable"] and not story["unreadable"]):
             stories[story["id"]] = story
-    return sorted(stories.values(), key=lambda s: s["id"])
+    return sorted(stories.values(), key=lambda s: s["id"]), unreadable
 
 
 def read_log(args: list[str]) -> list[list[str]]:
@@ -530,7 +542,8 @@ def read_trunk_log(trunk_sha: str) -> list[dict]:
 
 def read_branches(trunk_sha: str, refs: dict, graph: dict, on_trunk: set) -> dict[str, dict]:
     """story id -> {branches, newest}: every origin branch whose commits off the trunk include a Part-of
-    commit of the story. One log finds the Part-of commits; the branches' tips walk the parent graph."""
+    commit of the story. One log finds the Part-of commits; each branch tip gets a bit, and the bits flow from
+    the tips to their parents in one pass over the off-trunk commits (children before parents)."""
     fmt = "%H%x00%ct%x00%(trailers:key=Part-of,valueonly,separator=%x2C,unfold)"
     out = git_read(["log", "-z", f"--format={fmt}", "--remotes=origin", "--not", trunk_sha]).decode(errors="replace")
     parts = out.split("\0")
@@ -540,23 +553,57 @@ def read_branches(trunk_sha: str, refs: dict, graph: dict, on_trunk: set) -> dic
         raise LedgerError("git log gave an unexpected answer")
     marked = {sha: (story_ids(trailer), int(ct)) for sha, ct, trailer in (parts[i:i + 3] for i in range(0, len(parts), 3))
               if story_ids(trailer)}
+    if not marked:
+        return {}
+    names = [n for n in sorted(refs) if n.startswith("refs/remotes/origin/") and n != "refs/remotes/origin/HEAD"]
+    masks = flow_masks(graph, on_trunk, [(1 << i, refs[n]) for i, n in enumerate(names)])
     result: dict[str, dict] = {}
-    for name, tip in sorted(refs.items()):
-        if not name.startswith("refs/remotes/origin/") or name == "refs/remotes/origin/HEAD" or not marked:
-            continue
-        branch = name.removeprefix("refs/remotes/origin/")
-        stack, seen = [tip], set()
-        while stack:
-            sha = stack.pop()
-            if sha in seen or sha in on_trunk:
+    for sha, (ids, ct) in marked.items():
+        for sid in ids:
+            entry = result.setdefault(sid, {"mask": 0, "newest": 0})
+            entry["mask"] |= masks.get(sha, 0)
+            entry["newest"] = max(entry["newest"], ct)
+    return {sid: {"branches": {names[i].removeprefix("refs/remotes/origin/") for i in set_bits(e["mask"])},
+                  "newest": e["newest"]} for sid, e in result.items() if e["mask"]}
+
+
+def flow_masks(graph: dict, on_trunk: set, tips: list[tuple[int, str]]) -> dict[str, int]:
+    """commit -> OR of the bits of the tips that reach it, for the commits off the trunk: one pass, children
+    before parents (a commit waits until all its children have passed their bits down)."""
+    masks: dict[str, int] = {}
+    for bit, tip in tips:
+        if tip not in on_trunk:
+            masks[tip] = masks.get(tip, 0) | bit
+    waiting: dict[str, int] = {}
+    stack, seen = list(masks), set(masks)
+    while stack:  # the off-trunk commits and, for each, how many children it has among them
+        for parent in graph.get(stack.pop(), ()):
+            if parent not in on_trunk:
+                waiting[parent] = waiting.get(parent, 0) + 1
+                if parent not in seen:
+                    seen.add(parent)
+                    stack.append(parent)
+    ready = [c for c in masks if c not in waiting]
+    while ready:
+        sha = ready.pop()
+        for parent in graph.get(sha, ()):
+            if parent in on_trunk:
                 continue
-            seen.add(sha)
-            stack.extend(graph.get(sha, ()))
-            for sid in marked.get(sha, ((), 0))[0]:
-                entry = result.setdefault(sid, {"branches": set(), "newest": 0})
-                entry["branches"].add(branch)
-                entry["newest"] = max(entry["newest"], marked[sha][1])
-    return result
+            masks[parent] = masks.get(parent, 0) | masks[sha]
+            waiting[parent] -= 1
+            if not waiting[parent]:
+                ready.append(parent)
+    return masks
+
+
+def set_bits(mask: int) -> list[int]:
+    """Indexes of the bits set in `mask`."""
+    bits = []
+    while mask:
+        low = mask & -mask
+        bits.append(low.bit_length() - 1)
+        mask ^= low
+    return bits
 
 
 # ── the parent graph, in O(commits) ──
@@ -620,16 +667,29 @@ def arrivals(graph: dict, trunk_sha: str) -> tuple[dict, dict]:
 
 # ── the states ──
 
-def revert_status(log: list[dict], arrival: dict) -> dict[str, bool]:
+def brought_by(graph: dict, merge: str) -> list[str]:
+    """What reverting `merge` reverts: the commits reachable from it and not from its first parent (just the
+    commit itself when it is not a merge)."""
+    parents = graph.get(merge, ())
+    if len(parents) < 2:
+        return [merge]
+    held = set(first_reach(graph, [parents[0]]))
+    stack, found = [merge], set()
+    while stack:
+        sha = stack.pop()
+        if sha not in held and sha not in found:
+            found.add(sha)
+            stack.extend(graph.get(sha, ()))
+    return sorted(found)
+
+
+def revert_status(log: list[dict], graph: dict) -> dict[str, bool]:
     """sha -> reverted. A revert on the trunk counts unless it is itself reverted (children come first).
-    Reverting a trunk commit reverts every commit it brought: a merge reverts what it merged."""
-    brought: dict[str, list[str]] = {}
-    for sha, via in arrival.items():
-        brought.setdefault(via, []).append(sha)
+    Reverting a merge reverts what the merge brought, wherever the merge sits."""
     reverters: dict[str, list[str]] = {}
     for c in log:
         for target in c["reverts"]:
-            for sha in brought.get(target, [target]):
+            for sha in brought_by(graph, target):
                 reverters.setdefault(sha, []).append(c["sha"])
     status: dict[str, bool] = {}
     for c in log:
@@ -637,9 +697,9 @@ def revert_status(log: list[dict], arrival: dict) -> dict[str, bool]:
     return status
 
 
-def story_commits(log: list[dict], arrival: dict, order: dict) -> tuple[dict, set]:
+def story_commits(log: list[dict], graph: dict, arrival: dict, order: dict) -> tuple[dict, set]:
     """({id: its oldest Story: commit not reverted}, {ids whose Story: commits are all reverted})."""
-    reverted = revert_status(log, arrival)
+    reverted = revert_status(log, graph)
     live: dict[str, tuple] = {}
     seen: set[str] = set()
     for c in log:
@@ -681,10 +741,11 @@ def on_trunk_facts(rec: dict, sha: str, arrival: dict, ct: dict, tags: tuple, de
         rec["state"] = "in-version"
 
 
-def settle_dependencies(stories: list[dict], records: dict) -> None:
+def settle_dependencies(stories: list[dict], records: dict, unreadable: list[str]) -> None:
     """Unreadable stories are unknown, and so is whatever depends on them, through any chain and in any id
-    order (a walk from them over the dependents); every other story without a Story: commit is ready
-    when each dependency has one, else defined."""
+    order (a walk from them over the dependents). While a story file is unreadable, a dependency id with no
+    record may be the one it carries: unknown, not unmet. Every other story without a Story: commit is
+    ready when each dependency has one, else defined."""
     dependents: dict[str, list[str]] = {}
     for story in stories:
         for d in story["depends_on"]:
@@ -693,6 +754,13 @@ def settle_dependencies(stories: list[dict], records: dict) -> None:
     for story in stories:
         if story.get("unreadable"):
             mark_unknown([records[story["id"]]], f"the story file {story['path']} cannot be read from the trunk's tree")
+            queue.append(story["id"])
+    files = ", ".join(unreadable)
+    for story in stories:
+        rec = records[story["id"]]
+        if unreadable and rec["state"] != "unknown" and not rec["commit"] \
+                and any(d not in records for d in story["depends_on"]):
+            mark_unknown([rec], f"a dependency has no readable story and may be in an unreadable file ({files})")
             queue.append(story["id"])
     while queue:
         sid = queue.pop()
@@ -714,20 +782,20 @@ def deploy_heads(graph: dict, refs: dict) -> dict:
     return {env: (head, set(first_reach(graph, [head])) if head else set()) for env, head in heads.items()}
 
 
-def compute_states(stories: list[dict], log: list[dict], graph: dict, refs: dict, arrivals_: tuple,
-                   branches: dict, stale_days: float, now: float) -> list[dict]:
+def compute_states(stories: list[dict], unreadable: list[str], log: list[dict], graph: dict, refs: dict,
+                   arrivals_: tuple, branches: dict, stale_days: float, now: float) -> list[dict]:
     """The record of every story, from the facts."""
     arrival, order = arrivals_
     ct = {c["sha"]: c["ct"] for c in log}
     tags, deploys = tag_containment(graph, refs), deploy_heads(graph, refs)
-    commits, all_reverted = story_commits(log, arrival, order)
+    commits, all_reverted = story_commits(log, graph, arrival, order)
     records = {s["id"]: new_story(s) for s in stories}
     for sid, rec in records.items():
         if sid in commits:
             on_trunk_facts(rec, commits[sid], arrival, ct, tags, deploys)
         rec["reverted"] = sid in all_reverted
         rec["branches"] = sorted(branches[sid]["branches"]) if sid in branches else []
-    settle_dependencies(stories, records)
+    settle_dependencies(stories, records, unreadable)
     for sid, rec in records.items():
         if sid in branches and rec["state"] in ("defined", "ready"):
             rec["state"] = "in-progress"
@@ -760,7 +828,7 @@ def ledger_facts(state: dict) -> dict:
     check_trunk(trunk)
     refs = read_refs(trunk)
     trunk_sha = resolve_trunk(trunk, refs)
-    stories = read_stories(trunk_sha, cfg)
+    stories, unreadable = read_stories(trunk_sha, cfg)
     tags = [sha for _, _, sha in version_tags(refs)]
     remotes = [sha for name, sha in refs.items() if name.startswith("refs/remotes/origin/")]
     graph = read_graph(sorted({trunk_sha, *tags, *remotes}))
@@ -775,7 +843,7 @@ def ledger_facts(state: dict) -> dict:
         return facts
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
-    facts["stories"] = compute_states(stories, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
+    facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
                                       cfg["stale_days"], time.time())
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
     return facts
