@@ -56,7 +56,8 @@ stories = "backlog/stories/*.md"   # an adopted repo: e.g. "5-Roadmap/stories/*.
 id_from = "front-matter"           # or "filename": the EPIC-NNN prefix of the file name
 trunk = "main"                     # default: [harbor] trunk when present
 since = "<sha>"                    # attribution is required from this commit on (the adoption commit)
-enforce = "warn"                   # warn | block: commit-msg, pre-push and CI follow it
+enforce = "block"                  # block | warn: commit-msg, pre-push and CI follow it.
+                                   # project-new and this repo: block; project-adopt: warn (see below)
 no_story = ["harness", "docs", "release", "deps", "ci"]
 stale_days = 7
 history_seconds = 20               # the SessionStart hook's cap to complete the history
@@ -249,7 +250,7 @@ Keelokit's stories are built one at a time (`[run] build = "serial"` here, and a
 | Version | Brings | Needs | On upgrade |
 |---|---|---|---|
 | Keelokit 0.15.0 | LEDGER-001..007, LEDGER-015 | — | `harness-upgrade`; write `[ledger] since`; choose `[ledger.approval] mode`; `ledger.py backfill --propose`, then the review |
-| Keelokit 0.16.0 | LEDGER-008..012 | 0.15.0 | `harness-upgrade` brings the hooks, the CI step and job, the deploy jobs; `enforce = "warn"`; CHANGELOG *Upgrading from 0.15.x* |
+| Keelokit 0.16.0 | LEDGER-008..012 | 0.15.0 | `harness-upgrade` brings the hooks, the CI step and job, the deploy jobs; `enforce = "warn"` in an adopted project, `block` in a generated one; CHANGELOG *Upgrading from 0.15.x* |
 | Harbor 0.6.0 | HRB-1..3 | Keelokit 0.16.0 for the new parts; with an older one it behaves as 0.5 | `claude plugin update`; the logbook stays `schema = 1` (`story` on workers is an optional key) |
 | Swarm: protocol v3, section 27 | SWM-1..3 | — unless SWM-1 finds that an unknown task field breaks older tools: then a new protocol version and `migrate` | update each swarm repo's template |
 | Keelokit 0.17.0 | LEDGER-013, 014 | Harbor 0.6.0, Swarm section 27 | `harness-upgrade` |
@@ -263,12 +264,15 @@ the submission notes.
 
 - Measured with `ledger.py check --json`: the share of unattributed commits on the trunk since `since`, the
   error-level differences, and the hook's history time (it prints it).
-- `warn` → `block` after 14 days in a row with zero unattributed commits and zero error differences. The
-  doctor recommends it; a person decides, project by project.
+- A generated project and Keelokit itself start in `block`: almost every commit is made by an agent with
+  the hooks on, which write the attribution themselves, so there is nothing to get used to.
+- An adopted project starts in `warn` and moves to `block` after 3 days in a row with zero unattributed
+  commits and zero error differences, with at least 20 commits in that window. The doctor recommends it;
+  the coordinator (or a person) switches it.
 - Going back: `enforce = "warn"`; a dated LEDGER-1 exception in `exceptions.toml`; `snapshot = ""`; Harbor
   and Swarm detect the ledger. A wrong correction row is cancelled with a `retract` row.
 
-## Decisions (taken by Leo on 2026-11-22)
+## Decisions (taken by Leo on 2026-11-22; 6 and 7 by the coordinator on 2026-11-23)
 
 These change existing rules or invariants, so a person decided them (execution protocol: new invariants
 and product rules wait for the human). All five were accepted as proposed. INV-007 and INV-008 are in
@@ -293,6 +297,15 @@ and product rules wait for the human). All five were accepted as proposed. INV-0
    recommended mode for projects with critical areas.
 5. **TRACE-1 and INV-1 skip reconstructed stories**, which predate those rules. (LEDGER-006) **Accepted.**
 
+6. **Block from the start where nothing needs getting used to.** Generated projects and Keelokit start in
+   `enforce = "block"`; adopted ones in `warn`, moving to `block` after 3 days with zero unattributed
+   commits (at least 20). Replaces the earlier 14-day window, which only delayed the guarantee.
+7. **Coordination is delegated.** On 2026-11-23 Leo delegated the coordination, the decisions and the
+   merges of this plan to a coordinator session (`[run] mode = "auto"` in `.keelokit/state.toml`). It stops
+   only for what a person must do: pressing Publish in the plugin directory, GitHub settings, the one-time
+   commit that enables delegated approval of corrections (LEDGER-015, protected on purpose), and access to
+   repositories outside the session.
+
 ## How to launch
 
 Order: phase 0 → gate → phase 1 → gate → release 0.15.0 → phase 2 → gate → release 0.16.0 → phase 3.
@@ -306,7 +319,8 @@ Read .keelokit/harness/agent-brief.md and docs/ledger.md, then /keelokit:build-s
 ```
 
 Title it with `python3 .keelokit/bin/status.py title LEDGER-001`. `/keelokit` and `doctor.py --brief` say
-which story is ready next. `[run] mode = "step"` stops after each story for Leo's review.
+which story is ready next. `[run] mode = "auto"`: the coordinator merges each story once its CI is green
+ and starts the next.
 
 **Harbor.** A session in `leosimini/keelokit-harbor`:
 
