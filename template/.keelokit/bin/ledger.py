@@ -958,8 +958,10 @@ def read_all(state: dict) -> dict:
         return {"facts": facts, "reason": reason}
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
+    delegation = {"reviews": reviews, "stories": {s["id"]: s for s in stories if not s.get("unreadable")},
+                  "areas": critical_areas(extra["critical"])}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
-                                    else None, set(placed[0]), graph, reviews)
+                                    else None, set(placed[0]), graph, delegation)
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, read_branches(trunk_sha, refs, graph, set(placed[0])),
                                       cfg["stale_days"], time.time(), corrections)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
@@ -968,7 +970,7 @@ def read_all(state: dict) -> dict:
     facts["diffs"] += pending_reviews(reviews, records)
     return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "stories": stories, "log": log,
             "graph": graph, "placed": placed, "corrections": corrections, "records": records, "reviews": reviews,
-            "approval": approval_config(extra["state"]), "areas": critical_areas(extra["critical"])}
+            "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation}
 
 
 # ── corrections (docs/ledger.md, "Corrections file") ──
@@ -1012,7 +1014,8 @@ def valid_date(text: str) -> bool:
 
 def row_problem(row, story_ids: set | None, reachable: set, reviews: dict | None = None) -> str | None:
     """Why a row cannot count, or None. `story_ids` None: some story file is unreadable, so any id may exist.
-    `reviews`: {run: parsed review file or None} of the trunk, which back the rows a delegated review approved."""
+    `reviews`: the delegation context (with_touched): the review files ({run: parsed or None}), the stories, the
+    critical areas and the paths each delegated row's commit touches, which back the rows a review approved."""
     if not isinstance(row, dict):
         return "not a table"
     values = {k: plain_value(row.get(k)) for k in ("story", "commit", "kind", "evidence", "approver", "date")}
@@ -1030,7 +1033,7 @@ def row_problem(row, story_ids: set | None, reachable: set, reviews: dict | None
     if not ISO_DATE.fullmatch(values["date"]) or not valid_date(values["date"]):
         return f"date {values['date']!r} is not a YYYY-MM-DD date"
     if is_delegated(values["approver"]):
-        return delegated_problem(values, reviews or {})
+        return delegated_problem(values, reviews or {"reviews": {}})
     return None
 
 
@@ -1149,7 +1152,8 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
             result["diffs"].append({"level": "error", "code": "CORRECTION_INVALID", "detail": f"{CORRECTIONS}: {why}"})
         else:
             tip_rows = rows
-            result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS, reviews=reviews)
+            result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS,
+                                                           reviews=with_touched(reviews, rows, reachable))
     tip_keys = [row_key(row) for row in tip_rows]
     unchecked, reported = 0, set()
     # Oldest first, so a row is named where it first was; then the versions merges' parents had.
@@ -1393,7 +1397,7 @@ def cmd_accept(state: dict) -> int:
             "date": today} if isinstance(r, dict) else r for r in proposed]
     ids = {s["id"] for s in ctx["stories"] if not s.get("unreadable")}
     known = None if any(s.get("unreadable") for s in ctx["stories"]) else ids
-    reviews = known_reviews(ctx)
+    reviews = local_delegation(ctx, current)
     before, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS, reviews=reviews)
     kept, skipped = [], []
     for row in new:
@@ -1542,6 +1546,12 @@ def known_reviews(ctx: dict) -> dict:
     return {**ctx["reviews"], **local_reviews()}
 
 
+def local_delegation(ctx: dict, rows: list, extra: dict | None = None) -> dict:
+    """The delegation context of the work tree: its review files over the trunk's (and `extra`), for these rows."""
+    return with_touched({**ctx["delegation"], "reviews": {**known_reviews(ctx), **(extra or {})}}, rows,
+                        ctx["placed"][0])
+
+
 def verdict(row: dict, judge: str) -> str | None:
     v = row.get(judge)
     return v.get("verdict") if isinstance(v, dict) and v.get("verdict") in ("yes", "no") else None
@@ -1594,21 +1604,54 @@ def decide(row: dict, approval: dict) -> str:
     return "pending"
 
 
-def delegated_problem(values: dict, reviews: dict) -> str | None:
-    """Why a row approved by `delegated:<run>` cannot count: its review file, on the trunk, must hold the same
-    story, commit and kind with decision approved, both judges yes and the skeptic's refutation failed."""
+def with_touched(delegation: dict | None, rows: list, reachable: set) -> dict:
+    """The delegation context plus `touched`: the paths each delegated row's commit changes (one `git log` for all
+    of them, none when no row is delegated)."""
+    delegation = dict(delegation or {"reviews": {}})
+    shas = [plain_value(r.get("commit")) for r in rows if isinstance(r, dict) and is_delegated(r.get("approver"))]
+    delegation["touched"] = changed_paths([c for c in shas if isinstance(c, str) and c in reachable])
+    return delegation
+
+
+def review_approval(review: dict) -> dict:
+    """The mode and human_for a review file recorded (as approval_config reads the table; mode human otherwise)."""
+    reasons = review.get("human_for")
+    mode = review.get("mode")
+    return {"mode": mode if isinstance(mode, str) and mode in MODES else "human",
+            "human_for": [h for h in HUMAN_FOR if h in reasons] if isinstance(reasons, list) else list(HUMAN_FOR)}
+
+
+def delegated_problem(values: dict, delegation: dict) -> str | None:
+    """Why a row approved by `delegated:<run>` cannot count. Its review file, on the trunk, recorded mode delegated
+    or mixed and holds the same story, commit and kind approved by both judges with the skeptic's refutation failed;
+    and ledger.py re-decides it as approved now (the recorded mode, human_for, confidence and models, the story's
+    critical flag from the trunk) and the commit's diff touches the story's paths: a review file is only verdicts."""
     run = delegated_run(values["approver"])
+    reviews = delegation.get("reviews", {})
     if not RUN_ID.fullmatch(run):
         return f"the delegated approver {values['approver']!r} names no valid run"
+    if values["kind"] not in ("backfill", "late"):
+        return f"a {values['kind']} row is a person's, never a delegated review's (run {run})"
     if run not in reviews:
-        return f"a delegated row needs its review file {REVIEWS}/{run}.json on the trunk"
+        return f"a delegated row of run {run} needs its review file {REVIEWS}/{run}.json on the trunk"
     review = reviews[run]
     if review is None:
         return f"{REVIEWS}/{run}.json is not a review file of run {run}"
+    approval = review_approval(review)
+    if approval["mode"] not in ("delegated", "mixed"):
+        return f"{REVIEWS}/{run}.json does not record a delegated or mixed approval mode"
+    story = delegation.get("stories", {}).get(values["story"])
+    critical = True if story is None else is_critical(story, delegation.get("areas"))
     same = [r for r in review["rows"] if isinstance(r, dict)
             and (r.get("story"), r.get("commit"), r.get("kind")) == (values["story"], values["commit"], values["kind"])]
-    if not any(r.get("decision") == "approved" and judges_approve(r) for r in same):
-        return f"{REVIEWS}/{run}.json does not show this row approved by both judges with the skeptic's refutation failed"
+    if not any(r.get("decision") == "approved" and judges_approve(r)
+               and decide({**r, "critical": critical}, approval) == "approved" for r in same):
+        return f"run {run} does not approve this row ({REVIEWS}/{run}.json: both judges yes, the skeptic's " \
+               "refutation failed, and not left to the person by the mode)"
+    touches = story["touches"] if story else []
+    if touches and not any(overlaps(p, t) for p in delegation.get("touched", {}).get(values["commit"], ())
+                           for t in touches):
+        return f"run {run}: the diff of {values['commit'][:12]} touches none of {values['story']}'s paths"
     return None
 
 
@@ -1646,6 +1689,17 @@ def changed_paths(shas: list[str]) -> dict[str, set[str]]:
     return paths
 
 
+def left_by_reviews(reviews: dict) -> dict:
+    """(story, commit) -> why a review left it to the person or pending: such a row is not judged again by agents."""
+    left = {}
+    for run in sorted(reviews):
+        for r in (reviews[run] or {}).get("rows", []):
+            if isinstance(r, dict) and r.get("decision") in ("person", "pending"):
+                left.setdefault((r.get("story"), r.get("commit")),
+                                f"left to the person by run {run}" if r["decision"] == "person" else f"pending after run {run}")
+    return left
+
+
 def filter_rows(ctx: dict, rows: list, active: set) -> list[tuple[dict | None, str | None]]:
     """The mechanical filter (no model), one (kept row, None) or (None, why it is dropped) per row: the commit
     is a full sha on the trunk, the story exists and is not on the trunk yet, the row repeats no active row
@@ -1654,6 +1708,7 @@ def filter_rows(ctx: dict, rows: list, active: set) -> list[tuple[dict | None, s
     stories = {s["id"]: s for s in ctx["stories"]}
     reachable, records, areas = ctx["placed"][0], ctx["records"], ctx["areas"]
     seen, results = set(), []
+    left = left_by_reviews(known_reviews(ctx))
     for row in rows:
         if not isinstance(row, dict):
             results.append((None, "not a table"))
@@ -1669,7 +1724,7 @@ def filter_rows(ctx: dict, rows: list, active: set) -> list[tuple[dict | None, s
                else f"the story file {story['path']} cannot be read" if story.get("unreadable")
                else f"{v['story']} is already on the trunk" if records[v["story"]]["commit"]
                else f"a duplicate of a row of {v['story']} at {v['commit'][:12]}" if (v["story"], v["commit"]) in active | seen
-               else None)
+               else left.get((v["story"], v["commit"])))
         if why:
             results.append((None, why))
             continue
@@ -1699,7 +1754,7 @@ def worktree_active(ctx: dict) -> tuple[str, list | None, set]:
     if why:
         return text, None, set()
     known = None if any(s.get("unreadable") for s in ctx["stories"]) else {s["id"] for s in ctx["stories"]}
-    active, _ = apply_rows(rows, known, ctx["placed"][0], CORRECTIONS, reviews=known_reviews(ctx))
+    active, _ = apply_rows(rows, known, ctx["placed"][0], CORRECTIONS, reviews=local_delegation(ctx, rows))
     return text, rows, {(r["story"], r["commit"]) for r in active} | \
         {(r["story"], r["commit"]) for r in ctx["corrections"]["active"]}
 
@@ -1783,6 +1838,9 @@ def cmd_accept_delegated(state: dict, run: str) -> int:
     current_text, current, active = worktree_active(ctx)
     if current is None:
         return refuse(f"{CORRECTIONS} cannot be read; fix it first")
+    if any(isinstance(r, dict) and is_delegated(r.get("approver")) and delegated_run(r["approver"]) == run
+           for r in current):
+        return refuse(f"{CORRECTIONS} already has rows of run {run}; commit them with {REVIEWS}/{run}.json")
     results = filter_rows(ctx, review["rows"], active)
     for row, (kept, why) in zip(review["rows"], results):
         if why:
@@ -1798,7 +1856,7 @@ def cmd_accept_delegated(state: dict, run: str) -> int:
     known = None if any(s.get("unreadable") for s in ctx["stories"]) else {s["id"] for s in ctx["stories"]}
     bad: list[int] = []
     _, diffs = apply_rows(current + new, known, ctx["placed"][0], CORRECTIONS, bad,
-                          {**known_reviews(ctx), run: review})
+                          local_delegation(ctx, current + new, {run: review}))
     if [i for i in bad if i > len(current)]:
         return refuse("; ".join(d["detail"] for i, d in zip(bad, diffs) if i > len(current)))
     path.write_text(json.dumps(review, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1849,7 +1907,7 @@ def cmd_reject_sample(state: dict, run: str) -> int:
         print(f"Keelokit: {CORRECTIONS} cannot be read; fix it first", file=sys.stderr)
         return 1
     known = None if any(s.get("unreadable") for s in ctx["stories"]) else {s["id"] for s in ctx["stories"]}
-    active, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS, reviews=known_reviews(ctx))
+    active, _ = apply_rows(current, known, ctx["placed"][0], CORRECTIONS, reviews=local_delegation(ctx, current))
     mine = [r for r in active if is_delegated(r["approver"]) and delegated_run(r["approver"]) == run]
     if not mine:
         print(f"Keelokit: nothing to send back: no active row of {CORRECTIONS} was approved by run {run}",

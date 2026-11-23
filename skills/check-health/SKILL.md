@@ -75,8 +75,8 @@ approved the way the person chose once, in `[ledger.approval]` of `.keelokit/sta
 | `mode` | Who approves | What the person does |
 |---|---|---|
 | `human` (the default, no table) | The person, row by row: `ledger.py backfill --accept` in their terminal | Reviews every row |
-| `delegated` | Agents: run `/keelokit:ledger-review-flow` | Nothing required; checks the sample if they want |
-| `mixed` (recommended with critical areas) | Agents for the clear rows; the person for what `human_for` lists (`critical`, `disagreement`, `low-confidence`) | Accepts only that queue, left in the proposed file |
+| `delegated` | Agents: run `/keelokit:ledger-review-flow` | Nothing required; checks the sample if they want (pending rows stay in the proposed file) |
+| `mixed` (recommended with critical areas) | Agents for the clear rows; the person for what `human_for` lists (`critical`, `disagreement`, `low-confidence`) | Accepts, with `backfill --accept`, what the review left in the proposed file: that queue |
 
 The table is the person's, like the corrections file: the guard blocks agents from changing it, a commit
 that changes it needs `git -c keelokit.allowTamper=true commit`, and only the trunk's committed table

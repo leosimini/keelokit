@@ -324,6 +324,8 @@ def named_write(cmd: str, name: str) -> bool:
             return True
         if head in WRITE_LAST and plain and names_it(plain[-1]):
             return True
+        if head == "ln" and any(names_it(a) for a in args):  # an alias of the file is a way to write it
+            return True
         if head == "dd" and any(a.startswith("of=") and names_it(a) for a in args):
             return True
         if head in ("sed", "perl") and any(re.fullmatch(r"-[a-zA-Z]*i\S*", a) for a in args) \
@@ -375,7 +377,8 @@ def accept_problem(cmd: str, depth: int = 0) -> str | None:
                 return REJECT_WHY
             if "backfill" in rest and any(x.startswith("--accept") for x in rest):
                 exact = rest[:3] == ["backfill", "--accept", "--delegated"] and len(rest) == 4 and \
-                    all(re.fullmatch(r"(?:\S*/)?python[0-9.]*", x) for x in words[:i]) and len(words[:i]) <= 1
+                    all(re.fullmatch(r"(?:\S*/)?python[0-9.]*", x) for x in words[:i]) and len(words[:i]) <= 1 \
+                    and rel_posix(w) == ".keelokit/bin/ledger.py" and not CHDIR.search(unquoted(cmd))
                 if not exact:
                     return ACCEPT_WHY
                 if why := delegated_gate(rest[3]):
@@ -462,14 +465,20 @@ def trunk_approval():
     return None
 
 
-def review_rows(text: str | bytes | None, run: str) -> list | None:
-    """The rows of a review file for this run, or None when it is not one."""
+def review_data(text: str | bytes | None, run: str) -> dict | None:
+    """A review file for this run (an object with run and a list of rows), or None when it is not one."""
     try:
         data = json.loads(text.decode("utf-8") if isinstance(text, bytes) else text) if text is not None else None
     except Exception:
         return None
-    rows = data.get("rows") if isinstance(data, dict) and data.get("run") == run else None
-    return rows if isinstance(rows, list) else None
+    ok = isinstance(data, dict) and data.get("run") == run and isinstance(data.get("rows"), list)
+    return data if ok else None
+
+
+def review_rows(text: str | bytes | None, run: str) -> list | None:
+    """The rows of a review file for this run, or None when it is not one."""
+    data = review_data(text, run)
+    return data["rows"] if data else None
 
 
 def verdicts_missing(row) -> bool:
@@ -534,7 +543,22 @@ def state_after(tool: str, args: dict, rel: str) -> str | None:
             text = text.replace(old, new) if e.get("replace_all") else text.replace(old, new, 1)
         elif not old:
             text = new + text
+        else:  # the tool may match it another way (quotes normalised): the result is unknown
+            return None
     return text
+
+
+def trunk_of(text: str | bytes | None) -> str:
+    """The trunk a state.toml text names ([ledger] trunk, else [harbor] trunk, else main), as ledger.py reads it."""
+    try:
+        data = tomllib.loads(text.decode("utf-8") if isinstance(text, bytes) else text) if text is not None else {}
+    except Exception:
+        data = {}
+    for table in ("ledger", "harbor"):
+        t = data.get(table)
+        if isinstance(t, dict) and isinstance(t.get("trunk"), str) and t["trunk"].strip():
+            return t["trunk"].strip()
+    return "main"
 
 
 def approval_changed(tool: str, args: dict, rel: str) -> bool:
@@ -543,7 +567,8 @@ def approval_changed(tool: str, args: dict, rel: str) -> bool:
     except OSError:
         current = None
     after = state_after(tool, args, rel)
-    return after is None or approval_of(after) != approval_of(current)
+    # The trunk too: the approval is read from the trunk's committed file, so moving the trunk moves the approval.
+    return after is None or approval_of(after) != approval_of(current) or trunk_of(after) != trunk_of(current)
 
 
 def toml_str(value: str) -> str:
@@ -682,16 +707,27 @@ def edit_payload(tool: str, args: dict) -> tuple[str, list[str]]:
     return path, [p for p in parts if isinstance(p, str) and p]
 
 
+def real_rel(path: str) -> str | None:
+    """The repo-relative POSIX path a tool really writes: symlinks resolved, a relative path taken from the root."""
+    try:
+        real = ((ROOT / path) if not Path(path).is_absolute() else Path(path)).resolve()
+        norm = real.relative_to(ROOT.resolve()).as_posix()
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return norm
+
+
 def tool_problem(tool: str, args: dict) -> str | None:
     allow = committed_registry()
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
-    if path and rel_posix(path) == REGISTRY:
+    names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
+    if REGISTRY in names:
         return REGISTRY_WHY
-    if path and (rel_posix(path) or "").lower() == CORRECTIONS:
+    if CORRECTIONS in {n.lower() for n in names}:
         return CORRECTIONS_WHY
-    if path and (rel_posix(path) or "").lower() == STATE and approval_changed(tool, args, rel_posix(path)):
+    if STATE in {n.lower() for n in names} and approval_changed(tool, args, STATE):
         return APPROVAL_WHY
     if path and is_env_file(path) and not allowed(allow, "SEC-2", path):
         return "SEC-2: real values go in the secret store; edit .env.example instead"
@@ -782,12 +818,31 @@ def delegated_append() -> bool:
         if not isinstance(approver, str) or not approver.strip().lower().startswith("delegated:"):
             return False
         run = approver.strip()[len("delegated:"):].strip()
-        if not RUN_ID.fullmatch(run):
+        if not RUN_ID.fullmatch(run) or row.get("kind") not in ("backfill", "late"):
             return False
-        reviewed = review_rows(git_bytes("show", f":{REVIEWS}/{run}.json"), run)
-        if not reviewed or not approved_in(row, reviewed):
+        review = review_data(git_bytes("show", f":{REVIEWS}/{run}.json"), run)
+        if not review or review.get("mode") != head_table.get("mode") or not approved_in(row, review["rows"]) \
+                or not any(redecided(r, review) for r in review["rows"] if isinstance(r, dict) and
+                           (r.get("story"), r.get("commit"), r.get("kind")) ==
+                           (row.get("story"), row.get("commit"), row.get("kind"))):
             return False
     return True
+
+
+def redecided(r: dict, review: dict) -> bool:
+    """The recorded facts of a review row (critical, confidence, the verdict models) and the recorded mode and
+    human_for still give `approved`, as ledger.py decides."""
+    reasons = review.get("human_for")
+    reasons = [h for h in ("critical", "disagreement", "low-confidence") if h in reasons] \
+        if isinstance(reasons, list) else ["critical", "disagreement", "low-confidence"]
+    if review.get("mode") == "mixed" and ((r.get("critical") is not False and "critical" in reasons)
+                                         or (r.get("confidence") == "low" and "low-confidence" in reasons)):
+        return False
+    if review.get("mode") == "delegated" and r.get("critical") is not False and not all(
+            isinstance(r.get(k), dict) and "opus" in str(r[k].get("model", "")).lower()
+            for k in ("judge_a", "judge_b", "skeptic")):
+        return False
+    return review.get("mode") in ("delegated", "mixed")
 
 
 def git_pre_commit() -> int:
