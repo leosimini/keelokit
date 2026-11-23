@@ -2754,5 +2754,35 @@ class LedgerCorrectionsBudgetTest(LedgerCase):
                          + "\n---\n".join(self.calls))
 
 
+
+class LedgerCorrectionsNestedFoxtrotTest(LedgerCase):
+    def test_LEDGER_004_S5_ESC_098_INV_008_a_row_removed_through_a_nested_foxtrot_merge_is_correction_edited(self):
+        """ESC-098 (fixture n1b): the removal happens in a merge on feat2, feat merges feat2 with --no-ff and
+        main is fast-forwarded to feat: the merge that dropped the row is not a direct parent of a
+        first-parent merge, yet no row on the trunk may disappear."""
+        repo = GitRepo(self.tmp)
+        repo.plan("UXC-113")
+        login = repo.commit("feat: the login form")
+        repo.publish()
+        before = repo.sha()
+        repo.commit("chore: accept row\n\nNo-story: ledger", {CORR: corrections(toml_row(commit=login))})
+        repo.publish()
+        repo.git("branch", "feat", before)
+        repo.git("checkout", "-q", "-b", "feat2", before)
+        repo.commit("feat: work on feat2")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "main", check=False)
+        repo.git("rm", "-q", "-f", CORR)
+        repo.git("commit", "-q", "-m", "Merge main into feat2\n\nNo-story: release", when=repo.next_date())
+        repo.git("checkout", "-q", "feat")
+        repo.commit("feat: work on feat")
+        repo.merge("feat2", "Merge feat2\n\nNo-story: release")
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--ff-only", "feat")
+        repo.publish()
+        self.assertFalse(repo.git("ls-tree", "origin/main", "--", CORR).strip(), "fixture: the row is gone from main")
+        data = ledger_check(self, repo)
+        self.assertIn("CORRECTION_EDITED", codes(data, "error"), data["diffs"])
+
+
 if __name__ == "__main__":
     unittest.main()
