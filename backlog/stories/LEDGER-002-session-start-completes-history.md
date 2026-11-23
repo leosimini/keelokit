@@ -90,8 +90,10 @@ Decided:
 Measured (phase-0 gate, by verifier B in a cloud session through the proxy, not yet by a person): a `--depth 30`
 clone of this repo goes from "Backlog: unknown" to "17/41 done" (the full clone's count) in 1.1 s;
 psf/requests `--depth 1`: 6 496 commits in 1.3 s; git/git `--depth 1`: cut at 20 s, and the same fetch by hand
-finished in 14 s afterwards, so very large repos sit near the cap. A person still times it on a large project.
+finished in 14 s afterwards, so very large repos sit near the cap.
+Phase-0 gate, decided by the coordinator (2026-11-23): the hook's 20 s cap and the doctor's unknown fallback are the
+guarantee (git/git `--depth 1` hit the cap and the session stayed unblocked); a timing on a large repo is recorded
+here when one is measured.
 
-Left out: the escape rows ESC-055..059 for the five review/breaker findings. The pre-commit guard's SEC-1 rejects any
-commit of docs/escapes.md because ESC-052 quotes credential-looking URLs; it needs a person's guard-allow entry
-(or a reworded ESC-052). A SIGKILL of ledger.py itself between a filtered pack and the shallow update is not covered.
+Escape rows ESC-055..059 are in docs/escapes.md; to commit them, ESC-052's and ESC-045's example URLs were reworded
+without a literal password (the guard's SEC-1 rightly flagged them; coordinator's decision). Left out: a SIGKILL of ledger.py itself between a filtered pack and the shallow update is not covered.
