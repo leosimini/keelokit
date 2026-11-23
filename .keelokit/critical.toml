@@ -1,4 +1,0 @@
-[[area]]
-name = "money"
-why = "w"
-paths = ["apps/api/src/pay/"]
