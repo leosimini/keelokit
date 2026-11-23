@@ -1077,12 +1077,13 @@ class DoctorTest(unittest.TestCase):
                         self.assertRegex(cmd, r"^(\{DOCTOR_CMD\}|python3 \.keelokit/bin/\w+\.py\b|git |chmod \+x )", cmd)
 
     # ── LEDGER-001: an incomplete (shallow) history reads unknown, never a lower count ──
-    def ledger_origin(self, critical: bool = False, migrations: bool = False) -> None:
+    def ledger_origin(self, critical: bool = False, migrations: bool = False, merges: bool = False) -> None:
         """Six stories, four done (AUTH-001..004), on main as: plan, AUTH-001, AUTH-002, AUTH-003,
         chore, AUTH-004, chore. A `--depth 3` clone keeps only the last three commits, so only
         AUTH-004's trailer is in it. `critical`: AUTH-001 and AUTH-002 share wave 1, a path and a
         critical area without 'integrity' (fine once done), and AUTH-004 lacks its S10 citation.
-        `migrations`: AUTH-001 and AUTH-002 (wave 1) each add migrations (fine once done)."""
+        `migrations`: AUTH-001 and AUTH-002 (wave 1) each add migrations (fine once done).
+        `merges`: instead, each of AUTH-001..004 is one commit on a side branch merged with --no-ff."""
         self.rules()
         layout = {"AUTH-001": (1, "apps/api/a1/"), "AUTH-002": (1, "apps/api/a1/" if critical else "apps/api/a2/"),
                   "AUTH-003": (2, "apps/api/a3/"), "AUTH-004": (2, "apps/api/a4/"),
@@ -1101,6 +1102,13 @@ class DoctorTest(unittest.TestCase):
                 cites.append(f"    def test_AUTH_00{n}_S10_also_works(self):\n        pass\n")
         self.write("tests/test_auth.py", "import unittest\n\n\nclass T(unittest.TestCase):\n" + "\n".join(cites))
         self.commit("docs: plan AUTH")
+        if merges:
+            for sid in ("AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004"):
+                sh(self.root, "git", "checkout", "-q", "-b", sid.lower())
+                self.commit(f"feat: {sid}\n\nStory: {sid}")
+                sh(self.root, "git", "checkout", "-q", "main")
+                sh(self.root, "git", "merge", "-q", "--no-ff", "-m", f"Merge {sid}", sid.lower())
+            return
         for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
             self.commit(f"feat: {sid}\n\nStory: {sid}")
         self.commit("chore: x")
@@ -1199,6 +1207,43 @@ class DoctorTest(unittest.TestCase):
         self.assertNotRegex(ci.stdout.lower(), r"shallow|unknown|fetch-depth", ci.stdout)
         self.assertIn("  Backlog: 4/6 done · next: AUTH-005, AUTH-006", ci.stdout.splitlines(), ci.stdout)
         self.assertEqual(ci.returncode, 0, ci.stdout)
+
+    def test_LEDGER_001_S2_a_boundary_on_a_merged_side_commit_whose_parent_main_has_cuts_nothing(self):
+        """Breaker: --no-ff merges of one-commit side branches, cloned as deep as main's first-parent
+        chain. The shallow file lists a side commit whose parent the clone walks from main anyway:
+        nothing is cut, so the count is exact. (A cut: a parent of a listed commit not in rev-list main.)"""
+        self.ledger_origin(merges=True)
+        n = int(sh(self.root, "git", "rev-list", "--first-parent", "--count", "main").strip())
+        clone = self.ledger_clone(n)
+        walked = set(sh(clone, "git", "rev-list", "origin/main").split())
+        listed = set((clone / ".git/shallow").read_text().split()) & walked
+        self.assertTrue(listed, "fixture: a boundary on main's history")
+        parents = {q for c in listed for q in sh(self.root, "git", "rev-parse", f"{c}^@").split()}
+        self.assertTrue(parents <= walked, "fixture: every parent of a listed commit is walked from main")
+        brief = self.ledger_doctor(clone, "--brief").stdout
+        self.assertIn("Context gaps: 0 (0 blocking) · Backlog: 4/6 done", brief.splitlines(), brief)
+        ci = self.ledger_doctor(clone, "--ci", ci=True)
+        self.assertNotRegex(ci.stdout.lower(), r"shallow|unknown|fetch-depth", ci.stdout)
+        self.assertEqual(ci.returncode, 0, ci.stdout)
+
+    def test_LEDGER_001_S1_a_listed_parent_present_but_not_walked_from_main_is_still_a_cut(self):
+        """Breaker's probe: a full clone, then origin/main moved back with --depth 1. The listed
+        commit's parent object is in the repo, but main's walk stops at it: history is cut."""
+        self.ledger_origin()
+        clone = self.ledger_clone(None)
+        back = sh(self.root, "git", "rev-parse", "main~2").strip()
+        subprocess.run(["git", "fetch", "-q", "--depth=1", "origin", f"+{back}:refs/remotes/origin/main"],
+                       cwd=clone, check=True, capture_output=True)
+        self.assertEqual(sh(clone, "git", "rev-parse", "--is-shallow-repository").strip(), "true", "fixture")
+        parent = sh(self.root, "git", "rev-parse", f"{back}^").strip()
+        self.assertEqual(sh(clone, "git", "cat-file", "-t", parent).strip(), "commit", "fixture: the parent is here")
+        self.assertNotIn(parent, sh(clone, "git", "rev-list", "origin/main").split(), "fixture: but not walked")
+        out = self.ledger_doctor(clone, "--brief").stdout
+        self.assertIn("unknown", self.backlog_line(out).lower(), out)
+        self.assertNotRegex(out, r"\b\d+/6\b", out)
+        ci = self.ledger_doctor(clone, "--ci", ci=True)
+        self.assertEqual(ci.returncode, 1, ci.stdout)
+        self.assertIn("fetch-depth: 0", ci.stdout)
 
     def test_LEDGER_001_S5_two_maybe_done_stories_adding_migrations_in_one_wave_warn_not_error(self):
         self.ledger_origin(migrations=True)
