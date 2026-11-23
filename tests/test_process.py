@@ -280,6 +280,12 @@ class VerifyLockTest(unittest.TestCase):
 
 REPO = Path(__file__).resolve().parents[1]
 
+# FLEET-005: what a money story is, worded the same in breaker.md, build-story and invariants.md (ESC-101).
+MONEY_STORY = "a money story: the integrity dimension, or a story that moves money in a project with the payments trait"
+# The changed shipped files that must not name the project the examples came from.
+FLEET_005_SHIPPED = ["agents/breaker.md", "agents/reviewer.md", "references/invariants.md",
+                     "references/dimensions.md", "skills/build-story/SKILL.md"]
+
 # FLEET-005: the six failure paths of a money story, by the key phrase each must carry wherever the
 # list appears (agents/breaker.md, references/invariants.md, and build-story when it spells them out).
 FAILURE_PATHS = {
@@ -442,6 +448,78 @@ class MoneyFailurePathsTest(unittest.TestCase):
         whole = self.read("references/invariants.md").lower()
         self.assertNotIn("jouna", whole)
         self.assertNotIn("mercado pago", whole)
+
+    # Round 1: review and breaker findings.
+
+    def test_FLEET_005_S1_ESC_100_the_report_limit_exempts_the_failure_path_lines(self):
+        import re
+        paragraphs = [" ".join(p.split()) for p in self.read("agents/breaker.md").split("```")[0::2]
+                      for p in p.split("\n\n")]
+        sentences = [x for p in paragraphs for x in re.split(r"(?<=\.)\s", p) if "10 lines" in x]
+        self.assertTrue(sentences, "agents/breaker.md: no sentence with the report limit '10 lines'")
+        for sentence in sentences:
+            self.assertIn("BROKEN", sentence)
+            self.assertIn("FAILURE PATHS", sentence, f"the limit must exempt the FAILURE PATHS lines: {sentence!r}")
+
+    def test_FLEET_005_S1_ESC_101_breaker_defines_a_money_story_like_the_others(self):
+        self.assertIn(MONEY_STORY, _norm(self.read("agents/breaker.md")))
+
+    def test_FLEET_005_S3_ESC_101_build_story_defines_a_money_story_like_the_others(self):
+        self.assertIn(MONEY_STORY, _norm(self.read("skills/build-story/SKILL.md")))
+
+    def test_FLEET_005_S4_ESC_101_invariants_defines_a_money_story_like_the_others(self):
+        self.assertIn(MONEY_STORY, _norm(self.read("references/invariants.md")))
+
+    def test_FLEET_005_S3_ESC_101_a_money_story_is_always_full_tier(self):
+        sec = _section(self.read("skills/build-story/SKILL.md"), r"^0\. Choose the tier")
+        self.assertTrue(sec, "build-story: no '## 0. Choose the tier' section")
+        rules = sec.split("Rules for the choice", 1)
+        self.assertEqual(len(rules), 2, "build-story step 0: no 'Rules for the choice'")
+        items = [i for i in _items(rules[1]) if "a money story" in _norm(i)]
+        self.assertTrue(items, "step 0's rules don't mention 'a money story'")
+        self.assertTrue(any("**full**" in i for i in items), f"a money story must be always **full**: {items}")
+
+    def test_FLEET_005_S3_ESC_102_reversible_money_decisions_keep_what_is_reserved_for_the_human(self):
+        items = [_norm(i) for i in _items(self.contract()) if "reversible" in _norm(i)]
+        self.assertTrue(items, "build-story contract: no item about reversible money decisions")
+        item = items[0]
+        self.assertTrue("moves money" in item or "moving money" in item, item)
+        self.assertIn("payment configuration", item)
+        self.assertIn("reserved", item)
+
+    def test_FLEET_005_S3_the_failure_path_item_comes_before_the_verifier_writes(self):
+        items = [_norm(i) for i in _items(self.contract()) if "failure path" in _norm(i)]
+        self.assertTrue(items, "build-story contract: no item about failure paths")
+        self.assertIn("before the verifier writes", items[0])
+
+    def test_FLEET_005_S4_the_failure_path_section_directly_follows_the_once_replay_test(self):
+        import re
+        text = self.read("references/invariants.md")
+        h3 = [l for l in text.splitlines() if re.match(r"^###\s", l)]
+        self.assertIn("### once: a replay test", h3)
+        following = h3[h3.index("### once: a replay test") + 1]
+        self.assertIn("failure path", following.lower())
+        self.assertIn("once", following.lower())
+
+    def test_FLEET_005_S4_no_changed_shipped_file_names_the_project(self):
+        for rel in FLEET_005_SHIPPED:
+            whole = self.read(rel).lower()
+            for name in ("jouna", "mercado pago"):
+                self.assertNotIn(name, whole, f"{rel} names '{name}'")
+
+    def test_FLEET_005_S1_S3_the_section_name_they_quote_is_an_invariants_heading(self):
+        import re
+        headings = [_norm(l.lstrip("#")) for l in self.read("references/invariants.md").splitlines()
+                    if re.match(r"^#{1,6}\s", l)]
+        name = "the failure paths of a money movement"
+        self.assertTrue(any(name in h for h in headings), f"no invariants.md heading contains '{name}'")
+        for rel in ("agents/breaker.md", "skills/build-story/SKILL.md"):
+            text = " ".join(self.read(rel).split())
+            self.assertIn(f'"{name}"', text, f"{rel} doesn't quote \"{name}\"")
+            # every quoted name right after a pointer to invariants.md must be one of its headings
+            for quoted in re.findall(r'invariants\.md`?,? ?\(?"([^"]+)"', text):
+                self.assertTrue(any(_norm(quoted) in h for h in headings),
+                                f"{rel} points at invariants.md section \"{quoted}\", which no heading carries")
 
 
 if __name__ == "__main__":
