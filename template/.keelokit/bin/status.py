@@ -6,7 +6,9 @@
     python3 .keelokit/bin/status.py title --role coordinator   the title of the session that coordinates
 
 Worktrees and what they hold, branches with commits not on origin/main ("not finished"), the verify
-lock, the CI of main (`ci.py health`, skipped with --no-ci or without network), and the backlog.
+lock, the CI of main (`ci.py health`, skipped with --no-ci or without network), the last verify, the
+stories in progress on other machines (`ledger.py --json`: origin branches with `Part-of:` commits not
+checked out here; unknown when the ledger can't tell), and the backlog.
 The coordinator runs it every round and trusts origin/main, not what a session said (SESS-1).
 With `[landing] policy = "convoy"` in .keelokit/state.toml, a branch whose head is already on origin
 is "delivered, waiting for a convoy": Harbor, not the session, takes it to main.
@@ -24,6 +26,7 @@ if sys.version_info < (3, 11):
     print(f"Keelokit needs Python 3.11+ (found {sys.version.split()[0]}).")
     sys.exit(1)
 
+import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import subprocess  # noqa: E402
@@ -164,6 +167,40 @@ def verify_line(common: Path) -> str:
     return f"verify: last {st.get('state')} (exit {st.get('rc')}) on {head}, {st.get('level')}"
 
 
+STATES = {"defined", "ready", "in-progress", "delivered", "unknown", "on-trunk", "in-version", "in-staging",
+          "in-production"}  # docs/ledger.md, "States"
+
+
+def elsewhere(local: set[str]) -> str:
+    """LEDGER-006: stories in progress on other machines, from `ledger.py --json` (docs/ledger.md: one reader):
+    each with its origin branches not checked out in a local worktree (those are listed above). Unknown when
+    the ledger can't answer, answers outside schema 1 or reads the history as incomplete: never "none" for
+    lack of history."""
+    head, why = "in progress elsewhere (ledger): ", ""
+    try:
+        out = subprocess.run([sys.executable, str(BIN / "ledger.py"), "--json"], cwd=ROOT, capture_output=True,
+                             text=True, timeout=120)
+        why = (out.stderr.strip().splitlines() or [""])[-1].removeprefix("Keelokit: ")
+        facts = json.loads(out.stdout) if out.returncode in (0, 1) else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        facts = None
+    stories = facts.get("stories") if isinstance(facts, dict) else None
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or isinstance(facts.get("schema"), bool) or not isinstance(facts.get("history"), str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and isinstance(x.get("state"), str) and x["state"] in STATES for x in stories)):
+        return head + f"unknown ({why or 'run python3 .keelokit/bin/ledger.py'})"
+    unknown = next((x for x in stories if x["state"] == "unknown"), None)
+    if facts["history"] == "incomplete" or unknown:
+        reason = (unknown or {}).get("reason")
+        return head + f"unknown ({reason if isinstance(reason, str) and reason else 'history incomplete'})"
+    found = []
+    for x in stories:
+        branches = x.get("branches") if isinstance(x.get("branches"), list) else []
+        branches = [b for b in branches if isinstance(b, str) and b not in local]
+        if x["state"] in ("in-progress", "delivered") and branches:
+            found.append(f"{x['id']} ({', '.join(branches)})")
+    return head + (", ".join(found) if found else "none")
+
+
 def main() -> int:
     if sys.argv[1:2] == ["title"]:
         return title(sys.argv[2:])
@@ -207,9 +244,15 @@ def main() -> int:
         lines.append("CI of main: " + ((res.stdout.strip().splitlines() or [res.stderr.strip() or "unknown"])[0]))
 
     lines.append(verify_line(lock.parent))
+    # After the verify line, so the worktree lines above keep their room within the ten.
+    local = {dict(l.split(" ", 1) for l in t if " " in l).get("branch", "").removeprefix("refs/heads/") for t in trees}
+    lines.append(elsewhere(local - {""}))
 
     brief = subprocess.run([sys.executable, str(BIN / "doctor.py"), "--brief"], cwd=ROOT, capture_output=True, text=True)
     lines += [l for l in brief.stdout.strip().splitlines()[:3]]
+    # Ten lines at most, and the doctor's backlog line among them: the per-worktree lines give way first.
+    while len(lines) > 10 and any(l.startswith("  ") for l in lines):
+        lines.remove(next(l for l in reversed(lines) if l.startswith("  ")))
     print("\n".join(lines[:10]))
     return 0
 
