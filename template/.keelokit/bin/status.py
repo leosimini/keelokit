@@ -185,8 +185,8 @@ def elsewhere(local: set[str]) -> str:
     except (OSError, subprocess.TimeoutExpired, ValueError):
         facts = None
     stories = facts.get("stories") if isinstance(facts, dict) else None
-    if (not isinstance(stories, list) or facts.get("schema") != 1 or not isinstance(facts.get("history"), str)
-            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and x.get("state") in STATES for x in stories)):
+    if (not isinstance(stories, list) or facts.get("schema") != 1 or isinstance(facts.get("schema"), bool) or not isinstance(facts.get("history"), str)
+            or not all(isinstance(x, dict) and isinstance(x.get("id"), str) and isinstance(x.get("state"), str) and x["state"] in STATES for x in stories)):
         return head + f"unknown ({why or 'run python3 .keelokit/bin/ledger.py'})"
     unknown = next((x for x in stories if x["state"] == "unknown"), None)
     if facts["history"] == "incomplete" or unknown:
