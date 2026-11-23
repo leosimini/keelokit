@@ -34,6 +34,8 @@ user can force a tier with `--trivial`, `--light` or `--full`; without a flag it
 
 Rules for the choice:
 - **When in doubt, go up one tier.** Missing an escape costs more than a reviewer's tokens.
+- A money story: the `integrity` dimension, or a story that moves money in a project with the
+  `payments` trait, is always **full**: it gets the breaker's failure paths.
 - `integrity`, a critical area, money, reservations, quotas, credits, refunds, notices,
   permissions or an assistant are always **full** (doctor enforces the declaration).
 - **Re-evaluate after the builder, escalate only.** If `doctor --scope` fails, or the diff reaches
@@ -99,14 +101,16 @@ Write the story's done-contract as a checklist and show it in one block, then co
 - for each declared dimension, its lines from `${CLAUDE_PLUGIN_ROOT}/references/dimensions.md`;
 - dimensions the `touches` imply but the story forgot (a screen → `ux`, `ui`, `i18n`, `a11y`; a
   critical area → `integrity`): add them to the story's front matter now;
-- every promise the story's text makes to the user (COPY-1), with the behaviour that keeps it.
-- for a money story (`integrity`, or the profile's `payments` trait), its failure paths from
-  `${CLAUDE_PLUGIN_ROOT}/references/invariants.md` ("Failure paths"), each with the test that
+- every promise the story's text makes to the user (COPY-1), with the behaviour that keeps it;
+- for a money story, its failure paths from `${CLAUDE_PLUGIN_ROOT}/references/invariants.md`
+  ("the failure paths of a money movement"), each with the test that
   covers it or why it cannot happen, before the verifier writes any test; the breaker walks the
   same list;
 - a decision about money that you take inside what the person already decided is recorded as
   reversible (in the addendum) and the person is told; anything new about money waits for the
-  person (execution protocol, unchanged).
+  person. Moving money and touching payment configuration stay reserved for the human
+  (execution protocol, unchanged): this is about how the code handles money, never about
+  moving it.
 Anything the story leaves undefined that changes behaviour → a gap in `docs/context/gaps.md` and
 a question to the user. Don't guess product rules. An invariant the story needs but
 `domain.md` doesn't have is a product rule too: propose it to the user, don't write it alone.
