@@ -65,3 +65,23 @@ Scenario: [S4] The reference
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line,
 `Story: FLEET-005` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-23
+
+- **What makes a money story** was left open: `integrity` alone, or anything in a project with
+  `payments`. Settled as one definition, worded the same in the breaker, `build-story` and
+  `invariants.md`: the `integrity` dimension, or a story that moves money in a project with the
+  `payments` trait. Such a story is always **full** in `build-story`'s step 0, so the breaker
+  always runs on it (ESC-101).
+- **The breaker's report limit** (10 lines beyond the BROKEN items) left no room for six path lines;
+  the six FAILURE PATHS lines are now outside the limit too (ESC-100).
+- **Reversible money decisions vs the execution protocol**: the protocol reserves "anything that
+  moves money or touches payment configuration" for the human, with no exception. The contract
+  item says so explicitly: it covers how the code handles money inside what the person decided,
+  never moving money or changing payment configuration; the protocol itself is unchanged (ESC-102).
+- The failure-path list in `invariants.md` is a subsection of the `once` tests
+  ("once: the failure paths of a money movement"), right after the replay test; the `integrity` row
+  of `dimensions.md` and its `copy` row carry the paths and the money question.
+- The six paths are pinned by key phrases ("retry still running", "response lost", "credential
+  removed", "double submit", "operations pending", "manual instruction"); like any text check, the
+  tests can't tell that a sentence makes the line optional. That stays with the review.
