@@ -227,6 +227,21 @@ class LedgerSnapshotJobTest(unittest.TestCase):
         head = self.text(self.RELEASE).split("\njobs:\n", 1)[0]
         self.assertIn("workflow_dispatch:", head)
 
+    def test_LEDGER_011_S1_the_arrival_time_is_the_push_time_from_the_event(self):
+        """ESC-210: the job runs minutes after the push (the gate, the checkout, the queue); the push event says when."""
+        for rel in (self.CI, self.RELEASE):
+            with self.subTest(workflow=rel):
+                job = self.jobs(rel)["ledger-snapshot"]
+                self.assertRegex(job, r"KEELOKIT_SNAPSHOT_AT: \$\{\{ github\.event\.repository\.pushed_at \}\}")
+
+    def test_LEDGER_011_S6_a_crash_reading_the_switch_fails_the_gate(self):
+        """ESC-211: `echo "branch=$(...)"` hides a crash of ledger.py: an empty branch, the snapshot skipped, CI green."""
+        for rel in (self.CI, self.RELEASE):
+            with self.subTest(workflow=rel):
+                gate = self.jobs(rel)["ledger-config"]
+                self.assertNotRegex(gate, r"echo [^\n]*\$\(python3")
+                self.assertRegex(gate, r"(?m)^\s+(?:run: )?branch=\$\(python3 \.keelokit/bin/ledger\.py snapshot --branch\)\s*$")
+
     def test_LEDGER_011_S6_the_snapshot_job_runs_only_when_the_project_keeps_a_snapshot(self):
         for rel in (self.CI, self.RELEASE):
             with self.subTest(workflow=rel):
