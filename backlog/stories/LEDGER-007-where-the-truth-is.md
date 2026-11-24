@@ -56,6 +56,7 @@ Scenario: [S4] A fresh session answers from the ledger
 | hook order, line bound, guards | unit | tests/test_hooks.py |
 | the rendered AGENTS.md section | unit | tests/test_copier.py |
 | a fresh session's answer | manual, recorded in the addendum | — |
+| the start points to `show`, and `show` answers done and why (S4's automatable half) | unit | tests/test_hooks.py |
 
 ## Definition of done
 `scripts/verify.sh` green, S1–S3 covered by tests titled with their ids, S4 done by hand and written in
@@ -98,3 +99,7 @@ failing test. Round 2: APPROVE.
 Left as it is: a doctor brief longer than about 8 lines (four or more profile drift lines) still loses its last
 lines to the final `head -n 12`, `Harness errors` included; the order of `doctor.py --brief` is the doctor's, outside
 this story's touches (the reviewer's round-2 note).
+
+S4 has both halves (the coordinator's review of the PR): the manual record above, and
+`test_LEDGER_007_S4_the_start_points_to_show_and_show_answers_done_and_why`, so the doctor's TRACE-1 finds a test
+title citing LEDGER-007.S4 once the story is done.
