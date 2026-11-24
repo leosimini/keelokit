@@ -5359,6 +5359,31 @@ class LedgerSnapshotRaceTest(SnapshotCase):
         self.assertIn(SNAP, r.stderr)
 
 
+class LedgerSnapshotRoundOneTest(SnapshotCase):
+    """Round 1 of the review (ESC-208, ESC-209)."""
+
+    def test_LEDGER_011_S2_an_earlier_sighting_wins_over_a_later_exact_one(self):
+        """ESC-208: a run that already had the commit saw it at tA; the push's own run records it exact at tB > tA.
+        The commit had reached the trunk by tA: the earliest time stays, and it is not exact."""
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        self.snapshot(repo.clone("ci-a"), "1", EPOCH + 200_000)
+        self.snapshot(repo.clone("ci-b"), "2", EPOCH + 200_100, f"{before}..{after}")
+        move = {m["sha"]: m for m in self.moves(repo)}[after]
+        self.assertEqual((move["seen"], move["exact"]), (snap_iso(EPOCH + 200_000), False))
+
+    def test_LEDGER_011_S2_a_rewritten_trunk_gets_its_own_reading_back(self):
+        """ESC-209: after main is rewritten, the snapshot's old trunk commit is in no later checkout; a later run must
+        not keep that reading forever."""
+        repo = self.project()
+        self.snapshot(repo.clone("ci-old"), "1", EPOCH + 210_000)
+        repo.git("reset", "-q", "--hard", "HEAD~1")
+        new = repo.commit("feat: AUTH-002 again\n\nWhy.\n\nStory: AUTH-002")
+        repo.git("push", "-q", "-f", "origin", "main")
+        self.snapshot(repo.clone("ci-new"), "2", EPOCH + 210_100)
+        self.assertEqual(self.snap_json(repo)["trunk_sha"], new)
+
+
 class LedgerSnapshotReadTest(SnapshotCase):
     """S3: a shallow session whose fetch is cut reads the snapshot."""
 
@@ -5428,7 +5453,7 @@ class LedgerSnapshotReadTest(SnapshotCase):
     def test_LEDGER_011_S3_history_ensure_reads_the_snapshot_when_the_fetch_is_cut(self):
         repo, tip = self.published()
         clone = repo.clone("shallow", depth=2)
-        clone.state("[ledger]\nhistory_seconds = 4\n")
+        clone.state("[ledger]\nhistory_seconds = 8\n")
         marker = self.tmp / "slow-once"
         slow = self.tmp / "slow-upload-pack"
         slow.write_text(f'#!/bin/sh\nif [ ! -f "{marker}" ]; then touch "{marker}"; sleep 30; fi\n'
@@ -5437,7 +5462,7 @@ class LedgerSnapshotReadTest(SnapshotCase):
         clone.git("config", "remote.origin.uploadpack", str(slow))
         r = clone.ledger("history", "--ensure", timeout=40)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("cut at 4s", r.stdout)
+        self.assertIn("cut at 8s", r.stdout)
         self.assertIn("snapshot", r.stdout)
         self.assertIn(tip[:7], r.stdout)
         self.assertEqual(len(r.stdout.strip().splitlines()), 1, r.stdout)
