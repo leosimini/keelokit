@@ -1112,7 +1112,8 @@ def read_all(state: dict) -> dict:
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
     facts["diffs"] += pending_reviews(reviews, records)
-    return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "tip": trunk_sha, "trunk": trunk, "stories": stories, "log": log,
+    return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "tip": trunk_sha, "trunk": trunk,
+            "unverified": unverified_prefixes(state), "stories": stories, "log": log,
             "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
             "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation}
 
@@ -2189,9 +2190,9 @@ def attribution_diffs(ctx: dict, in_range: list[dict] | None = None, on_trunk: b
     level = "error" if cfg["enforce"] == "block" else "warning"
     diffs = []
 
-    def add(code: str, c: dict, detail: str) -> None:
+    def add(code: str, c: dict, detail: str, at: str | None = None) -> None:
         subject = c["message"].split("\n", 1)[0].strip()[:80]
-        diffs.append({"level": level, "code": code, "detail": f"{short(c['sha'])} {subject!r}: {detail}"})
+        diffs.append({"level": at or level, "code": code, "detail": f"{short(c['sha'])} {subject!r}: {detail}"})
 
     known = {s["id"] for s in ctx["stories"]}
     if in_range is None:
@@ -2234,12 +2235,15 @@ def attribution_diffs(ctx: dict, in_range: list[dict] | None = None, on_trunk: b
         if c["story"] and not split_message(c["message"], c["trailers"])[1]:
             add("STORY_NO_BODY", c, f"closes {', '.join(c['story'])} with no body (what was decided, what was left out)")
     for c, branch, lost, how in squashes(ctx, in_range):
-        fix = (f" (on the trunk: `python3 .keelokit/bin/ledger.py correct {c['sha']} --story <ID> --evidence "
-               f"\"squash of {branch}\"` for each, then `ledger.py backfill --accept`)") if on_trunk else ""
-        what = f"its tree is the tip of {branch}" if how == "tree" else \
-            f"its change is {branch}'s since it forked"
-        add("SQUASH_LOST_TRAILERS", c, f"{what}, which is not integrated: a squash of it "
-            f"that lost {', '.join(lost)}; carry every Story: and Part-of: of the branch in its last paragraph{fix}")
+        if how == "tree":
+            fix = (f" (on the trunk: `python3 .keelokit/bin/ledger.py correct {c['sha']} --story <ID> --evidence "
+                   f"\"squash of {branch}\"` for each, then `ledger.py backfill --accept`)") if on_trunk else ""
+            add("SQUASH_LOST_TRAILERS", c, f"its tree is the tip of {branch}, which is not integrated: a squash of it "
+                f"that lost {', '.join(lost)}; carry every Story: and Part-of: of the branch in its last paragraph{fix}")
+        else:  # the same change is weaker evidence than the same tree (ESC-240): a warning, and no correction to copy
+            add("SQUASH_LOST_TRAILERS", c, f"its change is {branch}'s since it forked, which is not integrated: if it "
+                f"is a squash of it, it lost {', '.join(lost)}; if it is not (the same change made twice), nothing "
+                "to do", at="warning")
     return diffs
 
 
@@ -2281,7 +2285,9 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
     each, plus one `--name-only` log of the range; patches are read only for commits that change exactly the
     branch's paths (ESC-204)."""
     tip, graph = ctx.get("tip"), ctx["graph"]
-    branches = origin_branches(ctx.get("refs") or {}, ctx.get("trunk") or "")
+    skip = tuple(f"origin/{p}" for p in ctx.get("unverified", ()))
+    branches = {n: sha for n, sha in origin_branches(ctx.get("refs") or {}, ctx.get("trunk") or "").items()
+                if not n.startswith(skip)}  # wip/ and archive/ never land, so they are never squashed (ESC-241)
     singles = [c for c in in_range if len(c["parents"]) < 2]
     if not tip or not branches or not singles:
         return []
@@ -2327,6 +2333,24 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
     rowed: dict[str, set] = {}
     for r in (ctx.get("corrections") or {}).get("active", ()):
         rowed.setdefault(r.get("commit"), set()).add(r.get("story"))
+    since_fork: dict[tuple, tuple] = {}
+
+    def trunk_since(sha: str, base: str | None) -> tuple[set, set, set]:
+        """(Story: ids, every Story:/Part-of: id, trees of the commits before `sha`) on the trunk from the branch's
+        fork to `sha`: what the trunk already carries counts as kept (ESC-238, ESC-239, ESC-242), and a tree the
+        trunk already had is no squash (ESC-207). Without a base, the range's own ancestors of `sha`."""
+        key = (sha, base)
+        if key not in since_fork:
+            if base:
+                log = read_trunk_log(sha, ("--not", base))
+                earlier = git_read(["log", "--format=%T", f"{sha}^", "--not", base], ok=(0, 128)).decode().split()
+            else:
+                log = [ranged[x] for x in reach_until(graph, [sha], set(graph) - set(ranged))]
+                earlier = []
+            since_fork[key] = ({i for k in log for i in k["story"]},
+                               {i for k in log for i in k["story"] + k["part_of"]}, set(earlier))
+        return since_fork[key]
+
     found = []
     for name, (stories, parts) in needs.items():
         btip, base = loose[name], bases.get(name)
@@ -2342,14 +2366,24 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
             same_tree = trees.get(c["sha"]) is not None and trees.get(c["sha"]) == trees.get(btip)
             if not same_tree and not (net and mine_ids.get(c["sha"]) == net):
                 continue
-            kept = [ranged[sha] for sha in reach_until(graph, [c["sha"]], (set(graph) - set(ranged)) | forked)]
-            kept_story = {i for k in kept for i in k["story"]} | rowed.get(c["sha"], set())
-            kept_any = kept_story | {i for k in kept for i in k["part_of"]}
+            story_ids, any_ids, earlier = trunk_since(c["sha"], base)
+            if same_tree and trees.get(btip) in earlier:
+                continue  # the trunk had this tree before: a revert back to it, not a squash (ESC-207)
+            kept_story = story_ids | rowed.get(c["sha"], set())
+            kept_any = kept_story | any_ids
             lost = [f"Story: {i}" for i in sorted(stories - kept_story)] + \
                    [f"Part-of: {i}" for i in sorted(parts - kept_any)]
             if lost:
                 found.append((c, name, lost, "tree" if same_tree else "patch"))
     return found
+
+
+def unverified_prefixes(state: dict) -> list[str]:
+    """The branch prefixes whose work never lands as it is (LEDGER-008): `[verify] wip_branches` (wip/ when unset)
+    and archive/."""
+    wip = (state.get("verify") or {}).get("wip_branches") if isinstance(state.get("verify"), dict) else None
+    wip = wip.strip() if isinstance(wip, str) and wip.strip() else "wip/"
+    return sorted({wip if wip.endswith("/") else wip + "/", "archive/"})
 
 
 def range_ctx(state: dict, cfg: dict, tip: str, exclude: list[str]) -> dict | None:
@@ -2373,7 +2407,7 @@ def range_ctx(state: dict, cfg: dict, tip: str, exclude: list[str]) -> dict | No
     log = read_trunk_log(tip, ("--not", *stops))
     stories, unreadable = read_stories(tip, cfg)
     return {"cfg": cfg, "log": log, "graph": graph, "stories": stories, "unreadable": unreadable, "tip": tip,
-            "placed": arrivals(graph, tip), "refs": refs, "trunk": trunk}
+            "placed": arrivals(graph, tip), "refs": refs, "trunk": trunk, "unverified": unverified_prefixes(state)}
 
 
 def done_twice(ctx: dict) -> list[dict]:
@@ -3139,6 +3173,9 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
         return 0
     for d in diffs:
         print(f"Keelokit: {d['code']} — {d['detail']}", file=sys.stderr)
+    if not any(d["level"] == "error" for d in diffs):
+        print(f"Keelokit: the push to {trunk} goes through (warnings only).", file=sys.stderr)
+        return 0
     if cfg["enforce"] == "warn":
         print(f'Keelokit: the push to {trunk} goes through ([ledger] enforce = "warn"); the CI reports the same.',
               file=sys.stderr)
