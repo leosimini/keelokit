@@ -41,6 +41,54 @@ stub_context() {
 
 commit_all() { git -C "$dir" add -A && git -C "$dir" -c user.name=t -c user.email=t@t commit -qm "$1"; }
 
+# LEDGER-011.S7, the gate of the ledger's phase 2: in a copy of the generated project with a local remote, a session
+# takes a story, commits with the ledger's git hooks (Part-of: comes by itself), lands with Story:, the CI's snapshot
+# records the push, a tag is pushed, the deploy job moves deploy/production, and `ledger.py show` reaches in-production
+# with nobody writing a state. Only git and python3: it runs before the install. The commit hooks are the template's
+# own prepare-commit-msg and commit-msg (the guard and the verify are checked elsewhere in this script).
+ledger_walk() (
+  step 'LEDGER-011.S7 the ledger walk: take, commit, land with Story:, snapshot, tag, deploy → in-production'
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+  w=$work/walk
+  mkdir -p "$w/hooks"
+  git init -q --bare -b main "$w/origin.git"
+  git clone -q "$dir" "$w/session"
+  cd "$w/session"
+  git config user.name t && git config user.email t@t
+  git remote set-url origin "file://$w/origin.git"
+  cp .githooks/prepare-commit-msg .githooks/commit-msg "$w/hooks/"
+  git config core.hooksPath "$w/hooks"
+  since=$(git rev-parse HEAD)
+  git push -q origin main
+  mkdir -p backlog/stories
+  printf '[ledger]\nsince = "%s"\n' "$since" >.keelokit/state.toml
+  printf '+++\nid = "WALK-001"\nepic = "WALK"\ntitle = "The walk"\nwave = 1\ndepends_on = []\n+++\n# The walk\n' \
+    >backlog/stories/WALK-001-walk.md
+  git add -A && git commit -qm 'docs: plan WALK-001' -m 'No-story: docs'
+  git push -q origin main
+  python3 .keelokit/bin/ledger.py take WALK-001
+  echo one >walk.txt && git add walk.txt && git commit -qm 'feat: the walk, first half'
+  git log -1 --format=%B | grep -qx 'Part-of: WALK-001' || { echo 'the hook did not write Part-of: WALK-001' >&2; exit 1; }
+  echo two >>walk.txt && git add walk.txt
+  git commit -qm 'feat: the walk' -m 'Decided: nothing to decide; it walks.' -m 'Story: WALK-001'
+  before=$(git rev-parse origin/main) after=$(git rev-parse HEAD)
+  git push -q origin main
+  # The CI: a full clone, the snapshot job, the tag's release run and its deploy job.
+  git clone -q "file://$w/origin.git" "$w/ci"
+  (cd "$w/ci" && KEELOKIT_SNAPSHOT_AT=1767225600 python3 .keelokit/bin/ledger.py snapshot --run walk.1 --push "$before..$after")
+  git tag -a v0.1.0 -m v0.1.0 && git push -q origin v0.1.0
+  (cd "$w/ci" && git fetch -q --tags origin && python3 .keelokit/bin/ledger.py deploy production "$(git rev-parse 'v0.1.0^{commit}')")
+  git fetch -q origin
+  out=$(python3 .keelokit/bin/ledger.py show WALK-001)
+  echo "$out"
+  grep -q 'in-production' <<<"$out" || { echo 'WALK-001 did not reach in-production' >&2; exit 1; }
+  grep -q '2026-01-01T00:00:00Z (exact)' <<<"$out" || { echo "WALK-001's arrival is not the snapshot's exact time" >&2; exit 1; }
+  # Nobody wrote a state: the story file is as planned and no commit after the plan touched backlog/.
+  [ -z "$(git log --format=%H "$since.." -- backlog/ | sed 1d)" ] || { echo 'a commit after the plan wrote backlog/' >&2; exit 1; }
+  ! grep -qi 'state' backlog/stories/WALK-001-walk.md || { echo 'the story file holds a state' >&2; exit 1; }
+  python3 .keelokit/bin/ledger.py take --clear
+)
+
 mkdir -p "$dir"
 git -C "$dir" init -q -b main
 stub_context
@@ -105,6 +153,7 @@ else
   "${copier[@]}" copy --vcs-ref HEAD --defaults "${data[@]}" "$keelokit" "$dir"
 fi
 commit_all generated
+ledger_walk
 
 # run-local.sh (RUN-1) needs no install, no Docker and no emulator: the [local] block the template
 # wrote must be coherent and agree with what the script detects in the generated repo.

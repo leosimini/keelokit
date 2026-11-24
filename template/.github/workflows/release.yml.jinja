@@ -2,11 +2,15 @@
 # /keelokit:ship-release writes the entry and creates the tag, after the human says yes. The deploy
 # then waits for a person to approve the `production` environment (set its required reviewers in
 # the repo's Settings → Environments); until then nothing reaches users.
+# A rollback runs this workflow again from an older tag (Actions → Release → Run workflow, "Use workflow
+# from" that tag): the check passes for it, the deploy waits for the same approval, and deploy/production
+# moves back to it (LEDGER-011).
 name: Release
 
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,6 +32,42 @@ jobs:
             || { echo "::error::$GITHUB_REF_NAME is not a commit of main"; exit 1; }
           grep -q "^## $version — " CHANGELOG.md \
             || { echo "::error::CHANGELOG.md has no '## $version — <date>' entry"; exit 1; }
+
+  # LEDGER-011: the snapshot again after a tag, so the snapshot's ledger has the new version (see ci.yml).
+  ledger-config:
+    name: Ledger snapshot switch
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      branch: ${{ steps.read.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+      # Its own line, so a crash of ledger.py fails the step instead of reading as "off".
+      - id: read
+        run: |
+          branch=$(python3 .keelokit/bin/ledger.py snapshot --branch)
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+  ledger-snapshot:
+    name: Ledger snapshot (the new version)
+    needs: ledger-config
+    if: needs.ledger-config.outputs.branch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ledger-snapshot
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      RUN: ${{ github.run_id }}.${{ github.run_attempt }}
+      KEELOKIT_SNAPSHOT_AT: ${{ github.event.repository.pushed_at }} # the tag's push, not this job's start
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 .keelokit/bin/ledger.py snapshot --run "$RUN"
 {% endraw %}{% if 'api' in apps %}{% raw %}
   deploy-production:
     name: Deploy API to production (Fly.io)
@@ -35,6 +75,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: write # deploy/production only
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
@@ -46,4 +91,9 @@ jobs:
         if: steps.fly.outputs.ready == 'yes'
       - if: steps.fly.outputs.ready == 'yes'
         run: flyctl deploy --config apps/api/fly.production.toml --remote-only
+      # deploy/production points at what production runs (the ledger's in-production): forward on a release,
+      # back on a rollback.
+      - name: deploy/production points at what production runs
+        if: steps.fly.outputs.ready == 'yes'
+        run: python3 .keelokit/bin/ledger.py deploy production "$GITHUB_SHA"
 {% endraw %}{% endif %}

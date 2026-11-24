@@ -18,7 +18,7 @@ TESTS = Path(__file__).resolve().parents[1] / "tests"
 
 # Seconds per module, measured 2026-11-24 on a 4-core machine, two modules at a time.
 SECONDS = {
-    "test_verify_operativo": 254, "test_ledger": 174, "test_doctor": 130, "test_run_local": 105, "test_guard": 100,
+    "test_verify_operativo": 254, "test_ledger": 245, "test_doctor": 130, "test_run_local": 105, "test_guard": 100,
     "test_verify": 80, "test_dashboard": 72, "test_hooks": 37, "test_guard_corrections": 26, "test_copier": 13,
     "test_ux_gate": 10, "test_first_commit": 10, "test_landing": 6, "test_verify_plan": 3, "test_process": 3,
     "test_scripts": 2, "test_session_titles": 1, "test_release": 1, "test_ci": 1, "test_workflows": 0.5,
