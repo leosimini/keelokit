@@ -15,6 +15,7 @@ REPO = Path(__file__).resolve().parents[1]
 STATUS = REPO / "template/.keelokit/bin/status.py"
 DOCTOR = REPO / "template/.keelokit/bin/doctor.py"
 PRE_PUSH = REPO / "template/.githooks/pre-push"
+VERIFY_TOOLS = REPO / "template/.keelokit/bin/verify_tools.py"
 NOTE = "verifies every push, Harbor's logbook writes included"
 # The pre-push hook of 0.11.0, before it skipped a push of only the shared-seals branch.
 OLD_PRE_PUSH = "#!/usr/bin/env sh\nexec pnpm verify --use-seal\n"
@@ -234,3 +235,96 @@ class TextsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnverifiedPrefixesTest(unittest.TestCase):
+    """LEDGER-008: the pre-push runs no verify for archive/ (ledger.py drop's abandoned attempts), as for the
+    wip/ branches of [verify] wip_branches; verify_tools.py keeps the list of unverified prefixes."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.origin, self.root = self.tmp / "origin.git", self.tmp / "repo"
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", HOME=str(self.tmp))
+        stubs = self.tmp / "stubs"
+        stubs.mkdir()
+        self.calls = self.tmp / "pnpm-calls"
+        (stubs / "pnpm").write_text(f'#!/bin/sh\necho "pnpm $*" >> "{self.calls}"\nexit 1\n')
+        (stubs / "pnpm").chmod(0o755)
+        self.env["PATH"] = f"{stubs}:{self.env['PATH']}"
+        self.git(self.tmp, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(self.tmp, "clone", "-q", str(self.origin), str(self.root))
+        for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
+            self.git(self.root, "config", key, value)
+        for rel, src in ((".keelokit/bin/verify_tools.py", VERIFY_TOOLS), (".githooks/pre-push", PRE_PUSH)):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, self.root / rel)
+        (self.root / ".githooks/pre-push").chmod(0o755)
+
+    def git(self, cwd: Path, *args: str) -> str:
+        r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=self.env)
+        if r.returncode:
+            raise AssertionError(f"git {' '.join(args)}: {r.stderr}")
+        return r.stdout
+
+    def main_with(self, state: str | None) -> None:
+        if state is not None:
+            (self.root / ".keelokit/state.toml").write_text(state)
+        self.git(self.root, "add", "-A")
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "init")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.git(self.root, "config", "core.hooksPath", ".githooks")
+
+    def prefixes(self) -> list[str]:
+        r = subprocess.run(["python3", ".keelokit/bin/verify_tools.py", "unverified-prefixes", "origin"],
+                           cwd=self.root, capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.split()
+
+    def push(self, *refs: str) -> subprocess.CompletedProcess:
+        self.calls.unlink(missing_ok=True)
+        return subprocess.run(["git", "push", "-q", "origin", *refs], cwd=self.root, capture_output=True,
+                              text=True, env=self.env, timeout=60)
+
+    def verified(self) -> bool:
+        return self.calls.exists() and "pnpm verify" in self.calls.read_text()
+
+    def test_LEDGER_008_S4_the_unverified_prefixes_are_wip_branches_and_archive(self):
+        self.main_with('[verify]\nwip_branches = "wip/"\n')
+        self.assertEqual(self.prefixes(), ["wip/", "archive/"])
+
+    def test_LEDGER_008_S4_archive_is_unverified_without_any_key(self):
+        self.main_with(None)
+        self.assertEqual(self.prefixes(), ["archive/"])
+
+    def test_LEDGER_008_S4_wip_branches_set_to_archive_is_listed_once(self):
+        self.main_with('[verify]\nwip_branches = "archive/"\n')
+        self.assertEqual(self.prefixes(), ["archive/"])
+
+    def test_LEDGER_008_S4_a_push_to_archive_runs_no_verify(self):
+        self.main_with(None)
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "drop(AUTH-002): x\n\nDropped: AUTH-002")
+        r = self.push("HEAD:refs/heads/archive/auth-002-20261124")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.verified(), "no verify for archive/")
+        self.assertIn("is archive work: not verified", r.stdout)
+        self.assertTrue(self.git(self.root, "ls-remote", "origin", "refs/heads/archive/auth-002-20261124").strip())
+
+    def test_LEDGER_008_S4_a_push_to_any_other_branch_still_verifies(self):
+        self.main_with('[verify]\nwip_branches = "wip/"\n')
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "work")
+        r = self.push("HEAD:refs/heads/archived/x")  # a name that only starts like archive/
+        self.assertNotEqual(r.returncode, 0, "the stub pnpm fails")
+        self.assertTrue(self.verified())
+
+    def test_LEDGER_008_S4_a_push_that_holds_an_archived_attempt_is_refused_before_a_verify(self):
+        self.main_with(None)
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "drop(AUTH-002): x\n\nDropped: AUTH-002")
+        self.assertEqual(self.push("HEAD:refs/heads/archive/auth-002-20261124").returncode, 0)
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "carried on from the abandoned attempt")
+        r = self.push("HEAD:refs/heads/feature")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unverified wip work", r.stderr)
+        self.assertFalse(self.verified(), "refused before any verify")
+
