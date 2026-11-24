@@ -119,6 +119,22 @@
   (`'@prisma/config>effect': ^3.22.1` in `pnpm-workspace.yaml`), like the other pinned fixes there, until Prisma ships
   it. An existing project runs `/keelokit:harness-upgrade`, then `pnpm install`.
 
+### Upgrading from 0.14.x
+
+1. `/keelokit:harness-upgrade` brings `ledger.py`, the SessionStart hook's new steps, the doctor, dashboard and
+   `status.py` that read the ledger, and the verify's memory plan and estimate.
+2. Write `[ledger] since = "<sha>"` in `.keelokit/state.toml`, with the trunk's current tip: from that commit on,
+   every commit names its story (`Story:`, `Part-of:` or `No-story:`, in the message's last paragraph). Without
+   it, `ledger.py check` reports every old commit that names an unknown id.
+3. Choose who approves corrections. Without `[ledger.approval]` it is a person (`mode = "human"`). To delegate,
+   add `mode = "delegated"` or `"mixed"` in a commit you make yourself with `git -c keelokit.allowTamper=true
+   commit`; agents can't.
+4. `python3 .keelokit/bin/ledger.py backfill --propose` proposes rows for the stories done before the trailers
+   existed; review them and run `ledger.py backfill --accept` in your own terminal (or the delegated review).
+5. `python3 .keelokit/bin/ledger.py check` should report no error. Until the commit hooks of 0.16.0, write the
+   trailer in every commit's last paragraph by hand; an adopted project may set `[ledger] enforce = "warn"` until
+   then.
+
 ## 0.14.0 — 2026-11-16
 
 - **Product quality is part of the harness: the interface and the journeys (UX-2..UX-5).** A project with the `ui`
