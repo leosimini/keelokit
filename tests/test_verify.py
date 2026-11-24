@@ -597,5 +597,105 @@ class MemoryAwareVerifyTest(VerifyFixture):
         self.assertFalse(any("--workspace-concurrency" in c or "--maxWorkers" in c for c in calls), calls)
 
 
+
+class PrePushAttributionTest(unittest.TestCase):
+    """LEDGER-010: both pre-push hooks (the template's and this repo's) run `ledger.py prepush` before the verify,
+    and a push to the trunk that it refuses never reaches the verify. Real git push to a local bare remote; the
+    verify is a stub that records it ran. Every git call runs with GIT_* cleared (ESC-090)."""
+
+    HOOKS = {"template": ROOT / "template/.githooks/pre-push", "repo": ROOT / ".githooks/pre-push"}
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") and k not in ("CI", "GITHUB_ACTIONS")}
+        self.env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", HOME=str(self.tmp))
+        self.calls = self.tmp / "verify-calls"
+        stubs = self.tmp / "stubs"
+        stubs.mkdir()
+        (stubs / "pnpm").write_text(f'#!/bin/sh\necho "pnpm $*" >> "{self.calls}"\nexit 0\n')
+        (stubs / "pnpm").chmod(0o755)
+        self.env["PATH"] = f"{stubs}:{self.env['PATH']}"
+
+    def git(self, cwd: Path, *args: str) -> str:
+        r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=self.env, timeout=60)
+        if r.returncode:
+            raise AssertionError(f"git {' '.join(args)}: {r.stderr}")
+        return r.stdout
+
+    def project(self, which: str) -> Path:
+        origin, root = self.tmp / f"{which}.git", self.tmp / which
+        self.git(self.tmp, "init", "-q", "--bare", "-b", "main", str(origin))
+        self.git(self.tmp, "clone", "-q", str(origin), str(root))
+        for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
+            self.git(root, "config", key, value)
+        files = {".githooks/pre-push": self.HOOKS[which], ".keelokit/bin/ledger.py": ROOT / "template/.keelokit/bin/ledger.py",
+                 ".keelokit/bin/verify_tools.py": ROOT / "template/.keelokit/bin/verify_tools.py"}
+        for rel, src in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, root / rel)
+        (root / ".githooks/pre-push").chmod(0o755)
+        (root / "scripts").mkdir()
+        (root / "scripts/verify.sh").write_text(f'#!/bin/sh\necho "verify.sh" >> "{self.calls}"\nexit 0\n')
+        (root / "scripts/verify.sh").chmod(0o755)
+        (root / "backlog/stories").mkdir(parents=True)
+        (root / "backlog/stories/AUTH-001-s.md").write_text('+++\nid = "AUTH-001"\ntitle = "t"\nwave = 1\n+++\n')
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-q", "-m", "chore: adopt\n\nNo-story: harness")
+        since = self.git(root, "rev-parse", "HEAD").strip()
+        (root / ".keelokit/state.toml").write_text(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        self.git(root, "add", "-A")
+        self.git(root, "commit", "-q", "-m", "chore: state\n\nNo-story: harness")
+        self.git(root, "push", "-q", "origin", "HEAD:main")
+        self.git(root, "config", "core.hooksPath", ".githooks")
+        return root
+
+    def push(self, root: Path, *refs: str) -> subprocess.CompletedProcess:
+        self.calls.unlink(missing_ok=True)
+        return subprocess.run(["git", "push", "-q", "origin", *refs], cwd=root, capture_output=True, text=True,
+                              env=self.env, timeout=120)
+
+    def verified(self) -> bool:
+        return self.calls.exists() and self.calls.read_text().strip() != ""
+
+    def test_LEDGER_010_S1_the_attribution_runs_before_the_verify_and_a_refusal_never_verifies_INV_007(self):
+        for which in self.HOOKS:
+            with self.subTest(hook=which):
+                root = self.project(which)
+                self.git(root, "commit", "-q", "--allow-empty", "-m", "chore: loose")
+                r = self.push(root, "HEAD:main")
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("UNATTRIBUTED", r.stderr)
+                self.assertFalse(self.verified(), "refused before the verify")
+                self.assertEqual(self.git(root, "ls-remote", "origin", "refs/heads/main").split()[0],
+                                 self.git(root, "rev-parse", "HEAD~1").strip(), "main did not move")
+
+    def test_LEDGER_010_S1_an_attributed_push_to_the_trunk_goes_on_to_the_verify(self):
+        for which in self.HOOKS:
+            with self.subTest(hook=which):
+                root = self.project(which)
+                self.git(root, "commit", "-q", "--allow-empty", "-m", "wip: a\n\nPart-of: AUTH-001")
+                r = self.push(root, "HEAD:main")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertTrue(self.verified(), "the verify still runs")
+
+    def test_LEDGER_010_S6_a_push_to_another_branch_is_not_checked_and_still_verified(self):
+        for which in self.HOOKS:
+            with self.subTest(hook=which):
+                root = self.project(which)
+                self.git(root, "commit", "-q", "--allow-empty", "-m", "chore: loose")
+                r = self.push(root, "HEAD:refs/heads/feature")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("UNATTRIBUTED", r.stderr)
+                self.assertTrue(self.verified())
+
+    def test_LEDGER_010_order_the_attribution_block_comes_before_the_verify_line(self):
+        for which, hook in self.HOOKS.items():
+            with self.subTest(hook=which):
+                text = hook.read_text()
+                verify = "pnpm verify --use-seal" if which == "template" else "exec scripts/verify.sh"
+                self.assertLess(text.index("ledger.py prepush"), text.index(verify))
+
+
 if __name__ == "__main__":
     unittest.main()
