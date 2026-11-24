@@ -436,7 +436,9 @@ fi
 # percentile over the last green runs of the same level and workers. A range, never one number; status.py
 # shows the range left while the run goes. Not for a preflight: it stops long before the plan's end.
 if ! $preflight && [ -f "$tools" ]; then
-  est_out=$(python3 "$tools" estimate "$history" --steps "$planned" --level "$($requested_all && echo all || echo changed)" \
+  est_steps=$planned
+  ! $rerun_narrowed || est_steps=$only # a narrowed rerun records the whole plan, but runs only these
+  est_out=$(python3 "$tools" estimate "$history" --steps "$est_steps" --level "$($requested_all && echo all || echo changed)" \
     --workers "${mem_pairs:-}" 2>/dev/null) || est_out=
   if [ -n "$est_out" ]; then
     say "Estimate: $(printf '%s\n' "$est_out" | sed -n 1p)."

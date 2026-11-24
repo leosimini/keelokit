@@ -1396,10 +1396,6 @@ exit 0
         self.assertEqual(self.called(), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EstimateEndToEndTest(VerifyFixture):
     """FLEET-002 through the real verify.sh: the history records seconds per step id, the run says its estimate,
     and the state carries the figures status.py turns into the range left."""
@@ -1419,3 +1415,21 @@ class EstimateEndToEndTest(VerifyFixture):
         pairs = self.state()["estimate"].split()
         self.assertIn("unit:0:0", pairs)
         self.assertTrue(self.state()["step_id"] and self.state()["step_since"].isdigit(), self.state())
+
+    def test_FLEET_002_S1_a_narrowed_rerun_estimates_only_what_it_reruns(self):
+        """FLEET-002.S1 (review): --rerun-failed after a red build reruns build, e2e and audit, not lint or unit."""
+        self.commit_change()
+        for _ in range(3):
+            self.assertEqual(self.verify().returncode, 0)
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Rerun of what failed or never ran", r.stdout)
+        pairs = [p.split(":")[0] for p in self.state()["estimate"].split()]
+        self.assertIn("build", pairs)
+        self.assertNotIn("lint", pairs)
+        self.assertNotIn("unit", pairs)
+
+
+if __name__ == "__main__":
+    unittest.main()

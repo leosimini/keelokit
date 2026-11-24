@@ -513,7 +513,8 @@ def estimate(history_lines: list[str], steps: list[str], level: str, workers: di
     """{"runs", "steps": id → (median, p90) seconds, "order": the ids considered in run order, "text"}. Comparable runs:
     green, whole (not partial, scoped, narrowed or a rerun that kept passes), the same level, and the same planned
     workers for every worker step in this plan (none planned = the runner's default, a kind of its own)."""
-    considered = [s for s in RUN_ORDER if s in steps or s in SETUP_STEPS or (s == "db" and "integration" in steps)]
+    considered = [s for s in RUN_ORDER if s in steps or s in SETUP_STEPS
+                  or (s == "db" and ("integration" in steps or "e2e-stack" in steps))]
     runs, other_workers = [], 0
     for line in history_lines:
         try:
@@ -530,7 +531,8 @@ def estimate(history_lines: list[str], steps: list[str], level: str, workers: di
             continue
         durations = step_durations(entry)
         if durations:
-            runs.append(durations)
+            planned = entry.get("planned")
+            runs.append((durations, set(planned) if isinstance(planned, list) and planned else None))
     runs = runs[-ESTIMATE_RUNS:]
     if len(runs) < ESTIMATE_MIN_RUNS:
         others = f", {other_workers} with other workers" if other_workers else ""
@@ -538,7 +540,10 @@ def estimate(history_lines: list[str], steps: list[str], level: str, workers: di
                 "text": f"no estimate yet ({len(runs)} past runs like this one on this machine{others}; it needs {ESTIMATE_MIN_RUNS})"}
     per_step: dict[str, tuple[float, float]] = {}
     for s in considered:
-        samples = [r[s] for r in runs if s in r]
+        # A run that planned the step and didn't run it (no critical code for mutation, no Docker for e2e-stack)
+        # took 0 s for it; a line without `planned` (older) or a setup step counts only where it ran.
+        samples = [d.get(s, 0.0) if planned is not None and s in planned else d[s]
+                   for d, planned in runs if s in d or (planned is not None and s in planned)]
         if samples:
             per_step[s] = (percentile(samples, 0.5), percentile(samples, 0.9))
     missing = [s for s in considered if s not in per_step and s not in SETUP_STEPS and s != "db"]
