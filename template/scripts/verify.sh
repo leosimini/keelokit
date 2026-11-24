@@ -167,6 +167,8 @@ mark=$(date +%s)
 clean_at_start=$(tree_clean && echo true || echo false)
 current_step=starting current_id=starting
 steps_log=
+ids_log= # "seconds|step id" lines: the history's durations, what the estimate reads (FLEET-002)
+estimate_pairs= # "id:median:p90" per step in run order, for status.py's range left
 ran=0 skipped=0
 failed=
 failed_ids=' ' passed_ids=' ' stopped_by_reds=false
@@ -174,14 +176,16 @@ child=
 set -m 2>/dev/null || true # each background job gets its own process group, so a signal reaches its children
 
 write_state() { # key=value lines, replaced atomically
-  printf 'state=%s\npid=%s\nstep=%s\nsince=%s\nhead=%s\nlevel=%s\nrc=%s\nlog=%s\n' \
+  printf 'state=%s\npid=%s\nstep=%s\nsince=%s\nhead=%s\nlevel=%s\nrc=%s\nlog=%s\nstep_id=%s\nstep_since=%s\nestimate=%s\n' \
     "$1" "$$" "$current_step" "$mark" "$head_sha" "$($requested_all && echo all || echo changed)" "${2:-}" "$log" \
-    >"$state.$$" && mv "$state.$$" "$state"
+    "$current_id" "$step_start" "$estimate_pairs" >"$state.$$" && mv "$state.$$" "$state"
 }
 say() { printf '%s\n' "$*" | tee -a "$log"; }
 step() { # step ID TITLE: ID is the routing name (unit, lint…) or a setup name (git, prisma, db, clock)
   now=$(date +%s)
   [ "$current_step" = starting ] || steps_log="$steps_log$((now - step_start))|$current_step
+"
+  [ "$current_id" = starting ] || ids_log="$ids_log$((now - step_start))|$current_id
 "
   step_done
   current_id=$1
@@ -252,6 +256,8 @@ finish() {
   [ -z "$child" ] || kill -TERM -- "-$child" 2>/dev/null || true
   [ "$current_step" = starting ] || steps_log="$steps_log$(($(date +%s) - step_start))|$current_step
 "
+  [ "$current_id" = starting ] || ids_log="$ids_log$(($(date +%s) - step_start))|$current_id
+"
   if [ "$rc" -eq 0 ] || $stopped_by_reds; then
     step_done
   elif [ "$current_id" != starting ]; then # the step that stopped the run (a red, a signal) did not pass
@@ -263,7 +269,7 @@ finish() {
     printf '%s' "$steps_log" | python3 "$tools" table 2>/dev/null || true
     [ "$rc" -eq 0 ] || python3 "$tools" causes "$log" 2>/dev/null || true
     $preflight || VERIFY_INHERITED=${inherited:-} VERIFY_COMPOSITE_OF=${composite_of:-} VERIFY_RERUN_OF=${rerun_from:-} VERIFY_PROVEN_PACKAGES=${rerun_proven:-} VERIFY_INT_REPORT=${int_reports:-} VERIFY_NARROWED=${int_narrowed:-false} VERIFY_BASE=$(base_sha) VERIFY_PLANNED=${planned:-} VERIFY_PASSED=$passed_ids VERIFY_FAILED_STEPS=$failed_ids \
-      VERIFY_PEAKS=$peaks VERIFY_WORKERS=$mem_pairs VERIFY_WORKERS_WHY=$mem_why \
+      VERIFY_PEAKS=$peaks VERIFY_STEP_IDS=$ids_log VERIFY_WORKERS=$mem_pairs VERIFY_WORKERS_WHY=$mem_why \
       VERIFY_SCOPE=${explicit_scope_text:-} VERIFY_PACKAGES=${pkg_list:-} VERIFY_STEP_PACKAGES=${step_packages:-} \
       VERIFY_PARTIAL=$partial VERIFY_CLEAN=$clean_at_start VERIFY_SINCE=$since python3 "$tools" record "$history" "$([ "$rc" -eq 0 ] && echo pass || echo fail)" "$rc" "$head_sha" \
       "$($requested_all && echo all || echo changed)" "$steps_log" "$failed" "$log" 2>/dev/null || true
@@ -410,7 +416,7 @@ if [ -n "$mem_steps" ] && [ -f "$tools" ]; then
   mem_rc=0
   mem_out=$(python3 "$tools" workers "$history" --steps "$mem_steps" ${mem_force:+"$mem_force"}) || mem_rc=$?
   if [ "$mem_rc" -eq 3 ]; then # a refusal is not a run (like the busy machine): no history, no step to blame
-    current_step=starting current_id=starting steps_log=
+    current_step=starting current_id=starting steps_log= ids_log=
     exit 3
   fi
   if [ "$mem_rc" -eq 0 ] && [ -n "$mem_out" ]; then
@@ -423,6 +429,21 @@ if [ -n "$mem_steps" ] && [ -f "$tools" ]; then
       esac
     done
     [ -z "$mem_why" ] || say "Workers for this machine's memory: $mem_why"
+  fi
+fi
+
+# How long this will take, from this machine's own runs (FLEET-002): each planned step's median to its 90th
+# percentile over the last green runs of the same level and workers. A range, never one number; status.py
+# shows the range left while the run goes. Not for a preflight: it stops long before the plan's end.
+if ! $preflight && [ -f "$tools" ]; then
+  est_steps=$planned
+  ! $rerun_narrowed || est_steps=$only # a narrowed rerun records the whole plan, but runs only these
+  est_out=$(python3 "$tools" estimate "$history" --steps "$est_steps" --level "$($requested_all && echo all || echo changed)" \
+    --workers "${mem_pairs:-}" 2>/dev/null) || est_out=
+  if [ -n "$est_out" ]; then
+    say "Estimate: $(printf '%s\n' "$est_out" | sed -n 1p)."
+    estimate_pairs=$(printf '%s\n' "$est_out" | sed -n 2p)
+    write_state running
   fi
 fi
 

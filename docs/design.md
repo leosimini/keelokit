@@ -52,6 +52,13 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   The cgroup limits read are cgroup v2 only. A step whose one worker needs more than is available stops
   the run in seconds with exit 3 and no history line, like a busy machine (`VERIFY_FORCE=1` runs it with 1 worker);
   with no measure and no override, or no `/proc` (macOS), nothing changes.
+  The estimate (FLEET-002): the history also keeps seconds per step id (`durations`; older lines are read from their
+  step titles). After the memory plan, `verify_tools.py estimate` takes the last 20 green, whole runs of the same
+  level with the same planned workers for the worker steps in this plan, and prints "about 55–80 min (from 12 runs)":
+  the sum of each planned step's median to the sum of its 90th percentile (setup steps `git` and `prisma` included,
+  `db` with integration). Fewer than 3 such runs is "no estimate yet", saying how many ran with other workers. The
+  state file keeps the figures (`estimate=id:median:p90 ...`, `step_id`, `step_since`), and `status.py` turns them
+  into the range left while the run goes. Nothing is estimated for a preflight, or for a machine with no history.
 - `harness/agent-brief.md` — the one page every parallel session is told to read.
 - `[landing] policy` in `state.toml` — how finished work reaches main. `direct` (the default, and
   what an absent key means): each session rebases, verifies and pushes main itself. `convoy`: each
