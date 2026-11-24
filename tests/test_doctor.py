@@ -1398,6 +1398,11 @@ LEDGER_1 = {  # the rule as the story states it (backlog/stories/LEDGER-012-rule
 LEDGER_HOOKS = {"commit-msg": "hook msg", "prepare-commit-msg": "hook prepare", "pre-push": "prepush"}
 LEDGER_CI = """\
 name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 jobs:
   checks:
     name: Checks
@@ -1413,20 +1418,23 @@ jobs:
         run: python3 .keelokit/bin/ledger.py check --ci{step_extra}
       - name: Dependency audit
         run: python3 .keelokit/bin/audit.py
+{config_job}{snapshot_job}"""
+LEDGER_CONFIG_JOB = """\
   ledger-config:
     name: Ledger snapshot switch
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      branch: ${{{{ steps.read.outputs.branch }}}}
+      branch: ${{ steps.read.outputs.branch }}
     steps:
       - uses: actions/checkout@v4
       - id: read
         run: |
           branch=$(python3 .keelokit/bin/ledger.py snapshot --branch)
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
-{snapshot_job}"""
+"""
+LEDGER_STEP = "      - name: Ledger attribution\n        run: python3 .keelokit/bin/ledger.py check --ci\n"
 SNAPSHOT_JOB = """\
   ledger-snapshot:
     name: Ledger snapshot (when this push reached main)
@@ -1449,6 +1457,13 @@ SNAPSHOT_JOB = """\
           fetch-depth: 0
       - run: python3 .keelokit/bin/ledger.py snapshot --run "$RUN" --push "$BEFORE..$AFTER"
 """
+
+
+def ledger_ci(step_extra: str = "", snapshot_job: str = SNAPSHOT_JOB) -> str:
+    """The healthy CI workflow (on push and pull_request: ESC-218), its ledger step and snapshot jobs as the template has them."""
+    return LEDGER_CI.format(step_extra=step_extra, config_job=LEDGER_CONFIG_JOB, snapshot_job=snapshot_job)
+
+
 DAY = 86400
 EPOCH_2020 = 1577836800  # 2020-01-01T00:00:00Z: years in the past, so nothing here can lean on the wall clock
 
@@ -1486,7 +1501,7 @@ class DoctorLedgerRuleTest(LedgerRepo, unittest.TestCase):
         self.at(EPOCH_2020)
         files = {".keelokit/bin/doctor.py": DOCTOR.read_text(), ".keelokit/bin/ledger.py": LEDGER.read_text(),
                  ".keelokit/harness/rules.toml": toml_rule(template_ledger_1()),
-                 ".github/workflows/ci.yml": LEDGER_CI.format(step_extra="", snapshot_job=SNAPSHOT_JOB),
+                 ".github/workflows/ci.yml": ledger_ci(step_extra="", snapshot_job=SNAPSHOT_JOB),
                  "docs/context/gaps.md": "| Id | File | Missing | Owner | Question | Blocking |\n|---|---|---|---|---|---|\n",
                  "backlog/stories/UXC-113-a.md": STORY.format(id="UXC-113", wave=1, touches='"apps/api/a/"')}
         files |= {f"docs/context/{f}.md": f"# {f}\n" for f in ("product", "domain", "constraints", "environments")}
@@ -1655,10 +1670,10 @@ class DoctorLedgerRuleTest(LedgerRepo, unittest.TestCase):
     # ── S2: the CI ──
     def test_LEDGER_012_S2_a_workflow_without_a_live_ledger_step_is_reported(self):
         self.assert_alive()
-        no_step = LEDGER_CI.format(step_extra="", snapshot_job=SNAPSHOT_JOB).replace(
+        no_step = ledger_ci(step_extra="", snapshot_job=SNAPSHOT_JOB).replace(
             "      - name: Ledger attribution\n        run: python3 .keelokit/bin/ledger.py check --ci\n", "")
         cases = {"no step": no_step,
-                 "if: false": LEDGER_CI.format(step_extra="\n        if: false", snapshot_job=SNAPSHOT_JOB)}
+                 "if: false": ledger_ci(step_extra="\n        if: false", snapshot_job=SNAPSHOT_JOB)}
         for why, text in cases.items():
             with self.subTest(why):
                 self.write(".github/workflows/ci.yml", text)
@@ -1667,7 +1682,7 @@ class DoctorLedgerRuleTest(LedgerRepo, unittest.TestCase):
                 self.assert_reported(r.stdout, "ledger.py check --ci")
 
     def test_LEDGER_012_S2_the_snapshot_job_is_required_unless_turned_off(self):
-        self.write(".github/workflows/ci.yml", LEDGER_CI.format(step_extra="", snapshot_job=""))
+        self.write(".github/workflows/ci.yml", ledger_ci(step_extra="", snapshot_job=""))
         r = self.doctor("--ci")
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assert_reported(r.stdout, "ledger-snapshot")
@@ -1744,7 +1759,7 @@ class DoctorLedgerRuleTest(LedgerRepo, unittest.TestCase):
     # ── S4: a dated exception ──
     def break_enforcers(self) -> None:
         self.hook("prepare-commit-msg")
-        self.write(".github/workflows/ci.yml", LEDGER_CI.format(step_extra="", snapshot_job=SNAPSHOT_JOB).replace(
+        self.write(".github/workflows/ci.yml", ledger_ci(step_extra="", snapshot_job=SNAPSHOT_JOB).replace(
             "      - name: Ledger attribution\n        run: python3 .keelokit/bin/ledger.py check --ci\n", ""))
 
     def exception(self, expires: str) -> None:
@@ -1772,6 +1787,175 @@ class DoctorLedgerRuleTest(LedgerRepo, unittest.TestCase):
         self.assertRegex(r.stdout, r"(?m)^  ERROR exception for LEDGER-1: expired on 2000-01-01")
         self.assert_reported(r.stdout, ".githooks/prepare-commit-msg")
         self.assert_reported(r.stdout, "ledger.py check --ci")
+
+    # ── round 1: the breaker's and the reviewer's findings (docs/escapes.md ESC-218..ESC-225) ──
+    def ci_without_step(self, snapshot_job: str = SNAPSHOT_JOB) -> str:
+        return ledger_ci(snapshot_job=snapshot_job).replace(LEDGER_STEP, "")
+
+    def test_LEDGER_012_S2_ESC_218_the_snapshot_jobs_belong_to_the_ci_workflow(self):
+        """ESC-218: the CI workflow is the file whose `on:` has push or pull_request and that holds the live ledger
+        step; the snapshot jobs count only there, and another file's job of the same name never stands in for it."""
+        self.write(".github/workflows/ci.yml", ledger_ci(snapshot_job=""))
+        self.write(".github/workflows/release.yml", "name: Release\non:\n  push:\n    tags: ['v*']\njobs:\n"
+                   + LEDGER_CONFIG_JOB + SNAPSHOT_JOB)
+        r = self.doctor("--ci")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assert_reported(r.stdout, "ledger-snapshot")
+
+    def test_LEDGER_012_S2_ESC_218_another_workflows_job_of_the_same_name_is_no_false_error(self):
+        """ESC-218: a manual workflow's own `checks` job (make lint), sorted before or after ci.yml, is not the CI's."""
+        for name in ("aa.yml", "zz.yml"):
+            with self.subTest(name):
+                self.write(f".github/workflows/{name}", "name: Lint\non: workflow_dispatch\njobs:\n  checks:\n"
+                           "    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps:\n"
+                           "      - uses: actions/checkout@v4\n      - run: make lint\n")
+                out = self.doctor("--ci").stdout
+                self.assertEqual(self.rule_lines(out), [], out)
+                (self.root / f".github/workflows/{name}").unlink()
+
+    def test_LEDGER_012_S2_ESC_219_a_ledger_step_that_cannot_fail_or_never_runs_is_none(self):
+        """ESC-219: only a step that runs the command, can fail, and runs on push or pull_request counts."""
+        step = "python3 .keelokit/bin/ledger.py check --ci"
+        live = "name: Ledger\non:\n  push:\n  pull_request:\njobs:\n"
+        job = ("  attribution:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n{extra}    steps:\n"
+               "      - uses: actions/checkout@v4\n{steps}")
+        cases = {
+            "|| true": (f"      - name: Ledger attribution\n        run: {step} || true\n", None),
+            "exit 0 first": (f"      - name: Ledger attribution\n        run: |\n          exit 0\n          {step}\n", None),
+            "only in name:": (f"      - name: {step}\n        run: echo skipped\n", None),
+            "flow style, if: false": (f"      - {{if: false, run: {step}}}\n", None),
+            "needs a job that never runs": (None, live + "  gate:\n    if: false\n    runs-on: ubuntu-latest\n"
+                                            "    timeout-minutes: 5\n    steps:\n      - run: make gate\n"
+                                            + job.format(extra="    needs: gate\n", steps=f"      - run: {step}\n")),
+            "on: workflow_dispatch only": (None, "name: Ledger\non: workflow_dispatch\njobs:\n"
+                                           + job.format(extra="", steps=f"      - run: {step}\n")),
+            "no on:": (None, "name: Ledger\njobs:\n" + job.format(extra="", steps=f"      - run: {step}\n")),
+        }
+        for why, (in_checks, other) in cases.items():
+            with self.subTest(why):
+                ci = self.ci_without_step()
+                if in_checks:
+                    ci = ci.replace("      - name: Dependency audit\n", in_checks + "      - name: Dependency audit\n")
+                self.write(".github/workflows/ci.yml", ci)
+                if other:
+                    self.write(".github/workflows/ledger.yml", other)
+                r = self.doctor("--ci")
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assert_reported(r.stdout, "ledger.py check --ci")
+                (self.root / ".github/workflows/ledger.yml").unlink(missing_ok=True)
+
+    def test_LEDGER_012_S3_ESC_220_a_since_off_the_trunk_is_an_error_and_no_share(self):
+        """ESC-220: `since` must be a trunk commit; one only on a side branch measures nothing."""
+        self.at(EPOCH_2020 + DAY)
+        self.git("checkout", "-q", "-b", "side")
+        since = self.commit("docs: adoption on a side branch\n\nNo-story: docs")
+        self.git("checkout", "-q", "main")
+        self.state(since=since, enforce="warn")
+        self.at(EPOCH_2020 + 2 * DAY)
+        self.commit("chore: ledger config\n\nNo-story: harness")
+        self.fast_import([f"docs: note {i}\n\nNo-story: docs" for i in range(20)],
+                         [EPOCH_2020 + 9 * DAY + 3600 * i for i in range(20)])
+        out = self.doctor().stdout
+        self.assertTrue(any(re.search(r"\bsince\b.*\b(not on|off) the trunk\b", line) for line in self.rule_lines(out)),
+                        f"no `  ERROR rule LEDGER-1:` line saying since is not on the trunk:\n{out}")
+        line = self.ledger_line(out)
+        self.assertNotIn("%", line)
+        self.assertNotIn("recommend", line)
+
+    def test_LEDGER_012_S3_ESC_221_since_counts_from_when_it_reached_the_trunk(self):
+        """ESC-221: `since` committed 10 days before on a branch, merged (--no-ff) the day before the newest commit:
+        it reached the trunk a day before, so the trunk has 1 day of history since it, not 10."""
+        start = EPOCH_2020 + 40 * DAY
+        self.at(start)
+        self.git("checkout", "-q", "-b", "side")
+        since = self.commit("docs: adoption\n\nNo-story: docs")
+        self.git("checkout", "-q", "main")
+        self.at(start + 9 * DAY)
+        self.git("merge", "-q", "--no-ff", "side", "-m", "Merge side\n\nNo-story: docs")
+        self.state(since=since, enforce="warn")
+        self.at(start + 9 * DAY + 60)
+        self.commit("chore: ledger config\n\nNo-story: harness")
+        self.fast_import([f"docs: note {i}\n\nNo-story: docs" for i in range(20)],
+                         [start + 10 * DAY - 3600 * (19 - i) for i in range(20)])
+        line = self.ledger_line(self.doctor().stdout)
+        self.assertRegex(line, rf"^  Ledger: 0 of \d+ commits unattributed since {since[:7]}")
+        self.assertNotIn("recommend", line)
+
+    def test_LEDGER_012_S3_ESC_222_a_moves_toml_that_is_not_utf8_is_no_traceback(self):
+        """ESC-222: a snapshot whose moves.toml holds a byte that is not UTF-8 reads as no moves, never a crash."""
+        _, total, newest = self.history(window=20, since_age=9)
+        raw = self.root.parent / f"{self.root.name}-moves.toml"
+        self.addCleanup(raw.unlink, missing_ok=True)
+        head = self.git("rev-parse", "HEAD").strip()
+        raw.write_bytes(b"# moves \xff\xfe\n\n[[move]]\nsha = \"" + head.encode() + b"\"\nseen = \""
+                        + iso_utc(newest).encode() + b"\"\nrun = \"1.1\"\nexact = true\n")
+        blob = self.git("hash-object", "-w", str(raw)).strip()
+        tree = self.git("mktree", data=f"100644 blob {blob}\tmoves.toml\n").strip()
+        self.git("update-ref", "refs/remotes/origin/keelokit/ledger",
+                 self.git("commit-tree", tree, "-m", "ledger snapshot").strip())
+        line = self.ledger_line(self.doctor().stdout)  # doctor() fails on a Traceback
+        self.assertRegex(line, rf"^  Ledger: 0 of {total} commits unattributed")
+
+    def test_LEDGER_012_S1_ESC_223_one_broken_githooks_hook_is_one_line(self):
+        """ESC-223: a hook missing or not executable in .githooks (the hooks path) is one problem, so one line."""
+        saved = {name: (self.root / ".githooks" / name).read_text() for name in LEDGER_HOOKS}
+        for broken in ("missing", "not executable"):  # all three hooks at once: one doctor run per kind
+            with self.subTest(broken=broken):
+                for name in LEDGER_HOOKS:
+                    self.hook(name, None if broken == "missing" else saved[name], mode=0o644)
+                out = self.doctor("--ci").stdout
+                for name in LEDGER_HOOKS:
+                    self.hook(name, saved[name])
+                for name in LEDGER_HOOKS:
+                    lines = [line for line in out.splitlines() if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", line)]
+                    self.assertEqual(len(lines), 1, f"{name}:\n{out}")
+                    self.assertIn(f".githooks/{name}", lines[0])
+        self.write(".keelokit/harness/rules.toml",
+                   toml_rule({"id": "QA-1", "level": "MUST", "rule": "Pass the gates before pushing.",
+                              "why": "The local gate is free.", "enforced_by": ["git-hook:pre-push"]})
+                   + toml_rule(template_ledger_1()))
+        self.hook("pre-push")
+        out = self.doctor("--ci").stdout
+        lines = [line for line in out.splitlines() if re.search(r"(?<![\w-])pre-push(?![\w-])", line)]
+        self.assertEqual(len(lines), 1, out)
+        self.assertTrue(lines[0].startswith("  ERROR rule QA-1:"), lines[0])
+        self.assertIn("LEDGER-1", lines[0])
+
+    def test_LEDGER_012_S1_ESC_224_a_hook_that_names_ledger_py_only_in_a_comment_does_not_call_it(self):
+        """ESC-224: the template's hook with its call deleted still says `ledger.py …` in a comment: not a call."""
+        saved = {name: (self.root / ".githooks" / name).read_text() for name in LEDGER_HOOKS}
+        for name, call in LEDGER_HOOKS.items():  # all three at once: one doctor run
+            gutted = "".join(line for line in saved[name].splitlines(keepends=True)
+                             if line.lstrip().startswith("#") or not re.search(rf"ledger\.py {call}", line))
+            self.assertIn(f"ledger.py {call}", gutted, "the comment still names the command")
+            self.hook(name, gutted)
+        r = self.doctor("--ci")
+        for name in LEDGER_HOOKS:
+            self.hook(name, saved[name])
+        for name in LEDGER_HOOKS:
+            with self.subTest(name, where=".githooks"):
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assert_reported(r.stdout, f".githooks/{name}")
+        for name in LEDGER_HOOKS:
+            self.hook(name, "#!/usr/bin/env sh\n# TODO call ledger.py later\nexit 0\n", where="other-hooks")
+        self.git("config", "core.hooksPath", "other-hooks")
+        r = self.doctor("--ci")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assert_reported(r.stdout, "core.hooksPath", "commit-msg")
+
+    def test_LEDGER_012_S3_ESC_225_enforce_is_read_as_ledger_py_reads_it(self):
+        """ESC-225: `enforce = " warn "` is warn (ledger.py strips it), anything not a string is block."""
+        self.history(window=20, since_age=9, enforce=" warn ")
+        line = self.ledger_line(self.doctor().stdout)
+        self.assertIn('enforce = "warn"', line)
+        self.assertIn('recommend enforce = "block"', line)
+        for value in (True, 1):
+            with self.subTest(enforce=value):
+                text = (self.root / ".keelokit/state.toml").read_text()
+                self.write(".keelokit/state.toml", re.sub(r"(?m)^enforce = .*$", f"enforce = {json.dumps(value)}", text))
+                line = self.ledger_line(self.doctor().stdout)
+                self.assertIn('enforce = "block"', line)
+                self.assertNotIn("recommend", line)
 
 
 class LedgerRuleShipsTest(unittest.TestCase):
