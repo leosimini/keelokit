@@ -266,7 +266,7 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
         self.stubs()
         where = [l for l in self.lines(self.hook()) if l.startswith("Where to look:")]
         self.assertEqual(len(where), 1, "one line")
-        for ask in ("ledger.py show <ID>", "/harbor:log", "backlog/", "Where the truth is"):
+        for ask in ("ledger.py show <ID>", "/harbor:log", "backlog/", "Where the truth is", "agent-brief.md"):
             with self.subTest(ask=ask):
                 self.assertIn(ask, where[0])
 
@@ -281,8 +281,30 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertLessEqual(len(out), 12, out)
                 self.assertEqual(sum(l.startswith("Where to look:") for l in out), 1, out)
+                self.assertIn("summary 0", out) if summary else None
                 for i in range(min(doctor, 2)):
                     self.assertIn(f"doctor {i}", out)
+
+    def test_LEDGER_007_S1_ESC_155_ESC_156_the_doctor_s_whole_brief_survives_a_long_summary(self):
+        """The doctor's brief ends with `Harness errors`: a long summary gives way, never the doctor, and says
+        that it was cut and how to see the rest."""
+        for history in (True, False):
+            with self.subTest(history=history):
+                self.stubs(summary=10, doctor=5)
+                if not history:
+                    self.stub("ledger.py", "if sys.argv[1:] == []:\n    print('\\n'.join(f'summary {i}' for i in range(10)))\n")
+                out = self.lines(self.hook())
+                self.assertLessEqual(len(out), 12, out)
+                self.assertEqual(out[-5:], [f"doctor {i}" for i in range(5)])
+                cut = [l for l in out if "more" in l and "ledger.py" in l and not l.startswith("Where")]
+                self.assertEqual(len(cut), 1, out)
+                self.assertNotIn("summary 9", out)
+
+    def test_LEDGER_007_S1_a_summary_that_fits_is_shown_whole(self):
+        self.stubs(summary=6, doctor=3)
+        out = self.lines(self.hook())
+        self.assertEqual([l for l in out if l.startswith("summary")], [f"summary {i}" for i in range(6)])
+        self.assertFalse([l for l in out if "more" in l and not l.startswith("Where")], out)
 
     def test_LEDGER_007_S1_a_failing_summary_says_why_and_the_rest_still_runs(self):
         self.stub("ledger.py", "if sys.argv[1:] == []:\n"
@@ -302,7 +324,7 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.lines(r)[1:], ["doctor 0"])
 
-    def test_LEDGER_007_S1_the_real_ledger_and_doctor_fit(self):
+    def test_LEDGER_007_S1_ESC_157_the_real_ledger_and_doctor_fit(self):
         """The template's own ledger.py and doctor.py, in a small repo: the summary is the ledger's, all of it
         fits in 12 lines and the hook ends well within its timeout."""
         if not shutil.which("git"):
@@ -312,8 +334,8 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
         story = self.proj / "backlog/stories/DEMO-001-x.md"
         story.parent.mkdir(parents=True)
         story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "x"\nwave = 1\ndepends_on = []\n+++\n')
-        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-               "GIT_COMMITTER_EMAIL": "t@t", "HOME": self.tmp}
+        env = {"PATH": self.path, "HOME": self.tmp, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}  # no inherited GIT_DIR (a git hook's)
         for argv in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "x"]):
             subprocess.run(["git", *argv], cwd=self.proj, env=env, check=True, capture_output=True)
         r = self.hook()
