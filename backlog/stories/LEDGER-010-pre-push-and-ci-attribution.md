@@ -78,15 +78,21 @@ result differs.
 
 Where the result goes beyond or differs from the text above:
 - **A squash is found two ways.** By tree, as written (the commit's tree is the tip of an unintegrated origin
-  branch), and, since a train usually lands after the trunk moved, by the patch-id of the branch's change since
-  its merge base with the trunk (ESC-200). Never from a commit the branch itself reaches, nor from a branch whose
+  branch): an error under block. And, since a train usually lands after the trunk moved, by the patch-id of the
+  branch's change since its merge base with the trunk (ESC-200): only a warning with no correction command, since
+  the same change made twice (a pin bump on a branch and in a CVE fix) is no proof of a squash (ESC-240); the
+  pre-push refuses only on an error. Never from a commit the branch itself reaches, nor from a branch whose
   tip has its base's tree, i.e. one that changes nothing (ESC-199), nor from a branch of fewer than two commits of
   its own: a copy of one commit is a cherry-pick, and the same small change or revert is often made on the trunk
   too (ESC-202, ESC-203). So a one-commit branch squashed on the trunk is not caught. Only branches with a
   `Story:`/`Part-of:` of their own are read, and a patch only for a range commit that changes exactly the branch's
-  paths (ESC-204). A branch's `Story:` must stay a `Story:` (a `Part-of:` would take the story off the trunk); its
-  `Part-of:` is kept by either. What the squash keeps counts on it and on the range's commits made since the
-  branch forked, so a rebase merge, whose copies each keep their own trailer, is no squash loss.
+  paths (ESC-204). Never from a branch under the unverified prefixes (`[verify] wip_branches`, `wip/` when unset,
+  and `archive/`), whose work never lands as it is (ESC-241). A tree match does not count when the trunk already
+  had that tree since the branch forked: a revert back to it (ESC-207). A branch's `Story:` must stay a `Story:` (a `Part-of:` would take the story off the trunk); its
+  `Part-of:` is kept by either. What the squash keeps counts on it and on every trunk commit since the branch
+  forked, in the checked range or not, so the pre-push and `check` agree on the same history: a rebase merge, a
+  fix cherry-picked earlier, a branch stacked on one already squashed, a reapplied squash (ESC-238, ESC-239,
+  ESC-242). A trunk commit before the fork does not count.
 - **Approved correction rows attribute the commit they name**, in `check`, in the summary's unattributed count
   and in the pre-push (ESC-201), which reads them from the trunk the remote or origin already has, never from the
   pushed tip (ESC-205). Without it, the `ledger.py correct` command the CI prints could never turn the
@@ -112,5 +118,6 @@ Where the result goes beyond or differs from the text above:
   the branch until the CI ran, or writes every trailer of the branch in the squash message's last paragraph.
 - **Invariants.** INV-007 is enforced where work enters the trunk (pre-push, then CI); INV-005 by refusing a
   squash that drops a `Story:`. Review and attack: reviewer round 1 (non-blocking, fixed), breaker round 1
-  (ESC-198..ESC-201) and round 2 (ESC-202..ESC-205), each with its test. Round 2's fixes were not attacked again
-  (two rounds at most).
+  (ESC-198..ESC-201) and round 2 (ESC-202..ESC-205), each with its test; the fixture fix ESC-206 came from the
+  PR's own CI. The coordinator's review of #30 ran another breaker pass on the squash check and found false
+  positives (ESC-207, ESC-238..ESC-242), each with its test; a last breaker pass on the squash check followed.
