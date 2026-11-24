@@ -9,7 +9,7 @@
 #
 # This file is the template's: `copier update` merges its new rows into yours (keep your own rows below the template's).
 # New CI job of your own? Add it here in the same commit. A job that can't run on a machine goes in `ci_only`.
-ci_only = ["deploy-staging", "deploy-production", "ci-report"]
+ci_only = ["deploy-staging", "deploy-production", "ci-report", "ledger-config", "ledger-snapshot"]
 
 [jobs]
 secrets = { step = "Secret scan", when = "always" }

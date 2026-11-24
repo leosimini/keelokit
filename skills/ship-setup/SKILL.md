@@ -64,6 +64,14 @@ In order, stopping at the first step that needs the user; after each, tick it on
 
 A step that fails is left unticked with what went wrong and the next thing to try.
 
+**The deploy branches.** Once a deploy succeeds, the deploy job moves `deploy/staging` or `deploy/production` to the
+commit it deployed (`ledger.py deploy <env> <commit>`, the job's last step; the jobs have `contents: write` for
+it). They are what `ledger.py show <ID>` reads to say *in staging* or *in production*, so nobody writes that by
+hand. A rollback runs the release workflow again from the older tag (Actions → Release → Run workflow, "Use
+workflow from" that tag): after the same approval, production gets that version and `deploy/production` moves
+back. Tell the user both, and never move these branches by hand. A project without environments (library, CLI,
+plugin) has none and its stories stop at *in version*.
+
 ## 3. Close
 
 Update the URLs in `docs/context/environments.md`, close the "staging not configured" gap if

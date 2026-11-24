@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The ledger knows when a commit reached main and what runs where (LEDGER-011).** A new CI job,
+  `ledger-snapshot`, runs `ledger.py snapshot` on every push to main and every tag: the orphan branch
+  `keelokit/ledger` gets `LEDGER.md`, `ledger.json` and, in `moves.toml`, the time the CI saw the push, written
+  with plumbing (the checkout is never touched) and retried from the new tip when two runs race (5 tries). Only
+  that job and the deploy jobs get `contents: write`; nothing the CI pushes starts a workflow. `ledger.py show`
+  then gives an exact arrival time, and a shallow session whose history fetch is cut reads the snapshot (it says
+  so, and how old it is) instead of answering unknown. The deploy jobs move `deploy/staging` and
+  `deploy/production` (`ledger.py deploy`) after a deploy that succeeded, backwards on a rollback, which is the
+  release workflow run again from an older tag: stories reach *in staging* and *in production* by themselves.
+  `[ledger] snapshot = ""` turns the snapshot off. An existing project runs `/keelokit:harness-upgrade`.
+
 - **Nothing unattributed reaches the trunk, whatever machine pushed it (LEDGER-010).** The pre-push runs
   `ledger.py prepush` before the verify, for a push to the trunk only: each new commit needs a `Story:`,
   `Part-of:` or `No-story:`, or a merge carrying one that brings it (`UNATTRIBUTED`, with its hash), and a commit

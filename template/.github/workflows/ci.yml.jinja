@@ -263,6 +263,47 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends faketime
       - run: FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+365d' pnpm test
 
+  # LEDGER-011: the CI's snapshot. On every push to main the orphan branch keelokit/ledger gets LEDGER.md and
+  # ledger.json (the ledger of this commit, for a session whose history is cut) and, in moves.toml, the time this
+  # push reached main: everything a push brings ($BEFORE..$AFTER) reached it then. `ledger.py snapshot` commits with
+  # plumbing in a temporary index (the checkout is never touched) and, when the push is rejected, starts again from
+  # the new tip up to 5 times. Only this job writes to the repo, and runs take turns (concurrency); a pending
+  # run GitHub replaces with a newer one is filled in by that newer run, marked not exact. Pushes the CI makes start
+  # no workflow, and this one runs only on main. `[ledger] snapshot = ""` in .keelokit/state.toml turns it off:
+  # ledger-config reads that switch, and ledger-snapshot is skipped.
+  ledger-config:
+    name: Ledger snapshot switch
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      branch: ${{ steps.read.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "branch=$(python3 .keelokit/bin/ledger.py snapshot --branch)" >> "$GITHUB_OUTPUT"
+
+  ledger-snapshot:
+    name: Ledger snapshot (when this push reached main)
+    needs: ledger-config
+    if: needs.ledger-config.outputs.branch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ledger-snapshot
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      BEFORE: ${{ github.event.before }}
+      AFTER: ${{ github.sha }}
+      RUN: ${{ github.run_id }}.${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the ledger reads the whole history; deploy/* and keelokit/ledger come with it
+      - run: python3 .keelokit/bin/ledger.py snapshot --run "$RUN" --push "$BEFORE..$AFTER"
+
   # SAST-1: static analysis for injection, unsafe APIs and hard-coded secrets.
   sast:
     name: Static analysis (Semgrep)
@@ -324,7 +365,8 @@ jobs:
 
   # Staging deploys on every green main. It is a hard failure (never continue-on-error): a red
   # staging must be seen. Until the FLY_API_TOKEN secret exists the job skips itself, and
-  # `pnpm run doctor` keeps listing that as an open setup step.
+  # `pnpm run doctor` keeps listing that as an open setup step. Once the deploy succeeded, deploy/staging
+  # points at this commit (LEDGER-011: the ledger's in-staging); deploys of staging take turns.
   deploy-staging:
     name: Deploy API to staging (Fly.io)
     needs: [integration, build, e2e, {% endraw %}{% if 'web' in apps or 'mobile' in apps %}e2e-stack, {% endif %}{% raw %}sast]
@@ -332,6 +374,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: write # deploy/staging only
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
@@ -342,4 +389,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # 1.6
         if: steps.fly.outputs.ready == 'yes'
       - if: steps.fly.outputs.ready == 'yes'
-        run: flyctl deploy --config apps/api/fly.staging.toml --remote-only{% endraw %}{% endif %}
+        run: flyctl deploy --config apps/api/fly.staging.toml --remote-only
+      - name: deploy/staging points at what staging runs
+        if: steps.fly.outputs.ready == 'yes'
+        run: python3 .keelokit/bin/ledger.py deploy staging "$GITHUB_SHA"{% endraw %}{% endif %}
