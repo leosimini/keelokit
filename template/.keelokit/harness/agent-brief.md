@@ -11,13 +11,15 @@ parallel. (SESS-1)
   **landed** as `[landing] policy` in `.keelokit/state.toml` says (absent = `direct`). `direct`:
   merged on `origin/main`, `pnpm verify` green, pushed; a branch with commits that are not on
   `origin/main` is **not finished**, whatever the report says. `convoy`: delivered (below).
-- It works in its own worktree (`git worktree add ../<repo>-<id> -b <id>`), with its own ports
-  (`E2E_PORT`, `E2E_MOBILE_PORT`, `E2E_API_PORT`).
+- It works in its own worktree (`git worktree add ../<repo>-<id> -b <id>`, then `python3
+  .keelokit/bin/ledger.py take <ID>`, which records the story for its commits and pushes nothing), with
+  its own ports (`E2E_PORT`, `E2E_MOBILE_PORT`, `E2E_API_PORT`). Landed: `ledger.py take --clear`.
 - **Names.** A session that starts another titles it with `python3 .keelokit/bin/status.py title
   <ID>` (`create_session`'s `title`; `--role coordinator` for the coordinator), renames itself with
   its own title on starting when its tool can, and starts each Agent's description `<ID> · <role>`.
 - Cut off mid-work? Push it to `wip/<topic>` (when `[verify] wip_branches` is set): unverified, never
-  lands; whoever takes it over verifies it before it goes anywhere else (WIP-1).
+  lands; whoever takes it over verifies it before it goes anywhere else (WIP-1). Giving the story up:
+  `ledger.py drop <ID> --motivo "…"` keeps the attempt and its reason on `archive/`, for `ledger.py show`.
 - Stories that add a **migration** run one at a time (MIG-1): the second waits for the first to
   land, rebases, and takes a timestamp after it; one that sorts before main's last fails the doctor.
 
@@ -39,8 +41,7 @@ main. The session **never pushes to main**:
 2. `pnpm verify` green on the final commit: the same scope as `--since origin/main`, but it seals,
    so the push in step 3 doesn't run it again. A commit after it means verify again.
 3. `git push origin HEAD:<branch>`; `git ls-remote origin <branch>` shows the verified hash.
-4. The report is branch + full hash + tier + verify result. Not pushed, or green on another hash:
-   not delivered.
+4. The report is branch + full hash + tier + verify result. Not pushed, or green on another hash: not delivered.
 
 ## Models
 
@@ -75,8 +76,7 @@ the log for a phrase. Run `pnpm verify --preflight` first: a red there costs min
 ## The report: 8 lines at most
 
 The story id, the commit hash on `origin/main` (convoy: branch and hash), tier, what `verify` ran,
-anything the person must decide. **Paths, not contents:** point at the file or commit; never paste
-a diff or a log.
+anything the person must decide. **Paths, not contents:** point at the file or commit; never paste a diff or a log.
 
 ## The coordinator trusts nothing but origin/main
 

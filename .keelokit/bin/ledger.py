@@ -10,6 +10,12 @@
     python3 .keelokit/bin/ledger.py show <ID> [--full] a story's card: its state and the why (at most 60 lines)
     python3 .keelokit/bin/ledger.py next               the ready stories nobody works on, by wave and id
     python3 .keelokit/bin/ledger.py --release vX.Y.Z   the stories that entered that version
+    python3 .keelokit/bin/ledger.py take <ID>          this worktree works on <ID> (git config --worktree
+                                                       keelokit.story); exit 1 if it is no story or on the trunk
+    python3 .keelokit/bin/ledger.py take --clear       this worktree works on no story
+    python3 .keelokit/bin/ledger.py drop <ID> --motivo "..."
+                                                       record an abandoned attempt: an empty commit with
+                                                       `Dropped: <ID>`, pushed to archive/<id>-<YYYYMMDD>
     python3 .keelokit/bin/ledger.py check [--ci] [--json]
                                                        every difference (exit 1 on an error-level one)
     python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
@@ -101,9 +107,9 @@ def git_env() -> dict:
             "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never"}
 
 
-def run_git(args: list[str], timeout: float | None = None) -> tuple[int | None, str]:
-    """(returncode, stderr). returncode None: cut at `timeout`, the process group is gone."""
-    proc = subprocess.Popen(["git", *NOPROMPT, *args], cwd=ROOT, env=git_env(), stdin=subprocess.DEVNULL,
+def run_git(args: list[str], timeout: float | None = None, env: dict | None = None) -> tuple[int | None, str]:
+    """(returncode, stderr). returncode None: cut at `timeout`, the process group is gone. `env`: extra variables."""
+    proc = subprocess.Popen(["git", *NOPROMPT, *args], cwd=ROOT, env={**git_env(), **(env or {})}, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             errors="replace", start_new_session=True)
     try:
@@ -2466,6 +2472,158 @@ def cmd_release(state: dict, tag: str) -> int:
     return 0
 
 
+# ── take and drop (LEDGER-008) ──
+
+TAKE_LABELS = {
+    "en": {"no_story": "no story {id} among the stories of the trunk", "taken": "this worktree works on {id}",
+           "was": " (it was {old})", "on_trunk": "{id} is already {state}: nothing to take",
+           "unknown": "warning: the state of {id} cannot be said ({reason}); taken all the same",
+           "elsewhere": "warning: {id} already has Part-of: commits on {branches}: someone may be on it",
+           "cleared": "this worktree works on no story", "no_reason": "drop needs a reason: --motivo \"...\"",
+           "commit_failed": "the drop commit could not be made: {err}",
+           "archived": "{id} dropped: {sha} pushed to {ref} (no verify: archive/ never lands)",
+           "fallback": "the push to {ref} was refused ({err}); committing the drop on {branch} and pushing it",
+           "on_branch": "{id} dropped: {sha} pushed on {branch}",
+           "stays": "{id} not dropped: the push to {ref} was refused ({err}) and {why}; the story stays taken",
+           "unpushed": "{id}: the drop commit {sha} is on {branch} but its push failed ({err}; the pre-push's "
+                       "lines above say why); push it, then `ledger.py take --clear`",
+           "no_branch": "there is no branch to fall back to (a detached HEAD, or the trunk)"},
+    "es": {"no_story": "no hay historia {id} en el trunk", "taken": "este worktree trabaja en {id}",
+           "was": " (era {old})", "on_trunk": "{id} ya está {state}: no hay nada que tomar",
+           "unknown": "aviso: no se puede decir el estado de {id} ({reason}); tomada igual",
+           "elsewhere": "aviso: {id} ya tiene commits Part-of: en {branches}: puede haber alguien en ella",
+           "cleared": "este worktree no trabaja en ninguna historia",
+           "no_reason": "drop necesita un motivo: --motivo \"...\"",
+           "commit_failed": "no se pudo hacer el commit de drop: {err}",
+           "archived": "{id} abandonada: {sha} subido a {ref} (sin verify: archive/ nunca aterriza)",
+           "fallback": "el push a {ref} fue rechazado ({err}); se hace el drop en {branch} y se sube",
+           "on_branch": "{id} abandonada: {sha} subido en {branch}",
+           "stays": "{id} no abandonada: el push a {ref} fue rechazado ({err}) y {why}; la historia sigue tomada",
+           "unpushed": "{id}: el commit de drop {sha} está en {branch} pero su push falló ({err}; las líneas del "
+                       "pre-push de arriba dicen por qué); subilo y luego `ledger.py take --clear`",
+           "no_branch": "no hay rama a la que volver (HEAD suelto, o el trunk)"},
+}
+ON_TRUNK_STATES = ("on-trunk", "in-version", "in-staging", "in-production")
+ARCHIVE = "archive/"
+
+
+def find_story(state: dict, sid: str, t: dict) -> dict | None:
+    """The story's record (ledger_facts), or None after saying it is no story of the trunk."""
+    ctx = read_all(state)
+    rec = next((r for r in ctx["facts"]["stories"] if r["id"] == sid), None)
+    if rec is None:
+        print(f"Keelokit: {t['no_story'].format(id=sid)}")
+    return rec
+
+
+def current_branch() -> str | None:
+    code, out = git_out("symbolic-ref", "--quiet", "--short", "HEAD")
+    return out if code == 0 and out else None
+
+
+def clear_story() -> None:
+    """Unset keelokit.story in this worktree's own config (nothing to do when take never enabled it)."""
+    if git_out("config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")[1] == "true":
+        git_out("config", "--worktree", "--unset-all", "keelokit.story")
+
+
+def cmd_take(state: dict, sid: str | None) -> int:
+    """take <ID>: keelokit.story in this worktree's config (extensions.worktreeConfig: each worktree of the clone has
+    its own). Refuses an id that is no story or a story already on the trunk; a Part-of: commit of the story on
+    another origin branch is a warning, never a refusal (without Harbor in-progress is a signal). take --clear."""
+    t = TAKE_LABELS[read_config(state)["lang"]]
+    if sid is None:
+        clear_story()
+        print(t["cleared"])
+        return 0
+    rec = find_story(state, sid, t)
+    if rec is None:
+        return 1
+    if rec["state"] in ON_TRUNK_STATES:
+        print(f"Keelokit: {t['on_trunk'].format(id=sid, state=rec['state'])}")
+        return 1
+    if rec["state"] == "unknown":
+        print(t["unknown"].format(id=sid, reason=rec["reason"]))
+    mine = {b for b in (current_branch(),) if b}
+    code, upstream = git_out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if code == 0 and upstream.startswith("origin/"):
+        mine.add(upstream.removeprefix("origin/"))
+    others = [b for b in rec["branches"] if b not in mine]
+    if others:
+        print(t["elsewhere"].format(id=sid, branches=listed(others, "more")))
+    code, old = git_out("config", "--get", "keelokit.story")
+    old = old if code == 0 else None
+    for args in (("config", "extensions.worktreeConfig", "true"), ("config", "--worktree", "keelokit.story", sid)):
+        code, err = run_git(list(args))
+        if code != 0:
+            raise LedgerError(f"git {' '.join(args)} failed: {last_error(err)}")
+    print(t["taken"].format(id=sid) + (t["was"].format(old=old) if old and old != sid else ""))
+    return 0
+
+
+def archive_ref(sid: str, day: str) -> str:
+    """archive/<id>-<YYYYMMDD>, or the first -2, -3… that origin does not have yet (two drops in one day)."""
+    base = f"{ARCHIVE}{sid.lower()}-{day}"
+    code, out = git_out("ls-remote", "--heads", "origin", f"refs/heads/{base}*")
+    taken = {line.split()[1].removeprefix("refs/heads/") for line in out.splitlines() if len(line.split()) == 2} \
+        if code == 0 else set()
+    n, name = 1, base
+    while name in taken:
+        n += 1
+        name = f"{base}-{n}"
+    return name
+
+
+def cmd_drop(state: dict, sid: str, reason: str, day: str | None = None) -> int:
+    """drop <ID> --motivo: an empty commit `drop(<ID>): <reason>` (the reason in the body, `Dropped: <ID>` as its
+    trailer) whose parent is HEAD, made with commit-tree so neither HEAD nor the index moves, pushed to
+    archive/<id>-<YYYYMMDD>, where the pre-push runs no verify. Refused there (a session may push only its own
+    branch): the same message is committed on the current branch, one second later so it is another commit (the
+    pre-push remembered the first as an unverified tip), and that branch is pushed with its usual gate; never on
+    the trunk, main, master or release. Then keelokit.story is cleared. Not pushed anywhere: exit 1, the story
+    stays taken."""
+    t = TAKE_LABELS[read_config(state)["lang"]]
+    reason = reason.strip()
+    if not reason:
+        print(f"Keelokit: {t['no_reason']}")
+        return 1
+    if find_story(state, sid, t) is None:
+        return 1
+    subject = " ".join(reason.split("\n", 1)[0].split())
+    subject = subject if len(subject) <= 72 else subject[:71] + "…"
+    message = ["-m", f"drop({sid}): {subject}", "-m", reason, "-m", f"Dropped: {sid}"]
+    code, sha = git_out("commit-tree", "HEAD^{tree}", "-p", "HEAD", *message)
+    if code != 0 or not sha:
+        print(f"Keelokit: {t['commit_failed'].format(err='git commit-tree failed (no HEAD?)')}")
+        return 1
+    ref = archive_ref(sid, day or datetime.now(timezone.utc).strftime("%Y%m%d"))
+    code, err = run_git(["push", "origin", f"{sha}:refs/heads/{ref}"])
+    if code == 0:
+        print(t["archived"].format(id=sid, sha=short(sha), ref=ref))
+        clear_story()
+        return 0
+    branch = current_branch()
+    if branch is None or branch in {trunk_name(state), "main", "master", "release"}:
+        print(f"Keelokit: {t['stays'].format(id=sid, ref=ref, err=last_error(err), why=t['no_branch'])}")
+        return 1
+    print(t["fallback"].format(ref=ref, err=last_error(err), branch=branch))
+    when = f"@{int(git_out('log', '-1', '--format=%ct', sha)[1]) + 1} +0000"
+    code, err = run_git(["commit", "-q", "--only", "--allow-empty", *message],
+                        env={"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when})
+    if code != 0:
+        print(f"Keelokit: {t['commit_failed'].format(err=last_error(err))}")
+        return 1
+    sha = git_out("rev-parse", "HEAD")[1]
+    code, err = run_git(["push", "origin", f"HEAD:refs/heads/{branch}"])
+    if code != 0:
+        print(err.rstrip(), file=sys.stderr)
+        print(f"Keelokit: {t['unpushed'].format(id=sid, sha=short(sha), branch=branch, err=last_error(err))}")
+        return 1
+    print(t["on_branch"].format(id=sid, sha=short(sha), branch=branch))
+    clear_story()
+    return 0
+
+
 def parse_command(argv: list[str]) -> tuple | None:
     """(command, arguments) for the corrections commands and check, or None for any other spelling."""
     if argv[:1] == ["check"] and len(set(argv[1:])) == len(argv[1:]) and set(argv[1:]) <= {"--json", "--ci"}:
@@ -2474,6 +2632,12 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "show", (argv[1], len(argv) == 3)
     if argv == ["next"]:
         return "next", None
+    if argv == ["take", "--clear"]:
+        return "take", None
+    if argv[:1] == ["take"] and len(argv) == 2 and STORY_ID.fullmatch(argv[1]):
+        return "take", argv[1]
+    if argv[:1] == ["drop"] and len(argv) == 4 and STORY_ID.fullmatch(argv[1]) and argv[2] == "--motivo":
+        return "drop", (argv[1], argv[3])
     if argv[:1] == ["--release"] and len(argv) == 2 and not argv[1].startswith("-"):
         return "release", argv[1]
     if argv == ["backfill", "--accept"]:
@@ -2507,6 +2671,10 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_show(state, args)
         if command == "next":
             return cmd_next(state)
+        if command == "take":
+            return cmd_take(state, args)
+        if command == "drop":
+            return cmd_drop(state, *args)
         if command == "release":
             return cmd_release(state, args)
         if command == "propose":

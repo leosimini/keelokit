@@ -4191,5 +4191,227 @@ class LedgerRound1Test(LedgerCase):
         self.assertNotIn("v1.1.0-rc.1", out)
 
 
+ARCHIVE = re.compile(r"refs/heads/archive/auth-002-[0-9]{8}(-[0-9]+)?")
+TEMPLATE_PRE_PUSH = REPO / "template/.githooks/pre-push"
+VERIFY_TOOLS = REPO / "template/.keelokit/bin/verify_tools.py"
+
+
+class LedgerTakeDropCase(LedgerCase):
+    """LEDGER-008: take (the story this worktree works on, in its own config) and drop (an abandoned attempt
+    pushed to archive/<id>-<YYYYMMDD>, or to the current branch when archive/ is refused)."""
+
+    def project(self) -> GitRepo:
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002", "AUTH-003")
+        repo.commit("feat: AUTH-001\n\nStory: AUTH-001")
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "claude/session-x")
+        return repo
+
+    def story_of(self, cwd: Path) -> str | None:
+        r = subprocess.run(["git", "config", "--get", "keelokit.story"], cwd=cwd, env=clean_env(self.tmp),
+                           capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    def archived(self, repo: GitRepo) -> list[tuple[str, str]]:
+        """(sha, ref) of every archive/ branch of AUTH-002 on origin."""
+        out = repo.git("ls-remote", "origin", "refs/heads/archive/*")
+        return [(line.split()[0], line.split()[1]) for line in out.splitlines() if line.split()]
+
+    def message(self, repo: GitRepo, sha: str) -> str:
+        return repo.git("log", "-1", "--format=%B", sha)
+
+
+class LedgerTakeTest(LedgerTakeDropCase):
+    def test_LEDGER_008_S1_take_is_per_worktree(self):
+        repo = self.project()
+        second = self.tmp / "trees" / "second"  # both worktrees live in this test's temp dir
+        repo.git("worktree", "add", "-q", "-b", "other", str(second))
+        r = repo.ledger("take", "AUTH-002")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.story_of(repo.path), "AUTH-002")
+        self.assertIsNone(self.story_of(second), "the second worktree has no story")
+        self.assertEqual(repo.git("config", "--get", "extensions.worktreeConfig").strip(), "true")
+        self.assertNotIn("keelokit", repo.git("config", "--local", "--list"), "never in the clone's shared config")
+
+    def test_LEDGER_008_S1_take_clear_removes_it_and_is_quiet_when_nothing_is_set(self):
+        repo = self.project()
+        self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
+        r = repo.ledger("take", "--clear")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.story_of(repo.path))
+        self.assertEqual(repo.ledger("take", "--clear").returncode, 0, "clearing twice is fine")
+
+    def test_LEDGER_008_S2_take_refuses_a_story_already_on_the_trunk(self):
+        repo = self.project()
+        r = repo.ledger("take", "AUTH-001")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("AUTH-001", r.stdout + r.stderr)
+        self.assertIn("on-trunk", r.stdout + r.stderr)
+        self.assertIsNone(self.story_of(repo.path))
+
+    def test_LEDGER_008_S2_take_refuses_an_id_that_is_no_story(self):
+        repo = self.project()
+        r = repo.ledger("take", "NOPE-001")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("NOPE-001", r.stdout + r.stderr)
+        self.assertIsNone(self.story_of(repo.path))
+        for bad in (["take"], ["take", "AUTH-002", "AUTH-003"], ["take", "--bogus"], ["take", "AUTH-002", "--clear"]):
+            with self.subTest(bad=bad):
+                self.assertEqual(repo.ledger(*bad).returncode, 2)
+
+    def test_LEDGER_008_S3_take_warns_about_another_branch_and_still_sets_it(self):
+        repo = self.project()
+        repo.git("checkout", "-q", "main")
+        repo.on_branch("claude/other-session", "feat: half of AUTH-002\n\nPart-of: AUTH-002")
+        repo.git("fetch", "-q", "origin")
+        repo.git("checkout", "-q", "claude/session-x")
+        r = repo.ledger("take", "AUTH-002")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("claude/other-session", r.stdout + r.stderr)
+        self.assertEqual(self.story_of(repo.path), "AUTH-002")
+        quiet = repo.ledger("take", "AUTH-003")
+        self.assertNotIn("claude/other-session", quiet.stdout + quiet.stderr, "no warning for a story nobody has")
+
+    def test_LEDGER_008_S3_its_own_branch_is_not_another_branch(self):
+        repo = self.project()
+        repo.commit("feat: half of AUTH-002\n\nPart-of: AUTH-002")
+        repo.git("push", "-q", "origin", "claude/session-x")
+        r = repo.ledger("take", "AUTH-002")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("claude/session-x", r.stdout + r.stderr)
+
+
+class LedgerDropTest(LedgerTakeDropCase):
+    REASON = "the API it needs is not there yet"
+
+    def hooks(self, repo: GitRepo, pnpm_exit: int = 1) -> Path:
+        """The template's pre-push on, and a pnpm that records every call (failing by default, so a verify
+        shows)."""
+        (repo.path / ".githooks").mkdir()
+        shutil.copyfile(TEMPLATE_PRE_PUSH, repo.path / ".githooks/pre-push")
+        (repo.path / ".githooks/pre-push").chmod(0o755)
+        shutil.copyfile(VERIFY_TOOLS, repo.path / ".keelokit/bin/verify_tools.py")
+        with (repo.path / ".git/info/exclude").open("a") as f:
+            f.write("/.githooks/\n")
+        repo.git("config", "core.hooksPath", ".githooks")
+        stubs = self.tmp / "stubs"
+        stubs.mkdir()
+        self.calls = self.tmp / "pnpm-calls"
+        (stubs / "pnpm").write_text(f'#!/bin/sh\necho "pnpm $*" >> "{self.calls}"\nexit {pnpm_exit}\n')
+        (stubs / "pnpm").chmod(0o755)
+        return stubs
+
+    def test_LEDGER_008_S4_drop_pushes_to_archive_without_verify(self):
+        repo = self.project()
+        head = repo.commit("feat: a first try at AUTH-002\n\nPart-of: AUTH-002")
+        stubs = self.hooks(repo)
+        self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
+        r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON, path=f"{stubs}:{os.environ['PATH']}")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(repo.sha(), head, "HEAD does not move: the branch carries no archived tip")
+        self.assertFalse(self.calls.exists() and self.calls.read_text().strip(), "the pre-push ran no verify")
+        archived = self.archived(repo)
+        self.assertEqual(len(archived), 1, archived)
+        sha, ref = archived[0]
+        self.assertRegex(ref, ARCHIVE)
+        message = self.message(repo, sha)
+        self.assertTrue(message.startswith("drop(AUTH-002): "), message)
+        self.assertIn(self.REASON, message)
+        self.assertEqual(repo.git("log", "-1", "--format=%(trailers:key=Dropped,valueonly)", sha).strip(), "AUTH-002")
+        self.assertEqual(repo.git("diff-tree", "--no-commit-id", "-r", sha).strip(), "", "an empty commit")
+        show = repo.ledger("show", "AUTH-002")
+        self.assertEqual(show.returncode, 0, show.stderr)
+        self.assertIn(self.REASON, show.stdout)
+        self.assertIn(ref.removeprefix("refs/heads/"), show.stdout)
+        attempts = self.stories(repo)["AUTH-002"]["attempts"]
+        self.assertEqual([a["commit"] for a in attempts], [sha])
+        self.assertIn(self.REASON, attempts[0]["reason"])
+
+    def test_LEDGER_008_S4_a_second_drop_the_same_day_gets_its_own_archive_branch(self):
+        repo = self.project()
+        for n in (1, 2):
+            r = repo.ledger("drop", "AUTH-002", "--motivo", f"try {n} failed")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        refs = [ref for _, ref in self.archived(repo)]
+        self.assertEqual(len(set(refs)), 2, refs)
+        self.assertEqual(len(self.stories(repo)["AUTH-002"]["attempts"]), 2)
+
+    def test_LEDGER_008_S4_drop_refuses_an_unknown_story_or_an_empty_reason(self):
+        repo = self.project()
+        before = repo.sha()
+        for args in (["drop", "NOPE-001", "--motivo", "x"], ["drop", "AUTH-002", "--motivo", "  "]):
+            with self.subTest(args=args):
+                r = repo.ledger(*args)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+        for bad in (["drop", "AUTH-002"], ["drop", "--motivo", "x"], ["drop", "AUTH-002", "--reason", "x"]):
+            with self.subTest(bad=bad):
+                self.assertEqual(repo.ledger(*bad).returncode, 2)
+        self.assertEqual(repo.sha(), before, "no commit")
+        self.assertEqual(self.archived(repo), [])
+
+    def test_LEDGER_008_S4_drop_leaves_staged_work_out_of_its_commit(self):
+        repo = self.project()
+        repo.write("staged.txt", "half\n")
+        repo.git("add", "staged.txt")
+        r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(repo.git("diff-tree", "--no-commit-id", "-r", self.archived(repo)[0][0]).strip(), "")
+        self.assertIn("staged.txt", repo.git("diff", "--cached", "--name-only"), "still staged, not committed")
+
+    def test_LEDGER_008_S5_drop_falls_back_to_the_current_branch_when_archive_is_refused(self):
+        repo = self.project()
+        stubs = self.hooks(repo, pnpm_exit=0)  # the template's pre-push on: the fallback goes through its gate
+        hook = repo.bare / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/archive/*) '
+                        'echo "archive/ is not yours" >&2; exit 1;; esac; done\n')
+        hook.chmod(0o755)
+        self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
+        r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON, path=f"{stubs}:{os.environ['PATH']}")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.archived(repo), [])
+        self.assertIn("pnpm verify", self.calls.read_text(), "the branch push went through its usual verify")
+        tip = repo.git("ls-remote", "origin", "refs/heads/claude/session-x").split()[0]
+        self.assertEqual(repo.sha(), tip, "the branch now holds the drop commit")
+        self.assertIn(self.REASON, self.message(repo, tip))
+        self.assertIn("claude/session-x", r.stdout + r.stderr, "it says where the commit went")
+        attempts = self.stories(repo)["AUTH-002"]["attempts"]
+        self.assertEqual([a["commit"] for a in attempts], [tip])
+        self.assertEqual(attempts[0]["branches"], ["claude/session-x"])
+        self.assertIsNone(self.story_of(repo.path))
+
+    def test_LEDGER_008_S5_drop_never_falls_back_to_the_trunk(self):
+        repo = self.project()
+        repo.git("checkout", "-q", "main")
+        hook = repo.bare / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/archive/*) exit 1;; esac; done\n')
+        hook.chmod(0o755)
+        trunk = repo.git("ls-remote", "origin", "refs/heads/main").split()[0]
+        self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
+        r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(repo.git("ls-remote", "origin", "refs/heads/main").split()[0], trunk)
+        self.assertEqual(repo.sha(), trunk, "no commit on the local trunk either")
+        self.assertEqual(self.story_of(repo.path), "AUTH-002", "not dropped: the story stays taken")
+
+    def test_LEDGER_008_S6_drop_and_landing_clear_the_story(self):
+        repo = self.project()
+        self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
+        self.assertEqual(repo.ledger("drop", "AUTH-002", "--motivo", self.REASON).returncode, 0)
+        self.assertIsNone(self.story_of(repo.path), "drop clears it")
+        # Landing: build-story runs `take --clear` once the story is on the trunk, and says so.
+        self.assertEqual(repo.ledger("take", "AUTH-003").returncode, 0)
+        self.assertEqual(repo.ledger("take", "--clear").returncode, 0)
+        self.assertIsNone(self.story_of(repo.path), "take --clear clears it")
+        skill = (REPO / "skills/build-story/SKILL.md").read_text()
+        land = skill[skill.index("## 7. Land"):skill.index("## Report")]
+        self.assertIn("ledger.py take --clear", land)
+        self.assertIn("ledger.py take <ID>", skill[skill.index("## 1. Pick"):skill.index("## 2. Contract")])
+        self.assertIn("ledger.py drop <ID>", skill)
+        brief = (REPO / "template/.keelokit/harness/agent-brief.md").read_text()
+        for command in ("ledger.py take <ID>", "ledger.py drop <ID>", "ledger.py take --clear"):
+            self.assertIn(command, brief)
+
+
 if __name__ == "__main__":
     unittest.main()
