@@ -2260,49 +2260,74 @@ def trees_of(shas: list[str]) -> dict[str, str]:
     return {s: line.split()[0] for s, line in zip(unique, out) if line.split()[1:2] == ["tree"]}
 
 
+def patch_ids(diff: bytes) -> dict[str, str]:
+    """commit (or the all-zero id for a bare diff) -> `git patch-id --stable` of its change; an empty change has none."""
+    out = git_read(["patch-id", "--stable"], diff).decode(errors="replace").split("\n")
+    return {line.split()[1]: line.split()[0] for line in out if len(line.split()) == 2}
+
+
 def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]]]:
-    """(commit, origin/<branch>, lost) for each non-merge commit of `in_range` whose tree is the tree of the tip of
-    an origin branch that `ctx["tip"]` does not reach (a squash of that branch, JOUNA's trains) and that, with its
-    ancestors in the range made since the branch forked (those the branch does not reach: a rebase merge's
-    copies), lacks a Story: or Part-of: of that branch's own commits (those the tip does not reach). A branch's
-    Story: must stay a Story:; its Part-of: is kept by either, and by an active correction row naming the commit. Two git calls, plus one log when a tree
-    matches."""
+    """(commit, origin/<branch>, lost) for each non-merge commit of `in_range` that is a squash of an origin branch
+    `ctx["tip"]` does not reach (JOUNA's trains) and that, with its ancestors in the range made since the branch
+    forked (those the branch does not reach: a rebase merge's copies), lacks a Story: or Part-of: of that branch's
+    own commits (those the tip does not reach). A squash: its tree is the branch tip's, or (the trunk moved since)
+    its change has the patch-id of the branch's change since its merge base with the tip; never a commit the branch
+    reaches, nor a branch that changes nothing (ESC-199, ESC-200). A branch's Story: must stay a Story:; its
+    Part-of: is kept by either, and by an active correction row naming the commit. Only branches with a Story: or
+    Part-of: of their own are read: one log, then two git calls each, plus one for the range."""
     tip, graph = ctx.get("tip"), ctx["graph"]
     branches = origin_branches(ctx.get("refs") or {}, ctx.get("trunk") or "")
     singles = [c for c in in_range if len(c["parents"]) < 2]
     if not tip or not branches or not singles:
         return []
     reach = set(first_reach(graph, [tip]))
-    loose = {name: sha for name, sha in branches.items() if sha not in reach and sha in graph}
+    loose = {name: sha for name, sha in sorted(branches.items()) if sha not in reach and sha in graph}
     if not loose:
         return []
-    trees = trees_of([c["sha"] for c in singles] + list(loose.values()))
-    by_tree: dict[str, list[str]] = {}
-    for name, sha in sorted(loose.items()):
-        if sha in trees:
-            by_tree.setdefault(trees[sha], []).append(name)
-    matched = [(c, name) for c in singles for name in by_tree.get(trees.get(c["sha"], ""), ())]
-    if not matched:
-        return []
-    tips = sorted({loose[name] for _, name in matched})
+    tips = sorted(set(loose.values()))
     own = {c["sha"]: c for c in read_trunk_log(tips[0], (*tips[1:], "--not", tip))}
+    needs = {}
+    for name, sha in loose.items():
+        mine = reach_until(graph, [sha], reach)
+        stories = {i for m in mine if m in own for i in own[m]["story"]}
+        parts = {i for m in mine if m in own for i in own[m]["part_of"]} - stories
+        if stories or parts:
+            needs[name] = (stories, parts)
+    if not needs:
+        return []
+    bases = {}
+    for name in needs:
+        base = git_read(["merge-base", tip, loose[name]], ok=(0, 1)).decode().strip()
+        if base:
+            bases[name] = base
+    trees = trees_of([c["sha"] for c in singles] + [loose[n] for n in needs] + list(bases.values()))
+    picks = git_read(["log", "--no-walk=unsorted", "-p", "--no-color", "--format=commit %H", "--stdin"],
+                     "".join(f"{c['sha']}\n" for c in singles).encode())
+    mine_ids = patch_ids(picks)
     ranged = {c["sha"]: c for c in in_range}
     rowed: dict[str, set] = {}
     for r in (ctx.get("corrections") or {}).get("active", ()):
         rowed.setdefault(r.get("commit"), set()).add(r.get("story"))
     found = []
-    for c, name in matched:
-        mine = reach_until(graph, [loose[name]], reach)
-        stories = {i for sha in mine if sha in own for i in own[sha]["story"]}
-        parts = {i for sha in mine if sha in own for i in own[sha]["part_of"]} - stories
-        forked = set(first_reach(graph, [loose[name]]))
-        kept = [ranged[sha] for sha in reach_until(graph, [c["sha"]], (set(graph) - set(ranged)) | forked)]
-        rows = rowed.get(c["sha"], set())
-        kept_story = {i for k in kept for i in k["story"]} | rows
-        kept_any = kept_story | {i for k in kept for i in k["part_of"]}
-        lost = [f"Story: {i}" for i in sorted(stories - kept_story)] + [f"Part-of: {i}" for i in sorted(parts - kept_any)]
-        if lost:
-            found.append((c, name, lost))
+    for name, (stories, parts) in needs.items():
+        btip, base = loose[name], bases.get(name)
+        if base and trees.get(base) == trees.get(btip):
+            continue  # the branch changes nothing: its tree is its base's
+        net = patch_ids(git_read(["diff-tree", "-p", "--no-color", base, btip])).get("0" * len(btip)) if base else None
+        forked = set(first_reach(graph, [btip]))
+        for c in singles:
+            if c["sha"] in forked:
+                continue
+            same_tree = trees.get(c["sha"]) is not None and trees.get(c["sha"]) == trees.get(btip)
+            if not same_tree and not (net and mine_ids.get(c["sha"]) == net):
+                continue
+            kept = [ranged[sha] for sha in reach_until(graph, [c["sha"]], (set(graph) - set(ranged)) | forked)]
+            kept_story = {i for k in kept for i in k["story"]} | rowed.get(c["sha"], set())
+            kept_any = kept_story | {i for k in kept for i in k["part_of"]}
+            lost = [f"Story: {i}" for i in sorted(stories - kept_story)] + \
+                   [f"Part-of: {i}" for i in sorted(parts - kept_any)]
+            if lost:
+                found.append((c, name, lost))
     return found
 
 
@@ -2315,9 +2340,15 @@ def range_ctx(state: dict, cfg: dict, tip: str, exclude: list[str]) -> dict | No
     graph = read_graph(sorted({tip, *exclude, *origin_branches(refs, trunk).values()}))
     since = cfg["since"]
     matches = [s for s in graph if s.startswith(since.lower())] if since else []
-    if len(matches) != 1:
+    if len(matches) == 1:
+        stops = sorted({*exclude, matches[0]})
+    elif since and len(matches) == 0 and is_shallow():
+        # A shallow clone cut before `since` (ESC-198): what the remote already has bounds the new commits.
+        if not exclude:
+            raise LedgerError(f"this shallow clone does not reach [ledger] since and nothing bounds the new commits; {FIX}")
+        stops = sorted(exclude)
+    else:
         return None
-    stops = sorted({*exclude, matches[0]})
     log = read_trunk_log(tip, ("--not", *stops))
     stories, unreadable = read_stories(tip, cfg)
     return {"cfg": cfg, "log": log, "graph": graph, "stories": stories, "unreadable": unreadable, "tip": tip,
@@ -3069,8 +3100,16 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
         exclude = [c for c in {commit_of(parts[3]), commit_of(f"refs/remotes/{remote}/{trunk}") if named else None}
                    if c]
         rctx = range_ctx(state, cfg, tip, exclude)
-        if rctx is not None:
-            diffs += attribution_diffs(rctx, rctx["log"], on_trunk=False)
+        if rctx is None:
+            continue
+        found = attribution_diffs(rctx, rctx["log"], on_trunk=False)
+        if found:  # approved correction rows of the pushed tip attribute what they name (ESC-201)
+            try:
+                rctx["corrections"] = corrections_facts(tip, None, set(rctx["placed"][0]), rctx["graph"])
+                found = attribution_diffs(rctx, rctx["log"], on_trunk=False)
+            except LedgerError:
+                pass  # unreadable corrections: the refusal stands
+        diffs += found
     if not diffs:
         return 0
     for d in diffs:
