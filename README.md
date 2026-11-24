@@ -76,6 +76,9 @@ For someone else, or to keep a copy, `/keelokit:project-report` generates the **
 read-only, every stage with its documents, the findings of every bug bash and security review,
 the decisions and the history — as a page to share or an HTML file to export.
 
+And every Claude session starts knowing the state: the **ledger** (`.keelokit/bin/ledger.py`) reads each
+story's state from git — defined, in progress, on main, in which version — and says why it ended up that way.
+
 At the start you choose, once, how Keelokit works: **stage by stage** (it stops for you to
 review each stage) or **automatic** (it goes on alone and stops only where a person is required:
 questions only you can answer, the PRD, accounts, production, money, legal), and whether stories

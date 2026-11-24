@@ -237,5 +237,55 @@ class OwnershipTest(unittest.TestCase):
                         & set(ignored), "template/.gitignore ignores the proposed file")
 
 
+class WhereTheTruthIsTest(unittest.TestCase):
+    """LEDGER-007: a generated project tells every session to ask the ledger for the state."""
+
+    ASKS = {
+        "Is X done, since when, in which version?": "ledger.py show X",
+        "What do I take?": "ledger.py next",
+        "Is someone on it?": "ledger.py show X",
+        "Why did it end up this way?": "ledger.py show X",
+        "What went into 1.16?": "ledger.py --release v1.16.0",
+        "What is under way in the harbor?": "/harbor:log",
+        "Is the record healthy?": "ledger.py check",
+    }
+
+    def section(self, text, heading="## Where the truth is"):
+        self.assertTrue(heading in text, f"no {heading!r}")
+        body = text[text.index(heading) + len(heading):]
+        return body.split("\n## ", 1)[0]
+
+    def test_LEDGER_007_S3_a_generated_project_s_agents_md_has_the_section(self):
+        uv_or_skip(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            dst = Path(tmp, "product")
+            out = subprocess.run(
+                [UV, "tool", "run", "--quiet", COPIER, "copy", "--vcs-ref", "HEAD", "--defaults",
+                 "--data", "project_name=Acme", "--data", "description=What it does", str(ROOT), str(dst)],
+                capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(out.returncode, 0, out.stderr[-3000:])
+            body = self.section((dst / "AGENTS.md").read_text())
+        rows = [line for line in body.splitlines() if line.startswith("|")]
+        for question, command in self.ASKS.items():
+            with self.subTest(question=question):
+                row = next((r for r in rows if question in r), None)
+                self.assertIsNotNone(row, f"no row for {question!r}")
+                self.assertIn(f"`python3 .keelokit/bin/{command}`" if command.startswith("ledger")
+                              else f"`{command}`", row)
+        self.assertIn("never of memory or of a handoff file", body)
+
+    def test_LEDGER_007_S3_the_brief_and_the_protocol_say_the_same(self):
+        """An adopted repo (mode=harness) gets .keelokit/ only: the agent brief and the execution protocol carry
+        the rule too."""
+        brief = self.section((ROOT / "template/.keelokit/harness/agent-brief.md").read_text(),
+                             "## The coordinator trusts nothing but origin/main")
+        protocol = self.section((ROOT / "template/.keelokit/harness/execution-protocol.md").read_text(),
+                                "## Done means")
+        for name, text in (("agent-brief", brief), ("execution-protocol", protocol)):
+            with self.subTest(file=name):
+                self.assertTrue("ledger.py show" in text, "names `ledger.py show`")
+                self.assertTrue("never of memory or of a handoff file" in text, "states the rule")
+
+
 if __name__ == "__main__":
     unittest.main()
