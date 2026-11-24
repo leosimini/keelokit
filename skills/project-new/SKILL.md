@@ -143,7 +143,8 @@ the receptionist opens on the phone", not "Vite + React"), and ask for approval.
    green — the fix belongs in the generated project only if it is product-specific; if the
    template itself is wrong, say so: it must be fixed in Keelokit.
 4. First commit, of everything (`git add -A`: `pnpm-lock.yaml` included, or `pnpm verify` can't
-   compare it with origin/main): `chore: skeleton from Keelokit v<version>`.
+   compare it with origin/main): `git commit -m "chore: skeleton from Keelokit v<version>" -m "No-story: harness"`
+   (the commit-msg hook refuses a commit that names no story; its own `-m` makes the trailer the last paragraph).
    Then record where the ledger's attribution starts: `[ledger] since = "<the full sha of that first
    commit>"` in `.keelokit/state.toml` (`git rev-parse HEAD`), committed with the next change.
    With a `mobile` app, the template writes `[local]` in `.keelokit/profile.toml` and a

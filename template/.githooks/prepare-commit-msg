@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# appends Part-of: <ID> from `git config keelokit.story` (`ledger.py take <ID>`). The logic is `ledger.py hook prepare`; without python3 the commit stops.
+command -v python3 >/dev/null 2>&1 || { echo 'Keelokit: python3 not found, so the prepare-commit-msg hook cannot check this commit. Install Python 3.11+.' >&2; exit 1; }
+exec python3 .keelokit/bin/ledger.py hook prepare "$@"

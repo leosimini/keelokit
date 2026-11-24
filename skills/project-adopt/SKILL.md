@@ -23,8 +23,10 @@ reason and expiry; the waves and their stories). Explain terms of art in one pla
 first time they come up.
 
 Once `.keelokit/` is committed (the adoption commit), record where the ledger's attribution
-starts: `[ledger] since = "<the full sha of the adoption commit>"` in `.keelokit/state.toml`. History
-before it is the ledger's old history (corrections, LEDGER-004), never a commit to rewrite.
+starts: `[ledger] since = "<the full sha of the adoption commit>"` in `.keelokit/state.toml`, with
+`enforce = "warn"` (an adopted repo starts in warn and moves to block once its commits come attributed). History
+before it is the ledger's old history (corrections, LEDGER-004), never a commit to rewrite. The commits this
+skill makes carry `No-story: harness` as their own last paragraph (`git commit -m "…" -m "No-story: harness"`).
 
 Settle the run decisions once, as project-new's step 0 does, and record them in `[run]`. In
 automatic mode the intake and backlog gates can be approved automatically (`"<date> auto"`), but
