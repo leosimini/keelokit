@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Nothing unattributed reaches the trunk, whatever machine pushed it (LEDGER-010).** The pre-push runs
+  `ledger.py prepush` before the verify, for a push to the trunk only: each new commit needs a `Story:`,
+  `Part-of:` or `No-story:`, or a merge carrying one that brings it (`UNATTRIBUTED`, with its hash), and a commit
+  whose tree is the tip of an unintegrated origin branch is a squash of it that must keep every `Story:` and
+  `Part-of:` of that branch (`SQUASH_LOST_TRAILERS`). The CI's doctor job (`fetch-depth: 0`) gets a
+  `ledger.py check --ci` step: on a pull request it checks the branch's commits (GitHub's "Merge pull request"
+  and sync merges of main count as attributed when what they bring is), on a push to main the trunk since
+  `[ledger] since`, printing the exact `ledger.py correct` command for a commit that got through. An approved
+  correction row now attributes the commit it names. All three follow `[ledger] enforce`. An existing project
+  runs `/keelokit:harness-upgrade`.
+
 - **Commits name their story by themselves, and a commit that names none is caught when it is made
   (LEDGER-009).** Two new git hooks in `.githooks/`: `prepare-commit-msg` appends `Part-of: <ID>` from the story
   `ledger.py take` recorded in the worktree, and `commit-msg` checks the trailer grammar (`UNATTRIBUTED`,
