@@ -4,7 +4,7 @@ epic = "FLEET"
 title = "The verify says how long it will take, as a range from its own history"
 wave = 21
 depends_on = ["FLEET-001"]
-touches = ["template/scripts/verify.sh", "template/.keelokit/bin/verify_tools.py", "template/.keelokit/bin/status.py", "tests/test_verify_plan.py", "CHANGELOG.md"]
+touches = ["template/scripts/verify.sh", "template/.keelokit/bin/verify_tools.py", "template/.keelokit/bin/status.py", "tests/test_verify_plan.py", "tests/test_verify_operativo.py", "docs/design.md", "docs/escapes.md", "CHANGELOG.md"]
 dimensions = ["logic", "dx"]
 invariants = []
 origin = "docs/fleet-lessons.md — coordination; JOUNA: long verifies always took longer than estimated"
@@ -72,6 +72,13 @@ What was built differs from the text above in these points (the smallest option 
 - **Seconds per step id.** The history's `steps` were keyed by title; each line now also has `durations` (id →
   seconds, e2e-stack summed over apps). Lines written before are read through the titles, so the history the
   machine already has counts from the first run.
+- **A planned step that didn't run took 0 s.** `want` plans steps that run only sometimes (mutation without
+  critical code, e2e-stack without Docker or a web app, sast without semgrep). Where a history line records its
+  `planned` steps, a planned step it didn't run counts 0 s, so a rare 40-minute mutation shows in the high end
+  only when it is frequent enough, and a step a machine never runs isn't "missing" forever (review, ESC-166).
+- **A narrowed `--rerun-failed`** estimates the steps it reruns, not the whole plan it records (review, ESC-165).
 - **Range left.** The state file gains `step_id`, `step_since` and `estimate` (id:median:p90 per step in run order).
   `status.py` subtracts the time spent in the current step from its figures (none once past them), adds the later
-  steps whole, and says nothing about time when a figure is missing or doesn't parse.
+  steps whole, and says nothing about time when a figure is missing or doesn't parse. Known limit: e2e-stack's
+  figure is the sum over its apps, and `step_since` restarts with each app, so during the second app the range
+  left counts the first one again (too high, never too low).

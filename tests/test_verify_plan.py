@@ -507,10 +507,6 @@ class Round1PlanTest(MemoryFixture):
         self.assertEqual(r.stdout.strip(), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def run_entry(durations, level="changed", workers=None, result="pass", **extra):
     """A history line of a finished run as cmd_record writes it (FLEET-002 adds `durations`, id → seconds)."""
     return json.dumps({"t": 1, "level": level, "result": result, "partial": False, "scope": "", "narrowed": False,
@@ -582,6 +578,26 @@ class EstimateTest(unittest.TestCase):
         e = self.estimate(lines, ["unit", "lint", "build"])
         self.assertEqual(e["steps"], {"unit": (600, 600)})
 
+    def test_FLEET_002_S1_a_planned_step_that_did_not_run_counts_zero_seconds(self):
+        """FLEET-002.S1 (review): mutation was planned in 12 runs and ran in 2 (no critical code changed in the
+        rest): its median is 0, not the 40 minutes of the 2 runs where it ran."""
+        lines = [run_entry({"unit": 600, **({"mutation": 2400} if i < 2 else {})}, planned=["unit", "mutation"]) for i in range(12)]
+        e = self.estimate(lines, ["unit", "mutation"])
+        self.assertEqual(e["steps"]["mutation"][0], 0)
+        # 2 runs in 12 is more than the 10% above the 90th percentile: the high end shows it (0 + 0.9 × 2400 s)
+        self.assertEqual(e["steps"]["mutation"][1], 2160)
+        self.assertEqual(e["text"], "about 10–46 min (from 12 runs)")
+
+    def test_FLEET_002_S1_a_step_planned_in_every_run_and_never_run_is_not_called_missing(self):
+        """FLEET-002.S1 (review): a machine without Docker plans e2e-stack every time and never runs it."""
+        lines = [run_entry({"unit": 600}, planned=["unit", "e2e-stack"]) for _ in range(3)]
+        e = self.estimate(lines, ["unit", "e2e-stack"])
+        self.assertEqual(e["text"], "about 10 min (from 3 runs)")
+
+    def test_FLEET_002_S1_the_database_counts_for_e2e_stack_too(self):
+        lines = [run_entry({"db": 30, "e2e-stack": 100}) for _ in range(3)]
+        self.assertIn("db", self.estimate(lines, ["e2e-stack"])["steps"])
+
     def test_FLEET_002_S2_two_past_runs_give_no_estimate_yet(self):
         e = self.estimate([run_entry({"unit": 600}) for _ in range(2)], ["unit"])
         self.assertEqual(e["steps"], {})
@@ -651,11 +667,12 @@ class StatusRangeLeftTest(MemoryFixture):
         common.mkdir(exist_ok=True)
         (common / "keelokit-verify.state").write_text("".join(f"{k}={v}\n" for k, v in state.items()))
         status = runpy.run_path(str(REPO / "template/.keelokit/bin/status.py"), run_name="status")
-        return status["verify_line"](common)
+        return status["verify_line"](common, now=self.NOW)
+
+    NOW = 1_800_000_000  # a fixed clock: nothing here reads the real one
 
     def running(self, **extra):
-        import time
-        now = int(time.time())
+        now = self.NOW
         return {"state": "running", "pid": os.getpid(), "step": "Unit tests", "since": now - 600, "head": "abcdef0123",
                 "level": "changed", "step_id": "unit", "step_since": now - 120,
                 "estimate": "git:6:6 lint:60:90 unit:630:900 build::300 e2e:300:600", **extra}
@@ -666,8 +683,7 @@ class StatusRangeLeftTest(MemoryFixture):
                          "verify: running 'Unit tests' for 10 min (changed, abcdef0) · about 13–23 min left")
 
     def test_FLEET_002_S4_a_step_past_its_90th_percentile_counts_zero_and_the_rest_still_counts(self):
-        import time
-        line = self.line(self.running(step_since=int(time.time()) - 2000))
+        line = self.line(self.running(step_since=self.NOW - 2000))
         self.assertTrue(line.endswith("· about 5–10 min left"), line)
 
     def test_FLEET_002_S4_without_an_estimate_the_line_is_as_before(self):
@@ -683,3 +699,7 @@ class StatusRangeLeftTest(MemoryFixture):
     def test_FLEET_002_S4_a_finished_run_shows_no_range(self):
         self.assertEqual(self.line({"state": "pass", "rc": 0, "head": "abcdef0123", "level": "all", "since": 0,
                                     "estimate": "unit:600:900"}), "verify: last pass (exit 0) on abcdef0, all")
+
+
+if __name__ == "__main__":
+    unittest.main()
