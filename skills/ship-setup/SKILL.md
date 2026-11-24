@@ -69,7 +69,8 @@ commit it deployed (`ledger.py deploy <env> <commit>`, the job's last step; the 
 it). They are what `ledger.py show <ID>` reads to say *in staging* or *in production*, so nobody writes that by
 hand. A rollback runs the release workflow again from the older tag (Actions → Release → Run workflow, "Use
 workflow from" that tag): after the same approval, production gets that version and `deploy/production` moves
-back. Tell the user both, and never move these branches by hand. A project without environments (library, CLI,
+back (only to a tag made after the upgrade that brought this: an older tag's workflow has no "Run workflow" and its
+`ledger.py` no `deploy`). Tell the user both, and never move these branches by hand. A project without environments (library, CLI,
 plugin) has none and its stories stop at *in version*.
 
 ## 3. Close

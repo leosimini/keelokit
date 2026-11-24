@@ -98,7 +98,8 @@ Built as specified, with these differences and decisions (none changes a product
   run does not have, or a descendant of its trunk), the run keeps it and adds only its moves. moves.toml is
   merged (exact over not exact, then the earlier time) and kept oldest first along the trunk.
 - **The time comes from `KEELOKIT_SNAPSHOT_AT`** (epoch seconds or ISO 8601), the current time when unset, so
-  tests never assert the wall clock.
+  tests never assert the wall clock. The CI sets it to the push event's `repository.pushed_at`: when the push
+  happened, not when the job got to run (ESC-210). Of two records of one commit the earlier time wins (ESC-208).
 - **The deploy move is a ledger command**, `ledger.py deploy <staging|production> <commit>`, the deploy jobs'
   last step, only when the Fly deploy really ran. A rollback is the release workflow run again from an older tag:
   `workflow_dispatch` was added to `release.yml.jinja` (the tag check refuses any other ref). `deploy-staging`
@@ -107,7 +108,12 @@ Built as specified, with these differences and decisions (none changes a product
   them only where this clone proves it: a `Story:` commit or a revert after the snapshot's commit, a deploy branch
   that moved (contained or not, else a forward move from the snapshot's head; otherwise `unknown`), a new final tag.
   The snapshot's `ledger.json` carries the refs it saw (`snapshot.refs`) for that. `SNAPSHOT_BEHIND` says the
-  commit, when the CI saw it and how many commits behind it is. `in-progress` is as of the snapshot.
+  commit, when the CI saw it and how many commits behind it is. `in-progress` is as of the snapshot. Deliberate:
+  when the clone does not reach back to the snapshot's commit, a `Story:` or revert in the gap it cannot see leaves
+  the snapshot's state in place, marked `as_of` and said by `SNAPSHOT_BEHIND` ("a number of commits this clone
+  cannot count"): the story asks for states as of the snapshot's commit, and calling every story unknown there
+  would undo the reason the snapshot exists. A deploy branch or tag that moved is different: it changes a state
+  the snapshot claims for now, so it is proved or unknown.
 - **`history --ensure` keeps the last quarter of its cap (at most 3 s)** for fetching the snapshot branch when
   the history stays incomplete; the line still names the whole cap.
 - **The snapshot branch is no branch of the project.** `origin/keelokit/ledger` is left out of every reading of

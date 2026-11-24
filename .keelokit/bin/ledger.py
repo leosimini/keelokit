@@ -2613,8 +2613,9 @@ def moves_toml(moves: list[dict]) -> str:
 
 
 def better_move(old: dict, new: dict) -> bool:
-    """True when `new` says more about the same commit than `old`: exact over not exact, then the earlier time."""
-    return (not new["exact"], new["seen"]) < (not old["exact"], old["seen"])
+    """True when `new` says more about the same commit than `old`: the earlier time (the commit had reached the trunk
+    by then, ESC-208), then exact over not exact. A later exact record never replaces an earlier sighting."""
+    return (new["seen"], not new["exact"]) < (old["seen"], not old["exact"])
 
 
 def moves_map(moves: list[dict] | None) -> dict[str, dict]:
@@ -2895,16 +2896,19 @@ def merge_moves(old: list[dict], new: list[dict], graph: dict, trunk_sha: str) -
 
 
 def keep_theirs(theirs: dict | None, mine: str, seen: str, graph: dict) -> bool:
-    """True when the branch's ledger.json is of a newer trunk than this run's (pushed after its checkout, or a
-    descendant of its trunk), so a stale run never puts an older reading back."""
+    """True when the branch's ledger.json is of a newer trunk than this run's (a descendant of its trunk, or a commit
+    this run does not have that a later push brought), so a stale run never puts an older reading back. A commit this
+    run does not have counts as newer only when it was seen later: after a rewrite of the trunk the old reading's
+    commit never comes back, and the current trunk gets its reading again (ESC-209)."""
     if theirs is None:
         return False
     sha = theirs["trunk_sha"]
+    meta = theirs.get("snapshot") if isinstance(theirs.get("snapshot"), dict) else {}
+    later = isinstance(meta.get("seen"), str) and meta["seen"] > seen
     if sha == mine:
-        meta = theirs.get("snapshot") if isinstance(theirs.get("snapshot"), dict) else {}
-        return isinstance(meta.get("seen"), str) and meta["seen"] > seen
+        return later
     if sha not in graph:
-        return True
+        return later
     if sha in first_reach(graph, [mine]):
         return False
     return mine in first_reach(graph, [sha])

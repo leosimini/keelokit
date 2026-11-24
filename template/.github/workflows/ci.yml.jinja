@@ -280,8 +280,11 @@ jobs:
       branch: ${{ steps.read.outputs.branch }}
     steps:
       - uses: actions/checkout@v4
+      # Its own line, so a crash of ledger.py fails the step instead of reading as "off".
       - id: read
-        run: echo "branch=$(python3 .keelokit/bin/ledger.py snapshot --branch)" >> "$GITHUB_OUTPUT"
+        run: |
+          branch=$(python3 .keelokit/bin/ledger.py snapshot --branch)
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
   ledger-snapshot:
     name: Ledger snapshot (when this push reached main)
@@ -298,6 +301,8 @@ jobs:
       BEFORE: ${{ github.event.before }}
       AFTER: ${{ github.sha }}
       RUN: ${{ github.run_id }}.${{ github.run_attempt }}
+      # When the push happened (epoch seconds, from the push event), not when this job got to run.
+      KEELOKIT_SNAPSHOT_AT: ${{ github.event.repository.pushed_at }}
     steps:
       - uses: actions/checkout@v4
         with:
