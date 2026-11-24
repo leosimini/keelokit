@@ -74,6 +74,10 @@ jobs:
       # What `git config core.hooksPath .githooks` does once in a clone (AGENTS.md), so the git-hook checks see the hooks.
       - run: git config core.hooksPath .githooks
       - run: python3 .keelokit/bin/doctor.py --ci
+      # LEDGER-010 (INV-007): nothing unattributed reaches the trunk. On a pull request, its commits (GitHub's merge
+      # of it stands for the merge to come); on a push to main, main since [ledger] since. Needs fetch-depth 0.
+      - name: Ledger attribution
+        run: python3 .keelokit/bin/ledger.py check --ci
 
   # SAST-1: static analysis of the Python the plugin runs on people's machines, and of secrets.
   sast:
