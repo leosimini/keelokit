@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-11-24
 
 - **The agent brief carries the fleet's lessons (FLEET-006).** Push before any wait longer than a few minutes
   (the story's branch when verified, else `wip/<topic>` with the same commits); wait on state, never on a log
