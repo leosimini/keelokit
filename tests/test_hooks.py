@@ -742,6 +742,33 @@ class CommitHooks(unittest.TestCase):
         self.assert_refused(r, "UNKNOWN_STORY", before)
         self.assertIn("NEW-003", r.stderr)
 
+    def test_LEDGER_009_S4_ESC_191_the_editor_flow_still_needs_a_body(self):
+        """git's help comments below what the editor wrote are no body: git strips them (commit.cleanup unset)."""
+        self.assert_hooks_live()
+        self.git("config", "--unset", "commit.cleanup", check=False)
+        editor = self.tmp / "editor-story.sh"
+        editor.write_text("#!/bin/sh\nprintf 'feat: x\\n\\nStory: AUTH-001\\n' | cat - \"$1\" > \"$1.new\" "
+                          "&& mv \"$1.new\" \"$1\"\n")
+        editor.chmod(0o755)
+        before = self.head()
+        r = self.commit(None, GIT_EDITOR=str(editor))
+        self.assert_refused(r, "STORY_NO_BODY", before)
+
+    def test_LEDGER_009_S2_the_source_record_is_removed_and_a_stale_one_changes_nothing(self):
+        """prepare-commit-msg records git's source in $(git rev-parse --git-path keelokit-commit-source); commit-msg
+        reads and deletes it. A stale record (an editor's "" left behind) does not turn a -m commit into an abort."""
+        self.assert_hooks_live()
+        record = self.proj / self.git("rev-parse", "--git-path", "keelokit-commit-source").stdout.strip()
+        r = self.commit("x\n\nNo-story: docs — y\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(record.exists(), "commit-msg deletes the record")
+        record.write_text("")
+        before = self.head()
+        self.stage()
+        r = self.git("commit", "-q", "-m", "#5 fix", check=False)
+        self.assert_refused(r, "UNATTRIBUTED", before)
+        self.assertFalse(record.exists(), "commit-msg deletes the record after a refusal too")
+
     def test_LEDGER_009_S5_a_story_only_in_the_work_tree_is_known(self):
         self.assert_hooks_live()
         new = self.proj / "backlog/stories/NEW-002-y.md"
@@ -886,9 +913,14 @@ class CommitHooks(unittest.TestCase):
             "CRLF": (False, ("-F", str(crlf)), {}),
             "plain, unattributed": (False, ("-m", "x"), {}),
             "Part-of in its own paragraph": (False, ("-m", "x", "-m", "Part-of: AUTH-001", "-m", COAUTHOR), {}),
+            # commit.cleanup = strip drops the `#` line: git stores `Part-of: AUTH-001` alone, one paragraph.
+            "cleanup strip, hash subject": (False, ("-c", "commit.cleanup=strip", "-m", "#5 fix", "-m",
+                                                    "Part-of: AUTH-001"), {}),
         }
         codes = ("UNATTRIBUTED", "SQUASH_LOST_TRAILERS", "BAD_CATEGORY", "UNKNOWN_STORY", "STORY_NO_BODY")
         for name, (taken, args, extra) in corpus.items():
+            opts = args[:2] if args[:1] == ("-c",) else ()  # git options, before `commit`
+            args = args[len(opts):]
             with self.subTest(name):
                 self.enforce("block", f'since = "{since}"\n')  # the reset below restores the tracked state.toml
                 if taken:
@@ -897,11 +929,11 @@ class CommitHooks(unittest.TestCase):
                     self.git("config", "--worktree", "--unset-all", "keelokit.story", check=False)
                 before = self.head()
                 self.stage()
-                r = self.git("commit", "-q", *args, check=False, **extra)
+                r = self.git(*opts, "commit", "-q", *args, check=False, **extra)
                 accepted = r.returncode == 0
                 if not accepted:
                     self.assertEqual(self.head(), before)
-                    r2 = self.git("commit", "-q", "--no-verify", *args, check=False, **extra)
+                    r2 = self.git(*opts, "commit", "-q", "--no-verify", *args, check=False, **extra)
                     self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
                 sha = self.head()
                 chk = subprocess.run(["python3", ".keelokit/bin/ledger.py", "check"], cwd=self.proj, env=self.env(),
