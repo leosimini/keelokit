@@ -698,11 +698,43 @@ def workflow_job_texts(text: str) -> dict[str, str]:
         rf"(?ms)^ {{{n}}}([\w-]+):[ \t]*(?:#[^\n]*)?\n(.*?)(?=^ {{{n}}}[\w-]+:|\Z)", jobs.group(1))}
 
 
-def runs_on_trunk_events(text: str) -> bool:
-    """The workflow's `on:` names push or pull_request (a workflow_dispatch-only file, or a YAML file with no `on:`,
-    never runs for a commit or a pull request)."""
-    m = re.search(r"(?ms)^['\"]?on['\"]?:[ \t]*(.*?)(?=^[^\s#]|\Z)", text)
-    return bool(m and re.search(r"(?m)(?:^|[\s\[,'\"])(push|pull_request)['\"]?[ \t]*(?::|,|\]|$)", m.group(1)))
+def workflow_events(text: str) -> set[str]:
+    """The events a workflow runs on, from its top-level `on:` (a scalar, a list or a mapping; comments and the
+    keys under each event never count). A `push` filtered to tags only is `push-tags`: a release, not the trunk."""
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    at = next((i for i, ln in enumerate(lines) if re.match(r"['\"]?on['\"]?:", ln)), None)
+    if at is None:
+        return set()
+    inline = re.sub(r"\s#.*$", "", lines[at].split(":", 1)[1]).strip()
+    if inline:
+        return set(re.findall(r"[\w-]+", inline))
+    body = []
+    for ln in lines[at + 1:]:
+        if not ln.startswith((" ", "\t")):
+            break
+        body.append(ln)
+    if not body:
+        return set()
+    n = len(body[0]) - len(body[0].lstrip())
+    events: set[str] = set()
+    for i, ln in enumerate(body):
+        if len(ln) - len(ln.lstrip()) != n:
+            continue
+        m = re.match(r"\s*(?:-\s*)?['\"]?([\w-]+)['\"]?\s*(:|$)", ln)
+        if not m:
+            continue
+        event = m.group(1)
+        if event == "push":
+            under = []
+            for sub in body[i + 1:]:
+                if len(sub) - len(sub.lstrip()) <= n:
+                    break
+                under.append(sub)
+            keys = {k.group(1) for sub in under if (k := re.match(r"\s*([\w-]+)\s*:", sub))}
+            if keys & {"tags", "tags-ignore"} and not keys & {"branches", "branches-ignore"}:
+                event = "push-tags"
+        events.add(event)
+    return events
 
 
 FLOW_OFF = re.compile(r"(?:^|[{,\s])if:[ \t]*(?P<q>['\"]?)(?:false|\$\{\{\s*false\s*\}\})(?P=q)[ \t]*(?:[,}#]|$)",
@@ -713,7 +745,8 @@ LEDGER_CHECK = re.compile(r"\bledger\.py[ \t]+check[ \t]+--ci\b")
 
 
 def run_script(step: str) -> str:
-    """The shell text of a step's `run:` (one line, a block scalar, or a flow mapping's value); "" without one."""
+    """The shell text of a step's `run:` (one line, a block scalar, or a flow mapping's value); "" without one. A
+    folded scalar (`>`) is one line, as YAML reads it."""
     m = re.search(r"(?m)^([ \t-]*)run:[ \t]*([|>][-+0-9]*)?[ \t]*(.*)$", step)
     if not m:
         flow = re.search(r"[{,][ \t]*run:[ \t]*([^,}]*)", step)
@@ -725,20 +758,32 @@ def run_script(step: str) -> str:
         if line.strip() and len(line) - len(line.lstrip(" ")) < deeper:
             break
         lines.append(line.strip())
-    return "\n".join(lines)
+    return (" " if m.group(2).startswith(">") else "\n").join(lines)
+
+
+SHELL_OPENS = ("if", "case", "for", "while", "until", "select")
+SHELL_CLOSES = ("fi", "esac", "done", "}")
 
 
 def live_ledger_step(step: str) -> str | None:
-    """None when this step runs `ledger.py check --ci` so that its failure fails the job; "absent" when it doesn't
-    run it at all (the command only in its name); else why it can't fail the job."""
+    """None when this step runs `ledger.py check --ci` so that its failure fails the job (GitHub runs `run:` under
+    `bash -e`: `&&`, `;` and redirections keep it); "absent" when it doesn't run it at all (the command only in its
+    name); else why it can't fail the job: an `exit 0` before it outside any if/case/loop, or `||`, a pipe (no
+    pipefail) or `&` after it on its line."""
     lines = [ln.strip() for ln in run_script(step).splitlines() if ln.strip() and not ln.strip().startswith("#")]
     at = next((i for i, ln in enumerate(lines) if LEDGER_CHECK.search(ln)), None)
     if at is None:
         return "absent"
-    if any(re.match(r"exit\b", ln) for ln in lines[:at]):
-        return "never reaches the command (an `exit` comes first)"
-    if re.search(r"(\|\||;|&)\s*\S", LEDGER_CHECK.split(lines[at], 1)[1]) or lines[at].rstrip().endswith("&"):
-        return "hides its failure (`||`, `;` or `&` after the command)"
+    depth = 0
+    for ln in lines[:at]:
+        words = re.findall(r"[\w{}]+", ln)
+        depth += sum(w in SHELL_OPENS for w in words) + ln.endswith("{") - sum(w in SHELL_CLOSES for w in words)
+        if depth <= 0 and re.fullmatch(r"exit(\s+0)?\s*;?", ln):
+            return "never reaches the command (an `exit 0` comes first)"
+    rest = LEDGER_CHECK.split(lines[at], 1)[1]
+    pipefail = any("pipefail" in ln for ln in lines[:at])
+    if "||" in rest or (re.search(r"(?<!\|)\|(?!\|)", rest) and not pipefail) or re.search(r"(?<![&>0-9])&\s*$", rest):
+        return "hides its failure (`||`, a pipe or `&` after the command)"
     if FLOW_SOFT.search(step):
         return "has continue-on-error"
     if FLOW_OFF.search(step):
@@ -772,22 +817,29 @@ def dead_job(job: str, jobs: dict[str, str], seen: frozenset = frozenset()) -> s
     return None
 
 
-def ledger_ci_workflows() -> tuple[list[tuple[str, dict[str, str]]], str | None]:
-    """The workflows that hold a live `ledger.py check --ci` step for pushes or pull requests, each with its jobs;
-    when there is none, why. Files are read in name order and each on its own: a job of the same name in another
-    workflow (the release workflow's tag-only snapshot) never stands in for this one's."""
-    found: list[tuple[str, dict[str, str]]] = []
+def ledger_ci_workflows() -> tuple[list[tuple[str, dict[str, str], set[str]]], str | None]:
+    """The workflows that hold a live `ledger.py check --ci` step for pushes or pull requests, each with its jobs and
+    events; when there is none, why. Files are read in name order and each on its own: a job of the same name in
+    another workflow (the release workflow's tag-only snapshot) never stands in for this one's. A reusable workflow
+    (`on: workflow_call`) runs on the events of the workflows that call it (`uses: ./.github/workflows/<file>`)."""
+    texts = {rel(p): read(p) or "" for p in sorted((ROOT / ".github/workflows").glob("*.y*ml"))}
+    jobs_of = {path: workflow_job_texts(text) for path, text in texts.items()}
+    events = {path: workflow_events(text) for path, text in texts.items()}
+    for path, jobs in jobs_of.items():
+        for block in jobs.values():
+            for called in re.findall(r"(?m)^\s*uses:[ \t]*['\"]?\./(\.github/workflows/[\w.-]+)", block):
+                if called in events and "workflow_call" in events[called]:
+                    events[called] |= events[path] - {"workflow_call"}
+    found: list[tuple[str, dict[str, str], set[str]]] = []
     why = None
-    for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
-        text = read(path) or ""
-        jobs = workflow_job_texts(text)
+    for path, jobs in jobs_of.items():
         live = False
         for job, block in jobs.items():
             for step in workflow_steps(block):
                 if not LEDGER_CHECK.search(step) or (problem := live_ledger_step(step)) == "absent":
                     continue
-                if problem is None and not runs_on_trunk_events(text):
-                    problem = f"is in {rel(path)}, which runs on no push or pull_request"
+                if problem is None and not events[path] & {"push", "pull_request"}:
+                    problem = f"is in {path}, which runs on no push to a branch or pull_request"
                 if problem is None and (job_why := dead_job(job, jobs)):
                     problem = f"is in a job that never fails the run ({job_why})"
                 if problem is None:
@@ -797,7 +849,7 @@ def ledger_ci_workflows() -> tuple[list[tuple[str, dict[str, str]]], str | None]
             if live:
                 break
         if live:
-            found.append((rel(path), jobs))
+            found.append((path, jobs, events[path]))
     if found:
         return found, None
     return [], why or (f"no CI step runs `python3 .keelokit/bin/ledger.py check --ci` (LEDGER-010's "
@@ -805,8 +857,9 @@ def ledger_ci_workflows() -> tuple[list[tuple[str, dict[str, str]]], str | None]
 
 
 def calls(text: str | None, call: str) -> bool:
-    """Whether a hook's text runs `call` on a line that isn't a comment."""
-    return any(call in line.split("#", 1)[0] for line in (text or "").splitlines() if not line.lstrip().startswith("#"))
+    """Whether a hook's text runs `call` on a line that isn't a comment (quotes around the path don't matter)."""
+    return any(call in re.sub(r"['\"]", "", line) for line in (text or "").splitlines()
+               if line.strip() and not line.lstrip().startswith("#"))
 
 
 def ledger_hook_problems(hooks_dir: str) -> list[tuple[str, bool]]:
@@ -930,6 +983,28 @@ def block_readiness(facts: dict, diffs: list, since_sha: str, snapshot: str) -> 
             "and no error difference (a person or the coordinator switches it in .keelokit/state.toml)")
 
 
+def snapshot_problems(workflows: list[tuple[str, dict[str, str], set[str]]], snapshot: str) -> list[str]:
+    """LEDGER-011's snapshot jobs (`ledger-config`, `ledger-snapshot`), alive in a workflow that runs on a push to a
+    branch (the one with the ledger step, or the one that calls it); [] when one has both. A tag-only release
+    workflow, or one for pull requests only, never runs it for the trunk."""
+    tail = (f"LEDGER-011's snapshot runs there on every push to the trunk while [ledger] snapshot is \"{snapshot}\" "
+            f"({UPGRADE}; snapshot = \"\" turns the snapshot off)")
+    on_push = [(rel(p), workflow_job_texts(text)) for p in sorted((ROOT / ".github/workflows").glob("*.y*ml"))
+               if "push" in workflow_events(text := read(p) or "")]
+    on_push.sort(key=lambda w: not any(w[0] == path for path, _, _ in workflows))  # the ledger step's first
+    if not on_push:
+        return [f"CI job 'ledger-snapshot' never runs: no workflow runs on a push to a branch "
+                f"(the ledger step is in {', '.join(p for p, _, _ in workflows)}); {tail}"]
+    first: list[str] = []
+    for path, jobs in on_push:
+        problems = [f"{p} in {path}, which runs on a push: {tail}"
+                    for job in ("ledger-config", "ledger-snapshot") if (p := dead_job(job, jobs))]
+        if not problems:
+            return []
+        first = first or problems
+    return first
+
+
 def check_ledger(rules: dict[str, dict], excepted: set[str]) -> str | None:
     """LEDGER-1 (docs/ledger.md, "Mechanisms"): every piece that keeps the ledger complete is alive — the hooks of
     .githooks/ and git running them, the CI's `ledger.py check --ci` step in a workflow for pushes or pull requests,
@@ -949,12 +1024,7 @@ def check_ledger(rules: dict[str, dict], excepted: set[str]) -> str | None:
     snapshot = cfg.get("snapshot", "keelokit/ledger")
     snapshot = snapshot.strip() if isinstance(snapshot, str) else "keelokit/ledger"
     if snapshot and workflows:
-        path, jobs = workflows[0]
-        for job in ("ledger-config", "ledger-snapshot"):
-            if p := dead_job(job, jobs):
-                problems.append((f"{p} in {path}, where the ledger step runs: LEDGER-011's snapshot runs there while "
-                                 f"[ledger] snapshot is \"{snapshot}\" ({UPGRADE}; snapshot = \"\" turns the snapshot off)",
-                                 False))
+        problems += [(p, False) for p in snapshot_problems(workflows, snapshot)]
     enforce = cfg.get("enforce", "block")
     enforce = "warn" if isinstance(enforce, str) and enforce.strip() == "warn" else "block"  # as ledger.py reads it
     tail = f' · enforce = "{enforce}"'

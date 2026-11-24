@@ -83,11 +83,13 @@ Built as specified, with these differences and decisions (none changes a product
   message names the missing path. `prepare-commit-msg`, which no other rule names, is checked by LEDGER-1 itself the
   same way. `.githooks/` is checked for each hook calling its `ledger.py` command on a line that isn't a comment;
   a hooks path elsewhere (husky included) passes only when its hook of that name runs the command.
-- **The CI is one workflow, read on its own.** The ledger step counts only in a workflow whose `on:` has push or
-  pull_request, in a job that can fail the run (no `continue-on-error`, no `if: false`, no dead job it `needs`),
-  and only when the run line itself can fail (no `||`, `;` or `&` after it, no `exit` before it). The
-  `ledger-config` and `ledger-snapshot` jobs must be in that same workflow: the release workflow's tag-only
-  snapshot never stands in (ESC-218, ESC-219).
+- **Each workflow is read on its own.** The ledger step counts only in a workflow whose `on:` has a push to a branch
+  or pull_request (read by its keys: a tag-only push, a comment or an input named push don't count; a reusable
+  workflow runs on its callers' events), in a job that can fail the run (no `continue-on-error`, no `if: false`, no
+  dead job it `needs`), and only when its run line can fail under GitHub's `bash -e` (no `||`, no pipe without
+  pipefail, no trailing `&` after it, no `exit 0` before it outside an if/case/loop; `&&`, `;` and redirections
+  are fine). The `ledger-config` and `ledger-snapshot` jobs must be alive in a workflow that runs on a push to a
+  branch: the release workflow's tag-only snapshot never stands in (ESC-218, ESC-219, ESC-226, ESC-227).
 - **The recommendation reads only the history.** The window is the last 3 days of the trunk ending at its newest
   commit's arrival: the exact `seen` of `moves.toml` for the first-parent commit that brought it, else that
   commit's committer date. `since` counts from when it reached the trunk, and a `since` off the trunk is a LEDGER-1
