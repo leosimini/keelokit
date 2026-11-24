@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "Pre-push and CI: nothing unattributed reaches the trunk"
 wave = 15
 depends_on = ["LEDGER-009"]
-touches = ["template/.githooks/pre-push", ".githooks/pre-push", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", ".github/workflows/ci.yml", "tests/test_ledger.py", "tests/test_verify.py", "tests/test_ci.py", "CHANGELOG.md"]
+touches = ["template/.githooks/pre-push", ".githooks/pre-push", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", ".github/workflows/ci.yml", "tests/test_ledger.py", "tests/test_verify.py", "tests/test_ci.py", "CHANGELOG.md", "scripts/unit_shard.py", "tests/test_scripts.py"]
 dimensions = ["logic", "integrity", "ops"]
 invariants = ["INV-005", "INV-007"]
 origin = "docs/ledger.md — Mechanisms (pre-push and CI); JOUNA's squashed trains"
@@ -118,6 +118,10 @@ Where the result goes beyond or differs from the text above:
   deleted before the push-to-main CI checks out (GitHub's "automatically delete head branches"): no origin branch
   is left to compare with, and the pre-push never sees a server-side merge. A project that squashes on GitHub keeps
   the branch until the CI ran, or writes every trailer of the branch in the squash message's last paragraph.
+- **The unit suite runs in three CI shards**, balanced by measured seconds per test module (`SECONDS` in
+  `scripts/unit_shard.py`; a module it lacks weighs its size): this story's git-heavy tests pushed shard 1/2 past the
+  job's 10-minute timeout, and file size did not track runtime (the size split left one of three shards at twice
+  the others). The checks are now "Unit tests (doctor, guard, verify) 1/3, 2/3, 3/3": 13 checks instead of 12.
 - **Invariants.** INV-007 is enforced where work enters the trunk (pre-push, then CI); INV-005 by refusing a
   squash that drops a `Story:`. Review and attack: reviewer round 1 (non-blocking, fixed), breaker round 1
   (ESC-198..ESC-201) and round 2 (ESC-202..ESC-205), each with its test; the fixture fix ESC-206 came from the
