@@ -20,8 +20,12 @@
                                                        prepare-commit-msg: Part-of: <keelokit.story>; exit 0
     python3 .keelokit/bin/ledger.py hook msg <file>    commit-msg: the trailer grammar (docs/ledger.md,
                                                        "Trailers"); exit 1 refuses under enforce = "block"
+    python3 .keelokit/bin/ledger.py prepush <remote> [<url>]
+                                                       pre-push: git's lines on stdin; a push to the trunk
+                                                       must be attributed; exit 1 refuses under enforce = "block"
     python3 .keelokit/bin/ledger.py check [--ci] [--json]
-                                                       every difference (exit 1 on an error-level one)
+                                                       every difference (exit 1 on an error-level one); --ci
+                                                       in a pull request into the trunk checks its commits too
     python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
                                                        candidate correction rows, for review, written to
                                                        .keelokit/ledger-corrections.proposed.toml
@@ -647,13 +651,14 @@ def story_ids(field: str) -> list[str]:
     return [i for i in (p.strip() for p in field.split(",")) if STORY_ID.fullmatch(i)]
 
 
-def read_trunk_log(trunk_sha: str) -> list[dict]:
-    """Every trunk commit, children before parents: sha, parents, ct, trailers, the commits it reverts."""
+def read_trunk_log(trunk_sha: str, more: tuple = ()) -> list[dict]:
+    """Every trunk commit, children before parents: sha, parents, ct, trailers, the commits it reverts. `more`:
+    extra rev-list arguments (`--not <sha>...` for a range)."""
     return [{"sha": sha, "parents": parents.split(), "ct": int(ct), "story": story_ids(story),
              "part_of": story_ids(part), "attributed": bool(story.strip() or part.strip() or nostory.strip()),
              "no_story": bool(nostory.strip()), "reverts": REVERTS.findall(body), "message": body,
              "trailers": parse_trailers(trailers)}
-            for sha, parents, ct, story, part, nostory, trailers, body in read_log(["--topo-order", trunk_sha])]
+            for sha, parents, ct, story, part, nostory, trailers, body in read_log(["--topo-order", trunk_sha, *more])]
 
 
 def parse_trailers(text: str) -> list[tuple[str, str]]:
@@ -1012,8 +1017,9 @@ def attempts_of(sid: str, entry: dict | None, trunk_dropped: dict, trunk: str) -
     return attempts
 
 
-def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict) -> dict:
-    """Trunk commits after `since` with no Story:/Part-of:/No-story:, nor a merge that brought them with one."""
+def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict, corrected: set = frozenset()) -> dict:
+    """Trunk commits after `since` with no Story:/Part-of:/No-story:, nor a merge that brought them with one, nor
+    an active correction row naming them."""
     since = cfg["since"]
     base = {"since": since, "commits": 0, "ratio": 0.0}
     if since is None:
@@ -1023,7 +1029,7 @@ def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict) -> d
         return base
     held = set(first_reach(graph, [matches[0]]))
     in_range = [c for c in log if c["sha"] not in held]
-    covered = attributed_in_range(log, in_range, graph, arrival_of, held)
+    covered = attributed_in_range(log, in_range, graph, arrival_of, held, corrected)
     loose = sum(1 for c in in_range if c["sha"] not in covered)
     return {**base, "commits": loose, "ratio": loose / len(in_range) if in_range else 0.0}
 
@@ -1039,13 +1045,19 @@ def reach_until(graph: dict, tips, stop: set) -> set:
     return found
 
 
-def attributed_in_range(log: list[dict], in_range: list[dict], graph: dict, arrival_of: dict, held: set) -> set:
+def attributed_in_range(log: list[dict], in_range: list[dict], graph: dict, arrival_of: dict, held: set,
+                        corrected: set = frozenset()) -> set:
     """The commits of `in_range` that are attributed (docs/ledger.md, "Trailers"): by their own Story:/Part-of:/
-    No-story:, by the first-parent merge that brought them having one, or, for a merge with none, by every
-    non-merge commit it brings in (reachable from its other parents, not from its first; commits before `since`
+    No-story: (or an active correction row naming them, `corrected`), by a merge with one that brings them (the
+    first-parent merge that brought them, or a merge nested in a branch: reachable from its other parents, not
+    from its first), or, for a merge with none, by every non-merge commit it brings in (commits before `since`
     left out) being attributed so; a merge that brings nothing new is attributed."""
-    by_sha = {c["sha"]: c for c in log}
-    base = {c["sha"] for c in in_range if c["attributed"] or by_sha[arrival_of[c["sha"]]]["attributed"]}
+    own = {c["sha"] for c in in_range if c["attributed"] or c["sha"] in corrected}
+    base = {c["sha"] for c in in_range if c["sha"] in own or arrival_of.get(c["sha"]) in own}
+    for c in in_range:
+        if c["sha"] in own and len(c["parents"]) > 1 and arrival_of.get(c["sha"]) != c["sha"]:
+            mainline = reach_until(graph, c["parents"][:1], held)
+            base |= reach_until(graph, c["parents"][1:], held | mainline)
     covered = set(base)
     for c in in_range:
         if c["sha"] in base or len(c["parents"]) < 2:
@@ -1096,11 +1108,12 @@ def read_all(state: dict) -> dict:
     branches = read_branches(trunk_sha, refs, graph, set(placed[0]))
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, branches,
                                       cfg["stale_days"], time.time(), corrections, trunk)
-    facts["unattributed"] = unattributed(cfg, log, graph, placed[0])
+    facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
     facts["diffs"] += pending_reviews(reviews, records)
-    return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "stories": stories, "log": log,
+    return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "tip": trunk_sha, "trunk": trunk,
+            "unverified": unverified_prefixes(state), "stories": stories, "log": log,
             "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
             "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation}
 
@@ -2152,20 +2165,38 @@ def category(value: str) -> str:
     return re.split(r"[\s—–:,-]", value.strip(), maxsplit=1)[0].strip()
 
 
-def attribution_diffs(ctx: dict) -> list[dict]:
+def corrected(corrections: dict | None) -> set:
+    """The commits an active correction row names: attributed late (`ledger.py correct`, then `backfill --accept`)."""
+    return {r["commit"] for r in (corrections or {}).get("active", ()) if isinstance(r.get("commit"), str)}
+
+
+def unattributed_fix(c: dict, on_trunk: bool) -> str:
+    """How to attribute an UNATTRIBUTED commit: on the trunk, the exact `ledger.py correct` command (history is
+    not rewritten); before it gets there, its message."""
+    if on_trunk:
+        return (f"; fix: python3 .keelokit/bin/ledger.py correct {c['sha']} --story <ID> --evidence \"<why it is "
+                "work of <ID>>\", then a person runs `ledger.py backfill --accept`")
+    return (f"; fix before it reaches the trunk: give it a Story:, Part-of: or No-story: trailer (`git rebase -i "
+            f"{short(c['sha'])}^` and reword it, `git commit --amend` for the last one), or bring it with a merge commit "
+            "that carries one")
+
+
+def attribution_diffs(ctx: dict, in_range: list[dict] | None = None, on_trunk: bool = True) -> list[dict]:
     """UNKNOWN_STORY, UNATTRIBUTED, SQUASH_LOST_TRAILERS, BAD_CATEGORY and STORY_NO_BODY on the trunk commits after
     `since` (the rules hold from there on); without a `since`, UNKNOWN_STORY on every trunk commit and nothing else
-    (attribution is not required). Errors under `enforce = "block"`, warnings under "warn"."""
+    (attribution is not required). Errors under `enforce = "block"`, warnings under "warn". `in_range` given: those
+    commits instead (a push or a pull request: `range_ctx`), which are not on the trunk yet when not `on_trunk`."""
     cfg, log, graph = ctx["cfg"], ctx["log"], ctx["graph"]
     level = "error" if cfg["enforce"] == "block" else "warning"
     diffs = []
 
-    def add(code: str, c: dict, detail: str) -> None:
+    def add(code: str, c: dict, detail: str, at: str | None = None) -> None:
         subject = c["message"].split("\n", 1)[0].strip()[:80]
-        diffs.append({"level": level, "code": code, "detail": f"{short(c['sha'])} {subject!r}: {detail}"})
+        diffs.append({"level": at or level, "code": code, "detail": f"{short(c['sha'])} {subject!r}: {detail}"})
 
     known = {s["id"] for s in ctx["stories"]}
-    in_range = since_range(cfg, log, graph)
+    if in_range is None:
+        in_range = since_range(cfg, log, graph)
     for c in reversed(log if in_range is None else in_range):
         if ctx["unreadable"]:
             break  # an unreadable story file may hold the id
@@ -2180,7 +2211,7 @@ def attribution_diffs(ctx: dict) -> list[dict]:
         return diffs
     in_shas = {c["sha"] for c in in_range}
     held = {sha for sha in graph if sha not in in_shas}
-    covered = attributed_in_range(log, in_range, graph, ctx["placed"][0], held)
+    covered = attributed_in_range(log, in_range, graph, ctx["placed"][0], held, corrected(ctx.get("corrections")))
     where = ("the only one where git reads trailers; put it in the same final paragraph as the other trailers, with no "
              "blank line between them")
     for c in reversed(in_range):
@@ -2193,15 +2224,198 @@ def attribution_diffs(ctx: dict) -> list[dict]:
                 add("SQUASH_LOST_TRAILERS", c, "its Story:/Part-of: line is outside the message's last paragraph, "
                     f"{where}")
             elif len(c["parents"]) > 1:
-                add("UNATTRIBUTED", c, "a merge with no Story:, Part-of: or No-story: that brings commits without one")
+                add("UNATTRIBUTED", c, "a merge with no Story:, Part-of: or No-story: that brings commits without one"
+                    + unattributed_fix(c, on_trunk))
             else:
-                add("UNATTRIBUTED", c, "no Story:, Part-of: or No-story:, and no merge that brings it has one")
+                add("UNATTRIBUTED", c, "no Story:, Part-of: or No-story:, and no merge that brings it has one"
+                    + unattributed_fix(c, on_trunk))
         bad = [v for v in trailer_values(c["trailers"], "No-story") if v.strip() and category(v) not in cfg["no_story"]]
         if bad:
             add("BAD_CATEGORY", c, f"No-story: {bad[0]!r} is not one of [ledger] no_story ({', '.join(cfg['no_story'])})")
         if c["story"] and not split_message(c["message"], c["trailers"])[1]:
             add("STORY_NO_BODY", c, f"closes {', '.join(c['story'])} with no body (what was decided, what was left out)")
+    for c, branch, lost, how in squashes(ctx, in_range):
+        if how == "tree":
+            fix = (f" (on the trunk: `python3 .keelokit/bin/ledger.py correct {c['sha']} --story <ID> --evidence "
+                   f"\"squash of {branch}\"` for each, then `ledger.py backfill --accept`)") if on_trunk else ""
+            add("SQUASH_LOST_TRAILERS", c, f"its tree is the tip of {branch}, which is not integrated: a squash of it "
+                f"that lost {', '.join(lost)}; carry every Story: and Part-of: of the branch in its last paragraph{fix}")
+        else:  # the same change is weaker evidence than the same tree (ESC-240): a warning, and no correction to copy
+            add("SQUASH_LOST_TRAILERS", c, f"its change is {branch}'s since it forked, which is not integrated: if it "
+                f"is a squash of it, it lost {', '.join(lost)}; if it is not (the same change made twice), nothing "
+                "to do", at="warning")
     return diffs
+
+
+def origin_branches(refs: dict, trunk: str) -> dict[str, str]:
+    """origin/<name> -> tip, every origin branch but the trunk (and origin/HEAD)."""
+    skip = {f"refs/remotes/origin/{trunk}", "refs/remotes/origin/HEAD"}
+    return {name[len("refs/remotes/"):]: sha for name, sha in refs.items()
+            if name.startswith("refs/remotes/origin/") and name not in skip}
+
+
+def trees_of(shas: list[str]) -> dict[str, str]:
+    """commit -> its tree, one `cat-file --batch-check`; a commit that cannot be read is left out."""
+    unique = sorted(set(shas))
+    if not unique:
+        return {}
+    out = git_read(["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+                   "".join(f"{s}^{{tree}}\n" for s in unique).encode()).decode(errors="replace").splitlines()
+    if len(out) != len(unique):
+        raise LedgerError("git cat-file gave an unexpected answer")
+    return {s: line.split()[0] for s, line in zip(unique, out) if line.split()[1:2] == ["tree"]}
+
+
+def patch_ids(diff: bytes) -> dict[str, str]:
+    """commit (or the all-zero id for a bare diff) -> `git patch-id --stable` of its change; an empty change has none."""
+    out = git_read(["patch-id", "--stable"], diff).decode(errors="replace").split("\n")
+    return {line.split()[1]: line.split()[0] for line in out if len(line.split()) == 2}
+
+
+def paths_of(shas: list[str]) -> dict[str, frozenset]:
+    """commit -> the paths it changes (none for a merge), one `log --name-only` for all."""
+    if not shas:
+        return {}
+    named = git_read(["log", "--no-walk=unsorted", "--name-only", "--no-renames", "--format=%x00%H", "--stdin"],
+                     "".join(f"{sha}\n" for sha in shas).encode()).decode(errors="replace")
+    paths = {}
+    for chunk in named.split("\0")[1:]:
+        lines = [line for line in chunk.split("\n") if line]
+        if lines:
+            paths[lines[0]] = frozenset(lines[1:])
+    return paths
+
+
+def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str], str]]:
+    """(commit, origin/<branch>, lost, "tree" or "patch") for each non-merge commit of `in_range` that is a squash of
+    an origin branch `ctx["tip"]` does not reach (JOUNA's trains) and lacks a Story: or Part-of: of that branch's own
+    commits (those the tip does not reach) that the trunk does not already carry from the branch's fork on.
+    - A squash: its tree is the branch tip's (an error), or, the trunk having moved, its change has the patch-id of
+      the branch's change since its merge base with the tip (a warning only: the same change made twice is no
+      proof, ESC-240). Never a commit the branch reaches; never from a branch that changes nothing (ESC-199), of
+      fewer than two commits of its own (ESC-202, ESC-203), or under the unverified prefixes (ESC-241); a tree the
+      trunk already had since the fork is a revert back to it (ESC-207).
+    - Kept: a branch's Story: must stay a Story:; its Part-of: is kept by either; both count on the commit, on every
+      trunk commit from the fork of the branch's own oldest commits to it (not from the merge base, which a sync
+      merge of main moves: ESC-238, ESC-239, ESC-242..ESC-244), and in an active correction row naming the commit.
+    - Cost: one log of the branches' own commits and their paths, one `--name-only` log and one tree lookup for the
+      range; a branch costs git calls of its own only when its tip's tree, or a range commit's paths within the paths
+      it touches, match (ESC-204, ESC-245)."""
+    tip, graph = ctx.get("tip"), ctx["graph"]
+    skip = tuple(f"origin/{p}" for p in ctx.get("unverified", ()))
+    branches = {n: sha for n, sha in origin_branches(ctx.get("refs") or {}, ctx.get("trunk") or "").items()
+                if not n.startswith(skip)}  # wip/ and archive/ never land, so they are never squashed (ESC-241)
+    singles = [c for c in in_range if len(c["parents"]) < 2]
+    if not tip or not branches or not singles:
+        return []
+    reach = set(first_reach(graph, [tip]))
+    loose = {name: sha for name, sha in sorted(branches.items()) if sha not in reach and sha in graph}
+    if not loose:
+        return []
+    tips = sorted(set(loose.values()))
+    own = {c["sha"]: c for c in read_trunk_log(tips[0], (*tips[1:], "--not", tip))}
+    needs = {}
+    for name, sha in loose.items():
+        mine = [m for m in reach_until(graph, [sha], reach) if m in own]
+        stories = {i for m in mine for i in own[m]["story"]}
+        parts = {i for m in mine for i in own[m]["part_of"]} - stories
+        if (stories or parts) and sum(1 for m in mine if len(own[m]["parents"]) < 2) >= 2:
+            needs[name] = (stories, parts, mine)
+    if not needs:
+        return []
+    own_paths = paths_of(sorted({m for _, _, mine in needs.values() for m in mine}))
+    single_paths = paths_of([c["sha"] for c in singles])
+    trees = trees_of([c["sha"] for c in singles] + [loose[n] for n in needs])
+    by_path: dict[str, list[str]] = {}
+    for sha, changed in single_paths.items():
+        for path in changed:
+            by_path.setdefault(path, []).append(sha)
+    by_sha = {c["sha"]: c for c in singles}
+    ranged = {c["sha"]: c for c in in_range}
+    rowed: dict[str, set] = {}
+    for r in (ctx.get("corrections") or {}).get("active", ()):
+        rowed.setdefault(r.get("commit"), set()).add(r.get("story"))
+    found = []
+    for name, (stories, parts, mine) in needs.items():
+        btip = loose[name]
+        touched = frozenset().union(*(own_paths.get(m, frozenset()) for m in mine))
+        tree_hits = {c["sha"] for c in singles if trees.get(c["sha"]) is not None and trees.get(c["sha"]) == trees.get(btip)}
+        path_hits = {sha for path in touched for sha in by_path.get(path, ())
+                     if single_paths[sha] and single_paths[sha] <= touched} - tree_hits
+        if not tree_hits and not path_hits:
+            continue  # no call of its own (ESC-245)
+        base = git_read(["merge-base", tip, btip], ok=(0, 1)).decode().strip() or None
+        if base and trees_of([base]).get(base) == trees.get(btip):
+            continue  # the branch changes nothing: its tree is its base's (ESC-199)
+        patch_hits = set()
+        if path_hits and base:
+            net_paths = frozenset(line for line in git_read(["diff-tree", "-r", "--name-only", "--no-renames", base, btip])
+                                  .decode(errors="replace").split("\n") if line)
+            same = sorted(sha for sha in path_hits if single_paths[sha] == net_paths)
+            if same:
+                net = patch_ids(git_read(["diff-tree", "-p", "--no-color", base, btip])).get("0" * len(btip))
+                ids = patch_ids(git_read(["log", "--no-walk=unsorted", "-p", "--no-color", "--format=commit %H",
+                                          "--stdin"], "".join(f"{sha}\n" for sha in same).encode()))
+                patch_hits = {sha for sha in same if net and ids.get(sha) == net}
+        hits = tree_hits | patch_hits
+        if not hits:
+            continue
+        forked = set(first_reach(graph, [btip]))
+        # The fork of the branch's own oldest commits: their parents the tip reaches (a sync merge's are skipped).
+        forks = sorted({p for m in mine if len(graph.get(m, ())) < 2 for p in graph.get(m, ()) if p in reach}) or \
+            ([base] if base else [])
+        for c in (by_sha[sha] for sha in sorted(hits)):
+            if c["sha"] in forked:
+                continue
+            same_tree = c["sha"] in tree_hits
+            if forks:
+                carried = read_trunk_log(c["sha"], ("--not", *forks))
+                earlier = set(git_read(["log", "--format=%T", f"{c['sha']}^", "--not", *forks], ok=(0, 128))
+                              .decode().split())
+            else:
+                carried = [ranged[x] for x in reach_until(graph, [c["sha"]], set(graph) - set(ranged))]
+                earlier = set()
+            if same_tree and trees.get(btip) in earlier:
+                continue  # the trunk had this tree before: a revert back to it, not a squash (ESC-207)
+            kept_story = {i for k in carried for i in k["story"]} | rowed.get(c["sha"], set())
+            kept_any = kept_story | {i for k in carried for i in k["part_of"]}
+            lost = [f"Story: {i}" for i in sorted(stories - kept_story)] + \
+                   [f"Part-of: {i}" for i in sorted(parts - kept_any)]
+            if lost:
+                found.append((c, name, lost, "tree" if same_tree else "patch"))
+    return found
+
+
+def unverified_prefixes(state: dict) -> list[str]:
+    """The branch prefixes whose work never lands as it is (LEDGER-008): `[verify] wip_branches` (wip/ when unset)
+    and archive/."""
+    wip = (state.get("verify") or {}).get("wip_branches") if isinstance(state.get("verify"), dict) else None
+    wip = wip.strip() if isinstance(wip, str) and wip.strip() else "wip/"
+    return sorted({wip if wip.endswith("/") else wip + "/", "archive/"})
+
+
+def range_ctx(state: dict, cfg: dict, tip: str, exclude: list[str]) -> dict | None:
+    """What attribution_diffs needs for the commits `tip` reaches and none of `exclude` (nor `since`) does: a push to
+    the trunk, or a pull request over it. None without a `since` naming one commit tip reaches (attribution is not
+    required there). Stories are read from tip's tree, where a new story file already is."""
+    trunk = trunk_name(state)
+    refs = read_refs(trunk)
+    graph = read_graph(sorted({tip, *exclude, *origin_branches(refs, trunk).values()}))
+    since = cfg["since"]
+    matches = [s for s in graph if s.startswith(since.lower())] if since else []
+    if len(matches) == 1:
+        stops = sorted({*exclude, matches[0]})
+    elif since and len(matches) == 0 and is_shallow():
+        # A shallow clone cut before `since` (ESC-198): what the remote already has bounds the new commits.
+        if not exclude:
+            raise LedgerError(f"this shallow clone does not reach [ledger] since and nothing bounds the new commits; {FIX}")
+        stops = sorted(exclude)
+    else:
+        return None
+    log = read_trunk_log(tip, ("--not", *stops))
+    stories, unreadable = read_stories(tip, cfg)
+    return {"cfg": cfg, "log": log, "graph": graph, "stories": stories, "unreadable": unreadable, "tip": tip,
+            "placed": arrivals(graph, tip), "refs": refs, "trunk": trunk, "unverified": unverified_prefixes(state)}
 
 
 def done_twice(ctx: dict) -> list[dict]:
@@ -2246,12 +2460,37 @@ def snapshot_behind(ctx: dict) -> list[dict]:
              "detail": f"origin/{name} {where}; the trunk is at {short(ctx['trunk_sha'])}"}]
 
 
+def pull_request(trunk: str) -> bool:
+    """True in a GitHub Actions run of a pull request into the trunk (GITHUB_EVENT_NAME, GITHUB_BASE_REF)."""
+    event = os.environ.get("GITHUB_EVENT_NAME", "")
+    return event in ("pull_request", "pull_request_target") and os.environ.get("GITHUB_BASE_REF", trunk) == trunk
+
+
+def pull_request_diffs(state: dict, ctx: dict) -> list[dict]:
+    """A pull request's commits, as they would reach the trunk: those the checked-out HEAD (GitHub's merge of the
+    branch into the trunk, refs/pull/N/merge) reaches and the trunk does not. That merge stands for the one GitHub
+    makes, attributed when what it brings is; a sync merge of the trunk into the branch brings nothing new."""
+    head = git_read(["rev-parse", "--verify", "-q", "HEAD^{commit}"], ok=(0, 1)).decode().strip()
+    if not head or head == ctx["trunk_sha"]:
+        return []
+    rctx = range_ctx(state, ctx["cfg"], head, [ctx["trunk_sha"]])
+    if rctx is None:
+        return []
+    if cut_reason(rctx["graph"], is_shallow() is not False):
+        return [{"level": "error", "code": "HISTORY_INCOMPLETE",
+                 "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
+    return attribution_diffs(rctx, rctx["log"], on_trunk=False)
+
+
 def all_diffs(state: dict, ci: bool) -> list[dict]:
-    """The facts' differences and those only `check` gives (docs/ledger.md: the "Given by" column)."""
+    """The facts' differences and those only `check` gives (docs/ledger.md: the "Given by" column). `ci` in a pull
+    request into the trunk: its commits too (LEDGER-010)."""
     ctx = read_all(state)
     diffs = list(ctx["facts"]["diffs"])
     if ctx["reason"] is None:
         diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
+        if ci and pull_request(trunk_name(state)):
+            diffs += pull_request_diffs(state, ctx)
     if ci:
         diffs = [{**d, "level": "error"} if d["code"] == "HISTORY_INCOMPLETE" else d for d in diffs]
     return diffs
@@ -2896,6 +3135,64 @@ def cmd_hook(state: dict, args: tuple) -> int:
     return 1
 
 
+def commit_of(ref: str) -> str | None:
+    """The commit a sha or ref names in this clone, or None (an object the clone lacks, an all-zero sha)."""
+    if not ref or ref.startswith("-") or not ref.strip("0"):
+        return None
+    return git_read(["rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], ok=(0, 1, 128)).decode().strip() or None
+
+
+def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
+    """`prepush <remote> [<url>]` (the pre-push hook, before the verify): git's lines on stdin, "<local ref> <local
+    sha> <remote ref> <remote sha>". Each push to the trunk is checked over its new commits (those its remote sha,
+    origin's trunk and `since` do not reach) as `check` checks the trunk: attribution, a merge that brings them, a
+    squash of an origin branch that lost its trailers. A push to any other branch, or a deletion, is not checked;
+    nor is anything without a `since`. Exit 1 refuses under `enforce = "block"`; with "warn" the same text, exit 0."""
+    trunk = trunk_name(state)
+    cfg = read_config(state)
+    diffs = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or parts[2] != f"refs/heads/{trunk}":
+            continue
+        tip = commit_of(parts[1])
+        if tip is None:
+            continue  # a deletion pushes nothing
+        # What the remote this push goes to already has: its sha, and its remote-tracking trunk when it is a name.
+        named = remote and not remote.startswith("-") and "/" not in remote and ":" not in remote
+        exclude = [c for c in {commit_of(parts[3]), commit_of(f"refs/remotes/{remote}/{trunk}") if named else None}
+                   if c]
+        rctx = range_ctx(state, cfg, tip, exclude)
+        if rctx is None:
+            continue
+        found = attribution_diffs(rctx, rctx["log"], on_trunk=False)
+        source = commit_of(parts[3]) or commit_of(f"refs/remotes/origin/{trunk}")
+        if found and source:
+            # Approved rows attribute what they name (ESC-201), read from the trunk the remote (or origin) already
+            # has, never from the pushed tip: a row pushed with its commit is accepted by nobody (ESC-205).
+            try:
+                held = read_graph([source])
+                rctx["corrections"] = corrections_facts(source, None, set(held), held)
+                found = attribution_diffs(rctx, rctx["log"], on_trunk=False)
+            except LedgerError:
+                pass  # unreadable corrections: the refusal stands
+        diffs += found
+    if not diffs:
+        return 0
+    for d in diffs:
+        print(f"Keelokit: {d['code']} — {d['detail']}", file=sys.stderr)
+    if not any(d["level"] == "error" for d in diffs):
+        print(f"Keelokit: the push to {trunk} goes through (warnings only).", file=sys.stderr)
+        return 0
+    if cfg["enforce"] == "warn":
+        print(f'Keelokit: the push to {trunk} goes through ([ledger] enforce = "warn"); the CI reports the same.',
+              file=sys.stderr)
+        return 0
+    print(f'Keelokit: push to {trunk} refused ([ledger] enforce = "block"): nothing unattributed reaches the trunk '
+          "(INV-007). Fix the commits named above and push again.", file=sys.stderr)
+    return 1
+
+
 def parse_command(argv: list[str]) -> tuple | None:
     """(command, arguments) for the corrections commands and check, or None for any other spelling."""
     if argv[:1] == ["check"] and len(set(argv[1:])) == len(argv[1:]) and set(argv[1:]) <= {"--json", "--ci"}:
@@ -2904,6 +3201,8 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "show", (argv[1], len(argv) == 3)
     if argv == ["next"]:
         return "next", None
+    if argv[:1] == ["prepush"] and len(argv) in (2, 3):
+        return "prepush", argv[1]
     if argv[:2] == ["hook", "prepare"] and 3 <= len(argv) <= 5:
         return "hook", ("prepare", argv[2], argv[3] if len(argv) > 3 else "")
     if argv[:2] == ["hook", "msg"] and len(argv) == 3:
@@ -2949,6 +3248,8 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_next(state)
         if command == "hook":
             return cmd_hook(state, args)
+        if command == "prepush":
+            return cmd_prepush(state, args, [] if sys.stdin.isatty() else sys.stdin.read().splitlines())
         if command == "take":
             return cmd_take(state, args)
         if command == "drop":

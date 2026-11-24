@@ -77,6 +77,17 @@ if [ "$refused" -gt 0 ]; then
   echo "pre-push: refused. pnpm verify checks the checked-out commit, so it can't vouch for one pushed from elsewhere: check it out and push from there (git switch <branch>, or git checkout <sha>). A commit that already passed is skipped by its seal." >&2
   exit 1
 fi
+# The trunk's attribution (LEDGER-010, INV-007) comes before the verify: it is the fast part. ledger.py prepush
+# checks only a push to the trunk (nothing unattributed, a merge attributes what it brings, a squash keeps its
+# branch's trailers) and refuses under [ledger] enforce = "block"; when it cannot run, the CI checks the same.
+if [ -n "$refs" ] && [ -f .keelokit/bin/ledger.py ]; then
+  printf '%s\n' "$refs" | python3 .keelokit/bin/ledger.py prepush "$1" "$2"
+  case $? in
+    0) ;;
+    1) exit 1 ;;
+    *) echo 'pre-push: ledger.py could not check the attribution of this push; the CI checks it again.' >&2 ;;
+  esac
+fi
 # Only deletions, or only commits already proven: nothing to verify. No lines at all (the hook run by
 # hand): verify HEAD, as before.
 [ "$lines" -eq 0 ] || [ "$heads" -gt 0 ] || exit 0
