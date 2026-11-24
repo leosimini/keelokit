@@ -1,5 +1,14 @@
 # Changelog
 
+
+## Unreleased
+
+- **A release commit names its story-less category.** `ship-release` now commits `release: vX.Y.Z` with
+  `No-story: release` as its last paragraph, so `ledger.py check` no longer reports a project's release commit as
+  `UNATTRIBUTED`. For a release commit already on the trunk without it, set `[ledger] since` to that commit
+  (`check` starts after it) once the commits before it pass; a correction row can't attribute it, since rows
+  name stories.
+
 ## 0.15.0 — 2026-11-24
 
 - **A new session knows where the truth is (LEDGER-007).** The session start now prints, under one line that
