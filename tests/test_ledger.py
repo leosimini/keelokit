@@ -4783,3 +4783,64 @@ class LedgerCheckCiTest(LedgerPrepushCase):
         r = self.ci_check(clone)
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("main", r.stdout + r.stderr, "it says what is missing")
+
+
+class LedgerBreakerRound1Test(LedgerPrepushCase):
+    """LEDGER-010 breaker, round 1 (ESC-198..ESC-201): each finding reproduced before its fix."""
+
+    def test_LEDGER_010_S1_a_shallow_clone_still_checks_the_new_commits_INV_007(self):
+        """ESC-198: with `since` beyond a --depth 1 clone the pre-push passed everything silently."""
+        repo = self.project("AUTH-001")
+        repo.commit("docs: later\n\nNo-story: docs")
+        repo.publish()
+        clone = repo.clone("shallow", depth=1)
+        clone.state((repo.path / ".keelokit/state.toml").read_text())
+        loose = clone.commit("chore: loose")
+        r = prepush(self, clone, to_main(clone))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+        clone.git("reset", "-q", "--hard", "HEAD~1")
+        clone.commit("docs: fine\n\nNo-story: docs")
+        r = prepush(self, clone, to_main(clone))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), "only the new commits, not the cut history")
+
+    def test_LEDGER_010_S4_a_branch_that_changes_nothing_is_no_squash_source_INV_005(self):
+        """ESC-199: an empty commit on a branch made its base (a trunk commit) read as a squash of it."""
+        repo = self.project("AUTH-006")
+        repo.commit("chore: the trunk's tip\n\nNo-story: harness")
+        repo.git("checkout", "-q", "-b", "auth-6")
+        repo.git("commit", "-q", "--allow-empty", "-m", "start\n\nPart-of: AUTH-006")
+        repo.git("push", "-q", "origin", "auth-6")
+        repo.git("checkout", "-q", "main")
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+        repo.commit("docs: next\n\nNo-story: docs")
+        self.assertEqual(prepush(self, repo, to_main(repo)).returncode, 0)
+
+    def test_LEDGER_010_S3_a_squash_after_the_trunk_moved_is_still_named_INV_005(self):
+        """ESC-200: once main moved, the squash's tree no longer equals the branch tip's; its change still does."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.on_branch("train-5", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        repo.commit("docs: main moves on\n\nNo-story: docs")
+        squash = self.squash(repo, "train-5", "Train 5 (#11)\n\nWhy.\n\nStory: AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("SQUASH_LOST_TRAILERS", r.stderr)
+        self.assertIn("Part-of: AUTH-006", r.stderr)
+        self.assertIn(squash[:12], r.stderr)
+        repo.publish()
+        self.assertIn("AUTH-006", details(ledger_check(self, repo), "SQUASH_LOST_TRAILERS"))
+
+    def test_LEDGER_010_S1_a_corrected_commit_does_not_block_a_push_of_the_trunk_to_a_new_remote_INV_007(self):
+        """ESC-201: the pre-push read no correction rows, so the first push of a corrected trunk was refused."""
+        repo = self.project("AUTH-001")
+        loose = repo.commit("feat: the login, no trailer")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-001", commit=loose, kind="late", evidence="slipped through"))})
+        repo.publish()
+        backup = repo.tmp / "backup.git"
+        repo.run(["git", "init", "-q", "--bare", "-b", "main", str(backup)], repo.tmp)
+        repo.git("remote", "add", "backup", f"file://{backup}")
+        r = prepush(self, repo, f"refs/heads/main {repo.sha()} refs/heads/main {ZERO}", remote="backup")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
