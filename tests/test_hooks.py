@@ -769,6 +769,26 @@ class CommitHooks(unittest.TestCase):
         self.assert_refused(r, "UNATTRIBUTED", before)
         self.assertFalse(record.exists(), "commit-msg deletes the record after a refusal too")
 
+    def test_LEDGER_009_S2_ESC_192_commit_e_is_read_as_git_stores_it(self):
+        """`commit -e -m …` with an editor that leaves the file: git strips its help comments (cleanup unset) though
+        the source is `message`; the hook reads what git stores."""
+        self.assert_hooks_live()
+        self.git("config", "--unset", "commit.cleanup", check=False)
+        for args, code in ((("-m", "subj", "-m", "Story: AUTH-001"), "STORY_NO_BODY"),
+                           (("-m", "#12 fix", "-m", "why", "-m", "Story: AUTH-001"), "STORY_NO_BODY"),
+                           (("-m", "#123 fix", "-m", "Part-of: AUTH-001"), "SQUASH_LOST_TRAILERS")):
+            with self.subTest(args=args):
+                before = self.head()
+                self.stage()
+                r = self.git("commit", "-q", "-e", *args, check=False, GIT_EDITOR="true")
+                self.assert_refused(r, code, before)
+        self.take()
+        before = self.head()
+        self.stage()
+        r = self.git("commit", "-q", "-e", "-m", "#123 fix", check=False, GIT_EDITOR="true")
+        self.assertNotEqual(r.returncode, 0, f"git aborts an empty message\n{self.message()!r}")
+        self.assertEqual(self.head(), before, "never a commit called `Part-of: AUTH-001`")
+
     def test_LEDGER_009_S5_a_story_only_in_the_work_tree_is_known(self):
         self.assert_hooks_live()
         new = self.proj / "backlog/stories/NEW-002-y.md"
@@ -913,6 +933,14 @@ class CommitHooks(unittest.TestCase):
             "CRLF": (False, ("-F", str(crlf)), {}),
             "plain, unattributed": (False, ("-m", "x"), {}),
             "Part-of in its own paragraph": (False, ("-m", "x", "-m", "Part-of: AUTH-001", "-m", COAUTHOR), {}),
+            # ESC-192: -e with an editor that leaves the file: the source is `message`, but git strips the comments.
+            "-e, Story without body": (False, ("-e", "-m", "subj", "-m", "Story: AUTH-001"), {"GIT_EDITOR": "true"}),
+            "-e, hash subject, Story": (False, ("-e", "-m", "#12 fix", "-m", "why", "-m", "Story: AUTH-001"),
+                                        {"GIT_EDITOR": "true"}),
+            "-e, hash subject, Part-of": (False, ("-e", "-m", "#123 fix", "-m", "Part-of: AUTH-001"),
+                                          {"GIT_EDITOR": "true"}),
+            "-e, body and Story": (False, ("-e", "-m", "subj", "-m", "why", "-m", "Story: AUTH-001"),
+                                   {"GIT_EDITOR": "true"}),
             # commit.cleanup = strip drops the `#` line: git stores `Part-of: AUTH-001` alone, one paragraph.
             "cleanup strip, hash subject": (False, ("-c", "commit.cleanup=strip", "-m", "#5 fix", "-m",
                                                     "Part-of: AUTH-001"), {}),
