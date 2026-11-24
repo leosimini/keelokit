@@ -2645,18 +2645,19 @@ LEDGER_CMD = "python3 .keelokit/bin/ledger.py"
 def comment_char() -> str:
     """core.commentChar when it is one character, else `#` (git's default; "auto" picks per message and
     leaves `#` for every message an editor did not touch)."""
-    for key in ("core.commentString", "core.commentChar"):  # commentString: git 2.45+
-        code, out = git_out("config", "--get", key)
-        if code == 0 and out and out != "auto":
-            return out
-    return "#"
+    # core.commentString (git 2.45+) and core.commentChar are one setting: the last one git reads wins.
+    code, out = git_out("config", "--get-regexp", r"^core\.comment(char|string)$")
+    values = [line.split(" ", 1)[1] for line in out.splitlines() if " " in line] if code == 0 else []
+    return values[-1] if values and values[-1] != "auto" else "#"
 
 
-def readings(raw: str) -> list[str]:
-    """The message as git may store it, nothing from the scissors line of `commit -v` on. Git drops comment lines
-    only when it cleans up with `strip`, which by default it does only when the editor ran (ESC-190: `-m "#123 fix"`
-    keeps its line), and a hook cannot tell. So: `commit.cleanup` strip → without comments; verbatim, whitespace or
-    scissors → with them; unset → both readings, without comments first."""
+def readings(raw: str, source: str | None) -> str:
+    """The message as git will store it, nothing from the scissors line of `commit -v` on. Git drops comment lines
+    only when it cleans up with `strip`, which by default it does only when the editor ran: `-m "#123 fix"` keeps
+    its line (ESC-190). `commit.cleanup`, when set, decides; else git's source, as prepare-commit-msg got it: none
+    or `template` (the editor) or `message-edit` (-e with -m) → without comment lines, `message` (-m, -F) → with
+    them; unknown (no record, an
+    amend, a merge) → without them, unless nothing else is left."""
     c = comment_char()
     scissors = re.compile(rf"^{re.escape(c)} -+ >8 -+$")
     kept = []
@@ -2668,10 +2669,10 @@ def readings(raw: str) -> list[str]:
     whole = "\n".join(kept).strip("\n") + "\n"
     mode = git_out("config", "--get", "commit.cleanup")[1].strip().lower()
     if mode == "strip":
-        return [stripped]
-    if mode in ("verbatim", "whitespace", "scissors"):
-        return [whole]
-    return [stripped] if whole == stripped else [stripped, whole]
+        return stripped
+    if mode in ("verbatim", "whitespace", "scissors") or source == "message":
+        return whole
+    return stripped if stripped.strip() or source in ("", "template", "message-edit") else whole
 
 
 def message_trailers(text: str) -> list[tuple[str, str]]:
@@ -2719,18 +2720,31 @@ def source_path() -> Path | None:
     return (Path(path) if os.path.isabs(path) else ROOT / path) if code == 0 and path else None
 
 
-def editor_only(texts: list[str]) -> bool:
-    """A message with nothing but comment lines: git aborts it when the editor wrote it (only its help text), but
-    stores it when it came from -m or -F (`-m "#5 fix"`, ESC-190). prepare-commit-msg records git's source for
-    commit-msg: none or `template` is the editor flow."""
-    if texts[0].strip():
-        return False
+def editor_template(raw: str) -> bool:
+    """Whether git appended its help text for the editor (`commit -e -m …`): the message ends in a paragraph of
+    comment lines only, at least two (git's shortest, with commit.status off, has two; the words are in the
+    person's language, so they are not read). A `-m` message alone gets no such paragraph."""
+    c = comment_char()
+    paragraphs = [q for q in re.split(r"\n[ \t]*\n", raw.replace("\r\n", "\n").strip("\n")) if q.strip()]
+    last = paragraphs[-1].split("\n") if len(paragraphs) > 1 else []
+    return len(last) >= 2 and all(line.startswith(c) for line in last)
+
+
+def recorded_source() -> str | None:
+    """git's source for this commit as prepare-commit-msg wrote it, read once (the file goes, so a later commit
+    whose prepare did not run reads no stale value); None when there is no record."""
     where = source_path()
+    if where is None:
+        return None
     try:
-        source = where.read_text(encoding="utf-8").strip() if where else None
+        source = where.read_text(encoding="utf-8").strip()
     except OSError:
-        source = None
-    return source in ("", "template") or not texts[-1].strip()
+        return None
+    try:
+        where.unlink()
+    except OSError:
+        pass
+    return source
 
 
 def add_part_of(path: Path, source: str = "") -> None:
@@ -2742,8 +2756,8 @@ def add_part_of(path: Path, source: str = "") -> None:
     sid = taken_story()
     if sid is None:
         return
-    texts = readings(path.read_text(encoding="utf-8", errors="replace"))
-    if not texts[0].strip() or any(exempt_subject(t) or attributed(message_trailers(t)) for t in texts):
+    text = readings(path.read_text(encoding="utf-8", errors="replace"), source)
+    if not text.strip() or exempt_subject(text) or attributed(message_trailers(text)):
         return
     code, err = run_git(["interpret-trailers", "--in-place", "--no-divider", "--if-missing", "add", "--trailer",
                          f"Part-of: {sid}", str(path)])
@@ -2847,17 +2861,21 @@ def cmd_hook(state: dict, args: tuple) -> int:
     try:
         path = Path(os.path.abspath(given))
         where = source_path()
+        if which == "prepare" and source == "message" and editor_template(path.read_text(encoding="utf-8",
+                                                                                         errors="replace")):
+            source = "message-edit"  # -e with -m/-F: the editor runs, so git drops the comment lines
         if which == "prepare" and where:
             where.write_text(source + "\n", encoding="utf-8")
+        if which == "msg":
+            source = recorded_source()
         add_part_of(path, source)
         if which == "prepare":
             return 0
         cfg = read_config(state)
-        texts = readings(path.read_text(encoding="utf-8", errors="replace"))
-        if editor_only(texts):
+        text = readings(path.read_text(encoding="utf-8", errors="replace"), source)
+        if not text.strip():
             return 0  # only the editor's comments: git aborts the commit itself ("empty commit message")
-        texts = [t for t in texts if t.strip()]
-        problems = min((message_problems(state, cfg, t) for t in texts), key=len)
+        problems = message_problems(state, cfg, text)
     except Exception as e:  # noqa: BLE001 - a broken hook must not stop every commit
         hook = "prepare-commit-msg" if which == "prepare" else "commit-msg"
         print(f"Keelokit: the {hook} hook could not check this commit ({' '.join(str(e).split())[:160]}); "

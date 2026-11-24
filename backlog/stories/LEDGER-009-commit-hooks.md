@@ -96,7 +96,8 @@ Where the result goes beyond or differs from the text above:
   `Co-Authored-By:` is reported as that (with the line to move), not as `UNATTRIBUTED`.
 - **The hook reads trailers as `git log` does** (`--no-divider`: a `---` line hides nothing, ESC-189) and keeps
   `#` lines unless git will drop them (`commit.cleanup`; unset: a `-m` message keeps them, the editor's comments
-  go, so both readings are tried, ESC-190). `Dropped:` alone does not attribute (as in `check`): `drop`'s fallback
+  go: `prepare-commit-msg` records git's source for `commit-msg`, `-e` with `-m` read as the editor flow; ESC-190,
+  ESC-191, ESC-192). `Dropped:` alone does not attribute (as in `check`): `drop`'s fallback
   commit gets `Part-of:` from the story still taken. A `fixup!` commit passes the hook but `check` has no such
   exemption: it is meant to be squashed before it lands.
 - An aborted editor commit (only comments) gets no Keelokit text: git's own "empty commit message" says it.
