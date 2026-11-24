@@ -1,3 +1,17 @@
 #!/usr/bin/env sh
 # Nothing reaches the remote without passing the same gates as CI. Never bypass with --no-verify.
+# Git lists what is pushed on stdin, "<local ref> <local sha> <remote ref> <remote sha>" per line.
+refs=
+[ -t 0 ] || refs=$(cat)
+# The trunk's attribution (LEDGER-010, INV-007) comes before the verify: it is the fast part. ledger.py prepush
+# checks only a push to the trunk (nothing unattributed, a merge attributes what it brings, a squash keeps its
+# branch's trailers) and refuses under [ledger] enforce = "block"; when it cannot run, the CI checks the same.
+if [ -n "$refs" ] && [ -f .keelokit/bin/ledger.py ]; then
+  printf '%s\n' "$refs" | python3 .keelokit/bin/ledger.py prepush "$1" "$2"
+  case $? in
+    0) ;;
+    1) exit 1 ;;
+    *) echo 'pre-push: ledger.py could not check the attribution of this push; the CI checks it again.' >&2 ;;
+  esac
+fi
 exec scripts/verify.sh
