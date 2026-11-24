@@ -1,0 +1,26 @@
+# Approved corrections to the ledger (docs/ledger.md, "Corrections file"): the history that has no trailers,
+# and commits that slipped through without one. An active row makes its story on-trunk, shown as
+# reconstructed. Rows are added by `python3 .keelokit/bin/ledger.py backfill --accept`, run by a person in
+# their terminal after reviewing what `backfill --propose` or `correct` put in
+# .keelokit/ledger-corrections.proposed.toml (git-ignored).
+#
+# Each row is a [[row]] table:
+#   story     the story id, e.g. "UXC-113"
+#   commit    the full sha of a commit reachable from the trunk
+#   kind      "backfill" (old history), "late" (a commit that slipped through) or "retract" (cancels an
+#             earlier row of the same story and commit)
+#   evidence  where the attribution comes from
+#   approver  who approved it
+#   date      "YYYY-MM-DD"
+#
+# Append-only: no row already on the trunk may change or disappear (INV-008); cancel a wrong row with a
+# retract row. A change here needs a human: the guard blocks agents from writing this file, and a commit
+# that changes it needs `git -c keelokit.allowTamper=true commit`, saying why in the message.
+
+[[row]]
+story = "LEDGER-004"
+commit = "d772674273de10891259e51b826bcd373463a3ee"
+kind = "backfill"
+evidence = "d772674 is LEDGER-004's closing commit (subject 'fix(ledger): close the review and attack findings on corrections'); its Story: LEDGER-004 trailer sits in the paragraph before the Co-Authored-By/Claude-Session one, so git reads no trailer; merged to main by 489a494 (branch ledger-004)"
+approver = "Leo (approved in chat on 2026-11-24; written by the coordinator session)"
+date = "2026-11-24"

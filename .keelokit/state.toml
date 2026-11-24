@@ -23,3 +23,11 @@ since = "222faf179665c92628473de9733b839c47c9a533"
 # This repo's CI has no ledger-config/ledger-snapshot jobs (LEDGER-011 put them in the template only), so there is no
 # keelokit/ledger branch to read: the snapshot is off, and LEDGER-1 doesn't ask for its jobs (LEDGER-012).
 snapshot = ""
+
+[ledger.approval]
+# Leo, 2026-11-24, in chat: "Apruebo todo lo de las correcciones que necesitás … Quiero que avances sin
+# restricciones." Correction rows are approved by the delegated review (two judges and a skeptic,
+# workflows/ledger-review-flow.js); a doubtful row stays pending. Leo can still send a run back with
+# `ledger.py review --reject-sample <run>`.
+mode = "delegated"
+sample = 0.05
