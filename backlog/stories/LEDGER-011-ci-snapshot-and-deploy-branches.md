@@ -96,12 +96,17 @@ Built as specified, with these differences and decisions (none changes a product
   below its own back to a recorded move, with its push time and `exact = false` (an upper bound). A run records
   nothing above its own AFTER, even what its checkout already sees, nothing without a push (a tag's run) and nothing
   when it lacks BEFORE (a forced push) (ESC-246, ESC-247). Exact beats not exact; of two exact records of one commit
-  the later wins, which only a commit landed again has.
+  the later wins, which only a commit landed again has. Round 4 (ESC-257): the walk follows AFTER's own first-parent
+  chain (a later foxtrot merge may have taken it off main's); an all-zero BEFORE dates only AFTER; a recorded commit
+  that a later push's trunk no longer holds is marked `left` and loses to any later record. A story takes its
+  commit's own exact move first, else its first-parent arrival's (not exact when an earlier move already held it).
 - **A stale run never writes an older reading.** When the branch's `ledger.json` is of a trunk commit this run's
   trunk does not hold and was seen later (a newer push), the run keeps it and adds only its moves; a reading of an
   ancestor, or of a trunk since forced back, is replaced (ESC-209, ESC-248). The snapshot also records every live
   `Story:` commit of every id (`snapshot.story_commits`) and the corrections file it was computed with
-  (`snapshot.corrections`). moves.toml is
+  (`snapshot.corrections`), and each id's reverted Story: commits (`snapshot.reverted_commits`), which a revert of
+  an old revert after the snapshot makes unknown. `SNAPSHOT_BEHIND` names a time only from the snapshot's commit's
+  own move: a run's time is its push's, and its checkout may already hold a later push. moves.toml is
   merged (exact over not exact, then the earlier time) and kept oldest first along the trunk.
 - **The time comes from `KEELOKIT_SNAPSHOT_AT`** (epoch seconds or ISO 8601), the current time when unset, so
   tests never assert the wall clock. The CI sets it to the push event's `repository.pushed_at`: when the push
