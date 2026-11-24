@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A worktree knows which story it works on, and an abandoned attempt stays readable (LEDGER-008).**
+  `ledger.py take <ID>` records the story in that worktree's own git config (`keelokit.story`), whatever the
+  branch is called, pushes nothing, refuses a story already on the trunk and warns, naming the branch, when
+  another branch already has its `Part-of:` commits; `take --clear` forgets it. `ledger.py drop <ID> --motivo "…"`
+  pushes an empty `Dropped:` commit with the reason to `archive/<id>-<YYYYMMDD>` (on the current branch when
+  `archive/` is refused) and clears the story, so `ledger.py show <ID>` lists the attempt. The pre-push runs no
+  verify for `archive/`, as for `wip/`, and refuses a push that carries an archived attempt nobody verified.
+  `build-story` and the agent brief run `take`, `drop` and `take --clear`. An existing project runs
+  `/keelokit:harness-upgrade`.
 - **A new session knows where the truth is (LEDGER-007).** The session start now prints, under one line that
   frames it as data, the ledger's summary (story states read from git) and one line of where to look —
   `ledger.py show <ID>` for a story, `/harbor:log` for what is under way, `backlog/` for what is asked — before

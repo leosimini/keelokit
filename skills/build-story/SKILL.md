@@ -96,6 +96,15 @@ the contract. A story already `on-trunk` or later is not built again; one `in-pr
 branch is someone else's: pick another or say so; `unknown` is never "not started": `ledger.py` says
 why (a cut history: `ledger.py history --ensure`).
 
+Then take it: `python3 .keelokit/bin/ledger.py take <ID>` in the story's worktree. It records the story in
+that worktree's own config (`keelokit.story`), so its commits are attributed whatever the branch is called
+(`claude/<name>`, a Harbor vessel), and pushes nothing. It refuses a story already on the trunk, and warns,
+naming the branch, when another origin branch has `Part-of:` commits of it: read that branch before going on.
+Giving a story up at any step (a third failed review round, a blocker the story can't get past):
+`python3 .keelokit/bin/ledger.py drop <ID> --motivo "<why, and what was tried>"`. It pushes an empty
+`Dropped:` commit to `archive/<id>-<YYYYMMDD>` (no verify; on the current branch when archive/ is refused)
+and clears the story, so the next session's `ledger.py show <ID>` reads why.
+
 A story that brings something new into the project — its first migration, a new app, a deploy
 config, personal data, payments — updates `traits` in `.keelokit/profile.toml` in the same change;
 the doctor warns when the code shows a trait the profile lacks.
@@ -206,6 +215,8 @@ builder.
    timeout, a retry or a skip.
 6. `python3 .keelokit/bin/doctor.py` passes: TRACE-1 now checks this story's scenarios and INV-1
    its invariants.
+7. Once `ledger.py show <ID>` says `on-trunk` (convoy: once the branch is delivered),
+   `python3 .keelokit/bin/ledger.py take --clear`: the worktree works on no story until the next `take`.
 
 ## Report
 

@@ -11,8 +11,9 @@
 #    main, master or release, when that exact commit already passed a clean, full verify here
 #    against origin/main as it is now (verify_tools.py proven).
 # 3. With [verify] wip_branches = "wip/" (as origin/main's state.toml sets it), a push to wip/<topic>
-#    carries unfinished work between sessions: it runs no verify and says it can't land. Any other push
-#    is refused while it holds a wip tip that origin/main lacks and no green verify here proved.
+#    carries unfinished work between sessions: it runs no verify and says it can't land. So does a push
+#    to archive/<id>-<date>, where `ledger.py drop` keeps an abandoned attempt (always unverified). Any
+#    other push is refused while it holds such a tip that origin/main lacks and no green verify here proved.
 command -v python3 >/dev/null 2>&1 || { echo 'Keelokit: python3 not found, so the pre-push hook cannot check this push. Install Python 3.11+.' >&2; exit 1; }
 refs=
 [ -t 0 ] || refs=$(cat)
@@ -21,19 +22,25 @@ if [ -n "$refs" ] && printf '%s\n' "$refs" | python3 .keelokit/bin/verify_tools.
   exit 0
 fi
 head=$(git rev-parse --verify --quiet HEAD) || head=
-wip=$(python3 .keelokit/bin/verify_tools.py wip-prefix "$1" "$2" </dev/null) || wip=
+# The unverified prefixes, space-separated: wip_branches (when set) and archive/.
+prefixes=$(python3 .keelokit/bin/verify_tools.py unverified-prefixes "$1" "$2" </dev/null) || prefixes=archive/
+# unverified REF: print the prefix (without its slash) when REF is a branch under one of them.
+unverified() {
+  for prefix in $prefixes; do
+    case $1 in "refs/heads/$prefix"*) printf '%s\n' "${prefix%/}"; return 0 ;; esac
+  done
+  return 1
+}
 pushed=0 refused=0 lines=0 heads=0
-# Every wip tip of this push is remembered before any other line is checked: a main listed first can't
-# carry wip work the same push is only now putting on the remote.
-if [ -n "$wip" ]; then
-  while read -r local_ref local_sha remote_ref remote_sha; do
-    case $remote_ref in "refs/heads/$wip"*) ;; *) continue ;; esac
-    case $local_sha in *[!0]*) ;; *) continue ;; esac
-    python3 .keelokit/bin/verify_tools.py wip-record "$(git rev-parse --verify --quiet "$local_sha^{commit}" || echo "$local_sha")" </dev/null || true
-  done <<EOF_WIP
+# Every unverified tip of this push is remembered before any other line is checked: a main listed first
+# can't carry wip work the same push is only now putting on the remote.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  unverified "$remote_ref" >/dev/null || continue
+  case $local_sha in *[!0]*) ;; *) continue ;; esac
+  python3 .keelokit/bin/verify_tools.py wip-record "$(git rev-parse --verify --quiet "$local_sha^{commit}" || echo "$local_sha")" </dev/null || true
+done <<EOF_WIP
 $refs
 EOF_WIP
-fi
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$local_sha" ] || continue
   lines=$((lines + 1))
@@ -41,18 +48,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   pushed=$((pushed + 1))
   # A tag pushes the commit it names: an annotated tag on HEAD pushes HEAD.
   commit=$(git rev-parse --verify --quiet "$local_sha^{commit}") || commit=$local_sha
-  if [ -n "$wip" ]; then
-    case $remote_ref in
-      "refs/heads/$wip"*)
-        echo "pre-push: $remote_ref is ${wip%/} work: not verified, and it can't land until a commit that holds it passes a verify."
-        continue
-        ;;
-    esac
-    if tip=$(python3 .keelokit/bin/verify_tools.py wip-inside "$1" "$commit" "$2" </dev/null); then
-      refused=$((refused + 1))
-      echo "pre-push: $remote_ref would get unverified ${wip%/} work ($(printf %.7s "$tip"), not on origin/main): run pnpm verify on this commit (green and clean, it covers the wip work in it), then push again." >&2
-      continue
-    fi
+  if kind=$(unverified "$remote_ref"); then
+    echo "pre-push: $remote_ref is $kind work: not verified, and it can't land until a commit that holds it passes a verify."
+    continue
+  fi
+  if tip=$(python3 .keelokit/bin/verify_tools.py wip-inside "$1" "$commit" "$2" </dev/null); then
+    refused=$((refused + 1))
+    echo "pre-push: $remote_ref would get unverified wip work ($(printf %.7s "$tip"), pushed to one of: $prefixes; not on origin/main): run pnpm verify on this commit (green and clean, it covers the wip work in it), then push again." >&2
+    continue
   fi
   if [ "$commit" = "$head" ]; then heads=$((heads + 1)); continue; fi
   case $remote_ref in
