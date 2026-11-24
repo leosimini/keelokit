@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Commits name their story by themselves, and a commit that names none is caught when it is made
+  (LEDGER-009).** Two new git hooks in `.githooks/`: `prepare-commit-msg` appends `Part-of: <ID>` from the story
+  `ledger.py take` recorded in the worktree, and `commit-msg` checks the trailer grammar (`UNATTRIBUTED`,
+  `UNKNOWN_STORY`, `BAD_CATEGORY`, `STORY_NO_BODY`, `SQUASH_LOST_TRAILERS`), naming the exact lines to add;
+  `[ledger] enforce = "block"` refuses the commit, `"warn"` lets it through. Merges and `fixup!` commits need no
+  attribution. The plugin's SessionStart turns the hooks on (`core.hooksPath = .githooks`) when the key is unset,
+  and says so in one line. The commits Keelokit's skills make carry `No-story: harness` (or `Finding:` with
+  `Part-of:`). *Upgrading:* an adopted project sets `enforce = "warn"` in `[ledger]` before it gets the hooks.
+
 - **A worktree knows which story it works on, and an abandoned attempt stays readable (LEDGER-008).**
   `ledger.py take <ID>` records the story in that worktree's own git config (`keelokit.story`), whatever the
   branch is called, pushes nothing, refuses a story already on the trunk and warns, naming the branch, when

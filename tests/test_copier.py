@@ -287,5 +287,52 @@ class WhereTheTruthIsTest(unittest.TestCase):
                 self.assertTrue("never of memory or of a handoff file" in text, "states the rule")
 
 
+class CommitHooksShipTest(unittest.TestCase):
+    """LEDGER-009.S8: the template ships prepare-commit-msg and commit-msg, executable, as three-line wrappers around
+    `ledger.py hook prepare|msg`; this repo runs the same two files in its own .githooks/."""
+
+    HOOKS = {"prepare-commit-msg": "prepare", "commit-msg": "msg"}
+
+    def test_LEDGER_009_S8_the_template_ships_both_hooks_as_executable_wrappers(self):
+        for name, cmd in self.HOOKS.items():
+            with self.subTest(hook=name):
+                hook = ROOT / "template/.githooks" / name
+                self.assertTrue(hook.is_file(), f"template/.githooks/{name} is missing")
+                self.assertTrue(os.access(hook, os.X_OK), f"template/.githooks/{name} is not executable")
+                lines = hook.read_text().splitlines()
+                self.assertEqual(lines[0], "#!/usr/bin/env sh")
+                code = [l for l in lines[1:] if l.strip() and not l.lstrip().startswith("#")]
+                self.assertEqual(len(code), 2, code)
+                self.assertTrue(code[0].startswith("command -v python3 >/dev/null 2>&1 ||"), code[0])
+                self.assertIn(name, code[0], "the python3 message names the hook")
+                self.assertIn("Python 3.11+", code[0])
+                self.assertIn("exit 1", code[0])
+                self.assertEqual(code[1], f'exec python3 .keelokit/bin/ledger.py hook {cmd} "$@"')
+
+    def test_LEDGER_009_S8_this_repo_s_githooks_has_the_same_two_files(self):
+        for name in self.HOOKS:
+            with self.subTest(hook=name):
+                mine, shipped = ROOT / ".githooks" / name, ROOT / "template/.githooks" / name
+                self.assertTrue(mine.is_file(), f".githooks/{name} is missing")
+                self.assertTrue(os.access(mine, os.X_OK), f".githooks/{name} is not executable")
+                self.assertTrue(shipped.is_file(), f"template/.githooks/{name} is missing")
+                self.assertEqual(mine.read_bytes(), shipped.read_bytes())
+
+    def test_LEDGER_009_S8_a_generated_project_gets_both_hooks_executable(self):
+        uv_or_skip(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            dst = Path(tmp, "product")
+            out = subprocess.run(
+                [UV, "tool", "run", "--quiet", COPIER, "copy", "--vcs-ref", "HEAD", "--defaults",
+                 "--data", "project_name=Acme", str(ROOT), str(dst)],
+                capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(out.returncode, 0, out.stderr[-3000:])
+            for name in self.HOOKS:
+                with self.subTest(hook=name):
+                    hook = dst / ".githooks" / name
+                    self.assertTrue(hook.is_file() and os.access(hook, os.X_OK), f"{name} missing or not executable")
+                    self.assertEqual(hook.read_bytes(), (ROOT / "template/.githooks" / name).read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()
