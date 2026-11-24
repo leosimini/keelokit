@@ -137,8 +137,11 @@ reconnect by itself. Android has no such prompt.
   the project's `.keelokit/bin` when it is the same as the plugin's. A project whose copy differs (an
   older harness, or rules you changed in code) gets one line at the session start; you upgrade it with
   `/keelokit:harness-upgrade`, or review and approve its copy in your own terminal with the
-  `trusted.py trust` command that line prints. Running the project's tests, scripts or commands is still
-  trusting it.
+  `trusted.py trust` command that line prints. A repo's own `.githooks` are turned on only when they
+  are the plugin's (or you approved them); otherwise the session start says they stay off. Approvals
+  live in `~/.config/keelokit/trusted.json`; the guard keeps agents from writing it or running `trust`,
+  but an agent with a shell of its own, running as you, could still write it: the same limit as the
+  guard's. Running the project's tests, scripts or commands is still trusting it.
 - `doctor` can tell a check is present and switched on, not that it's a good check. For the
   critical code, mutation testing measures that; elsewhere, reviews and bug hunts cover it.
 - Bugs come in classes, so the harness aims at classes: the rules that must always hold

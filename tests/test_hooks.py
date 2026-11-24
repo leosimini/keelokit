@@ -153,6 +153,7 @@ class SessionStartHook:
         (self.plugin / "hooks").mkdir(parents=True)
         (self.plugin / "template/.keelokit/bin").mkdir(parents=True)
         shutil.copy(ROOT / "hooks/trusted.py", self.plugin / "hooks/trusted.py")
+        shutil.copytree(ROOT / "template/.githooks", self.plugin / "template/.githooks")
 
     def stub(self, name, extra=""):
         for d in (self.proj / ".keelokit/bin", self.plugin / "template/.keelokit/bin"):
@@ -1009,9 +1010,8 @@ class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
 
     def repo(self, githooks=True):
         self.git("init", "-q", "-b", "main")
-        if githooks:
-            (self.proj / ".githooks").mkdir()
-            (self.proj / ".githooks/pre-commit").write_text("#!/bin/sh\n")
+        if githooks:  # the plugin's own hooks (HARN-004, ESC-271: a repo's own stay off until a person approves them)
+            shutil.copytree(ROOT / "template/.githooks", self.proj / ".githooks")
 
     def test_LEDGER_009_S7_session_start_sets_core_hooks_path_and_says_so_in_one_line(self):
         for sh in SHELLS:

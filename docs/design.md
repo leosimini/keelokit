@@ -34,8 +34,13 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   the project's data (rules, `rules.local.toml`, state, backlog) and the session start says so in one line, unless
   a person approved the project's `.keelokit/bin` as it is now with `trusted.py trust` (on a terminal; the guard
   refuses it to agents; the store is `~/.config/keelokit/trusted.json`, per project and fingerprint). An approved
-  copy runs from the bytes that were checked. guard, doctor, ledger and ux_gate take `--root DIR` first; the
-  doctor runs the ledger and ux_gate next to itself, with the same `--root`.
+  copy runs from the bytes that were checked: one snapshot reads every file of `.keelokit/bin` and `.githooks`
+  once, and only plain files can be approved. guard, doctor, ledger and ux_gate take `--root DIR` first; the
+  doctor runs the ledger and ux_gate next to itself, with the same `--root`; the ledger and the guard run with
+  `--root` set core.hooksPath=/dev/null for their git calls. The session start turns a repo's `.githooks` on
+  (LEDGER-009.S7) only through `trusted.py githooks`: when they and the scripts they run are the plugin's, or
+  approved. The guard reads its data files without blocking and at most 1 MB, and bounds its git calls, so it
+  can't outlive the hook's timeout, which Claude Code would read as a pass.
 - `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
   runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).

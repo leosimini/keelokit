@@ -119,6 +119,22 @@ def root_of(argv: list[str]) -> Path:
 
 
 ROOT = root_of(sys.argv)
+
+
+def no_repo_hooks() -> None:
+    """HARN-004 (ESC-271): run with --root by the plugin's hooks, no git call of this copy fires the project's own git
+    hooks (a fetch runs reference-transaction), whatever core.hooksPath says: git reads GIT_CONFIG_* as `-c`."""
+    try:
+        n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
+    except ValueError:
+        n = 0
+    os.environ[f"GIT_CONFIG_KEY_{n}"] = "core.hooksPath"
+    os.environ[f"GIT_CONFIG_VALUE_{n}"] = os.devnull
+    os.environ["GIT_CONFIG_COUNT"] = str(n + 1)
+
+
+if ROOT != Path(__file__).resolve().parents[2]:
+    no_repo_hooks()
 DEFAULT_CAP = 20
 MAX_CAP = 20
 GRACE = 2.0

@@ -5,7 +5,8 @@
 - **Opening a repo no longer runs its own guard, doctor or ledger (HARN-004).** The hooks run the plugin's copy
   against the project's data, or the project's copy only when it matches the plugin's or you approved it with
   `hooks/trusted.py trust` in your terminal (it shows the diff, control characters escaped). A project whose
-  `.keelokit/bin` differs gets one line at the session start saying so.
+  `.keelokit/bin` differs gets one line at the session start saying so. A repo's own `.githooks` are turned on only
+  when they are the plugin's or you approved them, and the guard can no longer be stalled past its timeout.
 
 ## 0.16.0 — 2026-11-24
 

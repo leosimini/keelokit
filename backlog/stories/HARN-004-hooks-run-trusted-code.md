@@ -83,6 +83,28 @@ to agents (AGENT-1), and `trust` reads its answer from /dev/tty and asks for the
 characters. The breaker round's findings are ESC-268..270 (the doctor's children, relative PATH entries, a FIFO).
 The launcher's tests are in tests/test_guard.py (`HooksRunTrustedCode`), the doctor's in tests/test_doctor.py.
 
+Breaker round 2 (an independent breaker, ESC-271..276), and what changed:
+- **The repo's own git hooks** (ESC-271). LEDGER-009.S7's session start turned `.githooks` on whatever they held,
+  so a repo's reference-transaction ran inside the plugin's own fetch, and its pre-commit at the agent's first
+  commit. Now `trusted.py githooks` turns them on only when every hook is the plugin's and the `.keelokit/bin`
+  scripts they run are too (the template's pre-commit runs guard.py), or a person approved them: the fingerprint
+  covers `.githooks`. Otherwise one line says they stay off and how to review them. Independently, the plugin's
+  ledger and guard run with `--root` set core.hooksPath=/dev/null (GIT_CONFIG_*), so even a hooks path set earlier
+  fires nothing from our own git calls. The doctor is left out on purpose: it reads the hooks path to report
+  whether the hooks are installed, and runs no git command that fires a hook. The template's pre-push still runs
+  the project's verify when a person or agent pushes: running its tests, which this story leaves alone.
+- **The store** (ESC-272). The guard refuses file tools inside ~/.config/keelokit and shell commands that name it.
+  An agent with arbitrary shell, as the same user, can still write it (a variable, a script): the guard's limit.
+- **`trust` on a real terminal** (ESC-273). It never worked: a text-mode "r+" open of /dev/tty raises on a
+  terminal. Now it reads and writes the descriptor unbuffered, tested on a real pseudo-terminal. AGENT-1 reads
+  commands as shell words (quotes, backslashes, $'…', `sh -c` strings).
+- **One read** (ESC-274). A snapshot reads every file once; the fingerprint and the bytes run come from it.
+- **Only plain files** (ESC-275). A directory, symlink, special file or file over 8 MB in `.keelokit/bin` or
+  `.githooks` cannot be approved, and approved code writes no bytecode. A project with a `__pycache__` in
+  `.keelokit/bin` (left by tests that import a script) must remove it before approving.
+- **No fail-open by timeout** (ESC-276). The guard reads its data files without blocking and at most 1 MB, bounds
+  its git calls to 30 s and 1 MB of output, and blocks with one line past a bound; the hook states 60 s.
+
 Known limits, not fixed here: a repo that arrives with its own `.git/config` (an archive, not a clone) can still
 make git run commands (core.fsmonitor, a remote's uploadpack) when the plugin's scripts run git: that is git's
 trust model. Environment a repo's `.claude/settings.json` sets is behind Claude Code's own workspace-trust prompt;

@@ -32,7 +32,9 @@ import re  # noqa: E402
 import shlex  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
+import stat  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 import tomllib  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -48,10 +50,142 @@ def root_of(argv: list[str]) -> Path:
 
 
 ROOT = root_of(sys.argv)
+
+
+def no_repo_hooks() -> None:
+    """HARN-004 (ESC-271): run with --root by the plugin's hooks, no git call of this copy fires the project's own git
+    hooks (a fetch runs reference-transaction), whatever core.hooksPath says: git reads GIT_CONFIG_* as `-c`."""
+    try:
+        n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
+    except ValueError:
+        n = 0
+    os.environ[f"GIT_CONFIG_KEY_{n}"] = "core.hooksPath"
+    os.environ[f"GIT_CONFIG_VALUE_{n}"] = os.devnull
+    os.environ["GIT_CONFIG_COUNT"] = str(n + 1)
+
+
+if ROOT != Path(__file__).resolve().parents[2]:
+    no_repo_hooks()
 ENV_OK = {".env.example", ".env.ci"}
 # HARN-004: which copy of the guard, doctor and ledger the plugin's hooks run is approved on a terminal, by a person.
 TRUST_WHY = ("AGENT-1: approving the code Keelokit's hooks run (hooks/trusted.py trust/untrust) is the human's call: "
              "they run it in their own terminal, where it shows the diff; `trusted.py show` is yours to read")
+STORE_WHY = ("AGENT-1: ~/.config/keelokit holds the person's approvals of the code Keelokit's hooks run: agents don't "
+             "write it; the person runs `trusted.py trust` in their own terminal")
+try:
+    import pwd  # noqa: E402
+
+    STORE_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config/keelokit"
+except (ImportError, KeyError):
+    STORE_DIR = Path.home() / ".config/keelokit"
+# ESC-276: Claude Code lets a call through when the hook outlives its timeout, so the guard bounds what it reads and
+# how long its git calls take, and blocks when a bound is hit (hooks/hooks.json gives the hook more than GIT_SECONDS).
+MAX_DATA = 1 << 20
+GIT_SECONDS = 30
+_GIT_DEADLINE = time.monotonic() + GIT_SECONDS
+
+
+class GuardLimit(Exception):
+    """A bound the guard keeps was hit: the call is blocked."""
+
+
+def read_data(path: Path) -> bytes:
+    """A data file's bytes, read without blocking and at most MAX_DATA of them. OSError as reading would raise it (a
+    missing file); GuardLimit for a FIFO, a device or a file over the bound."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise GuardLimit(f"{rel_shown(path)} is not a regular file")
+        data = os.read(fd, MAX_DATA + 1)
+        if len(data) > MAX_DATA or st.st_size > MAX_DATA:
+            raise GuardLimit(f"{rel_shown(path)} is over {MAX_DATA >> 20} MB")
+        while chunk := os.read(fd, MAX_DATA):  # a short read: the rest, still within the bound
+            data += chunk
+            if len(data) > MAX_DATA:
+                raise GuardLimit(f"{rel_shown(path)} is over {MAX_DATA >> 20} MB")
+        return data
+    finally:
+        os.close(fd)
+
+
+def rel_shown(path: Path) -> str:
+    try:
+        return Path(path).relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def git_run(*args: str) -> subprocess.CompletedProcess:
+    """A git call of the Claude hook: within what is left of GIT_SECONDS, and its output within MAX_DATA."""
+    left = _GIT_DEADLINE - time.monotonic()
+    if left <= 0:
+        raise GuardLimit(f"its git calls took more than {GIT_SECONDS}s")
+    try:
+        out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, timeout=left)
+    except subprocess.TimeoutExpired:
+        raise GuardLimit(f"its git calls took more than {GIT_SECONDS}s") from None
+    if len(out.stdout) > MAX_DATA:
+        raise GuardLimit(f"`git {' '.join(args)}` gave more than {MAX_DATA >> 20} MB")
+    return out
+
+
+# ESC-272/273: what the shell will run, read as its words: quotes joined, backslashes and $'…' decoded, and the
+# strings handed to `sh -c`, `script -c` or an interpreter read the same way, a few levels deep.
+ANSI_C = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+SHELL_PUNCT = ";&|()<>`{}"
+
+
+def _ansi_c(match: re.Match) -> str:
+    try:
+        text = match.group(1).encode("latin-1", "backslashreplace").decode("unicode_escape")
+    except (UnicodeDecodeError, ValueError):
+        text = match.group(1)
+    return shlex.quote(text)
+
+
+def shell_words(cmd: str, depth: int = 0) -> list[str]:
+    text = ANSI_C.sub(_ansi_c, cmd)
+    try:
+        words = shlex.split(text, posix=True)
+    except ValueError:
+        words = text.split()
+    out = []
+    for w in words:
+        out.append(w.strip(SHELL_PUNCT))
+        out.extend(p.strip(SHELL_PUNCT) for p in re.split(r"[;&|<>]+", w) if p)
+        if depth < 3 and (any(c.isspace() for c in w) or any(c in w for c in "'\"\\$")):
+            out.extend(shell_words(w, depth + 1))
+    return [w for w in out if w]
+
+
+def trust_command(cmd: str) -> bool:
+    words = shell_words(cmd)
+    return any(w.endswith("trusted.py") for w in words) and any(w in ("trust", "untrust") for w in words)
+
+
+def names_store(cmd: str) -> bool:
+    words = [posixpath.normpath(w) if "/" in w else w for w in shell_words(cmd)]
+    if any("trusted.json" in w or ".config/keelokit" in w for w in words):
+        return True
+    return any(w.endswith(".config") for w in words) and any(w == "keelokit" or w.startswith("keelokit/") for w in words)
+
+
+def in_store(path: str) -> bool:
+    """A file tool's path inside ~/.config/keelokit: ~ expanded, relative to the root, links resolved."""
+    paths = [Path(path).expanduser()]
+    if path == "~" or path.startswith("~/"):  # ~ is $HOME to the tool, and the store is under the account's home
+        paths.append(STORE_DIR.parent.parent / path[2:])
+    store = os.path.realpath(STORE_DIR)
+    candidates = []
+    for p in paths:
+        p = p if p.is_absolute() else ROOT / p
+        candidates += [os.path.realpath(p), posixpath.normpath(str(p))]
+    for candidate in candidates:
+        if candidate == store or candidate.startswith(store.rstrip("/") + "/") or \
+                candidate == str(STORE_DIR) or candidate.startswith(str(STORE_DIR) + "/"):
+            return True
+    return False
 SECRETS = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
@@ -145,9 +279,7 @@ def applied_migration(path: str) -> bool:
     rel = repo_rel(path)
     if rel is None or "prisma/migrations/" not in rel.as_posix() or rel.name == "migration_lock.toml":
         return False
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"origin/main:{rel.as_posix()}"], cwd=ROOT, capture_output=True
-    ).returncode == 0
+    return git_run("cat-file", "-e", f"origin/main:{rel.as_posix()}").returncode == 0
 
 
 def secret_in(text: str) -> str | None:
@@ -242,7 +374,7 @@ def active_allowed(text: str | bytes | None) -> list[dict]:
 def committed_registry() -> list[dict]:
     """The registry as of the last commit: what the Claude hook honours, so a write an agent slips past
     the shell check exempts nothing until a human commits it. No registry there means no entries."""
-    out = subprocess.run(["git", "show", f"HEAD:{REGISTRY}"], cwd=ROOT, capture_output=True)
+    out = git_run("show", f"HEAD:{REGISTRY}")
     return active_allowed(out.stdout) if out.returncode == 0 else []
 
 
@@ -455,7 +587,7 @@ def delegates(table) -> bool:
 
 def git_bytes(*args: str) -> bytes | None:
     """stdout of a git call, or None when it fails."""
-    out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True)
+    out = git_run(*args)
     return out.stdout if out.returncode == 0 else None
 
 
@@ -464,7 +596,7 @@ def trunk_approval(trunk: str | None = None):
     one ledger.py honours; the trunk is [ledger] trunk, else [harbor] trunk, else main (or the one given)."""
     if trunk is None:
         try:
-            trunk = trunk_of((ROOT / STATE).read_bytes())
+            trunk = trunk_of(read_data(ROOT / STATE))
         except OSError:
             trunk = "main"
     if trunk.startswith("-") or git_bytes("check-ref-format", f"refs/heads/{trunk}") is None:
@@ -524,7 +656,7 @@ def delegated_gate(run: str) -> str | None:
     if not delegates(trunk_approval()):
         return DELEGATED_OFF_WHY
     try:
-        rows = review_rows((ROOT / REVIEWS / f"{run}.json").read_bytes(), run)
+        rows = review_rows(read_data(ROOT / REVIEWS / f"{run}.json"), run)
     except OSError:
         rows = None
     if not rows or any(verdicts_missing(r) for r in rows):
@@ -537,7 +669,7 @@ def state_after(tool: str, args: dict, rel: str) -> str | None:
     """The text state.toml would have after this tool call (None: the call cannot be read, so it counts as a
     change)."""
     try:
-        current = (ROOT / rel).read_text(encoding="utf-8")
+        current = read_data(ROOT / rel).decode("utf-8")
     except OSError:
         current = ""
     if tool == "Write":
@@ -580,7 +712,7 @@ def state_problem(tool: str, args: dict, rel: str) -> str | None:
     """Why this edit of state.toml is the person's: it changes [ledger.approval], or moves the trunk to a branch whose
     committed table differs (the approval is read from the trunk's committed file); None for any other edit."""
     try:
-        current = (ROOT / rel).read_text(encoding="utf-8")
+        current = read_data(ROOT / rel).decode("utf-8")
     except OSError:
         current = None
     after = state_after(tool, args, rel)
@@ -672,8 +804,10 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                     rf"(?i){GIT}config\b{GIT_ARGS}['\"]?keelokit\.allowtamper"):
         if re.search(pattern, cmd):  # quoted spellings, which `bare` has emptied
             return "QA-4: only a human may allow a skipped test or silenced check"
-    if re.search(r"trusted\.py\b", cmd) and re.search(r"(?<![\w.-])(?:un)?trust(?![\w.-])", cmd):
+    if trust_command(cmd):
         return TRUST_WHY
+    if names_store(cmd):
+        return STORE_WHY
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why
@@ -751,6 +885,8 @@ def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
+    if path and in_store(path):
+        return STORE_WHY
     names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
     if REGISTRY in names:
         return REGISTRY_WHY
