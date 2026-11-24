@@ -139,7 +139,7 @@ SHAPES = {
     ".keelokit/profile.toml": ({"kind": "text", "traits": "texts"}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
-    ".keelokit/state.toml": ({"gates": "table"}, {}),
+    ".keelokit/state.toml": ({"gates": "table", "ledger": "table"}, {}),
     # Story front matter (backlog/README.md).
     "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
                               "touches": "texts", "dimensions": "texts", "invariants": "texts", "origin": "text"}, {}),
@@ -338,7 +338,7 @@ def hook_problem(target: str) -> str | None:
     hooks_dir = git("rev-parse", "--git-path", "hooks").strip() or ".git/hooks"
     hook = ROOT / hooks_dir / target
     if not hook.is_file():
-        return f"git hook '{target}' is not installed (hooksPath: {hooks_dir}; {hook_remedy(hooks_dir, target)})"
+        return f"git hook '{target}' is not installed (no {rel(hook)}; hooksPath: {hooks_dir}; {hook_remedy(hooks_dir, target)})"
     shown = rel(hook)
     text, why = read_file(hook, lenient=True)
     if why:
@@ -611,26 +611,455 @@ def check_guard_allow() -> None:
                         f"{e['reason']} (approved by {e['approver']})")
 
 
+_ledger_runs: dict[tuple[str, ...], tuple[dict | None, str]] = {}
+
+
+def ledger_json(*args: str) -> tuple[dict | None, str]:
+    """`ledger.py <args> --json`, parsed, run once per doctor run: (data, "") or (None, why)."""
+    if args not in _ledger_runs:
+        why, data = "", None
+        try:
+            out = subprocess.run([sys.executable, str(ROOT / ".keelokit/bin/ledger.py"), *args, "--json"], cwd=ROOT,
+                                 capture_output=True, text=True, timeout=60)
+            why = (out.stderr.strip().splitlines() or [""])[-1]
+            data = json.loads(out.stdout) if out.returncode in (0, 1) else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            data = None
+        _ledger_runs[args] = (data if isinstance(data, dict) else None, why)
+    return _ledger_runs[args]
+
+
 def check_corrections() -> None:
     """The ledger's corrections (backlog/ledger-corrections.toml): ledger.py checks them (docs/ledger.md,
     "Corrections file") and the doctor reports its CORRECTION_* differences: errors stay errors."""
-    ledger = ROOT / ".keelokit/bin/ledger.py"
-    if not ledger.is_file():
+    if not (ROOT / ".keelokit/bin/ledger.py").is_file():
         return
-    why = ""
-    try:
-        out = subprocess.run([sys.executable, str(ledger), "check", "--json"], cwd=ROOT, capture_output=True,
-                             text=True, timeout=60)
-        why = (out.stderr.strip().splitlines() or [""])[-1]
-        diffs = json.loads(out.stdout)["diffs"] if out.returncode in (0, 1) else None
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
-        diffs = None
+    data, why = ledger_json("check")
+    diffs = data.get("diffs") if data else None
     if not isinstance(diffs, list):
         warnings.append(f"ledger: the corrections could not be checked ({why or 'run `python3 .keelokit/bin/ledger.py check`'})")
         return
     for d in diffs:
         if isinstance(d, dict) and str(d.get("code", "")).startswith("CORRECTION_"):
             (errors if d.get("level") == "error" else warnings).append(f"{d['code']}: {d.get('detail', '')}")
+
+
+# --- LEDGER-1: the pieces that keep the ledger complete are alive (docs/ledger.md, "Mechanisms") -------
+# Each hook of .githooks/ (LEDGER-009, LEDGER-010) and the ledger.py command it has to run.
+LEDGER_HOOKS = {"commit-msg": "ledger.py hook msg", "prepare-commit-msg": "ledger.py hook prepare",
+                "pre-push": "ledger.py prepush"}
+# The differences that are errors under enforce = "block" (warnings under "warn"): ledger.py's attribution_diffs.
+ATTRIBUTION_CODES = {"UNATTRIBUTED", "UNKNOWN_STORY", "BAD_CATEGORY", "STORY_NO_BODY", "SQUASH_LOST_TRAILERS"}
+BLOCK_WINDOW = 3 * 86400  # docs/ledger.md decision 6: 3 days in a row with zero unattributed commits ...
+BLOCK_COMMITS = 20        # ... and at least 20 commits in that window
+UPGRADE = "/keelokit:harness-upgrade brings it"
+
+
+def ledger_config() -> dict:
+    """`[ledger]` of .keelokit/state.toml (its keys have the defaults docs/ledger.md gives: enforce block, the
+    snapshot on); ledger.py reports a value it can't use."""
+    table = state().get("ledger", {})
+    return table if isinstance(table, dict) else {}
+
+
+def workflow_steps(block: str) -> list[str]:
+    """The steps of one job's text, each with its lines (a step starts at a `-` at the indent of the first)."""
+    m = re.search(r"(?m)^ *steps:[ \t]*(?:#.*)?\n", block)
+    if not m:
+        return []
+    steps: list[list[str]] = []
+    indent = None
+    for line in block[m.end():].splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        lead = len(line) - len(line.lstrip(" "))
+        dash = re.match(r"( *)-(?:\s|$)", line)
+        if indent is None:
+            if not dash:
+                break
+            indent = lead
+        if lead < indent or (lead == indent and not dash):
+            break
+        if dash and lead == indent:
+            steps.append([line])
+        else:
+            steps[-1].append(line)
+    return ["\n".join(s) for s in steps]
+
+
+def workflow_job_texts(text: str) -> dict[str, str]:
+    """Job id -> its text, for one workflow file (the jobs sit at the indent of the first one)."""
+    jobs = re.search(r"(?ms)^jobs:[ \t]*(?:#[^\n]*)?\n(.*?)(?=^[^\s#]|\Z)", text)
+    indent = jobs and re.search(r"(?m)^( +)[^\s#]", jobs.group(1))
+    if not indent:
+        return {}
+    n = len(indent.group(1))
+    return {m.group(1): m.group(2) for m in re.finditer(
+        rf"(?ms)^ {{{n}}}([\w-]+):[ \t]*(?:#[^\n]*)?\n(.*?)(?=^ {{{n}}}[\w-]+:|\Z)", jobs.group(1))}
+
+
+def workflow_events(text: str) -> set[str]:
+    """The events a workflow runs on, from its top-level `on:` (a scalar, a list or a mapping; comments and the
+    keys under each event never count). A `push` filtered to tags only is `push-tags`: a release, not the trunk."""
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    at = next((i for i, ln in enumerate(lines) if re.match(r"['\"]?on['\"]?:", ln)), None)
+    if at is None:
+        return set()
+    inline = re.sub(r"\s#.*$", "", lines[at].split(":", 1)[1]).strip()
+    if inline:
+        return set(re.findall(r"[\w-]+", inline))
+    body = []
+    for ln in lines[at + 1:]:
+        if not ln.startswith((" ", "\t")):
+            break
+        body.append(ln)
+    if not body:
+        return set()
+    n = len(body[0]) - len(body[0].lstrip())
+    events: set[str] = set()
+    for i, ln in enumerate(body):
+        if len(ln) - len(ln.lstrip()) != n:
+            continue
+        m = re.match(r"\s*(?:-\s*)?['\"]?([\w-]+)['\"]?\s*(:|$)", ln)
+        if not m:
+            continue
+        event = m.group(1)
+        if event == "push":
+            under = []
+            for sub in body[i + 1:]:
+                if len(sub) - len(sub.lstrip()) <= n:
+                    break
+                under.append(sub)
+            keys = {k.group(1) for sub in under if (k := re.match(r"\s*([\w-]+)\s*:", sub))}
+            if keys & {"tags", "tags-ignore"} and not keys & {"branches", "branches-ignore"}:
+                event = "push-tags"
+        events.add(event)
+    return events
+
+
+FLOW_OFF = re.compile(r"(?:^|[{,\s])if:[ \t]*(?P<q>['\"]?)(?:false|\$\{\{\s*false\s*\}\})(?P=q)[ \t]*(?:[,}#]|$)",
+                      re.I | re.M)
+FLOW_SOFT = re.compile(r"(?:^|[{,\s])continue-on-error:[ \t]*(?P<q>['\"]?)(?:true|\$\{\{\s*true\s*\}\})(?P=q)"
+                       r"[ \t]*(?:[,}#]|$)", re.I | re.M)
+LEDGER_CHECK = re.compile(r"\bledger\.py[ \t]+check[ \t]+--ci\b")
+
+
+def run_script(step: str) -> str:
+    """The shell text of a step's `run:` (one line, a block scalar, or a flow mapping's value); "" without one. A
+    folded scalar (`>`) is one line, as YAML reads it."""
+    m = re.search(r"(?m)^([ \t-]*)run:[ \t]*([|>][-+0-9]*)?[ \t]*(.*)$", step)
+    if not m:
+        flow = re.search(r"[{,][ \t]*run:[ \t]*([^,}]*)", step)
+        return flow.group(1).strip().strip("'\"") if flow else ""
+    if not m.group(2):
+        return m.group(3).split(" #")[0].strip().strip("'\"")
+    lines, deeper = [], len(m.group(1)) + 1
+    for line in step[m.end():].splitlines()[1:]:
+        if line.strip() and len(line) - len(line.lstrip(" ")) < deeper:
+            break
+        lines.append(line.strip())
+    return (" " if m.group(2).startswith(">") else "\n").join(lines)
+
+
+SHELL_OPENS = ("if", "case", "for", "while", "until", "select")
+SHELL_CLOSES = ("fi", "esac", "done", "}")
+
+
+def live_ledger_step(step: str) -> str | None:
+    """None when this step runs `ledger.py check --ci` so that its failure fails the job (GitHub runs `run:` under
+    `bash -e`: `&&`, `;` and redirections keep it); "absent" when it doesn't run it at all (the command only in its
+    name); else why it can't fail the job: an `exit 0` before it outside any if/case/loop, or `||`, a pipe (no
+    pipefail) or `&` after it on its line."""
+    lines = [ln.strip() for ln in run_script(step).splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    at = next((i for i, ln in enumerate(lines) if LEDGER_CHECK.search(ln)), None)
+    if at is None:
+        return "absent"
+    depth = 0
+    for ln in lines[:at]:
+        words = re.findall(r"[\w{}]+", ln)
+        depth += sum(w in SHELL_OPENS for w in words) + ln.endswith("{") - sum(w in SHELL_CLOSES for w in words)
+        if depth <= 0 and re.fullmatch(r"exit(\s+0)?\s*;?", ln):
+            return "never reaches the command (an `exit 0` comes first)"
+    rest = LEDGER_CHECK.split(lines[at], 1)[1]
+    pipefail = any("pipefail" in ln for ln in lines[:at])
+    if "||" in rest or (re.search(r"(?<!\|)\|(?!\|)", rest) and not pipefail) or re.search(r"(?<![&>0-9])&\s*$", rest):
+        return "hides its failure (`||`, a pipe or `&` after the command)"
+    if FLOW_SOFT.search(step):
+        return "has continue-on-error"
+    if FLOW_OFF.search(step):
+        return "never runs (if: false)"
+    return None
+
+
+def dead_job(job: str, jobs: dict[str, str], seen: frozenset = frozenset()) -> str | None:
+    """Why this job of one workflow never fails it, or None: missing, continue-on-error, `if: false`, or a job it
+    needs that is dead (GitHub skips a job whose needs did not succeed)."""
+    block = jobs.get(job)
+    if block is None:
+        return f"CI job '{job}' does not exist"
+    if re.search(rf"(?m)^\s*continue-on-error:[ \t]*{ALWAYS['true']}", block):
+        return f"CI job '{job}' has continue-on-error"
+    key = re.match(r"(?:[ \t]*(?:#.*)?\n)*( *)", block).group(1)
+    if re.search(rf"(?m)^{key}if:[ \t]*{ALWAYS['false']}", block):
+        return f"CI job '{job}' never runs (if: false)"
+    needs: list[str] = []
+    if m := re.search(rf"(?m)^{key}needs:[ \t]*(.*)$", block):
+        if inline := m.group(1).split("#")[0].strip():
+            needs = re.findall(r"[\w-]+", inline)
+        else:
+            for line in block[m.end() + 1:].splitlines():
+                if not (item := re.match(rf"{key}[ \t]+-[ \t]*([\w-]+)", line)):
+                    break
+                needs.append(item.group(1))
+    for need in needs:
+        if need not in seen and (why := dead_job(need, jobs, seen | {job})):
+            return f"CI job '{job}' needs '{need}': {why}"
+    return None
+
+
+def ledger_ci_workflows() -> tuple[list[tuple[str, dict[str, str], set[str]]], str | None]:
+    """The workflows that hold a live `ledger.py check --ci` step for pushes or pull requests, each with its jobs and
+    events; when there is none, why. Files are read in name order and each on its own: a job of the same name in
+    another workflow (the release workflow's tag-only snapshot) never stands in for this one's. A reusable workflow
+    (`on: workflow_call`) runs on the events of the workflows that call it (`uses: ./.github/workflows/<file>`)."""
+    texts = {rel(p): read(p) or "" for p in sorted((ROOT / ".github/workflows").glob("*.y*ml"))}
+    jobs_of = {path: workflow_job_texts(text) for path, text in texts.items()}
+    events = {path: workflow_events(text) for path, text in texts.items()}
+    for path, jobs in jobs_of.items():
+        for block in jobs.values():
+            for called in re.findall(r"(?m)^\s*uses:[ \t]*['\"]?\./(\.github/workflows/[\w.-]+)", block):
+                if called in events and "workflow_call" in events[called]:
+                    events[called] |= events[path] - {"workflow_call"}
+    found: list[tuple[str, dict[str, str], set[str]]] = []
+    why = None
+    for path, jobs in jobs_of.items():
+        live = False
+        for job, block in jobs.items():
+            for step in workflow_steps(block):
+                if not LEDGER_CHECK.search(step) or (problem := live_ledger_step(step)) == "absent":
+                    continue
+                if problem is None and not events[path] & {"push", "pull_request"}:
+                    problem = f"is in {path}, which runs on no push to a branch or pull_request"
+                if problem is None and (job_why := dead_job(job, jobs)):
+                    problem = f"is in a job that never fails the run ({job_why})"
+                if problem is None:
+                    live = True
+                    break
+                why = why or f"the CI step that runs `python3 .keelokit/bin/ledger.py check --ci` (job '{job}') {problem}"
+            if live:
+                break
+        if live:
+            found.append((path, jobs, events[path]))
+    if found:
+        return found, None
+    return [], why or (f"no CI step runs `python3 .keelokit/bin/ledger.py check --ci` (LEDGER-010's "
+                       f"\"Ledger attribution\"; {UPGRADE})")
+
+
+def calls(text: str | None, call: str) -> bool:
+    """Whether a hook's text runs `call` on a line that isn't a comment (quotes around the path don't matter)."""
+    return any(call in re.sub(r"['\"]", "", line) for line in (text or "").splitlines()
+               if line.strip() and not line.lstrip().startswith("#"))
+
+
+def ledger_hook_problems(hooks_dir: str) -> list[tuple[str, bool]]:
+    """(problem, shared) for the ledger's hooks: each shipped in .githooks/, executable, running its ledger.py
+    command on a line that isn't a comment; prepare-commit-msg installed where git runs it (commit-msg and pre-push
+    are LEDGER-1's own git-hook enforcers, which the rule loop checks); and a hooks path elsewhere whose hooks of
+    these names don't run the ledger. A hook git can't run (missing, not executable) where the hooks path is
+    .githooks is the git-hook check's one line, never a second one here."""
+    problems: list[tuple[str, bool]] = []
+    ours = (ROOT / hooks_dir).resolve() == (ROOT / ".githooks").resolve()
+    husky = (ROOT / hooks_dir).resolve() == (ROOT / ".husky/_").resolve()
+    for name, call in LEDGER_HOOKS.items():
+        shipped = ROOT / ".githooks" / name
+        text, why = read_file(shipped, lenient=True) if shipped.is_file() else (None, None)
+        installed = hook_problem(name) if ours or name == "prepare-commit-msg" else None
+        if name == "prepare-commit-msg" and installed:
+            problems.append((installed, True))
+        if why:
+            problems.append((why, False))
+        elif text is None:
+            if not installed:
+                problems.append((f"'.githooks/{name}' is missing ({UPGRADE})", False))
+        elif not calls(text, call):
+            problems.append((f"'.githooks/{name}' does not call `{call}` ({UPGRADE})", False))
+        elif not os.access(shipped, os.X_OK) and not installed:
+            problems.append((f"'.githooks/{name}' is not executable, so git never runs it "
+                             f"(a human runs `chmod +x .githooks/{name}`)", False))
+        run = ROOT / ".husky" / name if husky else ROOT / hooks_dir / name
+        if not ours and run.is_file() and not calls(read_file(run, lenient=True)[0], call):
+            problems.append((f"core.hooksPath is '{hooks_dir}', so git runs '{rel(run)}', which does not call "
+                             f"`{call}`: the ledger's {name} never runs (`git config core.hooksPath .githooks`)", False))
+    return problems
+
+
+def first_parent_arrivals(trunk_sha: str, since_sha: str, moves: dict[str, int]) -> tuple[dict[str, int], int | None]:
+    """sha -> when it reached the trunk, for the trunk commits after `since`, and when `since` did: the arrival of
+    the first-parent commit that brought it, from moves.toml's exact time when it has one, else that commit's
+    committer date. Never the clock (decision 6 is read from the history)."""
+    graph: dict[str, list[str]] = {}
+    for line in git("rev-list", "--parents", trunk_sha, f"^{since_sha}").splitlines():
+        sha, *parents = line.split()
+        graph[sha] = parents
+    times = {}
+    for line in git("log", "--first-parent", "--format=%H %ct", trunk_sha, "--").splitlines():
+        sha, _, ct = line.partition(" ")
+        if ct.isdigit():
+            times[sha] = moves.get(sha, int(ct))
+    chain = git("rev-list", "--first-parent", trunk_sha).split()
+    # `since` reached the trunk with the oldest first-parent commit that holds it (itself when it is on that
+    # chain). The chain, newest first, holds it from the newest down to that one: a binary search.
+    lo, hi = 0, len(chain) - 1
+    if since_sha not in times:
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if subprocess.run(["git", "merge-base", "--is-ancestor", since_sha, chain[mid]], cwd=ROOT,
+                              capture_output=True).returncode == 0:
+                lo = mid
+            else:
+                hi = mid - 1
+    since_at = times.get(since_sha, times.get(chain[lo]) if chain else None)
+    arrival: dict[str, int] = {}
+    for f in reversed([s for s in chain if s in graph]):  # oldest first: a merge brings only what no earlier one did
+        at = times.get(f)
+        if at is None:
+            continue
+        arrival[f] = at
+        todo = list(graph[f][1:])
+        while todo:
+            c = todo.pop()
+            if c in graph and c not in arrival:
+                arrival[c] = at
+                todo += graph[c]
+    return arrival, since_at
+
+
+MOVE_ROW = re.compile(r'sha = "([0-9a-f]{40})"\nseen = "([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"\n'
+                      r'run = "[^"\n]*"\nexact = (true|false)\n(left = )?')
+
+
+def snapshot_moves(branch: str) -> dict[str, int]:
+    """sha -> epoch of the exact rows (not `left`) of origin/<branch>'s moves.toml (LEDGER-011); {} without one.
+    Only `ledger.py snapshot` writes it, always in this one layout (ledger.py's moves_toml): a row in any other
+    shape, or bytes that aren't UTF-8, count as no row, so a reading never takes a time that isn't one."""
+    found: dict[str, int] = {}
+    if not branch:
+        return found
+    out = subprocess.run(["git", "show", f"refs/remotes/origin/{branch}:moves.toml"], cwd=ROOT, capture_output=True)
+    try:
+        text = out.stdout.decode("utf-8") if out.returncode == 0 else ""
+    except UnicodeDecodeError:
+        return found
+    for block in text.split("[[move]]\n")[1:]:
+        m = MOVE_ROW.match(block)
+        if m and m[3] == "true" and not m[4]:
+            try:
+                at = dt.datetime.strptime(m[2], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+            except ValueError:
+                continue
+            found[m[1]] = int(at.timestamp())
+    return found
+
+
+def block_readiness(facts: dict, diffs: list, since_sha: str, snapshot: str) -> str:
+    """Under enforce = "warn": whether the trunk history earns `block` (docs/ledger.md decision 6): in the last 3
+    days of it (ending at the newest commit's arrival, not now) at least 20 commits, none unattributed, `since` on
+    the trunk at least that long, and no difference that `block` would make an error."""
+    blocking = [d for d in diffs if isinstance(d, dict)
+                and (d.get("level") == "error" or d.get("code") in ATTRIBUTION_CODES)]
+    if blocking:
+        return f"block: not yet, {len(blocking)} difference(s) `block` would refuse (`ledger.py check`)"
+    arrival, since_at = first_parent_arrivals(facts["trunk_sha"], since_sha, snapshot_moves(snapshot))
+    if not arrival or since_at is None:
+        return "block: not yet, no commits since [ledger] since"
+    end = max(arrival.values())
+    if end - since_at < BLOCK_WINDOW:
+        return "block: not yet, less than 3 days of trunk history since [ledger] since"
+    window = [s for s, at in arrival.items() if at > end - BLOCK_WINDOW]
+    if len(window) < BLOCK_COMMITS:
+        return f"block: not yet, {len(window)} of {BLOCK_COMMITS} commits in the last 3 days of the trunk"
+    return (f'recommend enforce = "block": the last 3 days of the trunk hold {len(window)} commits, all attributed, '
+            "and no error difference (a person or the coordinator switches it in .keelokit/state.toml)")
+
+
+def snapshot_problems(workflows: list[tuple[str, dict[str, str], set[str]]], snapshot: str) -> list[str]:
+    """LEDGER-011's snapshot jobs (`ledger-config`, `ledger-snapshot`), alive in a workflow that runs on a push to a
+    branch (the one with the ledger step, or the one that calls it); [] when one has both. A tag-only release
+    workflow, or one for pull requests only, never runs it for the trunk."""
+    tail = (f"LEDGER-011's snapshot runs there on every push to the trunk while [ledger] snapshot is \"{snapshot}\" "
+            f"({UPGRADE}; snapshot = \"\" turns the snapshot off)")
+    on_push = [(rel(p), workflow_job_texts(text)) for p in sorted((ROOT / ".github/workflows").glob("*.y*ml"))
+               if "push" in workflow_events(text := read(p) or "")]
+    on_push.sort(key=lambda w: not any(w[0] == path for path, _, _ in workflows))  # the ledger step's first
+    if not on_push:
+        return [f"CI job 'ledger-snapshot' never runs: no workflow runs on a push to a branch "
+                f"(the ledger step is in {', '.join(p for p, _, _ in workflows)}); {tail}"]
+    first: list[str] = []
+    for path, jobs in on_push:
+        problems = [f"{p} in {path}, which runs on a push: {tail}"
+                    for job in ("ledger-config", "ledger-snapshot") if (p := dead_job(job, jobs))]
+        if not problems:
+            return []
+        first = first or problems
+    return first
+
+
+def check_ledger(rules: dict[str, dict], excepted: set[str]) -> str | None:
+    """LEDGER-1 (docs/ledger.md, "Mechanisms"): every piece that keeps the ledger complete is alive — the hooks of
+    .githooks/ and git running them, the CI's `ledger.py check --ci` step in a workflow for pushes or pull requests,
+    the snapshot jobs in that same workflow unless `[ledger] snapshot = ""`, `[ledger] since` on the trunk (the
+    corrections are check_corrections'). Like any rule's, its problems are errors, or warnings under a dated
+    exception. Returns the Ledger line: the share of unattributed commits since `since` and, under `warn`, whether
+    to switch to `block` (only recommended: the doctor never writes `enforce`)."""
+    rid = "LEDGER-1"
+    if rid not in rules or rid in not_applicable:
+        return None
+    hooks_dir = git("rev-parse", "--git-path", "hooks").strip() or ".git/hooks"
+    problems = ledger_hook_problems(hooks_dir)
+    workflows, why = ledger_ci_workflows()
+    if why:
+        problems.append((why, False))
+    cfg = ledger_config()
+    snapshot = cfg.get("snapshot", "keelokit/ledger")
+    snapshot = snapshot.strip() if isinstance(snapshot, str) else "keelokit/ledger"
+    if snapshot and workflows:
+        problems += [(p, False) for p in snapshot_problems(workflows, snapshot)]
+    enforce = cfg.get("enforce", "block")
+    enforce = "warn" if isinstance(enforce, str) and enforce.strip() == "warn" else "block"  # as ledger.py reads it
+    tail = f' · enforce = "{enforce}"'
+    line = None
+    if (ROOT / ".keelokit/bin/ledger.py").is_file():
+        facts, why = ledger_json()
+        since = facts.get("unattributed", {}).get("since") if facts and isinstance(facts.get("unattributed"), dict) else None
+        if not facts or not isinstance(facts.get("unattributed"), dict):
+            line = f"Ledger: unknown ({why or 'run `python3 .keelokit/bin/ledger.py check`'}){tail}"
+        elif facts.get("history") != "complete":
+            line = f"Ledger: the history is cut, so the share is unknown (`ledger.py history --ensure`){tail}"
+        elif not since or not isinstance(since, str):
+            line = f"Ledger: no [ledger] since, so attribution is not required yet{tail}"
+        else:
+            since_sha = git("rev-parse", "--verify", "--quiet", f"{since}^{{commit}}").strip()
+            on_trunk = bool(since_sha) and subprocess.run(
+                ["git", "merge-base", "--is-ancestor", since_sha, facts["trunk_sha"]], cwd=ROOT,
+                capture_output=True).returncode == 0
+            if not on_trunk:
+                problems.append((f"[ledger] since = \"{since[:40]}\" is not on the trunk, so ledger.py checks "
+                                 "the attribution of no commit (set it to a trunk commit, e.g. the adoption commit)", False))
+                line = f"Ledger: [ledger] since is not on the trunk, so the share is unknown{tail}"
+            else:
+                total = len(git("rev-list", facts["trunk_sha"], f"^{since_sha}").split())
+                loose = facts["unattributed"].get("commits", 0)
+                share = 100 * loose / total if total else 0.0
+                line = f"Ledger: {loose} of {total} commits unattributed since {since_sha[:7]} ({share:.1f}%){tail}"
+                if enforce == "warn":
+                    data, _ = ledger_json("check")
+                    diffs = data.get("diffs") if data else None
+                    line += " · " + block_readiness(facts, diffs if isinstance(diffs, list) else [{"level": "error"}],
+                                                    since_sha, snapshot)
+    for problem, shared in problems:
+        report_rule(rid, problem, rid in excepted, shared)
+    return line
 
 
 def drift_text(trait: str, seen: str | None) -> str:
@@ -661,6 +1090,25 @@ def load_profile() -> dict | None:
     return {**profile, "traits": traits}
 
 
+_shared_lines: dict[tuple[bool, str], int] = {}
+
+
+def report_rule(rid: str, problem: str, excepted: bool, shared: bool = False) -> None:
+    """One enforcer problem of a rule: an error, or a warning under an approved, unexpired exception (which keeps
+    the debt visible without turning CI red). A `shared` problem (a git hook) that another rule already reported at
+    the same level is that line, naming this rule too: one missing hook, one line (LEDGER-012)."""
+    target = warnings if excepted else errors
+    key = (excepted, problem)
+    if shared and key in _shared_lines:
+        i = _shared_lines[key]
+        line = target[i]
+        target[i] = line[:-1] + f", {rid})" if line.endswith(")") and " (also " in line else f"{line} (also {rid})"
+        return
+    if shared:
+        _shared_lines[key] = len(target)
+    target.append(f"rule {rid}: {problem}" + (" (excepted)" if excepted else ""))
+
+
 def check_rules(rules: dict[str, dict], excepted: set[str], profile: dict | None = None) -> None:
     for rid, r in rules.items():
         when = r.get("when")
@@ -674,15 +1122,10 @@ def check_rules(rules: dict[str, dict], excepted: set[str], profile: dict | None
             continue
         refs = r.get("enforced_by", [])
         must = r.get("level", "").startswith("MUST")
-        problems = []
-        if must and not refs:
-            problems.append("MUST rule without an enforcer")
-        problems += [p for ref in refs if (p := enforcer_problem(rid, ref))]
-        for problem in problems:
-            # An approved, unexpired exception keeps the debt visible without turning CI red.
-            (warnings if rid in excepted else errors).append(
-                f"rule {rid}: {problem}" + (" (excepted)" if rid in excepted else "")
-            )
+        problems = [("", "MUST rule without an enforcer")] if must and not refs else []
+        problems += [(ref, p) for ref in refs if (p := enforcer_problem(rid, ref))]
+        for ref, problem in problems:
+            report_rule(rid, problem, rid in excepted, shared=ref.startswith("git-hook:"))
         if must and refs and all(ref.startswith("review:") for ref in refs):
             warnings.append(f"rule {rid}: MUST rule enforced only by review (inferential)")
 
@@ -1027,8 +1470,18 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             "unknown": gap, "reconstructed": reconstructed}
 
 
+_state: list[dict] = []
+
+
+def state() -> dict:
+    """.keelokit/state.toml, read once (its errors are reported once)."""
+    if not _state:
+        _state.append(read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {})
+    return _state[0]
+
+
 def gate_state() -> dict:
-    return (read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {}).get("gates", {})
+    return state().get("gates", {})
 
 
 def check_scope(sid: str) -> int:
@@ -1120,9 +1573,11 @@ def main() -> int:
         return 0
     rules = load_rules()
     profile = load_profile()
-    check_rules(rules, check_exceptions(set(rules)), profile)
+    excepted = check_exceptions(set(rules))
+    check_rules(rules, excepted, profile)
     check_guard_allow()
     check_corrections()
+    ledger_line = check_ledger(rules, excepted)
     gaps, blocking = check_context()
     invariants = check_invariants()
     areas, _ = load_critical()
@@ -1161,6 +1616,8 @@ def main() -> int:
           + (f" · next: {', '.join(backlog['ready'][:3])}" if backlog["ready"] else ""))
     if backlog["reconstructed"]:
         print(f"  Reconstructed (approved corrections; TRACE-1 and INV-1 skip them): {', '.join(backlog['reconstructed'])}")
+    if ledger_line:
+        print(f"  {ledger_line}")
     for w in warnings:
         print(f"  warn  {w}")
     for e in errors:

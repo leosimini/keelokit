@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The doctor checks that the ledger's pieces are alive (LEDGER-012).** New house rule LEDGER-1: every commit that
+  reaches the trunk is attributed, and the project's state is read only from `ledger.py`. Each doctor run checks
+  its enforcers: the three hooks in `.githooks/` (present, executable, calling `ledger.py`) and git running them
+  (`core.hooksPath`), the CI step that runs `ledger.py check --ci`, the snapshot jobs unless `[ledger] snapshot = ""`,
+  and the corrections file. A new `Ledger:` line gives the share of unattributed commits since `[ledger] since` and,
+  under `enforce = "warn"`, recommends `block` when the trunk history earns it, without changing it. A missing git
+  hook shared by several rules is now one line naming them all. A dated LEDGER-1 exception in
+  `.keelokit/exceptions.toml` turns its errors into warnings, as for any rule.
+
 - **The ledger knows when a commit reached main and what runs where (LEDGER-011).** A new CI job,
   `ledger-snapshot`, runs `ledger.py snapshot` on every push to main and every tag: the orphan branch
   `keelokit/ledger` gets `LEDGER.md`, `ledger.json` and, in `moves.toml`, the time the CI saw the push, written
@@ -49,6 +58,21 @@
   `UNATTRIBUTED`. For a release commit already on the trunk without it, set `[ledger] since` to that commit
   (`check` starts after it) once the commits before it pass; a correction row can't attribute it, since rows
   name stories.
+
+### Upgrading from 0.15.x
+
+The ledger's phase 2 (LEDGER-008..012) needs three things in an existing project:
+
+1. Run `/keelokit:harness-upgrade`. It brings `.githooks/commit-msg`, `prepare-commit-msg` and the new `pre-push`,
+   the CI's "Ledger attribution" step, the `ledger-config` and `ledger-snapshot` jobs and the deploy jobs' last step.
+2. Check that the CI may write to the repo: Settings → Actions → General → Workflow permissions. The
+   `ledger-snapshot` job pushes the `keelokit/ledger` branch and the deploy jobs push `deploy/*` with
+   `contents: write`; an organization that limits the token to read makes them fail. Without that, set
+   `[ledger] snapshot = ""` in `.keelokit/state.toml` and the snapshot stays off.
+3. Leave `[ledger] enforce = "warn"` (what `/keelokit:project-adopt` writes) until `python3 .keelokit/bin/doctor.py`
+   recommends `block` on its `Ledger:` line: 3 days of trunk history with at least 20 commits, none unattributed and
+   no error difference. A person, or the coordinator, makes the switch; the doctor never does. A generated project
+   starts in `block` and needs nothing.
 
 ## 0.15.0 — 2026-11-24
 
