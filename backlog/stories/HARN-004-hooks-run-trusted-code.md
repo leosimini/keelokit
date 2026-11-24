@@ -89,6 +89,19 @@ Beyond the spec, from the breaker rounds:
   the timeout. The guard reads its data files without blocking and at most 1 MB, bounds its git calls (30 s, 1 MB of
   output), and its patterns are linear (a bounded look-ahead, disjoint options, an atomic group); and the hook runs
   the guard in a child process it waits for at most 45 s, then kills it and blocks. The hook states 60 s.
+- **The plugin's own git** (ESC-280). A directory the repo ships can look like a bare repository to git, whose
+  config then names a remote that runs a command (`ext::`) or a promisor remote fetched lazily. Every git call of
+  the plugin's scripts with `--root`, and of trusted.py, runs with safe.bareRepository=explicit,
+  protocol.ext.allow=never, core.fsmonitor=false, GIT_NO_LAZY_FETCH=1, GIT_TERMINAL_PROMPT=0,
+  GIT_PROTOCOL_FROM_USER=0 and no GIT_DIR-like variables from the session (protocol.file.allow=always: local
+  remotes, the tests' too, run nothing of the repo's); and only where the git dir is the project's .git or outside
+  the project, else the guard blocks and the ledger and doctor say so and run no git. The doctor keeps the
+  person's hooks path, which it reports.
+- **Fail closed** (ESC-281). Any failure of the guard hook's own path (a failed fork, an exception, a guard that
+  crashed, exited 1 or was killed) is exit 2 with one line.
+- **Where the guard runs** (ESC-282). In any project with `.keelokit/`, not only where `.keelokit/bin/guard.py`
+  exists, which it never runs; the guard refuses commands that delete or move `.keelokit/` or its `bin/` whole.
+  Removing `.keelokit/` makes it not a Keelokit project: the person's decision.
 - guard, ledger and ux_gate take `--root` too, not only the doctor. The tests are in tests/test_guard.py
   (`HooksRunTrustedCode`, `HooksRunTrustedCodeRound2`), tests/test_doctor.py (`DoctorRootTest`) and
   tests/test_hooks.py.

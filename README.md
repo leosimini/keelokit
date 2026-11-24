@@ -138,7 +138,9 @@ reconnect by itself. Android has no such prompt.
   at the session start; `/keelokit:harness-upgrade` brings it up to date. Your own scripts still run when
   you run them, or from the project's git hooks, which the plugin never turns on: they run the repo's
   code, so after reviewing `.githooks` you turn them on with `git config core.hooksPath .githooks`.
-  Running the project's tests, scripts or commands is still trusting it.
+  The guard runs in any project with a `.keelokit/` directory; removing that directory makes it not a
+  Keelokit project, which is your call. Running the project's tests, scripts or commands is still
+  trusting it.
 - `doctor` can tell a check is present and switched on, not that it's a good check. For the
   critical code, mutation testing measures that; elsewhere, reviews and bug hunts cover it.
 - Bugs come in classes, so the harness aims at classes: the rules that must always hold

@@ -176,7 +176,11 @@ def watched(path: Path, data: bytes, argv: list[str]) -> int:
         done, status = os.waitpid(pid, os.WNOHANG)
         if done:
             code = os.waitstatus_to_exitcode(status)
-            return code if code >= 0 else 2  # killed by a signal: blocked
+            if code < 0:
+                print(f"Keelokit guard: the guard was stopped by signal {-code}, so the call is blocked",
+                      file=sys.stderr)
+                return 2
+            return code
         if time.monotonic() >= deadline:
             for kill in (lambda: os.killpg(pid, signal.SIGKILL), lambda: os.kill(pid, signal.SIGKILL)):
                 try:
@@ -199,10 +203,19 @@ def project_dir(arg: str | None = None) -> Path | None:
     return p if p.is_dir() else None
 
 
+def keelokit_project(project: Path, tool: str) -> bool:
+    """The guard runs wherever the project has .keelokit/ (ESC-282: deleting guard.py, which it never runs, must not
+    turn it off; removing .keelokit/ as a whole is the person's call); the ledger and the doctor where the project
+    has theirs, as the session start always did."""
+    if tool == "guard":
+        return os.path.isdir(project / ".keelokit")
+    return os.path.lexists(project / BIN / RUNS[tool])
+
+
 def choose(tool: str, project: Path) -> tuple[Path, bytes, list[str]] | None:
-    """(the plugin's script, its bytes, `--root <project>`), or None when the project has no such script, i.e. is
-    not a Keelokit project for this hook. The project's own copy is never read for running."""
-    if not os.path.lexists(project / BIN / RUNS[tool]):
+    """(the plugin's script, its bytes, `--root <project>`), or None when this hook has nothing to do in the
+    project. The project's own copy is never read for running."""
+    if not keelokit_project(project, tool):
         return None
     ours = BUNDLED / RUNS[tool]
     data = plugin_bytes(ours)
@@ -240,10 +253,33 @@ def check(arg: str | None = None) -> int:
     return 0
 
 
+GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+             "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_CONFIG", "GIT_SSH",
+             "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR")
+# Without core.hooksPath: this file only reads (rev-parse, config --get), and reads the hooks path the person set.
+GIT_CONFIG = {"safe.bareRepository": "explicit", "protocol.ext.allow": "never", "protocol.file.allow": "always",
+              "core.fsmonitor": "false"}
+
+
+def git_env() -> dict:
+    """The environment of this file's own git calls: the scripts' hardened one (ESC-280; see harden_git in them)."""
+    env = {k: v for k, v in os.environ.items() if k not in GIT_SCRUB}
+    try:
+        n = max(int(env.get("GIT_CONFIG_COUNT") or 0), 0)
+    except ValueError:
+        n = 0
+    for key, value in GIT_CONFIG.items():
+        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
+        n += 1
+    env.update(GIT_CONFIG_COUNT=str(n), GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_PROTOCOL_FROM_USER="0")
+    return env
+
+
 def git(project: Path, *args: str) -> str | None:
     """stdout of a read-only git call in the project (rev-parse, config --get), or None when it fails."""
     try:
-        out = subprocess.run(["git", "-C", str(project), *args], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["git", "-C", str(project), *args], capture_output=True, text=True, timeout=10,
+                             env=git_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out.stdout if out.returncode == 0 else None
@@ -257,7 +293,11 @@ def githooks(arg: str | None = None) -> int:
         return 0
     clean_environment()
     top = git(project, "rev-parse", "--show-cdup")
-    if top is None or top.strip() or git(project, "config", "--get", "core.hooksPath") is not None:
+    gitdir = git(project, "rev-parse", "--absolute-git-dir")
+    if top is None or top.strip() or gitdir is None or Path(gitdir.strip()).resolve() != project / ".git" and \
+            project in Path(gitdir.strip()).resolve().parents:
+        return 0
+    if git(project, "config", "--get", "core.hooksPath") is not None:
         return 0
     print("Keelokit: this repo's git hooks are off, and Keelokit never turns them on: they run the repo's own code. "
           "Review .githooks (and the .keelokit/bin scripts they run), then turn them on yourself: "
@@ -322,8 +362,28 @@ def show(arg: str | None) -> int:
 COMMANDS = {"check": check, "githooks": githooks, "show": show}
 
 
+def guard_hook(args: list[str]) -> int:
+    """`run guard`: Claude Code blocks a call only on exit 2, so every other outcome of this path (an exception before
+    or around the fork, a failed fork, a guard that crashed, exited 1 or was killed) is a block, said in one line
+    (ESC-281)."""
+    try:
+        code = run("guard", args)
+    except BaseException as e:  # noqa: BLE001 - KeyboardInterrupt and SystemExit included: all fail closed
+        if isinstance(e, SystemExit) and e.code in (0, None):
+            return 0
+        print(f"Keelokit guard: the hook failed ({type(e).__name__}: {' '.join(str(e).split())[:120]}), "
+              f"so the call is blocked", file=sys.stderr)
+        return 2
+    if code not in (0, 2):
+        print(f"Keelokit guard: the guard ended with exit {code}, so the call is blocked", file=sys.stderr)
+        return 2
+    return code
+
+
 def main(argv: list[str]) -> int:
     cmd, rest = (argv[0], argv[1:]) if argv else ("", [])
+    if cmd == "run" and rest[:1] == ["guard"]:
+        return guard_hook(rest[1:])
     if cmd == "run" and rest:
         return run(rest[0], rest[1:])
     if cmd in COMMANDS and len(rest) <= 1:

@@ -1394,7 +1394,7 @@ GITHOOK_MARK = "#!/bin/sh\necho \"$0 $*\" >> {mark}\n"
 
 
 class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
-    """HARN-004, breaker rounds 2 and 3 (ESC-271, ESC-276..279)."""
+    """HARN-004, breaker rounds 2 to 4 (ESC-271, ESC-276..282)."""
 
     def githook(self, where: Path, name: str) -> None:
         (where / ".githooks").mkdir(exist_ok=True)
@@ -1570,6 +1570,148 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                 self.assertEqual(trusted.guard_seconds(), expected)
         data = json.loads((REPO / "hooks/hooks.json").read_text())
         self.assertGreaterEqual(data["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], trusted.GUARD_SECONDS + 10)
+
+    # ESC-280: a bare-repository-looking directory the repo ships is not a repository to the plugin's git.
+
+    def shipped_bare(self, lazy: bool) -> Path:
+        """A repo whose pkg/ looks like a bare repository (HEAD, config, objects/, refs/ are ordinary files), with a
+        pkg/config whose remote runs a command; the clone's pkg/ is the project opened."""
+        up = self.tmp / "up"
+        pkg = up / "pkg"
+        shutil.copytree(BUNDLED, pkg / ".keelokit/bin", ignore=shutil.ignore_patterns("__pycache__"))
+        (pkg / "objects/info").mkdir(parents=True)
+        (pkg / "refs/heads").mkdir(parents=True)
+        (pkg / "objects/info/.keep").write_text("")
+        (pkg / "refs/heads/.keep").write_text("")
+        (pkg / "HEAD").write_text("ref: refs/heads/main\n")
+        if lazy:  # a commit whose tree is missing: reading it makes git fetch from the promisor remote
+            scratch = self.tmp / "scratch"
+            env0 = self.env(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+            subprocess.run(["git", "init", "-q", str(scratch)], env=env0, check=True, capture_output=True)
+            (scratch / "f").write_text("x\n")
+            subprocess.run(["git", "-C", str(scratch), "add", "f"], env=env0, check=True, capture_output=True)
+            tree = subprocess.run(["git", "-C", str(scratch), "write-tree"], env=env0, check=True, capture_output=True,
+                                  text=True).stdout.strip()
+            commit = subprocess.run(["git", "-C", str(scratch), "commit-tree", "-m", "x", tree], env=env0, check=True,
+                                    capture_output=True, text=True).stdout.strip()
+            (pkg / "objects" / commit[:2]).mkdir()
+            shutil.copy(scratch / ".git/objects" / commit[:2] / commit[2:], pkg / "objects" / commit[:2] / commit[2:])
+            (pkg / "refs/heads/main").write_text(commit + "\n")
+        mark = shlex_quote(str(self.marks / ("lazy" if lazy else "fetch")))
+        url = f"ext::sh -c touch% {mark.replace(' ', '% ')}"
+        lazy_cfg = "[extensions]\n\tpartialClone = origin\n" if lazy else ""
+        (pkg / "config").write_text(f"[core]\n\trepositoryformatversion = {1 if lazy else 0}\n{lazy_cfg}"
+                                    f"[protocol \"ext\"]\n\tallow = always\n[remote \"origin\"]\n"
+                                    f"\tpromisor = true\n\turl = \"{url}\"\n")
+        env = self.env(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for argv in (["init", "-q", "-b", "main", str(up)], ["-C", str(up), "add", "-A"],
+                     ["-C", str(up), "commit", "-q", "-m", "one"],
+                     ["clone", "-q", f"file://{up}", str(self.tmp / "victim")]):
+            subprocess.run(["git", *argv], env=env, check=True, capture_output=True)
+        return self.tmp / "victim/pkg"
+
+    def test_HARN_004_S1_ESC_280_a_shipped_bare_repo_runs_nothing_at_the_session_start(self):
+        self.proj = self.shipped_bare(lazy=False)
+        r = self.hook("SessionStart", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [], r.stdout + r.stderr)
+
+    def test_HARN_004_S1_ESC_280_a_shipped_bare_repo_runs_nothing_from_the_guard(self):
+        self.proj = self.shipped_bare(lazy=True)
+        env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        r = self.hook("PreToolUse", HARMLESS, **env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": str(self.proj / "notes.md"),
+                                                                         "content": "hi"}}, **env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", BLOCKED, **env)
+        self.assertEqual(r.returncode, 2, "the guard still answers: " + r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_ESC_280_a_git_dir_inside_the_project_blocks_the_guard(self):
+        inner = self.proj / "inner.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(inner)], env=self.env(), check=True, capture_output=True)
+        shutil.rmtree(self.proj / ".git")
+        (self.proj / ".git").write_text("gitdir: inner.git\n")
+        r = self.hook("PreToolUse", HARMLESS)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn("inner.git", r.stderr)
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("inner.git", r.stdout)
+
+    def test_HARN_004_ESC_280_every_git_call_of_the_plugin_runs_hardened(self):
+        """Each script, run with --root, sets the same git environment before its first git call."""
+        for name in ("guard.py", "ledger.py", "doctor.py", "ux_gate.py"):
+            with self.subTest(script=name):
+                code = ("import os, runpy, sys, json\n"
+                        f"sys.argv = [{str(BUNDLED / name)!r}, '--root', {str(self.proj)!r}, '--help']\n"
+                        "try:\n"
+                        f"    runpy.run_path(sys.argv[0], run_name='not_main')\n"
+                        "except SystemExit:\n    pass\n"
+                        "n = int(os.environ.get('GIT_CONFIG_COUNT', '0'))\n"
+                        "cfg = {os.environ[f'GIT_CONFIG_KEY_{i}']: os.environ[f'GIT_CONFIG_VALUE_{i}'] for i in range(n)}\n"
+                        "print(json.dumps({'cfg': cfg, 'env': {k: os.environ.get(k) for k in "
+                        "('GIT_NO_LAZY_FETCH', 'GIT_TERMINAL_PROMPT', 'GIT_PROTOCOL_FROM_USER')}}))\n")
+                r = subprocess.run([sys_python(), "-I", "-c", code], env=self.env(GIT_DIR="/elsewhere"),
+                                   capture_output=True, text=True, timeout=60)
+                got = json.loads(r.stdout.strip().splitlines()[-1])
+                for key, value in (("safe.bareRepository", "explicit"), ("protocol.ext.allow", "never"),
+                                   ("core.fsmonitor", "false")):
+                    self.assertEqual(got["cfg"].get(key), value, (key, r.stderr))
+                self.assertEqual(got["env"], {"GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
+                                              "GIT_PROTOCOL_FROM_USER": "0"})
+
+    # ESC-281: any failure of the hook's own path is a block, never Python's exit 1.
+
+    def test_HARN_004_S1_ESC_281_a_fork_that_fails_blocks(self):
+        code = ("import errno, os, runpy, sys\n"
+                "def fork(): raise BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable')\n"
+                "os.fork = fork\n"
+                f"sys.argv = [{str(TRUSTED)!r}, 'run', 'guard', '--claude']\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        r = subprocess.run([sys_python(), "-I", "-c", code], cwd=self.proj, env=self.env(), input=json.dumps(HARMLESS),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+
+    def test_HARN_004_S1_ESC_281_a_guard_that_crashes_or_exits_1_blocks(self):
+        for body in ("raise RuntimeError('boom')\n", "import sys; sys.exit(1)\n", "import os, signal\nos.kill(os.getpid(), signal.SIGINT)\n",
+                     "import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n"):
+            with self.subTest(body=body):
+                plugin = self.tmp / "plugin"
+                shutil.rmtree(plugin, ignore_errors=True)
+                (plugin / "hooks").mkdir(parents=True)
+                shutil.copy(TRUSTED, plugin / "hooks/trusted.py")
+                (plugin / "template/.keelokit/bin").mkdir(parents=True)
+                (plugin / "template/.keelokit/bin/guard.py").write_text(body)
+                r = self.hook("PreToolUse", HARMLESS, CLAUDE_PLUGIN_ROOT=str(plugin))
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertTrue(r.stderr.strip().splitlines()[-1].startswith("Keelokit guard:"), r.stderr)
+
+    # ESC-282: the guard ran only while the project's guard.py was there, though it never runs that file.
+
+    def test_HARN_004_S1_ESC_282_removing_the_project_s_guard_py_leaves_the_guard_on(self):
+        (self.proj / ".keelokit/bin/guard.py").unlink()
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        shutil.rmtree(self.proj / ".keelokit/bin")
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, "a .keelokit without bin/ is still a Keelokit project: " + r.stderr)
+
+    def test_HARN_004_S1_ESC_282_the_guard_refuses_removing_the_harness_as_a_whole(self):
+        for cmd in ("rm -rf .keelokit", "rm -r .keelokit/", "rm -rf ./.keelokit/bin", "mv .keelokit /tmp/x",
+                    "git rm -r -q .keelokit/bin", "find .keelokit -delete", "rmdir .keelokit/bin",
+                    f"rm -rf {shlex_quote(str(self.proj / '.keelokit'))}", "mv .keelokit/bin .keelokit/old"):
+            with self.subTest(cmd=cmd):
+                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for cmd in ("rm .keelokit/bin/notes.tmp", "ls .keelokit", "rm -rf node_modules", "cat .keelokit/bin/guard.py"):
+            with self.subTest(allowed=cmd):
+                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+                self.assertEqual(r.returncode, 0, r.stderr)
 
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 

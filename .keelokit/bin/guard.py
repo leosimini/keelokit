@@ -51,21 +51,55 @@ def root_of(argv: list[str]) -> Path:
 
 ROOT = root_of(sys.argv)
 
+PLUGIN_MODE = ROOT != Path(__file__).resolve().parents[2]  # run with --root: by the plugin's hooks (HARN-004)
+# Variables that point git at another repository, or at programs to run: none comes from the session's environment.
+GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+             "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_CONFIG", "GIT_SSH",
+             "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR")
 
-def no_repo_hooks() -> None:
-    """HARN-004 (ESC-271): run with --root by the plugin's hooks, no git call of this copy fires the project's own git
-    hooks (a fetch runs reference-transaction), whatever core.hooksPath says: git reads GIT_CONFIG_* as `-c`."""
+
+def harden_git(hooks_off: bool) -> None:
+    """HARN-004 (ESC-271, ESC-280): run by the plugin's hooks, every git call of this copy reads no repository the
+    project ships (a directory with HEAD, config, objects/ and refs/ is not a bare repository to it), runs no
+    transport helper (ext::), no lazy fetch, no fsmonitor, prompts for nothing, and fires no git hook. git
+    reads GIT_CONFIG_* as `-c`, above every config file."""
+    for key in GIT_SCRUB:
+        os.environ.pop(key, None)
+    config = {"safe.bareRepository": "explicit", "protocol.ext.allow": "never", "protocol.file.allow": "always",
+              "core.fsmonitor": "false"}
+    if hooks_off:
+        config["core.hooksPath"] = os.devnull
     try:
         n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
     except ValueError:
         n = 0
-    os.environ[f"GIT_CONFIG_KEY_{n}"] = "core.hooksPath"
-    os.environ[f"GIT_CONFIG_VALUE_{n}"] = os.devnull
-    os.environ["GIT_CONFIG_COUNT"] = str(n + 1)
+    for key, value in config.items():
+        os.environ[f"GIT_CONFIG_KEY_{n}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{n}"] = value
+        n += 1
+    os.environ["GIT_CONFIG_COUNT"] = str(n)
+    os.environ.update(GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_PROTOCOL_FROM_USER="0")
 
 
-if ROOT != Path(__file__).resolve().parents[2]:
-    no_repo_hooks()
+def git_dir_problem() -> str | None:
+    """Why git must not run for ROOT, or None: the repository git finds has its git dir inside ROOT but is not
+    ROOT/.git (a directory the repo ships, read as a repository by a git too old for safe.bareRepository)."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    found, root = Path(out.stdout.strip()).resolve(), ROOT.resolve()
+    if found == root / ".git" or root not in (found, *found.parents):
+        return None
+    return (f"git reads {found} as this project's repository, a directory inside it that is not its .git, so "
+            f"Keelokit runs no git here")
+
+
+if PLUGIN_MODE:
+    harden_git(True)
 ENV_OK = {".env.example", ".env.ci"}
 # ESC-276: Claude Code lets a call through when the hook outlives its timeout, so the guard bounds what it reads and
 # how long its git calls take, and blocks when a bound is hit (hooks/hooks.json gives the hook more than GIT_SECONDS).
@@ -743,6 +777,49 @@ def write_targets(segment: str) -> list[str]:
     return [t for w in words if not any(c.isspace() for c in w) for x in w.split(">") if (t := x.strip("(){}"))]
 
 
+HARNESS_DIRS = {".keelokit", ".keelokit/bin"}
+HARNESS_WHY = ("QA-2: removing or moving .keelokit/ (or its bin/) as a whole turns the guard and the harness off "
+               "for this project; that is the person's call")
+
+
+def harness_rel(word: str) -> str:
+    p = posixpath.normpath(word)
+    if posixpath.isabs(p):
+        try:
+            return Path(p).resolve().relative_to(ROOT.resolve()).as_posix()
+        except (ValueError, OSError):
+            return p
+    return p
+
+
+def harness_removal(cmd: str) -> bool:
+    """ESC-282, best effort like every shell rule: a command that deletes or moves .keelokit/ or .keelokit/bin/ whole
+    (rm, rmdir, git rm, mv as a source, find … -delete/-exec)."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        while words and (words[0] in PREFIXES or ("=" in words[0] and not words[0].startswith("-"))):
+            words = words[1:]
+        if not words:
+            continue
+        name = Path(words[0]).name
+        if name == "git" and "rm" in words:
+            args = words[words.index("rm") + 1:]
+        elif name in ("rm", "rmdir", "unlink", "shred", "trash"):
+            args = words[1:]
+        elif name == "mv":
+            args = [w for w in words[1:] if not w.startswith("-")][:-1]
+        elif name == "find" and any(w in ("-delete", "-exec", "-execdir", "-ok") for w in words):
+            args = words[1:]
+        else:
+            continue
+        if any(harness_rel(w) in HARNESS_DIRS for w in args if not w.startswith("-")):
+            return True
+    return False
+
+
 def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
     allow = committed_registry() if allow is None else allow
     bare = unquoted(cmd)
@@ -755,6 +832,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why
+    if harness_removal(cmd):
+        return HARNESS_WHY
     if why := accept_problem(cmd):
         return why
     if corrections_write(cmd):
@@ -1015,6 +1094,9 @@ def git_pre_commit() -> int:
 
 def main(argv: list[str]) -> int:
     mode = argv[0] if argv else ""
+    if mode == "--claude" and PLUGIN_MODE and (why := git_dir_problem()):  # ESC-280
+        print(f"Keelokit guard: {why}; the call is blocked", file=sys.stderr)
+        return 2
     if mode == "--claude":
         return claude()
     if mode == "git-pre-commit":

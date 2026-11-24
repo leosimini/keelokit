@@ -38,6 +38,10 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   ESC-277); the session start says when they are off. The guard runs in a child process the hook waits for at most
   45 s, and its patterns run in linear time; it reads its data files without blocking and at most 1 MB and bounds
   its git calls, so it can't outlive the hook's timeout, which Claude Code would read as a pass (ESC-276, ESC-279).
+  Every git call the plugin's scripts make with `--root` (and trusted.py's own) runs hardened (ESC-280):
+  safe.bareRepository=explicit, protocol.ext.allow=never, core.fsmonitor=false, GIT_NO_LAZY_FETCH=1, no
+  GIT_DIR-like variables, and only where the git dir is the project's .git or outside the project. Any failure of
+  the guard hook's own path is a block (ESC-281); the guard runs wherever the project has `.keelokit/` (ESC-282).
 - `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
   runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).
