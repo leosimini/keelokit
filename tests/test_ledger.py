@@ -51,7 +51,7 @@ Scenario: [S10] also works
 
 def clean_env(home: Path, path: str | None = None) -> dict:
     env = {k: v for k, v in os.environ.items()
-           if k not in PROXY_VARS and not k.startswith("GIT_") and k not in ("CI", "GITHUB_ACTIONS")}
+           if k not in PROXY_VARS and not k.startswith(("GIT_", "GITHUB_")) and k != "CI"}
     env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", HOME=str(home), LC_ALL="C",
                GIT_TERMINAL_PROMPT="0")
     if path is not None:
