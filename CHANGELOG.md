@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The verify fits its test workers to the memory the machine has.** It records each step's peak memory in
+  `keelokit-verify.history`, starts the unit and integration runners with as many workers as fit in what is
+  free (or in the container's cgroup limit), says so, and stops in seconds with exit 3 when even one worker would be
+  killed for memory (`VERIFY_FORCE=1` runs it anyway); `[verify] memory_per_worker_mb` in `.keelokit/state.toml`
+  overrides the measure, and `status` shows the workers chosen. An existing project runs `/keelokit:harness-upgrade`.
 - **The doctor, the dashboard, `status.py` and the skills read the ledger (LEDGER-006).** Story states come from
   `ledger.py --json` alone, so every tool gives the same answer, whatever `[ledger]` configures (trunk, story
   files, ids). The doctor's done count is the ledger's (reverts and approved corrections included); stories done only by a correction row are listed as *Reconstructed* and

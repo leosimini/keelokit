@@ -571,6 +571,26 @@ class DecisionTableTest(Lib, unittest.TestCase):
     def test_a_successful_installed_build_records_the_fingerprint(self):
         self.assertEqual(self.native('echo "BUILD SUCCESSFUL in 4m" >"$LOG/android.log"; return 0'), ["rc=0", "files:new|1.0"])
 
+    def test_FLEET_001_native_build_returns_when_the_watcher_misses_its_term(self):
+        """The native_build watcher race found while landing FLEET-001: a TERM that reaches the watcher before it resets
+        the trap it inherits is lost, and the build then waited 2000 x 5 s for it. A signal ignored in the parent stays
+        ignored in a subshell, so `trap '' TERM` before native_build makes the lost TERM certain: it must still return
+        within one watcher round (the stop file), not hang."""
+        p = Project(self, pnpm_monorepo, LOCAL_DEV)
+        e = {"PATH": str(p.bin), "HOME": str(p.home), "RUN_LOCAL_LIB": "1", "RUN_LOCAL_QUICK": "0"}
+        script = (f'cd "{p.dir}"; . .keelokit/bin/run-local.sh; load_config; init_state; fingerprint() {{ echo files:new; }}; '
+                  'app_version() { echo 1.0; }; chk() { return 1; }; launch() { return 0; }; '
+                  "trap '' TERM; native_build android S1 chk android true; echo rc=$?")
+        proc = subprocess.Popen(["bash", "-c", script], env=e, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, _ = proc.communicate("y\n", timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, 9)  # the watcher ignores TERM: nothing it started may outlive the test
+            proc.communicate()
+            self.fail("native_build still waiting for its watcher after 20 s: the lost TERM hangs the build")
+        self.assertIn("rc=0", out)
+
     def test_fingerprint_changes_with_native_inputs_only(self):
         p = Project(self, pnpm_monorepo, LOCAL_DEV)
         def fp():
