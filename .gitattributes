@@ -1,0 +1,6 @@
+# Parallel stories each add lines to these two files, and a local merge of main into a story branch then
+# conflicts on lines that both belong. `union` keeps both sides' lines (git's built-in driver); check the
+# order and the ESC numbering after a merge. GitHub's merge button doesn't use it; the builders' local
+# merges of origin/main do, which is where these conflicts came from.
+CHANGELOG.md merge=union
+docs/escapes.md merge=union
