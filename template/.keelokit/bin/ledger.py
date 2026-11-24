@@ -1195,7 +1195,7 @@ def read_all(state: dict) -> dict:
     branches = read_branches(trunk_sha, refs, graph, set(placed[0]), cfg["snapshot"])
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, branches,
                                       cfg["stale_days"], time.time(), corrections, trunk)
-    apply_moves(facts["stories"], snapshot_moves(refs))
+    apply_moves(facts["stories"], snapshot_moves(refs), graph)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
@@ -2612,7 +2612,8 @@ SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "Keelokit ledger", "GIT_AUTHOR_EMAIL": "
 ISO_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 MOVES_HEADER = ("# Written by `ledger.py snapshot` in the CI, never by hand: when each trunk commit reached the trunk.\n"
                 "# seen: the time the CI saw it; exact = false when a later run filled it in (its own run never\n"
-                "# recorded it), so it reached the trunk at or before `seen`.\n")
+                "# recorded it), so it reached the trunk at or before `seen`. left: a later run found it off the trunk\n"
+                "# (forced away), so this row no longer says when it arrived.\n")
 NULL_SHA = re.compile(r"0+")
 
 
@@ -2631,15 +2632,17 @@ def parse_moves(content: bytes | None) -> list[dict] | None:
     for r in rows:
         if not (isinstance(r, dict) and isinstance(r.get("sha"), str) and FULL_SHA.fullmatch(r["sha"])
                 and isinstance(r.get("seen"), str) and ISO_TIME.fullmatch(r["seen"])
-                and isinstance(r.get("run"), str) and isinstance(r.get("exact"), bool)):
+                and isinstance(r.get("run"), str) and isinstance(r.get("exact"), bool)
+                and ("left" not in r or isinstance(r["left"], str) and ISO_TIME.fullmatch(r["left"]))):
             return None
-        out.append({"sha": r["sha"], "seen": r["seen"], "run": r["run"], "exact": r["exact"]})
+        out.append({k: r[k] for k in ("sha", "seen", "run", "exact", "left") if k in r})
     return out
 
 
 def moves_toml(moves: list[dict]) -> str:
     rows = [f'[[move]]\nsha = "{m["sha"]}"\nseen = "{m["seen"]}"\nrun = {toml_str(m["run"])}\n'
-            f'exact = {"true" if m["exact"] else "false"}\n' for m in moves]
+            f'exact = {"true" if m["exact"] else "false"}\n' + (f'left = "{m["left"]}"\n' if "left" in m else "")
+            for m in moves]
     return MOVES_HEADER + "".join(f"\n{r}" for r in rows)
 
 
@@ -2648,6 +2651,12 @@ def better_move(old: dict, new: dict) -> bool:
     by a later push's run, so its time is an upper bound and the exact one is the truth (ESC-246). Of two exact rows
     the later wins: only a commit that landed again (pushed, forced away, pushed again) has two, and its arrival is
     the last landing (ESC-247). Of two not-exact rows the earlier, the tighter bound."""
+    if "left" in old and new["seen"] > old["left"]:
+        return True  # the commit came back after it was forced away: the old row says nothing now (round 4)
+    if "left" in new and new["seen"] > new["left"]:
+        return False
+    if (new["sha"], new["seen"], new["run"]) == (old["sha"], old["seen"], old["run"]):
+        return new.get("left", "") > old.get("left", "")  # the same row, now known to have left
     if new["exact"] != old["exact"]:
         return new["exact"]
     return new["seen"] > old["seen"] if new["exact"] else new["seen"] < old["seen"]
@@ -2669,13 +2678,28 @@ def snapshot_moves(refs: dict) -> dict[str, dict]:
     return moves_map(parse_moves(cat_specs([f"{head}:{MOVES}"]).get(f"{head}:{MOVES}")))
 
 
-def apply_moves(records: list[dict], moves: dict[str, dict]) -> None:
-    """A story whose commit arrived with a recorded move takes its time from it: since_exact when the move is exact,
-    else the time a later run saw it (an upper bound from the CI's clock, still approximate)."""
+def apply_moves(records: list[dict], moves: dict[str, dict], graph: dict) -> None:
+    """A story's time from the recorded moves (a row marked `left` says nothing). Its commit's own exact move first:
+    that push brought it, even when a later merge made it a second parent (a foxtrot merge, round 4). Else its
+    first-parent arrival's move, exact as that move is, when no earlier move already held the commit; when one did,
+    the commit was on the trunk by then: that time, not exact. A commit whose arrival has no move keeps its date."""
+    live = sorted((m for m in moves.values() if "left" not in m), key=lambda m: m["seen"])
+    if not live:
+        return
+    held = first_reach(graph, [m["sha"] for m in live])
     for rec in records:
-        move = moves.get(rec.get("arrival") or "")
-        if rec.get("commit") and move:
-            rec["since"], rec["since_exact"] = move["seen"], move["exact"]
+        commit = rec.get("commit")
+        own = moves.get(commit or "")
+        if not commit:
+            continue
+        if own and own["exact"] and "left" not in own:
+            rec["since"], rec["since_exact"] = own["seen"], True
+            continue
+        at = moves.get(rec.get("arrival") or "")
+        if not at or "left" in at or commit not in held:
+            continue
+        first = live[held[commit]]
+        rec["since"], rec["since_exact"] = first["seen"], first is at and at["exact"]
 
 
 def parse_snapshot(content: bytes | None) -> dict | None:
@@ -2764,12 +2788,17 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
     moves = moves_map(parse_moves(blobs.get(f"{head}:{MOVES}")))
     sha = snap["trunk_sha"]
     meta = snap.get("snapshot") if isinstance(snap.get("snapshot"), dict) else {}
-    seen = moves[sha]["seen"] if sha in moves else meta.get("seen") if isinstance(meta.get("seen"), str) else None
+    # When the snapshot's own commit was seen, from its move only: a run's time is its push's, and its checkout may
+    # already hold a later push (round 4).
+    seen = moves[sha]["seen"] if sha in moves and "left" not in moves[sha] else None
     old = {r["id"]: r for r in snap["stories"]}
     story_shas = meta.get("story_commits")
     if not (isinstance(story_shas, dict) and all(isinstance(v, list) and all(isinstance(x, str) and FULL_SHA.fullmatch(x)
                                                                               for x in v) for v in story_shas.values())):
         story_shas = None
+    undone_shas = meta.get("reverted_commits")
+    if not (isinstance(undone_shas, dict) and all(isinstance(v, list) for v in undone_shas.values())):
+        undone_shas = None
     cut = shallow_marks() & set(graph)
     records = {}
     for story in stories:
@@ -2810,7 +2839,7 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
                          f"the snapshot is of {short(sha)} and this clone does not reach back to it, so what reached "
                          f"{trunk} since cannot be read; {FIX}")
         else:
-            settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas)
+            settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas, undone_shas)
     settle_corrections(records, tree or [], trunk_sha, meta)
     settle_refs(records, refs, graph, cut, meta.get("refs") if isinstance(meta.get("refs"), dict) else {})
     settle_snapshot_states(stories, records)
@@ -2818,7 +2847,7 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
 
 
 def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sha: str, moves: dict,
-                 story_shas: dict | None = None) -> None:
+                 story_shas: dict | None = None, undone_shas: dict | None = None) -> None:
     """Story: commits and reverts in the trunk commits after the snapshot's commit (the log holds exactly those). A
     revert of a commit older than the snapshot that is no story's commit may undo an old revert (ESC-213) or a merge
     this clone cannot read: the stories it could change are unknown."""
@@ -2844,7 +2873,8 @@ def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sh
     for sid, rec in records.items():
         if rec["state"] == "unknown":
             continue
-        if unrevert and rec["reverted"] and not rec["commit"]:
+        if unrevert and ((rec["reverted"] and not rec["commit"]) or undone_shas is None or undone_shas.get(sid)):
+            # a reverted Story: commit of it may be back (round 4: also when a later one is its commit now)
             mark_unknown([rec], "a revert after the snapshot may undo the revert the snapshot read; " + FIX)
             continue
         others = None if story_shas is None else [c for c in story_shas.get(sid, ()) if c not in undone]
@@ -2866,7 +2896,10 @@ def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sh
             rec.update(commit=c, arrival=arrival, since=iso(ct.get(arrival, ct[c])), since_exact=False,
                        reverted=False, state="on-trunk", environments=dict.fromkeys(ENVIRONMENTS), version=None,
                        candidate=None)
-            if arrival in moves:
+            own = moves.get(c)
+            if own and own["exact"] and "left" not in own:
+                rec["since"], rec["since_exact"] = own["seen"], True
+            elif arrival in moves and "left" not in moves[arrival]:
                 rec["since"], rec["since_exact"] = moves[arrival]["seen"], moves[arrival]["exact"]
 
 
@@ -3007,21 +3040,23 @@ def fetch_snapshot(name: str) -> tuple[bool, str | None, str]:
     return False, None, last_error(err) if code is not None else "the fetch took over 60s"
 
 
-def new_moves(graph: dict, trunk_sha: str, known: dict, push: tuple, seen: str, run: str) -> list[dict]:
-    """The moves this run records, only from its own push (`push`: before, after, whether before was all zeros).
-    Exact: the first-parent commits from `after` down that `before` does not hold, which that push brought. Not exact:
-    the first-parent commits below them back to the newest recorded one, which a run of their own never recorded
-    (GitHub's concurrency replaces a pending run with a newer one): they had arrived by this push. Nothing above
-    `after` (later pushes this checkout already sees, ESC-246), nothing without a push (a tag's run), nothing when this
-    clone lacks `before` (a forced push: what it brought cannot be told)."""
+def new_moves(graph: dict, known: dict, push: tuple, seen: str, run: str) -> list[dict]:
+    """The moves this run records, only from its own push (`push`: before, after, whether before was all zeros), along
+    `after`'s own first-parent chain (a later foxtrot merge may have taken it off the trunk's, round 4). Exact: the
+    commits from `after` down that `before` does not hold, which that push brought. Not exact: the commits below them
+    back to the newest recorded one still on the trunk (`known`), which a run of their own never recorded (GitHub's
+    concurrency replaces a pending run with a newer one): they had arrived by this push. Nothing above `after` (later
+    pushes this checkout already sees, ESC-246), nothing without a push (a tag's run), nothing when this clone lacks
+    `before` (a forced push: what it brought cannot be told), and only `after` for an all-zero `before` (a history
+    pushed to a new remote: its old commits were not just written)."""
     before, after, null = push
-    chain = first_parent_chain(graph, trunk_sha)
-    pos = {sha: i for i, sha in enumerate(chain)}  # 0: the head
-    if after not in pos or (before is None and not null):
+    if after is None or after not in graph or (before is None and not null):
         return []
-    held = set() if null else set(first_reach(graph, [before]))
-    i = pos[after]
-    rows = []
+    if null:
+        return [{"sha": after, "seen": seen, "run": run, "exact": True}]
+    chain = first_parent_chain(graph, after)
+    held = set(first_reach(graph, [before]))
+    i, rows = 0, []
     while i < len(chain) and chain[i] not in held:
         rows.append({"sha": chain[i], "seen": seen, "run": run, "exact": True})
         i += 1
@@ -3064,7 +3099,8 @@ def keep_theirs(theirs: dict | None, mine: str, seen: str, graph: dict) -> bool:
 
 def ledger_md(facts: dict, meta: dict) -> str:
     lines = [f"# Ledger — {facts['trunk']}@{short(facts['trunk_sha'])}", "",
-             f"Written by `ledger.py snapshot` in the CI (run {meta['run']}, {meta['seen']}), never by hand. Ask "
+             f"Written by `ledger.py snapshot` in the CI (run {meta['run']}, for the push of {meta['seen']}), never by "
+             "hand. Ask "
              "`python3 .keelokit/bin/ledger.py`: a session reads this only when its history is incomplete.", "",
              "| Story | State | Since | Commit | Version | Staging | Production |", "|---|---|---|---|---|---|---|"]
     for r in sorted(facts["stories"], key=lambda r: id_key(r["id"])):
@@ -3136,14 +3172,15 @@ def cmd_snapshot(state: dict, args: tuple) -> int:
                  "deploy": {e: ctx["refs"].get(f"refs/remotes/origin/deploy/{e}") for e in ENVIRONMENTS}}
     reverted = revert_status(ctx["log"], graph)
     story_shas: dict[str, list[str]] = {}
+    undone_shas: dict[str, list[str]] = {}
     for c in reversed(ctx["log"]):  # oldest first
-        if not reverted[c["sha"]]:
-            for sid in c["story"]:
-                story_shas.setdefault(sid, []).append(c["sha"])
+        for sid in c["story"]:
+            (undone_shas if reverted[c["sha"]] else story_shas).setdefault(sid, []).append(c["sha"])
     corrections_blob = next((sha for path, sha in ctx["tree"] if path == CORRECTIONS), None)
     # What a shallow reader needs to prove a state since: every live Story: commit of every id, also ids with no story
     # file yet (ESC-250, ESC-251), and the corrections file the states were computed with (ESC-252).
-    meta = {"seen": seen, "run": run, "refs": refs_seen, "story_commits": story_shas, "corrections": corrections_blob}
+    meta = {"seen": seen, "run": run, "refs": refs_seen, "story_commits": story_shas, "reverted_commits": undone_shas,
+            "corrections": corrections_blob}
     for attempt in range(1, SNAPSHOT_TRIES + 1):
         if attempt > 1:
             time.sleep(random.uniform(0.05, 0.3) * attempt)
@@ -3158,7 +3195,13 @@ def cmd_snapshot(state: dict, args: tuple) -> int:
         if old is None:
             raise LedgerError(f"{MOVES} on origin/{name} ({short(tip)}) cannot be read: nothing written, so no move "
                               "recorded there is lost; fix it there first")
-        moves = merge_moves(old, new_moves(graph, trunk_sha, moves_map(old), push_at, seen, run), graph, trunk_sha)
+        on_trunk = set(first_reach(graph, [trunk_sha]))
+        # Round 4: a recorded commit this trunk no longer holds, recorded before this push, was forced away: its row
+        # is marked `left` and says nothing about when it came back.
+        old = [{**m, "left": seen} if "left" not in m and m["seen"] <= seen and m["sha"] not in on_trunk else m
+               for m in old]
+        known = {sha: m for sha, m in moves_map(old).items() if "left" not in m}
+        moves = merge_moves(old, new_moves(graph, known, push_at, seen, run), graph, trunk_sha)
         theirs = parse_snapshot(blobs.get(f"{tip}:ledger.json"))
         files = {MOVES: moves_toml(moves).encode()}
         if keep_theirs(theirs, trunk_sha, seen, graph):
@@ -3166,7 +3209,7 @@ def cmd_snapshot(state: dict, args: tuple) -> int:
             files["LEDGER.md"] = blobs.get(f"{tip}:LEDGER.md") or b""
         else:
             facts = json.loads(json.dumps(ctx["facts"]))
-            apply_moves(facts["stories"], moves_map(moves))
+            apply_moves(facts["stories"], moves_map(moves), graph)
             facts["snapshot"] = meta
             files["ledger.json"] = (json.dumps(facts, indent=1) + "\n").encode()
             files["LEDGER.md"] = ledger_md(facts, meta).encode()
