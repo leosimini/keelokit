@@ -7,6 +7,7 @@ file git doesn't track yet, a deleted one, one taken out of the index or ignored
 pnpm's `[origin/main]` filter see tracked files only, so each check that decides "changed since
 main" is run here across every state, against the real pnpm that decides the scope. The doctor's
 `--critical --changed` (what `pnpm mutation` mutates) gets the same matrix."""
+import json
 import os
 import shutil
 import subprocess
@@ -14,6 +15,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_verify_operativo import VerifyFixture  # noqa: E402  (no tests of its own: nothing is collected twice)
 
 ROOT = Path(__file__).resolve().parents[1]
 PNPM = shutil.which("pnpm")
@@ -400,6 +404,197 @@ class CriticalChangedTest(GitStates, unittest.TestCase):
                 out = sh(root, sys.executable, ".keelokit/bin/doctor.py", "--critical", "--changed").split()
                 want = {"new-untracked": ["packages/a/src/new.ts"], "deleted": []}.get(state, ["packages/a/src/index.ts"])
                 self.assertEqual(out, want, state)
+
+
+class MemoryAwareVerifyTest(VerifyFixture):
+    """FLEET-001 at verify.sh level: the real script and verify_tools.py, a stub pnpm, a fake meminfo and no cgroup.
+    The peaks the plan reads are seeded in the history; the cores are this machine's, so the expected count is
+    computed from them (2 needs 2 cores)."""
+
+    PEAK = 2355  # MB: 2.3 GB per worker
+
+    def memory(self, kb):
+        p = self.tmp / "meminfo"
+        p.write_text(f"MemTotal: 16384000 kB\nMemAvailable: {kb} kB\n")
+        return {"KEELOKIT_MEMINFO": str(p), "KEELOKIT_CGROUP_DIR": ""}
+
+    def seed_peak(self, step="unit", mb=PEAK):
+        self.seed_peaks({step: mb})
+
+    def seed_peaks(self, peaks):
+        entry = {"t": 1, "head": "0" * 40, "base": "0" * 40, "level": "changed", "result": "pass", "rc": 0, "planned": list(peaks),
+                 "passed": list(peaks), "failed_steps": [], "peak_mb": peaks, "peak_source": {s: "rss" for s in peaks}}
+        (self.git_dir / "keelokit-verify.history").write_text(json.dumps(entry) + "\n")
+
+    def unit_calls(self):
+        return [c for c in self.called() if "run test" in c]
+
+    def test_FLEET_001_S1_a_run_records_the_peak_of_a_step_it_ran(self):
+        """FLEET-001.S1: on Linux the max resident size is always measurable, so a step that ran an external command
+        has a positive peak and its source."""
+        self.commit_change()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        entry = self.history()[-1]
+        measured = {s: mb for s, mb in entry.get("peak_mb", {}).items() if s in ("unit", "doctor")}
+        self.assertTrue(measured, entry.get("peak_mb"))
+        for step, mb in measured.items():
+            self.assertIsInstance(mb, int)
+            self.assertGreater(mb, 0)
+            self.assertIn(entry["peak_source"][step], {"rss", "cgroup"})
+
+    def test_FLEET_001_S2_workers_fit_the_memory_and_the_runner_gets_them(self):
+        """FLEET-001.S2: memory that fits one 2.3 GB unit worker but not two → --maxWorkers=1 and the line, on any number
+        of cores (a figure that fits as many workers as there are cores is left to the runner, so 2 of 2 would hide)."""
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(**self.memory(2400 * 1024))  # 2.3 GB free: 2400 × 0.8 / 2355 < 1, and 2400 ≥ 2355
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        self.assertTrue(all(c.endswith("--maxWorkers=1") for c in calls), calls)
+        self.assertIn("Workers for this machine's memory: unit: 1 worker, 2.3 GB free, 2.3 GB each last time", r.stdout)
+        entry = self.history()[-1]
+        self.assertEqual(entry["workers"], {"unit": 1})
+        self.assertEqual(entry["workers_why"], "unit: 1 worker, 2.3 GB free, 2.3 GB each last time")
+
+    def test_FLEET_001_S3_nothing_fits_stop_in_seconds_with_exit_3(self):
+        """FLEET-001.S3: 1.5 GB free and 2.3 GB for one worker → exit 3 before any tool runs, both numbers, the way out."""
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(**self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        for part in ("unit", "2.3 GB", "1.5 GB", "VERIFY_FORCE=1"):
+            self.assertIn(part, r.stderr)
+        ran = [c for c in self.called() if "ls --depth" not in c]
+        self.assertEqual(ran, [], "the refusal comes before any step runs a tool")
+
+    def test_FLEET_001_S3_verify_force_runs_it_with_one_worker(self):
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(VERIFY_FORCE="1", **self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any("--maxWorkers=1" in c for c in self.unit_calls()), self.called())
+
+    def test_FLEET_001_S4_no_measure_runs_with_todays_workers(self):
+        """FLEET-001.S4: no recorded peak and no override → the runner's command is exactly today's, no plan line."""
+        self.commit_change()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        self.assertFalse(any("--maxWorkers" in c or "--workers" in c for c in self.called()), self.called())
+        self.assertTrue(all(c.endswith("--if-present run test") for c in calls), calls)
+        self.assertNotIn("Workers for this machine's memory", r.stdout)
+
+    def test_FLEET_001_S5_the_override_in_state_toml_wins(self):
+        """FLEET-001.S5: [verify] memory_per_worker_mb = 1500 is used instead of the 2.3 GB measured."""
+        self.commit_change()
+        self.seed_peak()
+        (self.repo / ".keelokit/state.toml").write_text("[verify]\nmemory_per_worker_mb = 1500\n")
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1.5 GB each ([verify] memory_per_worker_mb)", r.stdout)
+        self.assertNotIn("2.3 GB each last time", r.stdout)
+
+
+    # Round 1 (review and breaker findings), reproduced before the fix.
+
+    def test_FLEET_001_S3_a_memory_refusal_is_not_recorded_as_a_red_run(self):
+        """FLEET-001.S3 (R1): like the busy-machine refusal, a memory refusal leaves no history line and blames no step
+        (it was recorded as a red `git` step, and --rerun-failed then said it stopped in a setup step)."""
+        self.commit_change()
+        self.seed_peak()
+        before = (self.git_dir / "keelokit-verify.history").read_text()
+        r = self.verify(**self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual((self.git_dir / "keelokit-verify.history").read_text(), before, "the refusal must not be a run")
+
+    def test_FLEET_001_S3_no_refusal_for_integration_without_an_api(self):
+        """FLEET-001.S3 (R4): integration is only checked when apps/api/package.json exists: with no API it won't run,
+        so its huge peak and low memory refuse nothing, in a full plan or with --steps integration."""
+        self.commit_change()
+        self.seed_peaks({"integration": 99999})
+        mem = self.memory(1536 * 1024)
+        r = self.verify(**mem)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("will not start", r.stderr)
+        r = self.verify("--steps", "integration", **mem)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("will not start", r.stderr)
+
+    def test_FLEET_001_S2_e2e_peaks_plan_no_workers_and_refuse_nothing(self):
+        """FLEET-001.S2 (R6): e2e and e2e-stack scripts build in the same command, so their peak is not a Playwright
+        worker's: it is recorded but plans no --workers and refuses nothing, measured or overridden."""
+        self.commit_change()
+        self.seed_peaks({"e2e": 99999, "e2e-stack": 99999})
+        r = self.verify(**self.memory(1536 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("will not start", r.stderr)
+        self.assertTrue(any("run e2e" in c for c in self.called()), self.called())
+        self.assertFalse(any("--workers" in c for c in self.called()), self.called())
+        (self.repo / ".keelokit/state.toml").write_text("[verify]\nmemory_per_worker_mb = 1500\n")
+        self.calls.write_text("")
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(any("--workers" in c for c in self.called() if "run e2e" in c), self.called())
+
+    def test_FLEET_001_S1_a_preflight_during_a_verify_never_mixes_their_peaks(self):
+        """FLEET-001.S1 (R3): a preflight started while a verify runs (here from inside the verify's unit step, so no
+        timing is involved) must not empty the verify's peaks nor add its own to them: per-run files."""
+        (self.shims / "pnpm").write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "pnpm $*" >> "$CALLS"\n'
+            'case "$*" in *"run test"*) [ -n "${INNER:-}" ] || INNER=1 bash scripts/verify.sh --preflight >/dev/null 2>&1 ;; esac\n'
+            "exit 0\n")
+        self.commit_change()
+        r = self.verify("--steps", "doctor,unit", **self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any("lint" in c for c in self.called()), "the inner preflight ran: " + repr(self.called()))
+        peaks = self.history()[-1]["peak_mb"]
+        self.assertEqual(set(peaks), {"doctor", "unit"}, "only this run's own steps, none erased, none of the preflight's")
+
+
+    def test_FLEET_001_S1_per_run_peak_files_of_a_dead_run_are_removed_at_start(self):
+        """FLEET-001.S1: a verify killed with SIGKILL never reaches its cleanup and leaves keelokit-verify.peaks.<pid> and
+        its .started marker; the next verify removes those of a dead pid at start and keeps those of a live one."""
+        dead = subprocess.Popen(["true"])
+        dead.wait()  # reaped: its pid names no process
+        live = os.getpid()
+        files = {pid: [self.git_dir / f"keelokit-verify.peaks.{pid}", self.git_dir / f"keelokit-verify.peaks.{pid}.started"]
+                 for pid in (dead.pid, live)}
+        for paths in files.values():
+            for f in paths:
+                f.write_text("unit\t100\trss\n")
+        self.commit_change()
+        r = self.verify(**self.memory(6 * 1024 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([f.name for f in files[dead.pid] if f.exists()], [], "a dead run's files are gone")
+        self.assertEqual([f.exists() for f in files[live]], [True, True], "a live run's files are kept")
+
+
+    def test_FLEET_001_S2_planned_unit_workers_run_one_package_at_a_time(self):
+        """FLEET-001.S2: --maxWorkers is per runner, and pnpm runs up to 4 packages at once: a planned unit step also
+        gets --workspace-concurrency=1 (packages one after another, N workers each); with no plan, neither flag."""
+        self.commit_change()
+        self.seed_peak()
+        r = self.verify(**self.memory(2400 * 1024))  # fits one 2.3 GB worker
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        for c in calls:
+            words = c.split()
+            self.assertIn("--workspace-concurrency=1", words)
+            self.assertIn("--maxWorkers=1", words)
+            # pnpm's own option goes before `run`; after the script name it would be handed to the test runner
+            self.assertLess(words.index("--workspace-concurrency=1"), words.index("run"), c)
+        (self.git_dir / "keelokit-verify.history").unlink()
+        self.calls.write_text("")
+        r = self.verify(**self.memory(2400 * 1024))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.unit_calls()
+        self.assertTrue(calls, self.called())
+        self.assertFalse(any("--workspace-concurrency" in c or "--maxWorkers" in c for c in calls), calls)
 
 
 if __name__ == "__main__":
