@@ -15,6 +15,10 @@
                                                 run CMD and append "STEP<TAB>MB<TAB>source" to OUT: the most
                                                 memory it used (the exit code is CMD's; a failure to measure
                                                 never fails CMD)
+    verify_tools.py estimate HISTORY --steps "unit lint ..." --level changed|all [--workers "unit=2 ..."]
+                                                how long the planned steps took here before: "about 55–80 min
+                                                (from 12 runs)" (each step's median to its 90th percentile), or
+                                                "no estimate yet (...)"; then the "id:median:p90" pairs in run order
     verify_tools.py steps LIST | --list         check step names (comma list) / print every name
     verify_tools.py rerun HISTORY --head SHA --base SHA --scope TEXT --level LEVEL
                                                 "steps|inherited|red head|proven packages": what
@@ -462,6 +466,119 @@ def memory_plan(steps: list[str], available: tuple[int, str] | None, peaks: dict
     return workers, lines, None
 
 
+# FLEET-002: the order steps run in verify.sh, setup steps included (git, prisma, db: not in --steps).
+RUN_ORDER = ["git", "secrets", "prisma", "format", "lint", "typecheck", "doctor", "unit", "zones", "db", "integration",
+             "build", "e2e", "e2e-stack", "mutation", "sast", "clock", "audit"]
+SETUP_STEPS = {"git", "prisma"}  # counted whenever the history has them; db only with integration (it is its database)
+ESTIMATE_RUNS = 20  # the newest comparable runs: a machine or a suite that changed shows within a few runs
+ESTIMATE_MIN_RUNS = 3  # fewer than this is no estimate: a median of two runs is a guess
+# Lines written before `durations` existed name their steps by title (verify.sh's step calls).
+TITLE_IDS = {"Up to date with origin/main (GIT-1)": "git", "Secret scan (gitleaks)": "secrets", "Prisma client": "prisma",
+             "Format": "format", "Lint": "lint", "Typecheck": "typecheck", "Harness doctor": "doctor", "Unit tests": "unit",
+             "Changed tests at awkward clocks": "zones", "Throwaway PostgreSQL (migrated, seeded)": "db",
+             "Integration tests (real PostgreSQL)": "integration", "Build": "build", "End-to-end journeys": "e2e",
+             "Mutation testing (critical code)": "mutation", "Static analysis (Semgrep)": "sast",
+             "Clock a year ahead (date bombs)": "clock", "Dependency audit": "audit"}
+
+
+def good_secs(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 7 * 86400  # finite, a week at most
+
+
+def step_durations(entry: dict) -> dict[str, float]:
+    """Seconds per step id of one history line: its `durations`, else its titled `steps` (older lines)."""
+    durations = entry.get("durations")
+    if isinstance(durations, dict):
+        return {k: float(v) for k, v in durations.items() if isinstance(k, str) and good_secs(v)}
+    out: dict[str, float] = {}
+    for pair in entry.get("steps") if isinstance(entry.get("steps"), list) else []:
+        if not (isinstance(pair, list) and len(pair) == 2 and isinstance(pair[0], str) and good_secs(pair[1])):
+            continue
+        sid = "e2e-stack" if pair[0].startswith("End-to-end on the real stack (") else TITLE_IDS.get(pair[0])
+        if sid:
+            out[sid] = out.get(sid, 0.0) + float(pair[1])
+    return out
+
+
+def percentile(values: list[float], q: float) -> float:
+    """Linear between the two nearest ranks (numpy's default): the median of [10, 20, 30, 40] is 25."""
+    v = sorted(values)
+    at = (len(v) - 1) * q
+    lo = int(at)
+    hi = min(lo + 1, len(v) - 1)
+    return round(v[lo] + (v[hi] - v[lo]) * (at - lo), 6)
+
+
+def estimate(history_lines: list[str], steps: list[str], level: str, workers: dict[str, int]) -> dict:
+    """{"runs", "steps": id → (median, p90) seconds, "order": the ids considered in run order, "text"}. Comparable runs:
+    green, whole (not partial, scoped, narrowed or a rerun that kept passes), the same level, and the same planned
+    workers for every worker step in this plan (none planned = the runner's default, a kind of its own)."""
+    considered = [s for s in RUN_ORDER if s in steps or s in SETUP_STEPS
+                  or (s == "db" and ("integration" in steps or "e2e-stack" in steps))]
+    runs, other_workers = [], 0
+    for line in history_lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("result") != "pass" or entry.get("level") != level:
+            continue
+        if entry.get("partial") or entry.get("scope") or entry.get("narrowed") or entry.get("inherited"):
+            continue
+        had = entry.get("workers") if isinstance(entry.get("workers"), dict) else {}
+        if any(had.get(s) != workers.get(s) for s in WORKER_STEPS if s in steps):
+            other_workers += 1
+            continue
+        durations = step_durations(entry)
+        if durations:
+            planned = entry.get("planned")
+            runs.append((durations, set(planned) if isinstance(planned, list) and planned else None))
+    runs = runs[-ESTIMATE_RUNS:]
+    if len(runs) < ESTIMATE_MIN_RUNS:
+        others = f", {other_workers} with other workers" if other_workers else ""
+
+        def plural(n: int, word: str) -> str:
+            return f"{n} {word}{'' if n == 1 else 's'}"
+        return {"runs": len(runs), "steps": {}, "order": considered,
+                "text": f"no estimate yet ({plural(len(runs), 'past run')} like this one on this machine{others}; it needs {ESTIMATE_MIN_RUNS})"}
+    per_step: dict[str, tuple[float, float]] = {}
+    for s in considered:
+        # A run that planned the step and didn't run it (no critical code for mutation, no Docker for e2e-stack)
+        # took 0 s for it; a line without `planned` (older) or a setup step counts only where it ran.
+        samples = [d.get(s, 0.0) if planned is not None and s in planned else d[s]
+                   for d, planned in runs if s in d or (planned is not None and s in planned)]
+        if samples:
+            per_step[s] = (percentile(samples, 0.5), percentile(samples, 0.9))
+    missing = [s for s in considered if s not in per_step and s not in SETUP_STEPS and s != "db"]
+    low = sum(m for m, _ in per_step.values())
+    high = sum(p for _, p in per_step.values())
+    text = f"{minutes_range(low, high)} (from {len(runs)} runs" + (f"; no history yet for {', '.join(missing)}" if missing else "") + ")"
+    return {"runs": len(runs), "steps": per_step, "order": considered, "text": text}
+
+
+def minutes_range(low_secs: float, high_secs: float) -> str:
+    """"about 55–80 min": the low end rounded down, the high end up, so the range never narrows by rounding."""
+    lo, hi = int(low_secs // 60), max(1, -int(-high_secs // 60))
+    return f"about {lo} min" if lo >= hi else f"about {lo}–{hi} min"
+
+
+def cmd_estimate(args: list[str]) -> int:
+    try:
+        lines = Path(args[0]).read_text(errors="replace").splitlines() if args else []
+    except OSError:
+        lines = []
+    workers = {n: int(c) for n, _, c in (p.partition("=") for p in option(args, "--workers").split()) if c.isdigit()}
+    e = estimate(lines, option(args, "--steps").split(), option(args, "--level", "changed"), workers)
+    print(e["text"])
+
+    def secs(v: float) -> str:
+        return str(int(v)) if float(v).is_integer() else f"{v:.1f}"
+
+    print(" ".join(f"{s}:{secs(e['steps'][s][0])}:{secs(e['steps'][s][1])}" if s in e["steps"] else f"{s}::"
+                   for s in e["order"]) if e["steps"] else "")
+    return 0
+
+
 def usable_cores() -> int:
     return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
 
@@ -599,7 +716,8 @@ def cmd_record(args: list[str]) -> int:
     rerun VERIFY_INHERITED (passes kept from the red run), VERIFY_PROVEN_PACKAGES (where those were proven),
     VERIFY_RERUN_OF (the first red run of the chain) and VERIFY_COMPOSITE_OF (the same head, when the runs
     together sealed the commit). VERIFY_PEAKS names a file of "step<TAB>MB<TAB>source" lines (`measure`'s),
-    VERIFY_WORKERS the "step=N" pairs the memory plan chose and VERIFY_WORKERS_WHY its sentences, joined by "; "."""
+    VERIFY_WORKERS the "step=N" pairs the memory plan chose and VERIFY_WORKERS_WHY its sentences, joined by "; ",
+    VERIFY_STEP_IDS "seconds|step id" lines (the `durations` that `estimate` reads)."""
     file, result, rc, head, level, steps, failed, log = (args + [""] * 8)[:8]
     env = os.environ.get
     try:
@@ -622,6 +740,11 @@ def cmd_record(args: list[str]) -> int:
         mb, _, source = rest.partition("\t")
         if name and mb.isdigit() and source and int(mb) > peak_mb.get(name, 0):
             peak_mb[name], peak_source[name] = int(mb), source
+    durations: dict[str, int] = {}  # seconds per step id (FLEET-002), summed: e2e-stack runs once per app
+    for l in env("VERIFY_STEP_IDS", "").splitlines():
+        secs, _, sid = l.partition("|")
+        if secs.isdigit() and sid:
+            durations[sid] = durations.get(sid, 0) + int(secs)
     planned_workers = {n: int(c) for n, _, c in (p.partition("=") for p in env("VERIFY_WORKERS", "").split()) if c.isdigit()}
     packages = sorted({relative(l) for l in env("VERIFY_PACKAGES", "").splitlines() if l.strip()})
     entry = {
@@ -644,6 +767,7 @@ def cmd_record(args: list[str]) -> int:
         "causes": [cid for cid, _ in causes_in(text)] if result != "pass" else [],
         "peak_mb": peak_mb, "peak_source": peak_source,
         "workers": planned_workers, "workers_why": env("VERIFY_WORKERS_WHY", ""),
+        "durations": durations,
     }
     with open(file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -1100,6 +1224,8 @@ def main() -> int:
         return cmd_steps(a[1:])
     if a[0] == "workers":
         return cmd_workers(a[1:])
+    if a[0] == "estimate":
+        return cmd_estimate(a[1:])
     if a[0] == "measure":
         return cmd_measure(a[1:])
     if a[0] == "rerun":

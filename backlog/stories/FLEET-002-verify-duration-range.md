@@ -4,7 +4,7 @@ epic = "FLEET"
 title = "The verify says how long it will take, as a range from its own history"
 wave = 21
 depends_on = ["FLEET-001"]
-touches = ["template/scripts/verify.sh", "template/.keelokit/bin/verify_tools.py", "template/.keelokit/bin/status.py", "tests/test_verify_plan.py", "CHANGELOG.md"]
+touches = ["template/scripts/verify.sh", "template/.keelokit/bin/verify_tools.py", "template/.keelokit/bin/status.py", "tests/test_verify_plan.py", "tests/test_verify_operativo.py", "docs/design.md", "docs/escapes.md", "CHANGELOG.md"]
 dimensions = ["logic", "dx"]
 invariants = []
 origin = "docs/fleet-lessons.md — coordination; JOUNA: long verifies always took longer than estimated"
@@ -53,3 +53,32 @@ Scenario: [S4] While running
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line,
 `Story: FLEET-002` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-24
+What was built differs from the text above in these points (the smallest option consistent with the story):
+- **`estimate`, not `plan`.** `verify_tools.py plan`'s output is the step list verify.sh reads, and it runs
+  before the memory plan picks the workers. The range comes from a new `verify_tools.py estimate HISTORY --steps
+  --level --workers`, called right after the memory plan; verify.sh prints it as `Estimate: about 55–80 min (from
+  12 runs).` Not for a preflight (it stops long before the plan's end).
+- **Which runs count.** Green, whole runs (not partial, `--packages`, narrowed, or a rerun that kept passes) of the
+  same level, the newest 20. A red run stopped early and a partial one ran less than its plan, so their seconds
+  would pull the range down. "This machine" is this clone's history (it lives in the git common dir).
+- **Comparable workers.** The workers FLEET-001 planned must be equal for every worker step in this plan (`unit`,
+  `integration`); none planned (the runner's default) is a kind of its own. Fewer than 3 comparable runs is "no
+  estimate yet (N past runs like this one on this machine, M with other workers; it needs 3)".
+- **What is summed.** Each planned step's median (low end) and 90th percentile (high end, linear interpolation),
+  plus the setup steps the history has (`git`, `prisma`; `db` with integration). A planned step with no samples is
+  named ("no history yet for e2e"). Low end rounded down, high end up.
+- **Seconds per step id.** The history's `steps` were keyed by title; each line now also has `durations` (id →
+  seconds, e2e-stack summed over apps). Lines written before are read through the titles, so the history the
+  machine already has counts from the first run.
+- **A planned step that didn't run took 0 s.** `want` plans steps that run only sometimes (mutation without
+  critical code, e2e-stack without Docker or a web app, sast without semgrep). Where a history line records its
+  `planned` steps, a planned step it didn't run counts 0 s, so a rare 40-minute mutation shows in the high end
+  only when it is frequent enough, and a step a machine never runs isn't "missing" forever (review, ESC-166).
+- **A narrowed `--rerun-failed`** estimates the steps it reruns, not the whole plan it records (review, ESC-165).
+- **Range left.** The state file gains `step_id`, `step_since` and `estimate` (id:median:p90 per step in run order).
+  `status.py` subtracts the time spent in the current step from its figures (none once past them), adds the later
+  steps whole, and says nothing about time when a figure is missing or doesn't parse. Known limit: e2e-stack's
+  figure is the sum over its apps, and `step_since` restarts with each app, so during the second app the range
+  left counts the first one again (too high, never too low).
