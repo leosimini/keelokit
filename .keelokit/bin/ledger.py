@@ -2637,7 +2637,7 @@ def cmd_drop(state: dict, sid: str, reason: str, day: str | None = None) -> int:
 
 # ── the git hooks: prepare-commit-msg and commit-msg (LEDGER-009) ──
 
-ATTRIBUTING = ("story", "part-of", "no-story", "dropped")  # Dropped: is ledger.py drop's own commit
+ATTRIBUTING = ("story", "part-of", "no-story")  # as `check` counts them (a Dropped: commit gets Part-of: too)
 EXEMPT_SUBJECT = ("fixup! ", "squash! ", "amend! ")
 LEDGER_CMD = "python3 .keelokit/bin/ledger.py"
 
@@ -2645,26 +2645,39 @@ LEDGER_CMD = "python3 .keelokit/bin/ledger.py"
 def comment_char() -> str:
     """core.commentChar when it is one character, else `#` (git's default; "auto" picks per message and
     leaves `#` for every message an editor did not touch)."""
-    code, out = git_out("config", "--get", "core.commentChar")
-    return out if code == 0 and len(out) == 1 else "#"
+    for key in ("core.commentString", "core.commentChar"):  # commentString: git 2.45+
+        code, out = git_out("config", "--get", key)
+        if code == 0 and out and out != "auto":
+            return out
+    return "#"
 
 
-def stored_text(raw: str) -> str:
-    """The message as git will store it: nothing from the scissors line of `commit -v` on, no comment lines."""
+def readings(raw: str) -> list[str]:
+    """The message as git may store it, nothing from the scissors line of `commit -v` on. Git drops comment lines
+    only when it cleans up with `strip`, which by default it does only when the editor ran (ESC-190: `-m "#123 fix"`
+    keeps its line), and a hook cannot tell. So: `commit.cleanup` strip → without comments; verbatim, whitespace or
+    scissors → with them; unset → both readings, without comments first."""
     c = comment_char()
     scissors = re.compile(rf"^{re.escape(c)} -+ >8 -+$")
-    lines = []
+    kept = []
     for line in raw.replace("\r\n", "\n").split("\n"):
         if scissors.match(line):
             break
-        if not line.startswith(c):
-            lines.append(line)
-    return "\n".join(lines).strip("\n") + "\n"
+        kept.append(line)
+    stripped = "\n".join(line for line in kept if not line.startswith(c)).strip("\n") + "\n"
+    whole = "\n".join(kept).strip("\n") + "\n"
+    mode = git_out("config", "--get", "commit.cleanup")[1].strip().lower()
+    if mode == "strip":
+        return [stripped]
+    if mode in ("verbatim", "whitespace", "scissors"):
+        return [whole]
+    return [stripped] if whole == stripped else [stripped, whole]
 
 
 def message_trailers(text: str) -> list[tuple[str, str]]:
-    """(key, value) of the trailers git reads from the message (its last paragraph): `interpret-trailers --parse`."""
-    r = subprocess.run(["git", "interpret-trailers", "--parse"], cwd=ROOT, env=git_env(), input=text,
+    """(key, value) of the trailers git reads from the message (its last paragraph): `interpret-trailers --parse`,
+    with `--no-divider`, as `git log`'s %(trailers) reads them: a `---` line is no patch divider there (ESC-189)."""
+    r = subprocess.run(["git", "interpret-trailers", "--parse", "--no-divider"], cwd=ROOT, env=git_env(), input=text,
                        capture_output=True, text=True, errors="replace")
     if r.returncode != 0:
         raise LedgerError(f"git interpret-trailers failed: {last_error(r.stderr)}")
@@ -2698,6 +2711,28 @@ def taken_story() -> str | None:
     return sid
 
 
+SOURCE_FILE = "keelokit-commit-source"
+
+
+def source_path() -> Path | None:
+    code, path = git_out("rev-parse", "--git-path", SOURCE_FILE)
+    return (Path(path) if os.path.isabs(path) else ROOT / path) if code == 0 and path else None
+
+
+def editor_only(texts: list[str]) -> bool:
+    """A message with nothing but comment lines: git aborts it when the editor wrote it (only its help text), but
+    stores it when it came from -m or -F (`-m "#5 fix"`, ESC-190). prepare-commit-msg records git's source for
+    commit-msg: none or `template` is the editor flow."""
+    if texts[0].strip():
+        return False
+    where = source_path()
+    try:
+        source = where.read_text(encoding="utf-8").strip() if where else None
+    except OSError:
+        source = None
+    return source in ("", "template") or not texts[-1].strip()
+
+
 def add_part_of(path: Path, source: str = "") -> None:
     """prepare-commit-msg's work: `Part-of: <keelokit.story>` when the message has content, is no merge or
     fixup!, and names no story yet. A message with only comments (the editor is about to open) is left alone:
@@ -2707,10 +2742,10 @@ def add_part_of(path: Path, source: str = "") -> None:
     sid = taken_story()
     if sid is None:
         return
-    text = stored_text(path.read_text(encoding="utf-8", errors="replace"))
-    if not text.strip() or exempt_subject(text) or attributed(message_trailers(text)):
+    texts = readings(path.read_text(encoding="utf-8", errors="replace"))
+    if not texts[0].strip() or any(exempt_subject(t) or attributed(message_trailers(t)) for t in texts):
         return
-    code, err = run_git(["interpret-trailers", "--in-place", "--if-missing", "add", "--trailer",
+    code, err = run_git(["interpret-trailers", "--in-place", "--no-divider", "--if-missing", "add", "--trailer",
                          f"Part-of: {sid}", str(path)])
     if code != 0:
         raise LedgerError(f"git interpret-trailers failed: {last_error(err)}")
@@ -2718,7 +2753,8 @@ def add_part_of(path: Path, source: str = "") -> None:
 
 def known_story_ids(state: dict, cfg: dict) -> tuple[set[str], bool]:
     """(the ids of the configured stories, whether some story file could not be read): the trunk's tree, read as
-    every other command reads it, plus the work tree's own story files (a branch may add the story it works on)."""
+    every other command reads it, plus the story files staged or committed here (a branch may add the story it works on; an untracked one
+    would never reach the trunk, where `check` looks)."""
     ids, unreadable = set(), False
     trunk = trunk_name(state)
     for ref in (f"refs/remotes/origin/{trunk}", f"refs/heads/{trunk}"):
@@ -2729,7 +2765,7 @@ def known_story_ids(state: dict, cfg: dict) -> tuple[set[str], bool]:
             unreadable = bool(bad)
             break
     pattern = glob_regex(cfg["stories"])
-    code, out = git_out("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    code, out = git_out("ls-files", "-z", "--cached")
     for rel in out.split("\0") if code == 0 else []:
         if rel and pattern.fullmatch(rel):
             try:
@@ -2810,11 +2846,18 @@ def cmd_hook(state: dict, args: tuple) -> int:
     which, given, source = args
     try:
         path = Path(os.path.abspath(given))
+        where = source_path()
+        if which == "prepare" and where:
+            where.write_text(source + "\n", encoding="utf-8")
         add_part_of(path, source)
         if which == "prepare":
             return 0
         cfg = read_config(state)
-        problems = message_problems(state, cfg, stored_text(path.read_text(encoding="utf-8", errors="replace")))
+        texts = readings(path.read_text(encoding="utf-8", errors="replace"))
+        if editor_only(texts):
+            return 0  # only the editor's comments: git aborts the commit itself ("empty commit message")
+        texts = [t for t in texts if t.strip()]
+        problems = min((message_problems(state, cfg, t) for t in texts), key=len)
     except Exception as e:  # noqa: BLE001 - a broken hook must not stop every commit
         hook = "prepare-commit-msg" if which == "prepare" else "commit-msg"
         print(f"Keelokit: the {hook} hook could not check this commit ({' '.join(str(e).split())[:160]}); "
