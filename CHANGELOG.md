@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 — 2026-11-24
 
 - **A new session knows where the truth is (LEDGER-007).** The session start now prints, under one line that
   frames it as data, the ledger's summary (story states read from git) and one line of where to look —
