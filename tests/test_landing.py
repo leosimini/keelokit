@@ -233,10 +233,6 @@ class TextsTest(unittest.TestCase):
         self.assertIn('policy = "convoy"', done)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class UnverifiedPrefixesTest(unittest.TestCase):
     """LEDGER-008: the pre-push runs no verify for archive/ (ledger.py drop's abandoned attempts), as for the
     wip/ branches of [verify] wip_branches; verify_tools.py keeps the list of unverified prefixes."""
@@ -328,3 +324,6 @@ class UnverifiedPrefixesTest(unittest.TestCase):
         self.assertIn("unverified wip work", r.stderr)
         self.assertFalse(self.verified(), "refused before any verify")
 
+
+if __name__ == "__main__":
+    unittest.main()

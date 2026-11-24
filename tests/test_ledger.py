@@ -4285,8 +4285,9 @@ class LedgerTakeTest(LedgerTakeDropCase):
 class LedgerDropTest(LedgerTakeDropCase):
     REASON = "the API it needs is not there yet"
 
-    def hooks(self, repo: GitRepo) -> Path:
-        """The template's pre-push on, and a pnpm that records every call (and fails, so a verify shows)."""
+    def hooks(self, repo: GitRepo, pnpm_exit: int = 1) -> Path:
+        """The template's pre-push on, and a pnpm that records every call (failing by default, so a verify
+        shows)."""
         (repo.path / ".githooks").mkdir()
         shutil.copyfile(TEMPLATE_PRE_PUSH, repo.path / ".githooks/pre-push")
         (repo.path / ".githooks/pre-push").chmod(0o755)
@@ -4297,17 +4298,18 @@ class LedgerDropTest(LedgerTakeDropCase):
         stubs = self.tmp / "stubs"
         stubs.mkdir()
         self.calls = self.tmp / "pnpm-calls"
-        (stubs / "pnpm").write_text(f'#!/bin/sh\necho "pnpm $*" >> "{self.calls}"\nexit 1\n')
+        (stubs / "pnpm").write_text(f'#!/bin/sh\necho "pnpm $*" >> "{self.calls}"\nexit {pnpm_exit}\n')
         (stubs / "pnpm").chmod(0o755)
         return stubs
 
     def test_LEDGER_008_S4_drop_pushes_to_archive_without_verify(self):
         repo = self.project()
-        repo.commit("feat: a first try at AUTH-002\n\nPart-of: AUTH-002")
+        head = repo.commit("feat: a first try at AUTH-002\n\nPart-of: AUTH-002")
         stubs = self.hooks(repo)
         self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
         r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON, path=f"{stubs}:{os.environ['PATH']}")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(repo.sha(), head, "HEAD does not move: the branch carries no archived tip")
         self.assertFalse(self.calls.exists() and self.calls.read_text().strip(), "the pre-push ran no verify")
         archived = self.archived(repo)
         self.assertEqual(len(archived), 1, archived)
@@ -4359,15 +4361,18 @@ class LedgerDropTest(LedgerTakeDropCase):
 
     def test_LEDGER_008_S5_drop_falls_back_to_the_current_branch_when_archive_is_refused(self):
         repo = self.project()
+        stubs = self.hooks(repo, pnpm_exit=0)  # the template's pre-push on: the fallback goes through its gate
         hook = repo.bare / "hooks/pre-receive"
         hook.write_text('#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/archive/*) '
                         'echo "archive/ is not yours" >&2; exit 1;; esac; done\n')
         hook.chmod(0o755)
         self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
-        r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON)
+        r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON, path=f"{stubs}:{os.environ['PATH']}")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.archived(repo), [])
+        self.assertIn("pnpm verify", self.calls.read_text(), "the branch push went through its usual verify")
         tip = repo.git("ls-remote", "origin", "refs/heads/claude/session-x").split()[0]
+        self.assertEqual(repo.sha(), tip, "the branch now holds the drop commit")
         self.assertIn(self.REASON, self.message(repo, tip))
         self.assertIn("claude/session-x", r.stdout + r.stderr, "it says where the commit went")
         attempts = self.stories(repo)["AUTH-002"]["attempts"]
@@ -4382,9 +4387,12 @@ class LedgerDropTest(LedgerTakeDropCase):
         hook.write_text('#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/archive/*) exit 1;; esac; done\n')
         hook.chmod(0o755)
         trunk = repo.git("ls-remote", "origin", "refs/heads/main").split()[0]
+        self.assertEqual(repo.ledger("take", "AUTH-002").returncode, 0)
         r = repo.ledger("drop", "AUTH-002", "--motivo", self.REASON)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(repo.git("ls-remote", "origin", "refs/heads/main").split()[0], trunk)
+        self.assertEqual(repo.sha(), trunk, "no commit on the local trunk either")
+        self.assertEqual(self.story_of(repo.path), "AUTH-002", "not dropped: the story stays taken")
 
     def test_LEDGER_008_S6_drop_and_landing_clear_the_story(self):
         repo = self.project()

@@ -107,9 +107,9 @@ def git_env() -> dict:
             "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never"}
 
 
-def run_git(args: list[str], timeout: float | None = None) -> tuple[int | None, str]:
-    """(returncode, stderr). returncode None: cut at `timeout`, the process group is gone."""
-    proc = subprocess.Popen(["git", *NOPROMPT, *args], cwd=ROOT, env=git_env(), stdin=subprocess.DEVNULL,
+def run_git(args: list[str], timeout: float | None = None, env: dict | None = None) -> tuple[int | None, str]:
+    """(returncode, stderr). returncode None: cut at `timeout`, the process group is gone. `env`: extra variables."""
+    proc = subprocess.Popen(["git", *NOPROMPT, *args], cwd=ROOT, env={**git_env(), **(env or {})}, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             errors="replace", start_new_session=True)
     try:
@@ -2482,10 +2482,12 @@ TAKE_LABELS = {
            "cleared": "this worktree works on no story", "no_reason": "drop needs a reason: --motivo \"...\"",
            "commit_failed": "the drop commit could not be made: {err}",
            "archived": "{id} dropped: {sha} pushed to {ref} (no verify: archive/ never lands)",
-           "fallback": "the push to {ref} was refused ({err}); pushing {sha} on {branch} instead",
+           "fallback": "the push to {ref} was refused ({err}); committing the drop on {branch} and pushing it",
            "on_branch": "{id} dropped: {sha} pushed on {branch}",
-           "stays": "{id}: the drop commit {sha} stays here, unpushed ({err}); push it, then `ledger.py take --clear`",
-           "no_branch": "no branch to fall back to (a detached HEAD or the trunk)"},
+           "stays": "{id} not dropped: the push to {ref} was refused ({err}) and {why}; the story stays taken",
+           "unpushed": "{id}: the drop commit {sha} is on {branch} but its push failed ({err}; the pre-push's "
+                       "lines above say why); push it, then `ledger.py take --clear`",
+           "no_branch": "there is no branch to fall back to (a detached HEAD, or the trunk)"},
     "es": {"no_story": "no hay historia {id} en el trunk", "taken": "este worktree trabaja en {id}",
            "was": " (era {old})", "on_trunk": "{id} ya está {state}: no hay nada que tomar",
            "unknown": "aviso: no se puede decir el estado de {id} ({reason}); tomada igual",
@@ -2494,10 +2496,12 @@ TAKE_LABELS = {
            "no_reason": "drop necesita un motivo: --motivo \"...\"",
            "commit_failed": "no se pudo hacer el commit de drop: {err}",
            "archived": "{id} abandonada: {sha} subido a {ref} (sin verify: archive/ nunca aterriza)",
-           "fallback": "el push a {ref} fue rechazado ({err}); se sube {sha} en {branch}",
+           "fallback": "el push a {ref} fue rechazado ({err}); se hace el drop en {branch} y se sube",
            "on_branch": "{id} abandonada: {sha} subido en {branch}",
-           "stays": "{id}: el commit de drop {sha} queda acá, sin subir ({err}); subilo y luego `ledger.py take --clear`",
-           "no_branch": "no hay rama a la que volver (HEAD suelto o el trunk)"},
+           "stays": "{id} no abandonada: el push a {ref} fue rechazado ({err}) y {why}; la historia sigue tomada",
+           "unpushed": "{id}: el commit de drop {sha} está en {branch} pero su push falló ({err}; las líneas del "
+                       "pre-push de arriba dicen por qué); subilo y luego `ledger.py take --clear`",
+           "no_branch": "no hay rama a la que volver (HEAD suelto, o el trunk)"},
 }
 ON_TRUNK_STATES = ("on-trunk", "in-version", "in-staging", "in-production")
 ARCHIVE = "archive/"
@@ -2519,7 +2523,7 @@ def current_branch() -> str | None:
 
 def clear_story() -> None:
     """Unset keelokit.story in this worktree's own config (nothing to do when take never enabled it)."""
-    if config_get("extensions.worktreeConfig") == "true":
+    if git_out("config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")[1] == "true":
         git_out("config", "--worktree", "--unset-all", "keelokit.story")
 
 
@@ -2572,9 +2576,12 @@ def archive_ref(sid: str, day: str) -> str:
 
 def cmd_drop(state: dict, sid: str, reason: str, day: str | None = None) -> int:
     """drop <ID> --motivo: an empty commit `drop(<ID>): <reason>` (the reason in the body, `Dropped: <ID>` as its
-    trailer) on HEAD, staged work left out, pushed to archive/<id>-<YYYYMMDD>, where the pre-push runs no verify.
-    Refused there (a session may push only its own branch): pushed on the current branch, never the trunk. Then
-    keelokit.story is cleared. Both pushes refused: exit 1, the commit stays local and the story stays taken."""
+    trailer) whose parent is HEAD, made with commit-tree so neither HEAD nor the index moves, pushed to
+    archive/<id>-<YYYYMMDD>, where the pre-push runs no verify. Refused there (a session may push only its own
+    branch): the same message is committed on the current branch, one second later so it is another commit (the
+    pre-push remembered the first as an unverified tip), and that branch is pushed with its usual gate; never on
+    the trunk, main, master or release. Then keelokit.story is cleared. Not pushed anywhere: exit 1, the story
+    stays taken."""
     t = TAKE_LABELS[read_config(state)["lang"]]
     reason = reason.strip()
     if not reason:
@@ -2584,26 +2591,33 @@ def cmd_drop(state: dict, sid: str, reason: str, day: str | None = None) -> int:
         return 1
     subject = " ".join(reason.split("\n", 1)[0].split())
     subject = subject if len(subject) <= 72 else subject[:71] + "…"
-    code, err = run_git(["commit", "-q", "--only", "--allow-empty", "-m", f"drop({sid}): {subject}",
-                         "-m", reason, "-m", f"Dropped: {sid}"])
-    if code != 0:
-        print(f"Keelokit: {t['commit_failed'].format(err=last_error(err))}")
+    message = ["-m", f"drop({sid}): {subject}", "-m", reason, "-m", f"Dropped: {sid}"]
+    code, sha = git_out("commit-tree", "HEAD^{tree}", "-p", "HEAD", *message)
+    if code != 0 or not sha:
+        print(f"Keelokit: {t['commit_failed'].format(err='git commit-tree failed (no HEAD?)')}")
         return 1
-    sha = git_out("rev-parse", "HEAD")[1]
     ref = archive_ref(sid, day or datetime.now(timezone.utc).strftime("%Y%m%d"))
-    code, err = run_git(["push", "origin", f"HEAD:refs/heads/{ref}"])
+    code, err = run_git(["push", "origin", f"{sha}:refs/heads/{ref}"])
     if code == 0:
         print(t["archived"].format(id=sid, sha=short(sha), ref=ref))
         clear_story()
         return 0
     branch = current_branch()
-    print(t["fallback"].format(ref=ref, err=last_error(err), sha=short(sha), branch=branch or "—"))
-    if branch is None or branch == trunk_name(state):
-        print(f"Keelokit: {t['stays'].format(id=sid, sha=short(sha), err=t['no_branch'])}")
+    if branch is None or branch in {trunk_name(state), "main", "master", "release"}:
+        print(f"Keelokit: {t['stays'].format(id=sid, ref=ref, err=last_error(err), why=t['no_branch'])}")
         return 1
+    print(t["fallback"].format(ref=ref, err=last_error(err), branch=branch))
+    when = f"@{int(git_out('log', '-1', '--format=%ct', sha)[1]) + 1} +0000"
+    code, err = run_git(["commit", "-q", "--only", "--allow-empty", *message],
+                        env={"GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when})
+    if code != 0:
+        print(f"Keelokit: {t['commit_failed'].format(err=last_error(err))}")
+        return 1
+    sha = git_out("rev-parse", "HEAD")[1]
     code, err = run_git(["push", "origin", f"HEAD:refs/heads/{branch}"])
     if code != 0:
-        print(f"Keelokit: {t['stays'].format(id=sid, sha=short(sha), err=last_error(err))}")
+        print(err.rstrip(), file=sys.stderr)
+        print(f"Keelokit: {t['unpushed'].format(id=sid, sha=short(sha), branch=branch, err=last_error(err))}")
         return 1
     print(t["on_branch"].format(id=sid, sha=short(sha), branch=branch))
     clear_story()
