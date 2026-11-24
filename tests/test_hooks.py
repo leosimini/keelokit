@@ -550,8 +550,19 @@ class CommitHooks(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual(self.head(), before)
 
+    def ledger_take(self, *args, cwd=None):
+        """`ledger.py take <args>`, the supported way to set (or, with --clear, unset) the worktree's story."""
+        r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "take", *args], cwd=cwd or self.proj,
+                           env=self.env(), capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def worktree_config(self, key, cwd=None):
+        r = self.git("config", "--worktree", "--get", key, cwd=cwd, check=False)
+        return r.stdout.strip() if r.returncode == 0 else None
+
     def test_LEDGER_009_S1_the_story_is_worktree_local(self):
-        self.take()
+        self.ledger_take("AUTH-001")
         other = self.tmp / "other"
         self.git("worktree", "add", "-q", "-b", "other", str(other), "main")
         before = self.head(other)
@@ -562,6 +573,25 @@ class CommitHooks(unittest.TestCase):
         r = self.commit("x\n")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.message(), "x\n\nPart-of: AUTH-001")
+
+    def test_LEDGER_009_S1_ESC_188_a_worktree_added_after_take_does_not_inherit_the_story(self):
+        """git 2.43 copies config.worktree into a worktree added later, keelokit.story with it: the hooks must not
+        stamp the new worktree's commits with the story another worktree took."""
+        self.ledger_take("AUTH-001")
+        other = self.tmp / "added after take"
+        self.git("worktree", "add", "-q", "-b", "later", str(other), "main")
+        before = self.head(other)
+        r = self.commit("x\n", cwd=other)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Keelokit: UNATTRIBUTED", r.stderr)
+        self.assertEqual(self.head(other), before)
+        r = self.commit("x\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.message(), "x\n\nPart-of: AUTH-001")
+        self.assertIsNotNone(self.worktree_config("keelokit.storyGitDir"))
+        self.ledger_take("--clear")
+        self.assertIsNone(self.worktree_config("keelokit.story"))
+        self.assertIsNone(self.worktree_config("keelokit.storyGitDir"), "take --clear unsets it too")
 
     def test_LEDGER_009_S1_prepare_does_nothing_where_the_contract_says_so(self):
         self.take()
