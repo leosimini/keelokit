@@ -1192,7 +1192,6 @@ class TrustedProject:
         self.git("init", "-q", "-b", "main")
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "x")
-        self.store = self.tmp / "store/trusted.json"
         self.marks = self.tmp / "marks"
         self.marks.mkdir()
 
@@ -1223,15 +1222,9 @@ class TrustedProject:
         return subprocess.run(["/bin/sh", "-c", hook_command(event)], cwd=self.proj, env=self.env(**env),
                               input=json.dumps(stdin or {}), capture_output=True, text=True, timeout=60)
 
-    def with_store(self, *argv: str, stdin: dict | None = None, answer: str | None = None) -> subprocess.CompletedProcess:
-        """trusted.py's main with the trust store in this test's directory (and `ask` answering `answer`)."""
-        code = ("import importlib.util, pathlib, sys\n"
-                f"spec = importlib.util.spec_from_file_location('t', {str(TRUSTED)!r})\n"
-                "t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)\n"
-                f"t.store_path = lambda: pathlib.Path({str(self.store)!r})\n"
-                f"t.ask = lambda prompt: {answer!r}\n"
-                f"sys.exit(t.main({list(argv)!r}))\n")
-        return subprocess.run([sys_python(), "-I", "-c", code], cwd=self.proj, env=self.env(),
+    def with_store(self, *argv: str, stdin: dict | None = None) -> subprocess.CompletedProcess:
+        """trusted.py's main, run as the hooks run it."""
+        return subprocess.run([sys_python(), "-I", str(TRUSTED), *argv], cwd=self.proj, env=self.env(),
                               input=json.dumps(stdin or {}), capture_output=True, text=True, timeout=60)
 
 
@@ -1258,7 +1251,7 @@ class HooksRunTrustedCode(TrustedProject, unittest.TestCase):
         self.assertLessEqual(len(out), 12, out)
         warned = [l for l in out if "differ from the plugin's" in l]
         self.assertEqual(len(warned), 1, out)
-        for name in ("guard.py", "doctor.py", "ledger.py", "ux_gate.py", "trust", "harness-upgrade"):
+        for name in ("guard.py", "doctor.py", "ledger.py", "ux_gate.py", "harness-upgrade", "git hooks"):
             self.assertIn(name, warned[0])
         self.assertIn("Backlog: 0/1 done", r.stdout, "the doctor still reads this project's backlog")
         self.assertTrue(any(l.startswith("main@") for l in out), "the ledger still reads this project's git")
@@ -1271,50 +1264,6 @@ class HooksRunTrustedCode(TrustedProject, unittest.TestCase):
         self.assertEqual(self.ran(), [])
         self.assertIn("Backlog: 0/1 done", r.stdout)
 
-    def test_HARN_004_S1_an_approved_copy_runs_from_its_checked_bytes_until_it_changes(self):
-        self.tamper("guard.py")
-        r = self.with_store("check")
-        self.assertIn("differ from the plugin's", r.stdout)
-        trusted = load_trusted()
-        fp = trusted.fingerprint(self.proj)
-        self.assertEqual(self.with_store("trust", str(self.proj), answer="nope").returncode, 1)
-        self.assertFalse(self.store.exists(), "a wrong answer approves nothing")
-        r = self.with_store("trust", str(self.proj), answer=fp[:8])
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(oct(self.store.stat().st_mode & 0o777), oct(0o600))
-        self.assertEqual(self.with_store("check").stdout, "", "an approved copy is not warned about")
-        r = self.with_store("run", "guard", "--claude", stdin=BLOCKED)
-        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertEqual(self.ran(), ["guard.py"], "the approved copy is the one that ran")
-        (self.marks / "guard.py").unlink()
-        (self.proj / ".keelokit/bin/guard.py").write_text(self.mark_code("again") + (BUNDLED / "guard.py").read_text())
-        r = self.with_store("run", "guard", "--claude", stdin=BLOCKED)
-        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertEqual(self.ran(), [], "a change after the approval is not approved")
-        self.assertIn("differ from the plugin's", self.with_store("check").stdout)
-        (self.proj / ".keelokit/bin/notes.txt").write_text("a new file in bin\n")
-        self.assertNotEqual(trusted.fingerprint(self.proj), fp, "the fingerprint covers the whole of .keelokit/bin")
-        self.assertEqual(self.with_store("untrust", str(self.proj)).returncode, 0)
-        self.assertEqual(json.loads(self.store.read_text())["projects"], {})
-
-    def test_HARN_004_S1_trust_asks_a_person_on_a_terminal_and_the_guard_refuses_it_to_agents(self):
-        self.tamper("guard.py")
-        fp = load_trusted().fingerprint(self.proj)
-        r = subprocess.run([sys_python(), "-I", str(TRUSTED), "trust", str(self.proj)], cwd=self.proj,
-                           env=self.env(), input=fp[:8] + "\n", capture_output=True, text=True, timeout=60,
-                           start_new_session=True)  # no controlling terminal, as in an agent's shell
-        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("own terminal", r.stderr)
-        self.assertEqual(self.ran(), [])
-        for cmd in (f"python3 -I {TRUSTED} trust .", "python3 hooks/trusted.py untrust",
-                    "python3 -I '/x y/hooks/trusted.py' 'trust' /p"):
-            with self.subTest(cmd=cmd):
-                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
-                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn("AGENT-1", r.stderr)
-        r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": f"python3 -I {TRUSTED} show"}})
-        self.assertEqual(r.returncode, 0, r.stderr)
-
     def test_HARN_004_S1_show_escapes_what_a_terminal_would_hide(self):
         f = self.proj / ".keelokit/bin/guard.py"
         f.write_text(f.read_text() + "x = 1  # ‮)(lave‬ ​ \x1b[2K\r tab\there\n")
@@ -1326,7 +1275,6 @@ class HooksRunTrustedCode(TrustedProject, unittest.TestCase):
         self.assertIn("\\x09", out)
         for raw in ("‮", "‬", "​", "\x1b", "\r", "\t"):
             self.assertNotIn(raw, out)
-        self.assertIn("approved: no", out)
 
     # S2 -------------------------------------------------------------------------------------------------------------
 
@@ -1420,25 +1368,6 @@ class HooksRunTrustedCode(TrustedProject, unittest.TestCase):
         self.assertIn("differ from the plugin's", r.stdout)
         self.assertEqual(self.ran(), [])
 
-    def test_HARN_004_S1_breaker_the_bytes_checked_are_the_bytes_run(self):
-        """A swap between the check and the run changes nothing: what runs is the bytes read for the check."""
-        trusted = load_trusted()
-        trusted.store_path = lambda: self.store
-        guard = self.proj / ".keelokit/bin/guard.py"
-        guard.write_text(self.mark_code("checked"))
-        trusted.ask = lambda prompt: trusted.fingerprint(self.proj)[:8]
-        with open(os.devnull, "w") as quiet, unittest.mock.patch("sys.stdout", quiet):
-            self.assertEqual(trusted.trust(str(self.proj)), 0)
-        path, data, before = trusted.choose("guard", self.proj)
-        self.assertEqual((path, before), (guard, []))
-        guard.write_text(self.mark_code("swapped"))
-        saved = sys.modules["__main__"], list(sys.argv)
-        try:
-            trusted.execute(path, data, before)
-        finally:
-            sys.modules["__main__"], sys.argv[:] = saved[0], saved[1]
-        self.assertEqual(self.ran(), ["checked"])
-
     def test_HARN_004_S1_breaker_hook_environment_edge_cases(self):
         self.tamper("guard.py", "doctor.py", "ledger.py")
         for env in ({"CLAUDE_PLUGIN_ROOT": ""}, {"CLAUDE_PLUGIN_ROOT": str(self.proj)},
@@ -1461,68 +1390,11 @@ class HooksRunTrustedCode(TrustedProject, unittest.TestCase):
         self.assertFalse((self.tmp / "pwned").exists())
         self.assertFalse(Path("pwned").exists())
 
-    def test_HARN_004_S1_breaker_a_store_others_can_write_is_not_believed(self):
-        self.tamper("guard.py")
-        trusted = load_trusted()
-        trusted.store_path = lambda: self.store
-        trusted.write_store({str(self.proj): {"fingerprint": trusted.fingerprint(self.proj), "approved": "x"}})
-        self.assertTrue(trusted.approved(self.proj))
-        self.store.chmod(0o666)
-        self.assertFalse(trusted.approved(self.proj))
-        self.store.chmod(0o600)
-        self.assertFalse(trusted.approved(self.tmp), "an approval is for one project")
-        with unittest.mock.patch.dict(os.environ, {"HOME": str(self.tmp), "XDG_CONFIG_HOME": str(self.tmp)}):
-            where = load_trusted().store_path()
-        self.assertEqual(where.parent.name, "keelokit")
-        self.assertNotIn(str(self.tmp), str(where), "found from the password database, not from $HOME")
-
-
 GITHOOK_MARK = "#!/bin/sh\necho \"$0 $*\" >> {mark}\n"
-SHIM_JSON = """import importlib.util, os, sys, sysconfig
-d = os.path.join(sysconfig.get_paths()["stdlib"], "json")
-s = importlib.util.spec_from_file_location("json", os.path.join(d, "__init__.py"), submodule_search_locations=[d])
-m = importlib.util.module_from_spec(s); sys.modules["json"] = m; s.loader.exec_module(m)
-"""
-
-
-def run_on_pty(argv: list[str], answer: str | None, cwd: Path, env: dict) -> tuple[int, str]:
-    """argv with a real pseudo-terminal as its controlling terminal (its own session); `answer` typed once the
-    prompt has been written. (exit code, everything written to the terminal)."""
-    import fcntl
-    import pty
-    import select
-    import termios
-    master, slave = pty.openpty()
-
-    def ctty():
-        os.setsid()
-        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=slave, stderr=slave,
-                            preexec_fn=ctty, close_fds=True, pass_fds=(slave,))
-    os.close(slave)
-    out, typed = b"", False
-    while True:
-        ready, _, _ = select.select([master], [], [], 30)
-        if not ready:
-            proc.kill()
-            break
-        try:
-            chunk = os.read(master, 4096)
-        except OSError:  # EIO: the other side closed
-            break
-        if not chunk:
-            break
-        out += chunk
-        if not typed and answer is not None and b"approve it: " in out:
-            os.write(master, answer.encode() + b"\n")
-            typed = True
-    os.close(master)
-    return proc.wait(timeout=30), out.decode("utf-8", "replace")
 
 
 class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
-    """HARN-004, breaker round 2 (ESC-271..276)."""
+    """HARN-004, breaker rounds 2 and 3 (ESC-271, ESC-276..279)."""
 
     def githook(self, where: Path, name: str) -> None:
         (where / ".githooks").mkdir(exist_ok=True)
@@ -1546,7 +1418,8 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
         self.assertIsNone(self.config("core.hooksPath"), "the repo's own .githooks were turned on")
         said = [l for l in r.stdout.splitlines() if ".githooks" in l]
         self.assertEqual(len(said), 1, r.stdout)
-        self.assertIn("stay off", said[0])
+        self.assertIn("are off", said[0])
+        self.assertIn("git config core.hooksPath .githooks", said[0])
         (self.proj / "notes.txt").write_text("x\n")
         self.git("add", "notes.txt")
         self.git("commit", "-q", "-m", "notes")
@@ -1577,12 +1450,6 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(self.ran(), [])
 
-    def test_HARN_004_S2_ESC_271_githooks_like_the_plugin_s_are_turned_on_as_before(self):
-        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
-        r = self.hook("SessionStart")
-        self.assertEqual(self.config("core.hooksPath"), ".githooks", r.stdout + r.stderr)
-        self.assertEqual(sum("core.hooksPath" in l for l in r.stdout.splitlines()), 1, r.stdout)
-
     def test_HARN_004_S1_ESC_271_plugin_githooks_over_a_tampered_bin_stay_off(self):
         """The template's pre-commit runs .keelokit/bin/guard.py: turning it on over a tampered guard.py would run
         the repo's guard at the next commit."""
@@ -1592,136 +1459,117 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
         self.assertIsNone(self.config("core.hooksPath"), r.stdout + r.stderr)
         self.assertEqual(self.ran(), [])
 
-    def test_HARN_004_S1_ESC_271_approved_githooks_are_turned_on(self):
-        self.githook(self.proj, "pre-commit")
-        fp = load_trusted().fingerprint(self.proj)
-        r = self.with_store("trust", str(self.proj), answer=fp[:8])
+    # ESC-277: no hooks of the repo's are ever turned on by the plugin.
+
+    def agent_commit(self) -> None:
+        (self.proj / "notes.txt").write_text("x\n")
+        subprocess.run("git add notes.txt && git commit -qm 'add notes' -m 'No-story: notes'", shell=True,
+                       cwd=self.proj, env=self.env(), capture_output=True)
+
+    def test_HARN_004_S1_ESC_277_even_the_plugin_s_own_githooks_are_never_turned_on(self):
+        """The template's hooks run `python3 .keelokit/bin/guard.py` without -I: any module in .keelokit/bin (here a
+        fnmatch.py) shadows the standard library there, so even byte-checked hooks would run repo code."""
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        (self.proj / ".keelokit/bin/fnmatch.py").write_text(self.mark_code("fnmatch.py"))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "hooks")
+        r = self.hook("SessionStart")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = self.with_store("githooks", str(self.proj))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.config("core.hooksPath"), ".githooks", r.stdout)
+        self.assertIsNone(self.config("core.hooksPath"), r.stdout)
+        said = [l for l in r.stdout.splitlines() if ".githooks" in l]
+        self.assertEqual(len(said), 1, r.stdout)
+        self.assertIn("are off", said[0])
+        self.agent_commit()
+        self.assertEqual(self.ran(), [])
 
-    # ESC-272: an agent could approve by writing the store itself.
+    def test_HARN_004_S1_ESC_277_a_branch_s_own_hooks_do_not_run_after_a_switch(self):
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "hooks")
+        self.git("switch", "-q", "-c", "feature")
+        self.githook(self.proj, "post-checkout")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "a branch with its own hook")
+        self.git("switch", "-q", "main")
+        self.hook("SessionStart")
+        self.assertEqual(self.ran(), [])
+        self.git("switch", "-q", "feature")
+        self.assertEqual(self.ran(), [], "a hook the session start never saw ran at the switch")
 
-    def test_HARN_004_S1_ESC_272_the_guard_refuses_writes_to_the_trust_store(self):
-        home = Path(load_trusted().store_path().parent.parent.parent)
-        store = home / ".config/keelokit/trusted.json"
-        link = self.proj / "innocent"
-        link.symlink_to(home / ".config", target_is_directory=True)
-        tools = [{"tool_name": "Write", "tool_input": {"file_path": str(store), "content": "{}"}},
-                 {"tool_name": "Write", "tool_input": {"file_path": "~/.config/keelokit/trusted.json", "content": "{}"}},
-                 {"tool_name": "Write", "tool_input": {"file_path": str(home / ".config/keelokit/other"), "content": "x"}},
-                 {"tool_name": "Write", "tool_input": {"file_path": "innocent/keelokit/trusted.json", "content": "{}"}},
-                 {"tool_name": "Edit", "tool_input": {"file_path": str(store), "old_string": "a", "new_string": "b"}},
-                 {"tool_name": "MultiEdit", "tool_input": {"file_path": str(store), "edits": []}},
-                 {"tool_name": "NotebookEdit", "tool_input": {"notebook_path": str(store), "new_source": "x"}}]
-        cmds = ["echo {} > ~/.config/keelokit/trusted.json", "cp x \"$HOME/.config/keelo\"\"kit/trusted.json\"",
-                "tee ~/.config/keelokit/x < y", "python3 -c \"open('trusted.js''on','w')\"",
-                f"mkdir -p {home}/.config/keelokit", "cd ~/.config && cat > keelokit/t", "echo x > trus\\ted.json"]
-        tools += [{"tool_name": "Bash", "tool_input": {"command": c}} for c in cmds]
-        for payload in tools:
-            with self.subTest(payload=payload):
-                r = self.hook("PreToolUse", payload)
+    # ESC-278: there is no approval of a project's code, so nothing to forge or race.
+
+    def test_HARN_004_S1_ESC_278_there_is_no_approval_to_forge(self):
+        self.tamper("guard.py", "doctor.py", "ledger.py")
+        for argv in (["trust", str(self.proj)], ["untrust", str(self.proj)], ["trust"]):
+            with self.subTest(argv=argv):
+                r = self.with_store(*argv)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn("AGENT-1", r.stderr)
-        for c in ("ls", f"python3 -I {TRUSTED} show", "cat ~/.config/git/config"):
-            with self.subTest(allowed=c):
-                self.assertEqual(self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": c}}).returncode, 0)
-
-    # ESC-273: `trust` could never approve on a real terminal, and the guard missed quoted spellings of it.
-
-    def test_HARN_004_S1_ESC_273_trust_approves_on_a_real_terminal_and_refuses_a_wrong_answer(self):
-        self.tamper("guard.py")
-        fp = load_trusted().fingerprint(self.proj)
-        code = ("import importlib.util, pathlib, sys\n"
-                f"spec = importlib.util.spec_from_file_location('t', {str(TRUSTED)!r})\n"
-                "t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)\n"
-                f"t.store_path = lambda: pathlib.Path({str(self.store)!r})\n"
-                f"sys.exit(t.main(['trust', {str(self.proj)!r}]))\n")
-        argv = [sys_python(), "-I", "-c", code]
-        status, out = run_on_pty(argv, "deadbeef" if fp[:8] != "deadbeef" else "beefdead", self.proj, self.env())
-        self.assertEqual(status, 1, out)
-        self.assertFalse(self.store.exists(), out)
-        status, out = run_on_pty(argv, fp[:8], self.proj, self.env())
-        self.assertEqual(status, 0, out)
-        self.assertIn("approved", out)
-        self.assertEqual(json.loads(self.store.read_text())["projects"][str(self.proj)]["fingerprint"], fp)
-
-    def test_HARN_004_S1_ESC_273_the_guard_sees_trust_through_shell_quoting(self):
-        for cmd in ('python3 -I /p/hooks/trusted.p""y trus""t /x', "python3 trusted.py tr\\ust",
-                    "python3 trusted.py $'trus\\x74'", "python3 trusted.py $'\\x74rust'", "python3 'trusted.py' \"un\"trust",
-                    "bash -c 'python3 /p/hooks/trusted.py trust .'", "sh -c \"python3 trusted.py 'trust'\"",
-                    "echo 12345678 | script -qc 'python3 -I /p/hooks/trusted.p\"\"y trus\"\"t /x' /dev/null"):
-            with self.subTest(cmd=cmd):
-                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
-                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn("AGENT-1", r.stderr)
-
-    # ESC-274: the bytes run were read a second time, after the fingerprint.
-
-    def test_HARN_004_S1_ESC_274_the_bytes_run_are_the_bytes_fingerprinted(self):
         trusted = load_trusted()
-        trusted.store_path = lambda: self.store
-        guard = self.proj / ".keelokit/bin/guard.py"
-        guard.write_text("# a person's tweak\n" + guard.read_text())
-        approved_bytes = guard.read_bytes()
-        trusted.write_store({str(self.proj): {"fingerprint": trusted.fingerprint(self.proj), "approved": "x"}})
-        real = trusted.regular_bytes
-        reads = []
+        for gone in ("store_path", "read_store", "write_store", "approved", "trust", "ask", "fingerprint"):
+            self.assertFalse(hasattr(trusted, gone), f"trusted.py still has {gone}")
 
-        def swapping(path):
-            data = real(path)
-            if Path(path) == guard:
-                reads.append(data)
-                guard.write_text(self.mark_code("unapproved"))  # the swap lands right after each read
-            return data
+        def never(path):
+            raise AssertionError(f"the project's {path} was read to decide what runs")
 
-        trusted.regular_bytes = swapping
-        path, data, before = trusted.choose("guard", self.proj)
-        self.assertEqual((path, before), (guard, []))
-        self.assertEqual(data, approved_bytes, "the bytes chosen are not the bytes the fingerprint was computed on")
+        trusted.regular_bytes = never
+        for tool in ("guard", "doctor", "ledger"):
+            with self.subTest(tool=tool):
+                path, data, before = trusted.choose(tool, self.proj)
+                self.assertEqual((path, before), (BUNDLED / f"{tool}.py", ["--root", str(self.proj)]))
+        r = self.hook("SessionStart")
+        self.assertNotIn("trust", r.stdout.replace("trusted", ""), "the start no longer offers an approval")
+        self.assertEqual(self.ran(), [])
 
-    # ESC-275: what the fingerprint could not see.
+    # ESC-279: the guard's own CPU.
 
-    def test_HARN_004_S1_ESC_275_a_bin_with_anything_but_plain_files_cannot_be_approved(self):
-        bin_ = self.proj / ".keelokit/bin"
-        self.tamper("guard.py")
-        cases = {"a directory": lambda: (bin_ / "json").mkdir(),
-                 "a symlink": lambda: (bin_ / "link.py").symlink_to(bin_ / "guard.py"),
-                 "a FIFO": lambda: os.mkfifo(bin_ / "pipe"),
-                 "a file over the limit": lambda: (bin_ / "big.dat").write_bytes(b"\0" * (9 << 20)),
-                 "a directory in .githooks": lambda: (self.proj / ".githooks/sub").mkdir(parents=True)}
-        for what, make in cases.items():
-            with self.subTest(what=what):
-                make()
-                trusted = load_trusted()
-                trusted.store_path = lambda: self.store
-                fp = trusted.fingerprint(self.proj)
-                r = self.with_store("trust", str(self.proj), answer=fp[:8])
-                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn("cannot be approved", r.stderr)
-                self.assertFalse(self.store.exists())
-                trusted.write_store({str(self.proj): {"fingerprint": fp, "approved": "x"}})
-                self.assertFalse(trusted.approved(self.proj), "a store entry for it is not believed either")
-                self.store.unlink()
-                for p in (bin_ / "json", bin_ / "link.py", bin_ / "pipe", bin_ / "big.dat", self.proj / ".githooks/sub"):
-                    if p.is_dir() and not p.is_symlink():
-                        p.rmdir()
-                    elif os.path.lexists(p):
-                        p.unlink()
+    def test_HARN_004_S1_ESC_279_the_guard_s_patterns_finish_on_pathological_input(self):
+        code = ("import sys; sys.argv = ['g']\n"
+                f"sys.path.insert(0, {str(BUNDLED)!r}); import guard\n"
+                "pre, piece, fn = sys.stdin.read().split('\\0')\n"
+                "s = pre + piece * (200_000 // len(piece))\n"
+                "getattr(guard, fn)(*([s, []] if fn == 'bash_problem' else [s]))\n")
+        cases = [("postgres://a:", "${{", "secret_in"), ("https://u:", "${{", "secret_in"),
+                 ("// postgres://a:", "${{", "secret_in"), ("git ", "-C ", "bash_problem"),
+                 ("git -C ", "-c ", "bash_problem"), ("git ", "--git-dir ", "bash_problem"), ("", "git ", "bash_problem"),
+                 ("git ", "-c a=b ", "bash_problem"), ("", "${{ true }}", "tamper_in"), ("", "it.skip ", "tamper_in"),
+                 ("", "\n", "bash_problem"), ("git ", "|", "bash_problem"), ("echo x > ", "|", "bash_problem"),
+                 ("", "echo x|", "bash_problem")]
+        for pre, piece, fn in cases:
+            with self.subTest(pre=pre, piece=piece, fn=fn):
+                r = subprocess.run([sys_python(), "-I", "-c", code], input=f"{pre}\0{piece}\0{fn}", text=True,
+                                   capture_output=True, timeout=20, env=self.env())
+                self.assertEqual(r.returncode, 0, r.stderr)
+        payload = {"tool_name": "Write", "tool_input": {"file_path": str(self.proj / "src/a.ts"),
+                                                         "content": "// postgres://a:" + "${{" * 45000 + "\n"}}
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=self.proj, env=self.env(),
+                           input=json.dumps(payload), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_HARN_004_S1_ESC_275_approved_code_writes_no_bytecode(self):
-        """An approved doctor runs its ledger without -I, so a json.py in .keelokit/bin is imported; no __pycache__
-        may appear there (a .pyc is code the fingerprint never saw, and a directory)."""
-        bin_ = self.proj / ".keelokit/bin"
-        (bin_ / "json.py").write_text(SHIM_JSON)
-        (bin_ / "doctor.py").write_text((bin_ / "doctor.py").read_text() + "# a person's tweak\n")
-        fp = load_trusted().fingerprint(self.proj)
-        self.assertEqual(self.with_store("trust", str(self.proj), answer=fp[:8]).returncode, 0)
-        r = self.with_store("run", "doctor", "--brief")
-        self.assertIn("Backlog: 0/1 done", r.stdout, r.stderr)
-        self.assertFalse((bin_ / "__pycache__").exists(), "bytecode was written next to the approved code")
-        self.assertTrue(load_trusted().fingerprint(self.proj) == fp)
+    def test_HARN_004_S1_ESC_279_a_guard_that_does_not_answer_is_killed_and_the_call_blocked(self):
+        plugin = self.tmp / "plugin"
+        (plugin / "hooks").mkdir(parents=True)
+        shutil.copy(TRUSTED, plugin / "hooks/trusted.py")
+        (plugin / "template/.keelokit/bin").mkdir(parents=True)
+        (plugin / "template/.keelokit/bin/guard.py").write_text(
+            "import pathlib, subprocess, time\n"
+            f"subprocess.Popen(['sleep', '30'])\n"
+            f"pathlib.Path({str(self.marks / 'started')!r}).write_text('x')\n"
+            "time.sleep(30)\n")
+        r = self.hook("PreToolUse", HARMLESS, CLAUDE_PLUGIN_ROOT=str(plugin), KEELOKIT_GUARD_SECONDS="1")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn("did not answer", r.stderr)
+        self.assertEqual(self.ran(), ["started"], "the guard did run, and was stopped")
+
+    def test_HARN_004_ESC_279_the_guard_s_time_is_never_more_than_its_bound(self):
+        trusted = load_trusted()
+        cases = {"1000": trusted.GUARD_SECONDS, "abc": trusted.GUARD_SECONDS, "nan": trusted.GUARD_SECONDS,
+                 "-5": 0.1, "0.5": 0.5, "": trusted.GUARD_SECONDS}
+        for value, expected in cases.items():
+            with self.subTest(value=value), unittest.mock.patch.dict(os.environ, {"KEELOKIT_GUARD_SECONDS": value}):
+                self.assertEqual(trusted.guard_seconds(), expected)
+        data = json.loads((REPO / "hooks/hooks.json").read_text())
+        self.assertGreaterEqual(data["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], trusted.GUARD_SECONDS + 10)
 
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 

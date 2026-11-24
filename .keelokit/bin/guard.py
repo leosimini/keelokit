@@ -67,17 +67,6 @@ def no_repo_hooks() -> None:
 if ROOT != Path(__file__).resolve().parents[2]:
     no_repo_hooks()
 ENV_OK = {".env.example", ".env.ci"}
-# HARN-004: which copy of the guard, doctor and ledger the plugin's hooks run is approved on a terminal, by a person.
-TRUST_WHY = ("AGENT-1: approving the code Keelokit's hooks run (hooks/trusted.py trust/untrust) is the human's call: "
-             "they run it in their own terminal, where it shows the diff; `trusted.py show` is yours to read")
-STORE_WHY = ("AGENT-1: ~/.config/keelokit holds the person's approvals of the code Keelokit's hooks run: agents don't "
-             "write it; the person runs `trusted.py trust` in their own terminal")
-try:
-    import pwd  # noqa: E402
-
-    STORE_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config/keelokit"
-except (ImportError, KeyError):
-    STORE_DIR = Path.home() / ".config/keelokit"
 # ESC-276: Claude Code lets a call through when the hook outlives its timeout, so the guard bounds what it reads and
 # how long its git calls take, and blocks when a bound is hit (hooks/hooks.json gives the hook more than GIT_SECONDS).
 MAX_DATA = 1 << 20
@@ -130,62 +119,6 @@ def git_run(*args: str) -> subprocess.CompletedProcess:
     return out
 
 
-# ESC-272/273: what the shell will run, read as its words: quotes joined, backslashes and $'…' decoded, and the
-# strings handed to `sh -c`, `script -c` or an interpreter read the same way, a few levels deep.
-ANSI_C = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
-SHELL_PUNCT = ";&|()<>`{}"
-
-
-def _ansi_c(match: re.Match) -> str:
-    try:
-        text = match.group(1).encode("latin-1", "backslashreplace").decode("unicode_escape")
-    except (UnicodeDecodeError, ValueError):
-        text = match.group(1)
-    return shlex.quote(text)
-
-
-def shell_words(cmd: str, depth: int = 0) -> list[str]:
-    text = ANSI_C.sub(_ansi_c, cmd)
-    try:
-        words = shlex.split(text, posix=True)
-    except ValueError:
-        words = text.split()
-    out = []
-    for w in words:
-        out.append(w.strip(SHELL_PUNCT))
-        out.extend(p.strip(SHELL_PUNCT) for p in re.split(r"[;&|<>]+", w) if p)
-        if depth < 3 and (any(c.isspace() for c in w) or any(c in w for c in "'\"\\$")):
-            out.extend(shell_words(w, depth + 1))
-    return [w for w in out if w]
-
-
-def trust_command(cmd: str) -> bool:
-    words = shell_words(cmd)
-    return any(w.endswith("trusted.py") for w in words) and any(w in ("trust", "untrust") for w in words)
-
-
-def names_store(cmd: str) -> bool:
-    words = [posixpath.normpath(w) if "/" in w else w for w in shell_words(cmd)]
-    if any("trusted.json" in w or ".config/keelokit" in w for w in words):
-        return True
-    return any(w.endswith(".config") for w in words) and any(w == "keelokit" or w.startswith("keelokit/") for w in words)
-
-
-def in_store(path: str) -> bool:
-    """A file tool's path inside ~/.config/keelokit: ~ expanded, relative to the root, links resolved."""
-    paths = [Path(path).expanduser()]
-    if path == "~" or path.startswith("~/"):  # ~ is $HOME to the tool, and the store is under the account's home
-        paths.append(STORE_DIR.parent.parent / path[2:])
-    store = os.path.realpath(STORE_DIR)
-    candidates = []
-    for p in paths:
-        p = p if p.is_absolute() else ROOT / p
-        candidates += [os.path.realpath(p), posixpath.normpath(str(p))]
-    for candidate in candidates:
-        if candidate == store or candidate.startswith(store.rstrip("/") + "/") or \
-                candidate == str(STORE_DIR) or candidate.startswith(str(STORE_DIR) + "/"):
-            return True
-    return False
 SECRETS = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
@@ -205,7 +138,12 @@ SECRETS = [
 # `${NAME}`, `$NAME` or `${{ ctx.name }}`. A literal, alone or mixed with a reference, still is.
 # The alternatives of a password's tokens are disjoint (a closed `${{ … }}`, an unclosed `${{` taken as text,
 # a `$` not followed by `{{`, a character that is no `$`), so a failing match can't backtrack through two ways of reading one text.
-URL_PASSWORD = r"(?P<pw>(?:\$\{\{[^}\n]*\}\}|\$\{\{(?![^}\n]*\}\})|\$(?!\{\{)|[^/\s@$])+)"
+# ESC-279: an expression is at most EXPR characters, the same bound in the token and in the look-ahead that tells a
+# closed one from an unclosed one, so each `${{` costs a bounded look and a password is read in linear time (an
+# unbounded look-ahead made every `${{` scan to the end of the line: quadratic, minutes on 100 KB).
+EXPR = 200
+URL_PASSWORD = (rf"(?P<pw>(?:\$\{{\{{[^}}\n]{{0,{EXPR}}}\}}\}}|\$\{{\{{(?![^}}\n]{{0,{EXPR}}}\}}\}})|\$(?!\{{\{{)"
+                rf"|[^/\s@$])+)")
 URL_SECRETS = [
     (rf"https?://[^/\s:@]+:{URL_PASSWORD}@github\.com", "credentials in a git URL"),
     # A DB URL with a password, unless it points at this machine (local/dev/CI values).
@@ -226,14 +164,19 @@ TAMPER = [
 # git's own options come before the subcommand, and -C, -c and these long ones take the next word
 # as their value (`git -C dir commit -n`). A value may be quoted ('' by now) or hold `\ `.
 GIT_VALUE = r"(?:\\.|[^\s\\])+"
-GIT = rf"\bgit(?:\s+(?:(?:-[Cc]|--(?:git-dir|work-tree|namespace|config-env|attr-source))\s+|-){GIT_VALUE})*?\s+"
+# ESC-279: an option that takes the next word is never also read as a bare `-word` (the look-ahead), so each option
+# has one reading and a command that doesn't match fails in linear time (`git -C -C -C …` took minutes).
+GIT_TAKES = r"(?:[Cc]|-(?:git-dir|work-tree|namespace|config-env|attr-source))"  # after the option's first dash
+GIT = rf"\bgit(?:\s+(?:-{GIT_TAKES}\s+|-(?!{GIT_TAKES}(?:\s|$))){GIT_VALUE})*?\s+"
 # The rest of that git command: up to a shell separator, or `--`, after which come paths.
 GIT_ARGS = r"(?:(?!\s--(?![^\s;&|]))[^|;&\n])*"
 # A short-option bundle ends at the token's end (-nm"msg" is emptied to -nm'').
 BUNDLE_END = r"(?![^\s;&|<>()])"
 GIT_NO_HOOKS = [
     # git takes any unambiguous prefix of a long option: --no-veri(f) is --no-verify.
-    (r"\bgit\b.*\s--no-veri(fy?)?(?![\w-])", "QA-2: never bypass git hooks"),
+    # The first `git` of a line is enough (what follows a later one follows it too): atomic, so a line with many
+    # `git`s and no flag fails in linear time (ESC-279).
+    (r"(?m)^(?>.*?\bgit\b).*\s--no-veri(fy?)?(?![\w-])", "QA-2: never bypass git hooks"),
     # A short-option bundle skips hooks when -n is one of its letters: flags that take no value
     # (as in `git commit -h`), then n, then maybe one option whose value is the rest (-nm"msg").
     # In -uno or -mn the n is a value, not -n.
@@ -497,7 +440,9 @@ def named_write(cmd: str, name: str) -> bool:
 
 # A text command may name the accept command (a message, a PR body) unless its output goes to something that runs it.
 TEXT_CMDS = {"git", "gh", "echo", "printf"}
-RUNS_INPUT = re.compile(r"\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh|script|xargs|tmux|unbuffer|eval|source)\b")
+# A path before the command never crosses another `|`, so each `|` is read up to the next one (`\S*` read every `|`
+# after each one: quadratic, ESC-279).
+RUNS_INPUT = re.compile(r"\|\s*(?:sudo\s+)?(?:[^\s|]*/)?(?:sh|bash|zsh|dash|ksh|script|xargs|tmux|unbuffer|eval|source)\b")
 
 
 def runs_accept(cmd: str, depth: int = 0) -> bool:
@@ -511,6 +456,7 @@ def accept_problem(cmd: str, depth: int = 0) -> str | None:
     (`bash -c "…"`, `eval "…"`). A quoted commit message is an argument, not a script, so naming the command there
     is no run. The one exception: `python3 <path>/ledger.py backfill --accept --delegated <run>`, word for word,
     when the trunk's committed [ledger.approval] delegates and the run's review file holds the verdicts."""
+    runs_input = RUNS_INPUT.search(cmd)  # once: per segment, it read the whole command again (ESC-279)
     for segment in segments(cmd):
         try:
             words = shlex.split(segment, posix=True)
@@ -536,7 +482,7 @@ def accept_problem(cmd: str, depth: int = 0) -> str | None:
             continue
         # A wrapper that runs it from a string (script -c, tmux, xargs, `| sh`): the words as one text, unless the
         # segment only prints text (a commit message, a PR body, an echo) that nothing runs.
-        text = words and Path(words[0]).name in TEXT_CMDS and not RUNS_INPUT.search(cmd)
+        text = words and Path(words[0]).name in TEXT_CMDS and not runs_input
         joined = " ".join(words)
         if words and not text and re.search(r"ledger\.py\b.*\breview\b.*--reject-sample", joined, re.S):
             return REJECT_WHY
@@ -758,7 +704,9 @@ REGISTRY_WHY = (f"QA-4: {REGISTRY} lists what SEC-1 and SEC-2 let through and is
 
 
 # A command word that moves the shell: after it a relative path is not relative to the repo root.
-CHDIR = re.compile(r"(?:^|[;&|(){\n])\s*(?:cd|pushd|popd)\b")
+# The blanks after a separator are never newlines, which are separators themselves: `\s*` read every run of newlines
+# from each one, quadratic on a long command (ESC-279).
+CHDIR = re.compile(r"(?:^|[;&|(){\n])[^\S\n]*(?:cd|pushd|popd)\b")
 ENV_WHY = "SEC-2: don't write .env files from the shell; edit .env.example, real values go in the secret store"
 ENV_OWN_WHY = "SEC-2: .env files are the human's: don't delete, create or link them from the shell; ask in chat"
 
@@ -804,10 +752,6 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                     rf"(?i){GIT}config\b{GIT_ARGS}['\"]?keelokit\.allowtamper"):
         if re.search(pattern, cmd):  # quoted spellings, which `bare` has emptied
             return "QA-4: only a human may allow a skipped test or silenced check"
-    if trust_command(cmd):
-        return TRUST_WHY
-    if names_store(cmd):
-        return STORE_WHY
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why
@@ -885,8 +829,6 @@ def tool_problem(tool: str, args: dict) -> str | None:
     if tool == "Bash":
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
-    if path and in_store(path):
-        return STORE_WHY
     names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
     if REGISTRY in names:
         return REGISTRY_WHY

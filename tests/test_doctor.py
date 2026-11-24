@@ -945,7 +945,7 @@ class DoctorTest(unittest.TestCase):
         self.write(".keelokit/bin/guard.py", "")
         cases = {
             "no package.json, no hooks": ({}, "add a 'pre-commit' hook that runs `python3 .keelokit/bin/guard.py git-pre-commit`"),
-            # LEDGER-009: the plugin's SessionStart turns them on; the command is for a clone used without the plugin.
+            # HARN-004 (ESC-277): the plugin's SessionStart never turns them on; the person runs the command.
             "the hooks ship in .githooks": ({".githooks/pre-commit": "#!/bin/sh\n", ".githooks/pre-push": "#!/bin/sh\n"},
                                             ("SessionStart", "`git config core.hooksPath .githooks`")),
             "generated project": ({"package.json": json.dumps({"packageManager": "pnpm@10.33.0", "scripts": {

@@ -991,7 +991,8 @@ class CommitHooks(unittest.TestCase):
                 self.git("config", "--worktree", "--unset-all", "keelokit.story", check=False)
 
 class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
-    """LEDGER-009.S7: a fresh clone with .githooks/ and no core.hooksPath gets it set at the session start."""
+    """LEDGER-009.S7, as HARN-004 left it (ESC-277): a fresh clone with .githooks/ and no core.hooksPath is told, in one
+    line, that its hooks are off and how a person turns them on; the plugin never sets core.hooksPath."""
 
     def setUp(self):
         super().setUp()
@@ -1010,20 +1011,21 @@ class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
 
     def repo(self, githooks=True):
         self.git("init", "-q", "-b", "main")
-        if githooks:  # the plugin's own hooks (HARN-004, ESC-271: a repo's own stay off until a person approves them)
+        if githooks:  # even the plugin's own hooks stay off (HARN-004, ESC-277)
             shutil.copytree(ROOT / "template/.githooks", self.proj / ".githooks")
 
-    def test_LEDGER_009_S7_session_start_sets_core_hooks_path_and_says_so_in_one_line(self):
+    def test_LEDGER_009_S7_HARN_004_ESC_277_session_start_leaves_the_hooks_off_and_says_so_in_one_line(self):
         for sh in SHELLS:
             with self.subTest(shell=sh):
                 self.git("config", "--unset", "core.hooksPath", check=False) if (self.proj / ".git").exists() \
                     else self.repo()
                 r = self.hook(sh=sh)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertEqual(self.hooks_path(), ".githooks")
+                self.assertIsNone(self.hooks_path(), "the plugin turned the repo's hooks on")
                 said = [l for l in (r.stdout + r.stderr).splitlines() if "core.hooksPath" in l]
                 self.assertEqual(len(said), 1, r.stdout + r.stderr)
                 self.assertTrue(said[0].startswith("Keelokit:"), said)
+                self.assertIn("git config core.hooksPath .githooks", said[0])
                 self.assertIn("doctor 0", r.stdout, "the rest of the start still runs")
 
     def test_LEDGER_009_S7_the_line_counts_in_the_12_line_budget(self):
@@ -1033,7 +1035,7 @@ class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
         r = self.hook()
         out = r.stdout.splitlines()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.hooks_path(), ".githooks")
+        self.assertIsNone(self.hooks_path())
         self.assertLessEqual(len(out), 12, out)
         self.assertEqual(sum("core.hooksPath" in l for l in out), 1, out)
         for i in range(2):

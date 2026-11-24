@@ -47,68 +47,56 @@ Scenario: [S2] A project on the same version sees no change
 trailer on the completing commit, README's trust note updated.
 
 ## Addendum — 2026-11-24
-Chosen: a hybrid of B and C, with C's "run the project's copy" earned by a person's approval rather than by an
-equal hash alone. `hooks/hooks.json` runs `hooks/trusted.py` (`python3 -I`, after a `cd` into the plugin), which
-decides from bytes, before anything of the project runs:
-1. the project's copy of what the hook runs (guard.py; ledger.py; doctor.py with the ledger.py and ux_gate.py it
-   runs) is the plugin's byte for byte → the plugin's copy runs with `--root <project>` (S2: the same code, so the
-   same answers; tests compare the hook's output with the project's own copy run by hand);
-2. else, the project's whole `.keelokit/bin` as it is now (a fingerprint of every entry) was approved for this
-   project on this machine with `trusted.py trust` → the project's copy runs, from the bytes that were checked;
-3. else → the plugin's copy runs against the project's data, and the session start says so in one line (S1).
-Why not B alone: an older harness or a project that changed its doctor in code would silently get another doctor;
-here it is told, once, and chooses (upgrade, or approve its copy). Why not C alone: an equal hash proves nothing a
-person decided, and on a mismatch C still needs B to keep the rules enforced. The Swarm's trusted tool code
-(enjambre protocol §28) is the model for the store, `-I` and the escaped diff; it was not read, its summary was.
+Chosen, in the end: B. The Claude hooks always run the plugin's own copy of the guard, the ledger and the doctor,
+with `--root <project>`, against the project's data. `hooks/hooks.json` runs `hooks/trusted.py` (`python3 -I`,
+after a `cd` into the plugin); nothing of the project's executes, its `.keelokit/bin` is only read to say at the
+session start, in one line, that it differs (S1). A project on the plugin's version gets the same code and so the
+same answers (S2; the tests compare the hook's output with the project's own copy run by hand).
+
+How it got there. The first build was a hybrid of B and C: the project's copy ran when a person had approved it
+with `trusted.py trust` (a per-machine store, a fingerprint, a terminal prompt), modelled on the Swarm's trusted
+tool code. Three breaker rounds (ESC-268..279) showed the approval had too many edges: an agent with a shell, as
+the same user, can always fake "a person at a terminal" (a pty it types into, a store it writes), and an approved
+doctor still read its children from disk after the check. So the coordinator settled on B and dropped the approval
+whole (ESC-278): nothing left to forge or race. Customised scripts still run when a person runs them, or from the
+project's git hooks once the person turns them on; only the Claude hooks ignore them.
 
 How the cases in the brief come out:
-- **Older harness.** The plugin's newer doctor may report checks the older harness lacks (this repo itself: its
-  own doctor is older than the template's), and the newer guard enforces at least what the older one did. The
-  session-start line names the files and both ways out. It is said at the session start only, never per tool
-  call, which answers C's noise.
-- **`rules.local.toml` and the rest of the data** are read from `--root`, so customised rules work unchanged
-  (test: the doctor with `--root` and the project's own doctor give the same report on a project with a local
-  rule). A doctor customised in code is case 2.
-- **Offline.** The check reads local files only; nothing new touches the network (`ledger.py history --ensure`
-  fetches as before and says so when it can't).
-- **Codex and other agents.** The plugin ships Claude Code hooks only; there is no Codex manifest. The git hooks
-  (`.githooks`) still run the project's own copies, as its tests do: that is the project's code run by its own
-  git, which the story's "Does NOT" leaves alone.
-- **SessionStart budget.** One more short Python start (`check`) and its line counts in the 12-line budget;
-  measured on a fresh project: 0.66–0.77 s before, 0.71–0.78 s after; PreToolUse 59–78 ms before, 65–70 ms after.
+- **Older harness.** The plugin's newer doctor may report checks the older harness lacks (this repo's own doctor is
+  older than the template's), and the newer guard enforces at least what the older one did. The session-start line
+  names the files and points at `/keelokit:harness-upgrade`; it is said once per session, never per tool call.
+- **`rules.local.toml` and the rest of the data** are read from `--root`, so customised rules work unchanged (a test
+  compares the doctor with `--root` and the project's own doctor on a project with a local rule). A doctor
+  customised in code is not run by the Claude hooks; the person runs it.
+- **Offline.** Nothing new touches the network (`ledger.py history --ensure` fetches as before and says so when it
+  can't).
+- **Codex and other agents.** The plugin ships Claude Code hooks only; there is no Codex manifest.
+- **SessionStart budget.** One more short Python start (`check`) and its line counts in the 12-line budget; measured
+  on a fresh project: 0.66–0.77 s before, 0.71–0.78 s after; PreToolUse 59–78 ms before, 65–70 ms after (the
+  guard's child process adds a fork).
 
-Beyond the spec: guard.py, ledger.py and ux_gate.py also take `--root` (the doctor runs them, and the hooks run
-the ledger); the doctor runs the scripts next to itself (ESC-268); the guard refuses `trusted.py trust/untrust`
-to agents (AGENT-1), and `trust` reads its answer from /dev/tty and asks for the fingerprint's first 8
-characters. The breaker round's findings are ESC-268..270 (the doctor's children, relative PATH entries, a FIFO).
-The launcher's tests are in tests/test_guard.py (`HooksRunTrustedCode`), the doctor's in tests/test_doctor.py.
-
-Breaker round 2 (an independent breaker, ESC-271..276), and what changed:
-- **The repo's own git hooks** (ESC-271). LEDGER-009.S7's session start turned `.githooks` on whatever they held,
-  so a repo's reference-transaction ran inside the plugin's own fetch, and its pre-commit at the agent's first
-  commit. Now `trusted.py githooks` turns them on only when every hook is the plugin's and the `.keelokit/bin`
-  scripts they run are too (the template's pre-commit runs guard.py), or a person approved them: the fingerprint
-  covers `.githooks`. Otherwise one line says they stay off and how to review them. Independently, the plugin's
-  ledger and guard run with `--root` set core.hooksPath=/dev/null (GIT_CONFIG_*), so even a hooks path set earlier
-  fires nothing from our own git calls. The doctor is left out on purpose: it reads the hooks path to report
-  whether the hooks are installed, and runs no git command that fires a hook. The template's pre-push still runs
-  the project's verify when a person or agent pushes: running its tests, which this story leaves alone.
-- **The store** (ESC-272). The guard refuses file tools inside ~/.config/keelokit and shell commands that name it.
-  An agent with arbitrary shell, as the same user, can still write it (a variable, a script): the guard's limit.
-- **`trust` on a real terminal** (ESC-273). It never worked: a text-mode "r+" open of /dev/tty raises on a
-  terminal. Now it reads and writes the descriptor unbuffered, tested on a real pseudo-terminal. AGENT-1 reads
-  commands as shell words (quotes, backslashes, $'…', `sh -c` strings).
-- **One read** (ESC-274). A snapshot reads every file once; the fingerprint and the bytes run come from it.
-- **Only plain files** (ESC-275). A directory, symlink, special file or file over 8 MB in `.keelokit/bin` or
-  `.githooks` cannot be approved, and approved code writes no bytecode. A project with a `__pycache__` in
-  `.keelokit/bin` (left by tests that import a script) must remove it before approving.
-- **No fail-open by timeout** (ESC-276). The guard reads its data files without blocking and at most 1 MB, bounds
-  its git calls to 30 s and 1 MB of output, and blocks with one line past a bound; the hook states 60 s.
+Beyond the spec, from the breaker rounds:
+- **Git hooks** (ESC-271, ESC-277). LEDGER-009.S7 turned `.githooks` on at the session start. That ran repo code:
+  hooks of any content, then even the plugin's own hooks (they run `.keelokit/bin` without `-I`, where any module
+  shadows the standard library), and a branch's own hooks after a switch. The plugin now never sets
+  core.hooksPath; the session start says the hooks are off and how the person turns them on. The plugin's ledger and
+  guard with `--root` run git with core.hooksPath=/dev/null, so our own fetches fire no repo hook even when the
+  person turned them on. The doctor reads the hooks path to report it, and runs no git command that fires a hook.
+- **The doctor's children** run from next to the doctor, with the same `--root` (ESC-268).
+- **What runs** gets no PYTHON* variables and no relative PATH entries (ESC-269); files are read without blocking,
+  so a FIFO can't hang a hook (ESC-270).
+- **No fail-open by timeout** (ESC-276, ESC-279). Claude Code lets a call through when its PreToolUse hook outlives
+  the timeout. The guard reads its data files without blocking and at most 1 MB, bounds its git calls (30 s, 1 MB of
+  output), and its patterns are linear (a bounded look-ahead, disjoint options, an atomic group); and the hook runs
+  the guard in a child process it waits for at most 45 s, then kills it and blocks. The hook states 60 s.
+- guard, ledger and ux_gate take `--root` too, not only the doctor. The tests are in tests/test_guard.py
+  (`HooksRunTrustedCode`, `HooksRunTrustedCodeRound2`), tests/test_doctor.py (`DoctorRootTest`) and
+  tests/test_hooks.py.
 
 Known limits, not fixed here: a repo that arrives with its own `.git/config` (an archive, not a clone) can still
 make git run commands (core.fsmonitor, a remote's uploadpack) when the plugin's scripts run git: that is git's
 trust model. Environment a repo's `.claude/settings.json` sets is behind Claude Code's own workspace-trust prompt;
-trusted.py ignores PYTHON* variables, relative PATH entries and $HOME for the store, but an absolute PATH entry set
-there is believed. The session start's "Where to look" line still tells the agent to run
-`python3 .keelokit/bin/ledger.py show <ID>`, which an agent runs through its own Bash tool, under its permissions.
-`trust` is a speed bump for an agent that fakes a terminal; such an agent already runs code.
+trusted.py ignores PYTHON* variables and relative PATH entries, but an absolute PATH entry set there is believed.
+The session start's "Where to look" line still tells the agent to run `python3 .keelokit/bin/ledger.py show <ID>`,
+which an agent runs through its own Bash tool, under its permissions. Pushing runs the template's pre-push, i.e.
+the project's verify, once the person has turned the hooks on: running its tests, which this story leaves alone.

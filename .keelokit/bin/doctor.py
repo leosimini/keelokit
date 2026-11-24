@@ -335,10 +335,9 @@ def hook_remedy(hooks_dir: str, target: str) -> str:
         return f"run `{pm} install`"
     for d in (".githooks", ".husky"):
         if d != hooks_dir and (ROOT / d / target).is_file():
-            if d == ".githooks":  # LEDGER-009: the plugin's SessionStart sets the hooks path when it is unset
-                return ("Keelokit's SessionStart hook turns them on when a Claude session starts here and they "
-                        "are the plugin's own; "
-                        "a clone used without the plugin runs `git config core.hooksPath .githooks`")
+            if d == ".githooks":  # HARN-004 (ESC-277): the plugin never sets the hooks path; the person does
+                return ("Keelokit's SessionStart hook never turns them on, since they run the repo's own code: "
+                        "review .githooks, then run `git config core.hooksPath .githooks`")
             return f"a human runs `git config core.hooksPath {d}`"
     return add_hook(f"add a '{target}' hook", target)
 
