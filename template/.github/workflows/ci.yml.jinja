@@ -67,6 +67,11 @@ jobs:
       - run: pnpm typecheck
       - name: Harness doctor
         run: python3 .keelokit/bin/doctor.py --ci
+      # LEDGER-010 (INV-007): nothing unattributed reaches the trunk. On a pull request, its commits (GitHub's merge
+      # of it stands for the merge to come); on a push to main, main since [ledger] since. Prints the exact
+      # `ledger.py correct` command for a commit that got through; follows [ledger] enforce. Needs fetch-depth 0.
+      - name: Ledger attribution
+        run: python3 .keelokit/bin/ledger.py check --ci
       - name: Dependency audit
         run: python3 .keelokit/bin/audit.py
 

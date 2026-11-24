@@ -51,7 +51,7 @@ Scenario: [S10] also works
 
 def clean_env(home: Path, path: str | None = None) -> dict:
     env = {k: v for k, v in os.environ.items()
-           if k not in PROXY_VARS and not k.startswith("GIT_") and k not in ("CI", "GITHUB_ACTIONS")}
+           if k not in PROXY_VARS and not k.startswith(("GIT_", "GITHUB_")) and k != "CI"}
     env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", HOME=str(home), LC_ALL="C",
                GIT_TERMINAL_PROMPT="0")
     if path is not None:
@@ -4415,3 +4415,699 @@ class LedgerDropTest(LedgerTakeDropCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── LEDGER-010: pre-push and CI, nothing unattributed reaches the trunk (INV-007) ──
+
+ZERO = "0" * 40
+
+
+def prepush(test: unittest.TestCase, repo: GitRepo, *lines: str, remote: str = "origin") -> subprocess.CompletedProcess:
+    """`ledger.py prepush <remote> <url>` with git's pre-push lines on stdin; exit 0 or 1, never a traceback."""
+    r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "prepush", remote, f"file://{repo.tmp}/x.git"],
+                       cwd=repo.path, env=clean_env(repo.tmp), input="".join(f"{line}\n" for line in lines),
+                       capture_output=True, text=True, timeout=60)
+    test.assertNotIn("Traceback", r.stderr)
+    test.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+    return r
+
+
+def to_main(repo: GitRepo, ref: str = "HEAD") -> str:
+    """The pre-push line of `git push origin <ref>:main`, with origin's main as it is."""
+    remote = repo.git("ls-remote", "origin", "refs/heads/main").split()
+    return f"refs/heads/main {repo.sha(ref)} refs/heads/main {remote[0] if remote else ZERO}"
+
+
+class LedgerPrepushCase(LedgerCase):
+    def project(self, *ids: str, enforce: str = "block") -> GitRepo:
+        """A published trunk with `since` set on its adoption commit; the state is the work tree's (not committed)."""
+        repo = GitRepo(self.tmp)
+        repo.plan(*ids)
+        since = repo.commit("chore: adopt the ledger\n\nNo-story: harness")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "{enforce}"\n')
+        return repo
+
+    def squash(self, repo: GitRepo, branch: str, message: str) -> str:
+        """`git merge --squash origin/<branch>` committed on the trunk with `message` (GitHub's squash and merge)."""
+        repo.git("merge", "-q", "--squash", f"origin/{branch}")
+        repo.git("commit", "-q", "-m", message, when=repo.next_date())
+        return repo.sha()
+
+
+class LedgerPrepushTest(LedgerPrepushCase):
+    """S1, S2, S6: the pre-push's check of a push to the trunk (attribution, the merge that brings it)."""
+
+    def test_LEDGER_010_S1_an_unattributed_commit_to_the_trunk_is_refused_under_block_INV_007(self):
+        repo = self.project("AUTH-001")
+        loose = repo.commit("chore: loose")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("UNATTRIBUTED", r.stderr)
+        self.assertIn(loose[:12], r.stderr, "it names the commit's hash")
+        self.assertIn('enforce = "block"', r.stderr)
+
+    def test_LEDGER_010_S1_under_warn_it_goes_through_with_the_same_text_INV_007(self):
+        repo = self.project("AUTH-001", enforce="warn")
+        loose = repo.commit("chore: loose")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("UNATTRIBUTED", r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+        self.assertIn("goes through", r.stderr)
+
+    def test_LEDGER_010_S1_attributed_commits_go_through_silently(self):
+        repo = self.project("AUTH-001")
+        repo.commit("wip: a\n\nPart-of: AUTH-001")
+        repo.commit("docs: b\n\nNo-story: docs")
+        repo.commit("feat: c\n\nWhy.\n\nStory: AUTH-001")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_LEDGER_010_S1_only_the_new_commits_are_checked_not_the_trunk_s_history(self):
+        repo = self.project("AUTH-001")
+        repo.commit("chore: loose, already on origin's main")
+        repo.publish()
+        repo.commit("docs: new\n\nNo-story: docs")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), "check and the CI report the old one; the push adds none")
+
+    def test_LEDGER_010_S1_a_new_story_file_in_the_same_push_is_a_known_id(self):
+        repo = self.project("AUTH-001")
+        repo.commit("docs: plan AUTH-002\n\nNo-story: docs", {"backlog/stories/AUTH-002-s.md": story_md("AUTH-002")})
+        repo.commit("wip: AUTH-002\n\nPart-of: AUTH-002")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_LEDGER_010_S1_without_since_attribution_is_not_required(self):
+        repo = self.project("AUTH-001")
+        repo.state('[ledger]\nenforce = "block"\n')
+        repo.commit("chore: loose")
+        self.assertEqual(prepush(self, repo, to_main(repo)).returncode, 0)
+
+    def test_LEDGER_010_S2_a_merge_carrying_part_of_attributes_the_branch_it_brings_INV_007(self):
+        repo = self.project("AUTH-005")
+        repo.on_branch("elsewhere", "chore: one, no trailer", "chore: two, no trailer", keep=True, push=False)
+        repo.merge("elsewhere", "Merge the work from elsewhere\n\nPart-of: AUTH-005")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_LEDGER_010_S2_the_same_merge_without_a_trailer_is_refused_and_names_each_commit(self):
+        repo = self.project("AUTH-005")
+        shas = repo.on_branch("elsewhere", "chore: one", "chore: two", keep=True, push=False)
+        repo.merge("elsewhere", "Merge branch 'elsewhere'")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1)
+        for sha in (*shas, repo.sha()):
+            self.assertIn(sha[:12], r.stderr)
+        self.assertIn("rebase -i", r.stderr, "before the trunk, the fix is the message, not a correction")
+        self.assertNotIn("ledger.py correct", r.stderr)
+
+    def test_LEDGER_010_S2_a_merge_nested_in_a_pull_request_attributes_what_it_brings(self):
+        """GitHub's own trailerless "Merge pull request" over a branch whose Part-of merge brought loose commits."""
+        repo = self.project("AUTH-005")
+        repo.on_branch("elsewhere", "chore: one", "chore: two", keep=True, push=False)
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.merge("elsewhere", "Merge the work from elsewhere\n\nPart-of: AUTH-005")
+        repo.commit("feat: AUTH-005\n\nWhy.\n\nStory: AUTH-005")
+        repo.git("checkout", "-q", "main")
+        repo.merge("feature", "Merge pull request #4 from someone/feature")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_LEDGER_010_S6_a_push_to_another_branch_is_not_checked(self):
+        repo = self.project("AUTH-001")
+        repo.commit("chore: loose")
+        r = prepush(self, repo, f"refs/heads/feature {repo.sha()} refs/heads/feature {ZERO}",
+                    f"refs/heads/main {repo.sha()} refs/heads/mainline {ZERO}")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_LEDGER_010_S6_a_deletion_and_no_lines_check_nothing(self):
+        repo = self.project("AUTH-001")
+        repo.commit("chore: loose")
+        self.assertEqual(prepush(self, repo, f"(delete) {ZERO} refs/heads/main {repo.sha('origin/main')}").returncode, 0)
+        self.assertEqual(prepush(self, repo).returncode, 0)
+
+    def test_LEDGER_010_S1_a_push_to_another_remote_is_checked_against_that_remote_not_origin(self):
+        """origin's main ahead of the remote pushed to must not exempt commits that remote lacks (reviewer, round 1)."""
+        repo = self.project("AUTH-001")
+        other = repo.tmp / "other.git"
+        repo.run(["git", "init", "-q", "--bare", "-b", "main", str(other)], repo.tmp)
+        repo.git("remote", "add", "fork", f"file://{other}")
+        repo.git("push", "-q", "fork", "main")
+        repo.git("fetch", "-q", "fork")
+        loose = repo.commit("chore: loose")
+        repo.publish()  # origin has it now; fork does not
+        fork_main = repo.sha("fork/main")
+        r = prepush(self, repo, f"refs/heads/main {repo.sha()} refs/heads/main {fork_main}", remote="fork")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+
+    def test_LEDGER_010_S6_the_trunk_is_ledger_trunk_not_always_main(self):
+        repo = self.project("AUTH-001")
+        since = repo.sha()
+        repo.state(f'[ledger]\nsince = "{since}"\ntrunk = "trunk"\n')
+        repo.commit("chore: loose")
+        self.assertEqual(prepush(self, repo, to_main(repo)).returncode, 0, "main is not the trunk here")
+        r = prepush(self, repo, f"refs/heads/trunk {repo.sha()} refs/heads/trunk {ZERO}")
+        self.assertEqual(r.returncode, 1, r.stderr)
+
+
+class LedgerSquashTest(LedgerPrepushCase):
+    """S3, S4: a commit whose tree is the tip of an unintegrated origin branch is a squash of it, and keeps every
+    Story: and Part-of: of that branch (JOUNA's trains); the pre-push and check both see it."""
+
+    def branch(self) -> GitRepo:
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.on_branch("train-3", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        return repo
+
+    def test_LEDGER_010_S3_a_squash_that_loses_a_story_is_named_by_the_pre_push_INV_005(self):
+        repo = self.branch()
+        squash = self.squash(repo, "train-3", "Train 3 (#9)\n\nWhy.\n\nStory: AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("SQUASH_LOST_TRAILERS", r.stderr)
+        self.assertIn("AUTH-006", r.stderr)
+        self.assertIn(squash[:12], r.stderr)
+        self.assertIn("origin/train-3", r.stderr)
+        self.assertNotIn("Story: AUTH-007", r.stderr.split("lost", 1)[-1], "the kept one is not named as lost")
+
+    def test_LEDGER_010_S3_check_on_the_trunk_names_it_too_INV_005(self):
+        repo = self.branch()
+        self.squash(repo, "train-3", "Train 3 (#9)\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error"), ["SQUASH_LOST_TRAILERS"], data["diffs"])
+        self.assertIn("Part-of: AUTH-006", details(data, "SQUASH_LOST_TRAILERS"))
+
+    def test_LEDGER_010_S3_a_squash_that_turns_a_story_into_a_part_of_loses_it_INV_005(self):
+        repo = self.branch()
+        self.squash(repo, "train-3", "Train 3 (#9)\n\nPart-of: AUTH-006, AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("Story: AUTH-007", r.stderr, "the story would no longer be on the trunk")
+
+    def test_LEDGER_010_S4_a_squash_that_keeps_both_trailers_goes_through_INV_005(self):
+        repo = self.branch()
+        self.squash(repo, "train-3", "Train 3 (#9)\n\nWhy.\n\nPart-of: AUTH-006\nStory: AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+
+    def test_LEDGER_010_S4_a_rebase_merge_keeps_each_trailer_on_its_own_copy_INV_005(self):
+        repo = self.branch()
+        repo.git("cherry-pick", "origin/train-3~1", "origin/train-3")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), "the last copy's tree is the branch tip's")
+
+    def test_LEDGER_010_S4_an_integrated_branch_is_no_squash(self):
+        repo = self.branch()
+        repo.merge("origin/train-3", "Merge pull request #9 from someone/train-3")
+        repo.commit("docs: after\n\nNo-story: docs")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+
+    def test_LEDGER_010_S3_an_earlier_trunk_commit_with_the_trailer_does_not_hide_the_loss_INV_005(self):
+        """Only commits made since the branch forked count as keeping its trailers (reviewer, round 1)."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.commit("wip: an early part on the trunk\n\nPart-of: AUTH-006")
+        repo.publish()
+        repo.on_branch("train-4", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        self.squash(repo, "train-4", "Train 4 (#10)\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertIn("Part-of: AUTH-006", details(data, "SQUASH_LOST_TRAILERS"))
+        self.assertIn("ledger.py correct", details(data, "SQUASH_LOST_TRAILERS"), "on the trunk it says how to fix it")
+
+    def test_LEDGER_010_S3_an_approved_correction_of_the_squash_clears_it_INV_005(self):
+        repo = self.branch()
+        squash = self.squash(repo, "train-3", "Train 3 (#9)\n\nWhy.\n\nStory: AUTH-007")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-006", commit=squash, kind="late", evidence="squash of train-3"))})
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+
+
+class LedgerCheckCiTest(LedgerPrepushCase):
+    """S5: `check --ci` on the trunk since `since`, and on a pull request over its commits, as GitHub checks it out."""
+
+    def test_LEDGER_010_S5_an_unattributed_trunk_commit_fails_and_prints_the_correct_command_INV_007(self):
+        repo = self.project("AUTH-001")
+        loose = repo.commit("chore: loose")
+        repo.publish()
+        r = check_text(self, repo, "--ci")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("error UNATTRIBUTED", r.stdout)
+        self.assertIn(f"python3 .keelokit/bin/ledger.py correct {loose} --story <ID> --evidence", r.stdout)
+
+    def test_LEDGER_010_S5_under_warn_the_ci_step_prints_it_and_passes(self):
+        repo = self.project("AUTH-001", enforce="warn")
+        repo.commit("chore: loose")
+        repo.publish()
+        r = check_text(self, repo, "--ci")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("warning UNATTRIBUTED", r.stdout)
+
+    def test_LEDGER_010_S5_a_commit_corrected_by_an_active_row_is_attributed(self):
+        repo = self.project("AUTH-001")
+        loose = repo.commit("feat: the login, no trailer")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-001", commit=loose, kind="late", evidence="slipped through"))})
+        repo.publish()
+        r = check_text(self, repo, "--ci")
+        self.assertNotIn("UNATTRIBUTED", r.stdout)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(read_json(self, repo)["unattributed"]["commits"], 0)
+
+    def pull_request(self, repo: GitRepo, branch: str, number: int = 12) -> GitRepo:
+        """What actions/checkout does for a pull request with fetch-depth 0: every branch and tag, then GitHub's
+        merge of the branch into main (refs/pull/N/merge), detached."""
+        main, tip = repo.sha("origin/main"), repo.sha(f"origin/{branch}")
+        repo.git("checkout", "-q", "--detach", main)
+        repo.git("merge", "-q", "--no-ff", "-m", f"Merge {tip} into {main}", tip, when=repo.next_date())
+        repo.git("push", "-q", "origin", f"HEAD:refs/pull/{number}/merge")
+        repo.git("checkout", "-q", "main")
+        ci = self.tmp / f"ci-{number}"
+        ci.mkdir()
+        run = GitRepo.run
+        run(repo, ["git", "init", "-q"], ci)
+        run(repo, ["git", "remote", "add", "origin", f"file://{repo.bare}"], ci)
+        run(repo, ["git", "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*",
+                   "+refs/tags/*:refs/tags/*"], ci)
+        run(repo, ["git", "fetch", "-q", "origin", f"+refs/pull/{number}/merge:refs/remotes/pull/{number}/merge"], ci)
+        run(repo, ["git", "checkout", "-q", "--detach", f"refs/remotes/pull/{number}/merge"], ci)
+        clone = GitRepo(self.tmp, existing=ci)
+        clone.state((repo.path / ".keelokit/state.toml").read_text())
+        return clone
+
+    PR_ENV = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_BASE_REF": "main", "CI": "true"}
+
+    def ci_check(self, clone: GitRepo) -> subprocess.CompletedProcess:
+        r = clone.ledger("check", "--ci", extra_env=self.PR_ENV)
+        self.assertNotIn("Traceback", r.stderr)
+        return r
+
+    def test_LEDGER_010_S5_a_pull_request_with_a_sync_merge_of_main_passes_INV_007(self):
+        repo = self.project("AUTH-001")
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("wip: a\n\nPart-of: AUTH-001")
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: main moves on\n\nNo-story: docs")
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.merge("origin/main", "Merge remote-tracking branch 'origin/main' into feature")  # no trailer
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        clone = self.pull_request(repo, "feature")
+        r = self.ci_check(clone)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("UNATTRIBUTED", r.stdout)
+
+    def test_LEDGER_010_S5_after_github_merges_it_the_trunk_passes_too_INV_007(self):
+        """GitHub's "Merge pull request" and the branch's sync merge, both trailerless, on the trunk: not flagged."""
+        repo = self.project("AUTH-001")
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("wip: a\n\nPart-of: AUTH-001")
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: main moves on\n\nNo-story: docs")
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.merge("main", "Merge branch 'main' into feature")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.git("checkout", "-q", "main")
+        repo.merge("feature", "Merge pull request #12 from someone/feature")
+        repo.publish()
+        r = check_text(self, repo, "--ci")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("UNATTRIBUTED", r.stdout)
+
+    def test_LEDGER_010_S5_a_pull_request_with_an_unattributed_commit_fails_and_says_how_to_fix_it(self):
+        repo = self.project("AUTH-001")
+        repo.git("checkout", "-q", "-b", "feature")
+        loose = repo.commit("chore: loose")
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        clone = self.pull_request(repo, "feature")
+        r = self.ci_check(clone)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("error UNATTRIBUTED", r.stdout)
+        self.assertIn(loose[:12], r.stdout)
+        self.assertIn("rebase -i", r.stdout)
+        r = clone.ledger("check", "--ci", extra_env={**self.PR_ENV, "GITHUB_BASE_REF": "release"})
+        self.assertEqual(r.returncode, 0, "a pull request into another branch is not checked (S6)")
+        self.assertEqual(clone.ledger("check", "--ci").returncode, 0, "a push run reads the trunk only")
+
+    def test_LEDGER_010_S5_github_s_default_shallow_pr_checkout_fails_closed(self):
+        """fetch-depth 1 (actions/checkout's default) fetches only refs/pull/N/merge: no origin/main, a cut history.
+        The step never passes there; the workflow puts it in the job with fetch-depth 0 (tests/test_ci.py)."""
+        repo = self.project("AUTH-001")
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("wip: a\n\nPart-of: AUTH-001")
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        self.pull_request(repo, "feature", number=5)
+        ci = self.tmp / "ci-shallow"
+        ci.mkdir()
+        for argv in (["git", "init", "-q"], ["git", "remote", "add", "origin", f"file://{repo.bare}"],
+                     ["git", "fetch", "-q", "--depth=1", "origin", "+refs/pull/5/merge:refs/remotes/pull/5/merge"],
+                     ["git", "checkout", "-q", "--detach", "refs/remotes/pull/5/merge"]):
+            repo.run(argv, ci)
+        clone = GitRepo(self.tmp, existing=ci)
+        clone.state((repo.path / ".keelokit/state.toml").read_text())
+        r = self.ci_check(clone)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("main", r.stdout + r.stderr, "it says what is missing")
+
+
+class LedgerBreakerRound1Test(LedgerPrepushCase):
+    """LEDGER-010 breaker, round 1 (ESC-198..ESC-201): each finding reproduced before its fix."""
+
+    def test_LEDGER_010_S1_a_shallow_clone_still_checks_the_new_commits_INV_007(self):
+        """ESC-198: with `since` beyond a --depth 1 clone the pre-push passed everything silently."""
+        repo = self.project("AUTH-001")
+        repo.commit("docs: later\n\nNo-story: docs")
+        repo.publish()
+        clone = repo.clone("shallow", depth=1)
+        clone.state((repo.path / ".keelokit/state.toml").read_text())
+        loose = clone.commit("chore: loose")
+        r = prepush(self, clone, to_main(clone))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+        clone.git("reset", "-q", "--hard", "HEAD~1")
+        clone.commit("docs: fine\n\nNo-story: docs")
+        r = prepush(self, clone, to_main(clone))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), "only the new commits, not the cut history")
+
+    def test_LEDGER_010_S4_a_branch_that_changes_nothing_is_no_squash_source_INV_005(self):
+        """ESC-199: an empty commit on a branch made its base (a trunk commit) read as a squash of it."""
+        repo = self.project("AUTH-006")
+        repo.commit("chore: the trunk's tip\n\nNo-story: harness")
+        repo.git("checkout", "-q", "-b", "auth-6")
+        repo.git("commit", "-q", "--allow-empty", "-m", "start\n\nPart-of: AUTH-006")
+        repo.git("push", "-q", "origin", "auth-6")
+        repo.git("checkout", "-q", "main")
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+        repo.commit("docs: next\n\nNo-story: docs")
+        self.assertEqual(prepush(self, repo, to_main(repo)).returncode, 0)
+
+    def test_LEDGER_010_S3_a_squash_after_the_trunk_moved_is_still_named_INV_005(self):
+        """ESC-200: once main moved, the squash's tree no longer equals the branch tip's; its change still does."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.on_branch("train-5", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        repo.commit("docs: main moves on\n\nNo-story: docs")
+        squash = self.squash(repo, "train-5", "Train 5 (#11)\n\nWhy.\n\nStory: AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, "a match by patch alone warns (ESC-240)")
+        self.assertIn("SQUASH_LOST_TRAILERS", r.stderr)
+        self.assertIn("Part-of: AUTH-006", r.stderr)
+        self.assertIn(squash[:12], r.stderr)
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertIn("AUTH-006", details(data, "SQUASH_LOST_TRAILERS"))
+        self.assertEqual([d["level"] for d in data["diffs"] if d["code"] == "SQUASH_LOST_TRAILERS"], ["warning"])
+
+    def test_LEDGER_010_S1_a_corrected_commit_does_not_block_a_push_of_the_trunk_to_a_new_remote_INV_007(self):
+        """ESC-201: the pre-push read no correction rows, so the first push of a corrected trunk was refused."""
+        repo = self.project("AUTH-001")
+        loose = repo.commit("feat: the login, no trailer")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-001", commit=loose, kind="late", evidence="slipped through"))})
+        repo.publish()
+        backup = repo.tmp / "backup.git"
+        repo.run(["git", "init", "-q", "--bare", "-b", "main", str(backup)], repo.tmp)
+        repo.git("remote", "add", "backup", f"file://{backup}")
+        r = prepush(self, repo, f"refs/heads/main {repo.sha()} refs/heads/main {ZERO}", remote="backup")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+
+class LedgerBreakerRound2Test(LedgerPrepushCase):
+    """LEDGER-010 breaker, round 2 (ESC-202..ESC-205): each finding reproduced before its fix."""
+
+    def raw(self, repo: GitRepo, message: str, files: dict) -> str:
+        """A commit of exactly these files (GitRepo.commit adds a file of its own to each commit)."""
+        for rel, text in files.items():
+            repo.write(rel, text)
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", message, when=repo.next_date())
+        return repo.sha()
+
+    def test_LEDGER_010_S4_the_same_small_change_on_the_trunk_is_no_squash_of_a_one_commit_branch(self):
+        """ESC-202: a trunk commit making the change a one-commit story branch makes (same tree, or same patch)."""
+        repo = self.project("AUTH-007")
+        self.raw(repo, "chore: version 1\n\nNo-story: release", {"VERSION": "1\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "auth-7")
+        self.raw(repo, "feat: version 2\n\nPart-of: AUTH-007", {"VERSION": "2\n"})
+        repo.git("push", "-q", "origin", "auth-7")
+        repo.git("checkout", "-q", "main")
+        self.raw(repo, "release: 2\n\nNo-story: release", {"VERSION": "2\n"})
+        self.assertEqual(prepush(self, repo, to_main(repo)).returncode, 0, "same tree")
+        repo.git("reset", "-q", "--hard", "origin/main")
+        self.raw(repo, "docs: x\n\nNo-story: docs", {"README": "x\n"})
+        self.raw(repo, "release: 2\n\nNo-story: release", {"VERSION": "2\n"})
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), "same patch")
+
+    def test_LEDGER_010_S4_two_independent_reverts_are_no_squash(self):
+        """ESC-203: a branch reverting a trunk commit, and the trunk reverting it too."""
+        repo = self.project("AUTH-005", "AUTH-008")
+        added = self.raw(repo, "feat: add a\n\nWhy.\n\nStory: AUTH-005", {"a.txt": "a\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "auth-8")
+        repo.git("revert", "--no-edit", added, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert add a\n\nThis reverts commit {added}.\n\nPart-of: AUTH-008")
+        repo.git("push", "-q", "origin", "auth-8")
+        repo.git("checkout", "-q", "main")
+        repo.git("revert", "--no-edit", added, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert add a\n\nThis reverts commit {added}.\n\nNo-story: harness")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+
+    def test_LEDGER_010_S3_patches_are_read_only_for_commits_that_touch_the_branch_s_paths(self):
+        """ESC-204: check read every patch since `since` into memory (19 s, 1.7 GB on 1,000 commits). Counted in git
+        calls, never in seconds: no range commit touches the branch's paths, so no patch is read."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        for n in range(30):
+            repo.commit(f"docs: unrelated {n}\n\nNo-story: docs")
+        repo.publish()
+        repo.on_branch("train-6", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        bindir = self.tmp / "wrap-bin"
+        bindir.mkdir()
+        log = self.tmp / "git-argv.log"
+        real = shutil.which("git")
+        (bindir / "git").write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        (bindir / "git").chmod(0o755)
+        r = repo.ledger("check", "--json", path=f"{bindir}{os.pathsep}{repo.env['PATH']}")
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        calls = log.read_text().splitlines()
+        self.assertFalse([c for c in calls if " -p" in f" {c}" or c.startswith("patch-id")], calls)
+
+    def test_LEDGER_010_S1_a_correction_row_in_the_same_push_does_not_attribute_INV_007(self):
+        """ESC-205: the pre-push read rows from the pushed tip, so a row nobody accepted, pushed with its commit,
+        passed. Rows count from the trunk the remote already has."""
+        repo = self.project("AUTH-001")
+        loose = repo.commit("feat: the login, no trailer")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-001", commit=loose, kind="late", evidence="nobody accepted this"))})
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+
+    def test_LEDGER_010_S3_a_patch_id_match_says_it_is_the_branch_s_change(self):
+        """ESC-200's message said "its tree is the tip of" for a match by patch."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.on_branch("train-5", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        repo.commit("docs: main moves on\n\nNo-story: docs")
+        self.squash(repo, "train-5", "Train 5 (#11)\n\nWhy.\n\nStory: AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertIn("its change is origin/train-5's", r.stderr)
+        self.assertNotIn("its tree is the tip", r.stderr)
+
+
+class LedgerCoordinatorReviewTest(LedgerBreakerRound2Test):
+    """LEDGER-010 coordinator review of #30 (ESC-207, ESC-238..ESC-242): legitimate pushes the squash check refused.
+    Each history is checked by the pre-push and, once on the trunk, by `check`: the two must agree."""
+
+    def branch_of(self, repo: GitRepo, name: str, *commits: tuple, base: str = "main", push: bool = True) -> None:
+        repo.git("checkout", "-q", "-b", name, base)
+        for message, files in commits:
+            self.raw(repo, message, files)
+        if push:
+            repo.git("push", "-q", "origin", name)
+        repo.git("checkout", "-q", "main")
+
+    def agree(self, repo: GitRepo) -> None:
+        """The pre-push lets it through, and `check` on the trunk that results has no error either."""
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("SQUASH_LOST_TRAILERS", r.stderr)
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error"), [], data["diffs"])
+        self.assertNotIn("SQUASH_LOST_TRAILERS", codes(data))
+
+    def feat(self, repo: GitRepo, name: str = "feat") -> None:
+        self.branch_of(repo, name, ("wip: a\n\nPart-of: AUTH-001", {"a.txt": "1\n"}),
+                       ("feat: a done\n\nWhy.\n\nStory: AUTH-001", {"a.txt": "2\n", "b.txt": "1\n"}))
+
+    def test_LEDGER_010_S4_a_revert_back_to_a_squashed_tree_is_no_squash_INV_005(self):
+        """ESC-207: after feat was squashed with its Story:, reverting a later commit gives the branch tip's tree."""
+        repo = self.project("AUTH-001")
+        self.feat(repo)
+        self.squash(repo, "feat", "Feat A (#1)\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.raw(repo, "feat: z\n\nNo-story: docs", {"z.txt": "1\n"})
+        repo.publish()
+        repo.git("revert", "--no-edit", "HEAD", when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", "Revert z\n\nNo-story: harness")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_a_stacked_branch_keeps_what_the_trunk_already_has_INV_005(self):
+        """ESC-238: feat-b on feat-a; feat-a squashed first, then feat-b: A's Story: is on the trunk already."""
+        repo = self.project("AUTH-001", "AUTH-002")
+        self.feat(repo, "feat-a")
+        self.branch_of(repo, "feat-b", ("wip: b\n\nPart-of: AUTH-002", {"c.txt": "1\n"}),
+                       ("feat: b done\n\nWhy.\n\nStory: AUTH-002", {"c.txt": "2\n"}), base="origin/feat-a")
+        self.squash(repo, "feat-a", "Feat A (#1)\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.squash(repo, "feat-b", "Feat B (#2)\n\nWhy.\n\nStory: AUTH-002")
+        self.agree(repo)
+        self.assertNotIn("DONE_TWICE", codes(ledger_check(self, repo)))
+
+    def test_LEDGER_010_S4_a_fix_cherry_picked_earlier_is_kept_by_the_trunk_INV_005(self):
+        """ESC-239: a Part-of: C fix cherry-picked to main (-x), then the rest of the branch squashed."""
+        repo = self.project("AUTH-001", "AUTH-003")
+        self.branch_of(repo, "feat", ("fix: null check\n\nPart-of: AUTH-003", {"fix.txt": "1\n"}),
+                       ("wip: a\n\nPart-of: AUTH-001", {"a.txt": "1\n"}),
+                       ("feat: a done\n\nWhy.\n\nStory: AUTH-001", {"a.txt": "2\n"}))
+        repo.git("cherry-pick", "-x", "origin/feat~2")
+        repo.publish()
+        self.squash(repo, "feat", "Feat A (#4)\n\nWhy.\n\nStory: AUTH-001")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_a_patch_id_match_alone_warns_and_never_refuses_INV_005(self):
+        """ESC-240: an open branch bumps a pin to 2.32.3; a CVE fix on main makes the same bump. The same change
+        is no proof of a squash: a warning, never a refusal (and no `correct` command, which would be false)."""
+        repo = self.project("AUTH-001", "SEC-001")
+        self.raw(repo, "deps: pin\n\nNo-story: deps", {"requirements.txt": "requests==2.31.0\n"})
+        repo.publish()
+        self.branch_of(repo, "upgrade", ("wip: try 2.32.0\n\nPart-of: AUTH-001", {"requirements.txt": "requests==2.32.0\n"}),
+                       ("deps: settle on 2.32.3\n\nPart-of: AUTH-001", {"requirements.txt": "requests==2.32.3\n"}))
+        self.raw(repo, "docs: unrelated\n\nNo-story: docs", {"notes.txt": "1\n"})
+        self.raw(repo, "fix: CVE in requests\n\nWhy.\n\nStory: SEC-001", {"requirements.txt": "requests==2.32.3\n"})
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error"), [], data["diffs"])
+        self.assertNotIn("ledger.py correct", details(data, "SQUASH_LOST_TRAILERS"))
+
+    def test_LEDGER_010_S4_a_wip_or_archive_branch_is_never_a_squash_source_INV_005(self):
+        """ESC-241: wip/feat-backup keeps the old, wrong id; feat is reworded and squashed with the right one."""
+        repo = self.project("AUTH-001", "AUTH-002")
+        self.branch_of(repo, "feat", ("wip: part 1\n\nPart-of: AUTH-002", {"b.txt": "1\n"}),
+                       ("feat: part 2\n\nPart-of: AUTH-002", {"b.txt": "2\n"}), push=False)
+        repo.git("checkout", "-q", "-b", "old", "main")
+        self.raw(repo, "wip: part 1\n\nPart-of: AUTH-001", {"b.txt": "1\n"})
+        self.raw(repo, "feat: part 2\n\nPart-of: AUTH-001", {"b.txt": "2\n"})
+        repo.git("push", "-q", "origin", "old:refs/heads/wip/feat-backup", "old:refs/heads/archive/auth-001-20261124")
+        repo.git("checkout", "-q", "main")
+        repo.git("push", "-q", "origin", "feat")
+        repo.git("fetch", "-q", "origin")
+        self.squash(repo, "feat", "Feat B (#3)\n\nWhy.\n\nStory: AUTH-002")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_reapplying_a_reverted_squash_needs_no_second_story_INV_005(self):
+        """ESC-242: a squash reverted, then the revert reverted with Part-of: the Story: is on the trunk already."""
+        repo = self.project("AUTH-001")
+        self.feat(repo)
+        squash = self.squash(repo, "feat", "Feat A (#1)\n\nWhy.\n\nStory: AUTH-001")
+        self.raw(repo, "docs: other\n\nNo-story: docs", {"o.txt": "1\n"})
+        repo.publish()
+        repo.git("revert", "--no-edit", squash, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", "Revert Feat A\n\nNo-story: harness")
+        reverted = repo.sha()
+        repo.publish()
+        repo.git("revert", "--no-edit", reverted, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", "Reapply Feat A\n\nPart-of: AUTH-001")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("SQUASH_LOST_TRAILERS", r.stderr)
+
+
+class LedgerBreakerRound3Test(LedgerCoordinatorReviewTest):
+    """LEDGER-010 breaker, round 3 on the squash check (ESC-243..ESC-245)."""
+
+    def test_LEDGER_010_S4_a_stacked_branch_synced_with_main_keeps_what_the_trunk_has_INV_005(self):
+        """ESC-243: b2 stacked on b1; b1 squashed; main merged into b2 (its merge base moves past b1's squash)."""
+        repo = self.project("AUTH-005", "AUTH-006")
+        self.feat_named(repo, "b1", "AUTH-005", "a")
+        repo.git("checkout", "-q", "-b", "b2", "origin/b1")
+        self.raw(repo, "wip: c1\n\nPart-of: AUTH-006", {"c.txt": "1\n"})
+        repo.git("push", "-q", "origin", "b2")
+        repo.git("checkout", "-q", "main")
+        self.squash(repo, "b1", "B1 (#1)\n\nWhy.\n\nStory: AUTH-005")
+        repo.publish()
+        repo.git("checkout", "-q", "b2")
+        repo.git("merge", "-q", "--no-edit", "main", when=repo.next_date())
+        self.raw(repo, "feat: c2\n\nWhy.\n\nStory: AUTH-006", {"c.txt": "2\n"})
+        repo.git("push", "-q", "origin", "b2")
+        repo.git("checkout", "-q", "main")
+        repo.git("fetch", "-q", "origin")
+        self.squash(repo, "b2", "B2 (#2)\n\nWhy.\n\nStory: AUTH-006")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_an_early_cherry_pick_then_a_sync_merge_keeps_the_part_of_INV_005(self):
+        """ESC-244: x1 cherry-picked to main, main merged into the branch, then the branch squashed."""
+        repo = self.project("AUTH-005", "AUTH-006")
+        self.branch_of(repo, "b", ("fix: x1\n\nPart-of: AUTH-005", {"x.txt": "1\n"}))
+        self.raw(repo, "docs: other\n\nNo-story: docs", {"o.txt": "1\n"})
+        repo.git("cherry-pick", "origin/b")
+        repo.publish()
+        repo.git("checkout", "-q", "b")
+        repo.git("merge", "-q", "--no-edit", "main", when=repo.next_date())
+        self.raw(repo, "feat: x2\n\nWhy.\n\nStory: AUTH-006", {"y.txt": "1\n"})
+        repo.git("push", "-q", "origin", "b")
+        repo.git("checkout", "-q", "main")
+        repo.git("fetch", "-q", "origin")
+        self.squash(repo, "b", "B (#3)\n\nWhy.\n\nStory: AUTH-006")
+        self.agree(repo)
+
+    def test_LEDGER_010_S3_open_story_branches_cost_no_git_call_each_when_nothing_matches(self):
+        """ESC-245: every push ran merge-base and diff-tree for each open story branch (6 s with 100 of them on
+        20,000 commits). Counted in git calls, never in seconds: branches whose tree and paths match no pushed
+        commit cost none."""
+        repo = self.project(*(f"AUTH-{n:03d}" for n in range(1, 7)))
+        for n in range(1, 7):
+            self.branch_of(repo, f"story-{n}", (f"wip\n\nPart-of: AUTH-{n:03d}", {f"s{n}.txt": "1\n"}),
+                           (f"done\n\nWhy.\n\nStory: AUTH-{n:03d}", {f"s{n}.txt": "2\n"}))
+        repo.git("fetch", "-q", "origin")
+        self.raw(repo, "docs: elsewhere\n\nNo-story: docs", {"README": "x\n"})
+        bindir = self.tmp / "wrap-bin"
+        bindir.mkdir()
+        log = self.tmp / "git-argv.log"
+        (bindir / "git").write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\nexec "{shutil.which("git")}" "$@"\n')
+        (bindir / "git").chmod(0o755)
+        env = {**clean_env(repo.tmp), "PATH": f"{bindir}{os.pathsep}{repo.env['PATH']}"}
+        r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "prepush", "origin", "x"], cwd=repo.path, env=env,
+                           input=to_main(repo) + "\n", capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = log.read_text().splitlines()
+        per_branch = [c for c in calls if {"merge-base", "diff-tree"} & set(c.split())]
+        self.assertEqual(per_branch, [], calls)
+
+    def feat_named(self, repo: GitRepo, name: str, sid: str, f: str) -> None:
+        self.branch_of(repo, name, (f"wip: {f}\n\nPart-of: {sid}", {f"{f}.txt": "1\n"}),
+                       (f"feat: {f} done\n\nWhy.\n\nStory: {sid}", {f"{f}.txt": "2\n"}))

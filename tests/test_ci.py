@@ -118,5 +118,45 @@ class CiTests(unittest.TestCase):
         self.assertEqual(run(self.root, "nope").returncode, 2)
 
 
+
+def jobs_of(text: str) -> dict[str, str]:
+    """job id -> its text, from a workflow's `jobs:` block (two-space job keys)."""
+    body = text.split("\njobs:\n", 1)[1]
+    jobs, name = {}, None
+    for line in body.splitlines():
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":") and not line.lstrip().startswith("#"):
+            name = line.strip()[:-1]
+            jobs[name] = ""
+        elif name and not (line and not line.startswith(" ")):
+            jobs[name] += line + "\n"
+    return jobs
+
+
+class LedgerStepTest(unittest.TestCase):
+    """LEDGER-010: `ledger.py check --ci` runs in the job that already runs the doctor with fetch-depth 0, in the
+    template's CI and in this repo's (a PR's commits and the trunk since `since` need the full history)."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+    FILES = (".github/workflows/ci.yml", "template/.github/workflows/ci.yml.jinja")
+
+    def test_LEDGER_010_S5_the_ci_step_exists_in_the_doctor_job_with_fetch_depth_0_INV_007(self):
+        for rel in self.FILES:
+            with self.subTest(workflow=rel):
+                jobs = jobs_of((self.ROOT / rel).read_text())
+                with_step = [name for name, text in jobs.items() if "python3 .keelokit/bin/ledger.py check --ci" in text]
+                self.assertEqual(len(with_step), 1, f"one job runs the ledger step: {with_step}")
+                job = jobs[with_step[0]]
+                self.assertIn("python3 .keelokit/bin/doctor.py --ci", job, "the doctor's job")
+                self.assertRegex(job, r"(?m)^\s+fetch-depth: 0\b")
+                self.assertLess(job.index("doctor.py --ci"), job.index("ledger.py check --ci"))
+
+    def test_LEDGER_010_S5_the_workflows_run_on_pull_requests_and_on_pushes_to_main(self):
+        for rel in self.FILES:
+            with self.subTest(workflow=rel):
+                head = (self.ROOT / rel).read_text().split("\njobs:\n", 1)[0]
+                self.assertIn("pull_request:", head)
+                self.assertRegex(head, r"push:\s*\n\s+branches: \[main\]")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,15 +16,15 @@ permissions:
 
 jobs:
   unit:
-    name: Unit tests (doctor, guard, verify) ${{ matrix.shard }}/2
+    name: Unit tests (doctor, guard, verify) ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The suite outgrew one 10-minute job (9m54s): split it, never raise the timeout. scripts/unit_shard.py
-    # puts every tests/test_*.py in exactly one shard.
+    # The suite outgrew one 10-minute job (9m54s), then two (LEDGER-010): split it, never raise the timeout.
+    # scripts/unit_shard.py puts every tests/test_*.py in exactly one shard, balanced by measured seconds.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,7 +43,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # tests/test_dashboard.py lays both dashboard pages out in Chromium at 320/768/1280 px (UI-1).
       - run: pip install playwright==1.63.0 && python3 -m playwright install --with-deps chromium
-      - run: cd tests && python3 -m unittest -v $(python3 ../scripts/unit_shard.py ${{ matrix.shard }} 2)
+      - run: cd tests && python3 -m unittest -v $(python3 ../scripts/unit_shard.py ${{ matrix.shard }} 3)
 
   # SEC-1: no secret anywhere in the history (.gitleaks.toml leaves out the guard tests' fake keys).
   secrets:
@@ -74,6 +74,10 @@ jobs:
       # What `git config core.hooksPath .githooks` does once in a clone (AGENTS.md), so the git-hook checks see the hooks.
       - run: git config core.hooksPath .githooks
       - run: python3 .keelokit/bin/doctor.py --ci
+      # LEDGER-010 (INV-007): nothing unattributed reaches the trunk. On a pull request, its commits (GitHub's merge
+      # of it stands for the merge to come); on a push to main, main since [ledger] since. Needs fetch-depth 0.
+      - name: Ledger attribution
+        run: python3 .keelokit/bin/ledger.py check --ci
 
   # SAST-1: static analysis of the Python the plugin runs on people's machines, and of secrets.
   sast:
