@@ -113,3 +113,6 @@ Where the result goes beyond or differs from the text above:
   template (harness mode installs `.keelokit/` only), so there the hooks arrive only if the repo wires them.
 - `scripts/test-template.sh`'s two commits made with the hooks on carry `No-story: harness`.
 - The hook messages are in English whatever `[dashboard] lang` says.
+- **Invariants.** INV-007 is enforced at commit time here (the push and the CI follow in LEDGER-010); INV-005 is
+  kept by refusing a `Story:` commit with no body or an unknown id, since that commit is what makes a story
+  on-trunk. Review and attack took two rounds; their findings are ESC-189..ESC-192, each with its test.
