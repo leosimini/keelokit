@@ -139,7 +139,7 @@ SHAPES = {
     ".keelokit/profile.toml": ({"kind": "text", "traits": "texts"}, {}),
     ".keelokit/critical.toml": ({"mutation_break": "whole", "area": "tables"},
                                 {"area": {"name": "text", "why": "text", "paths": "texts"}}),
-    ".keelokit/state.toml": ({"gates": "table"}, {}),
+    ".keelokit/state.toml": ({"gates": "table", "ledger": "table"}, {}),
     # Story front matter (backlog/README.md).
     "backlog/stories/*.md": ({"id": "text", "epic": "text", "title": "text", "wave": "whole", "depends_on": "texts",
                               "touches": "texts", "dimensions": "texts", "invariants": "texts", "origin": "text"}, {}),
@@ -656,14 +656,9 @@ UPGRADE = "/keelokit:harness-upgrade brings it"
 
 
 def ledger_config() -> dict:
-    """`[ledger]` of .keelokit/state.toml, with the defaults docs/ledger.md gives (enforce block, the snapshot on)."""
-    path = ROOT / ".keelokit/state.toml"
-    text = read_file(path)[0] if path.is_file() else None
-    try:
-        state = tomllib.loads(text) if text else {}
-    except ValueError:
-        state = {}  # reported where the doctor reads it
-    table = state.get("ledger", {})
+    """`[ledger]` of .keelokit/state.toml (its keys have the defaults docs/ledger.md gives: enforce block, the
+    snapshot on); ledger.py reports a value it can't use."""
+    table = state().get("ledger", {})
     return table if isinstance(table, dict) else {}
 
 
@@ -704,7 +699,7 @@ def workflow_job_names() -> list[str]:
 
 
 def ledger_ci_problem(rid: str) -> str | None:
-    """LEDGER-010's CI step: a step that runs `ledger.py check --ci`, in a live job, neither soft nor off."""
+    """LEDGER-010's CI step: a step that runs `python3 .keelokit/bin/ledger.py check --ci`, in a live job, neither soft nor off."""
     found = []
     for job in workflow_job_names():
         for step in workflow_steps(ci_job(job) or ""):
@@ -715,11 +710,11 @@ def ledger_ci_problem(rid: str) -> str | None:
     why = ""
     for job, step in found:
         if re.search(rf"(?m)^[ \t-]*continue-on-error:[ \t]*{ALWAYS['true']}", step):
-            why = f"the CI step that runs `ledger.py check --ci` (job '{job}') has continue-on-error"
+            why = f"the CI step that runs `python3 .keelokit/bin/ledger.py check --ci` (job '{job}') has continue-on-error"
         elif re.search(rf"(?m)^[ \t-]*if:[ \t]*{ALWAYS['false']}", step):
-            why = f"the CI step that runs `ledger.py check --ci` (job '{job}') never runs (if: false)"
+            why = f"the CI step that runs `python3 .keelokit/bin/ledger.py check --ci` (job '{job}') never runs (if: false)"
         elif job_why := enforcer_problem(rid, f"ci:{job}"):
-            why = f"{job_why}, and it holds the step that runs `ledger.py check --ci`"
+            why = f"{job_why}, and it holds the step that runs `python3 .keelokit/bin/ledger.py check --ci`"
         else:
             return None
     return why
@@ -741,7 +736,7 @@ def ledger_hook_problems(hooks_dir: str) -> list[tuple[str, bool]]:
         elif text is None:
             problems.append((f"'.githooks/{name}' is missing ({UPGRADE})", False))
         elif call not in text:
-            problems.append((f"'.githooks/{name}' does not run `{call}` ({UPGRADE})", False))
+            problems.append((f"'.githooks/{name}' does not call `{call}` ({UPGRADE})", False))
         elif not os.access(shipped, os.X_OK):
             problems.append((f"'.githooks/{name}' is not executable, so git never runs it "
                              f"(a human runs `chmod +x .githooks/{name}`)", False))
@@ -786,24 +781,21 @@ def first_parent_arrivals(trunk_sha: str, since_sha: str, moves: dict[str, int])
     return arrival, times.get(since_sha)
 
 
+MOVE_ROW = re.compile(r'sha = "([0-9a-f]{40})"\nseen = "([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)"\n'
+                      r'run = "[^"\n]*"\nexact = (true|false)\n(left = )?')
+
+
 def snapshot_moves(branch: str) -> dict[str, int]:
-    """sha -> epoch of the exact rows of origin/<branch>'s moves.toml (LEDGER-011); {} without one."""
-    if not branch:
-        return {}
-    text = git("show", f"refs/remotes/origin/{branch}:moves.toml")
-    try:
-        rows = tomllib.loads(text).get("move", []) if text else []
-    except ValueError:
-        return {}
+    """sha -> epoch of the exact rows (not `left`) of origin/<branch>'s moves.toml (LEDGER-011); {} without one.
+    Only `ledger.py snapshot` writes it, always in this one layout (ledger.py's moves_toml): a row in any other
+    shape counts as no row, so a reading never takes a time that isn't one."""
     found = {}
-    for r in rows if isinstance(rows, list) else []:
-        if isinstance(r, dict) and r.get("exact") is True and "left" not in r and isinstance(r.get("sha"), str) \
-                and isinstance(r.get("seen"), str):
-            try:
-                at = dt.datetime.strptime(r["seen"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-            except ValueError:
-                continue
-            found[r["sha"]] = int(at.timestamp())
+    text = git("show", f"refs/remotes/origin/{branch}:moves.toml") if branch else ""
+    for block in text.split("[[move]]\n")[1:]:
+        m = MOVE_ROW.match(block)
+        if m and m[3] == "true" and not m[4]:
+            at = dt.datetime.strptime(m[2], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+            found[m[1]] = int(at.timestamp())
     return found
 
 
@@ -1282,8 +1274,18 @@ def check_backlog(invariants: dict[str, str], areas: list[dict]) -> dict:
             "unknown": gap, "reconstructed": reconstructed}
 
 
+_state: list[dict] = []
+
+
+def state() -> dict:
+    """.keelokit/state.toml, read once (its errors are reported once)."""
+    if not _state:
+        _state.append(read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {})
+    return _state[0]
+
+
 def gate_state() -> dict:
-    return (read_toml(ROOT / ".keelokit/state.toml", ".keelokit/state.toml") or {}).get("gates", {})
+    return state().get("gates", {})
 
 
 def check_scope(sid: str) -> int:
