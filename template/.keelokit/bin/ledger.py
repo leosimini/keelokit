@@ -2233,10 +2233,12 @@ def attribution_diffs(ctx: dict, in_range: list[dict] | None = None, on_trunk: b
             add("BAD_CATEGORY", c, f"No-story: {bad[0]!r} is not one of [ledger] no_story ({', '.join(cfg['no_story'])})")
         if c["story"] and not split_message(c["message"], c["trailers"])[1]:
             add("STORY_NO_BODY", c, f"closes {', '.join(c['story'])} with no body (what was decided, what was left out)")
-    for c, branch, lost in squashes(ctx, in_range):
+    for c, branch, lost, how in squashes(ctx, in_range):
         fix = (f" (on the trunk: `python3 .keelokit/bin/ledger.py correct {c['sha']} --story <ID> --evidence "
                f"\"squash of {branch}\"` for each, then `ledger.py backfill --accept`)") if on_trunk else ""
-        add("SQUASH_LOST_TRAILERS", c, f"its tree is the tip of {branch}, which is not integrated: a squash of it "
+        what = f"its tree is the tip of {branch}" if how == "tree" else \
+            f"its change is {branch}'s since it forked"
+        add("SQUASH_LOST_TRAILERS", c, f"{what}, which is not integrated: a squash of it "
             f"that lost {', '.join(lost)}; carry every Story: and Part-of: of the branch in its last paragraph{fix}")
     return diffs
 
@@ -2266,15 +2268,18 @@ def patch_ids(diff: bytes) -> dict[str, str]:
     return {line.split()[1]: line.split()[0] for line in out if len(line.split()) == 2}
 
 
-def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]]]:
-    """(commit, origin/<branch>, lost) for each non-merge commit of `in_range` that is a squash of an origin branch
+def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str], str]]:
+    """(commit, origin/<branch>, lost, "tree" or "patch") for each non-merge commit of `in_range` that is a squash of an origin branch
     `ctx["tip"]` does not reach (JOUNA's trains) and that, with its ancestors in the range made since the branch
     forked (those the branch does not reach: a rebase merge's copies), lacks a Story: or Part-of: of that branch's
     own commits (those the tip does not reach). A squash: its tree is the branch tip's, or (the trunk moved since)
     its change has the patch-id of the branch's change since its merge base with the tip; never a commit the branch
-    reaches, nor a branch that changes nothing (ESC-199, ESC-200). A branch's Story: must stay a Story:; its
-    Part-of: is kept by either, and by an active correction row naming the commit. Only branches with a Story: or
-    Part-of: of their own are read: one log, then two git calls each, plus one for the range."""
+    reaches, nor a branch that changes nothing (ESC-199, ESC-200), nor a branch of fewer than two commits of its own
+    (a copy of one commit is a cherry-pick, and the same small change or revert is made on the trunk too: ESC-202,
+    ESC-203). A branch's Story: must stay a Story:; its Part-of: is kept by either, and by an active correction row
+    naming the commit. Only branches with a Story: or Part-of: of their own are read: one log, then three git calls
+    each, plus one `--name-only` log of the range; patches are read only for commits that change exactly the
+    branch's paths (ESC-204)."""
     tip, graph = ctx.get("tip"), ctx["graph"]
     branches = origin_branches(ctx.get("refs") or {}, ctx.get("trunk") or "")
     singles = [c for c in in_range if len(c["parents"]) < 2]
@@ -2291,7 +2296,8 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
         mine = reach_until(graph, [sha], reach)
         stories = {i for m in mine if m in own for i in own[m]["story"]}
         parts = {i for m in mine if m in own for i in own[m]["part_of"]} - stories
-        if stories or parts:
+        singles_own = sum(1 for m in mine if m in own and len(own[m]["parents"]) < 2)
+        if (stories or parts) and singles_own >= 2:
             needs[name] = (stories, parts)
     if not needs:
         return []
@@ -2301,9 +2307,22 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
         if base:
             bases[name] = base
     trees = trees_of([c["sha"] for c in singles] + [loose[n] for n in needs] + list(bases.values()))
-    picks = git_read(["log", "--no-walk=unsorted", "-p", "--no-color", "--format=commit %H", "--stdin"],
-                     "".join(f"{c['sha']}\n" for c in singles).encode())
-    mine_ids = patch_ids(picks)
+    named = git_read(["log", "--no-walk=unsorted", "--name-only", "--no-renames", "--format=%x00%H", "--stdin"],
+                     "".join(f"{c['sha']}\n" for c in singles).encode()).decode(errors="replace")
+    paths = {}
+    for chunk in named.split("\0")[1:]:
+        lines = [line for line in chunk.split("\n") if line]
+        if lines:
+            paths[lines[0]] = frozenset(lines[1:])
+    nets = {}
+    for name in needs:
+        btip, base = loose[name], bases.get(name)
+        if base and trees.get(base) != trees.get(btip):
+            nets[name] = frozenset(line for line in git_read(["diff-tree", "-r", "--name-only", "--no-renames", base,
+                                                               btip]).decode(errors="replace").split("\n") if line)
+    candidates = sorted({c["sha"] for c in singles for net in nets.values() if net and paths.get(c["sha"]) == net})
+    mine_ids = patch_ids(git_read(["log", "--no-walk=unsorted", "-p", "--no-color", "--format=commit %H", "--stdin"],
+                                  "".join(f"{sha}\n" for sha in candidates).encode())) if candidates else {}
     ranged = {c["sha"]: c for c in in_range}
     rowed: dict[str, set] = {}
     for r in (ctx.get("corrections") or {}).get("active", ()):
@@ -2313,7 +2332,9 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
         btip, base = loose[name], bases.get(name)
         if base and trees.get(base) == trees.get(btip):
             continue  # the branch changes nothing: its tree is its base's
-        net = patch_ids(git_read(["diff-tree", "-p", "--no-color", base, btip])).get("0" * len(btip)) if base else None
+        same_paths = [c["sha"] for c in singles if name in nets and paths.get(c["sha"]) == nets[name]]
+        net = patch_ids(git_read(["diff-tree", "-p", "--no-color", base, btip])).get("0" * len(btip)) \
+            if same_paths else None
         forked = set(first_reach(graph, [btip]))
         for c in singles:
             if c["sha"] in forked:
@@ -2327,7 +2348,7 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
             lost = [f"Story: {i}" for i in sorted(stories - kept_story)] + \
                    [f"Part-of: {i}" for i in sorted(parts - kept_any)]
             if lost:
-                found.append((c, name, lost))
+                found.append((c, name, lost, "tree" if same_tree else "patch"))
     return found
 
 
@@ -3103,9 +3124,13 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
         if rctx is None:
             continue
         found = attribution_diffs(rctx, rctx["log"], on_trunk=False)
-        if found:  # approved correction rows of the pushed tip attribute what they name (ESC-201)
+        source = commit_of(parts[3]) or commit_of(f"refs/remotes/origin/{trunk}")
+        if found and source:
+            # Approved rows attribute what they name (ESC-201), read from the trunk the remote (or origin) already
+            # has, never from the pushed tip: a row pushed with its commit is accepted by nobody (ESC-205).
             try:
-                rctx["corrections"] = corrections_facts(tip, None, set(rctx["placed"][0]), rctx["graph"])
+                held = read_graph([source])
+                rctx["corrections"] = corrections_facts(source, None, set(held), held)
                 found = attribution_diffs(rctx, rctx["log"], on_trunk=False)
             except LedgerError:
                 pass  # unreadable corrections: the refusal stands
