@@ -3,22 +3,46 @@
 
 The unit suite outgrew one 10-minute CI job (it reached 9m54s on 2026-11-23). Keelokit's rule is to split a
 slow job, never to raise its timeout, so CI runs the suite in shards. Each tests/test_*.py goes to exactly one
-shard, the largest files first onto the lightest shard (file size stands in for duration), so the split is
-deterministic and every new test file lands somewhere without editing the workflow."""
+shard, the slowest first onto the lightest shard, so the split is deterministic and every new test file lands
+somewhere without editing the workflow.
+
+How slow a file is comes from SECONDS, measured (each module alone, `python3 -m unittest <module>`); file size did
+not track it (LEDGER-010: test_verify_operativo is mid-sized and the slowest, and the size split left one of three
+shards at twice the others). A file the table lacks weighs its size, scaled to seconds by the files it has.
+Re-measure when a shard nears the job's timeout."""
 import sys
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parents[1] / "tests"
 
 
+# Seconds per module, measured 2026-11-24 on a 4-core machine, two modules at a time.
+SECONDS = {
+    "test_verify_operativo": 254, "test_ledger": 174, "test_doctor": 130, "test_run_local": 105, "test_guard": 100,
+    "test_verify": 80, "test_dashboard": 72, "test_hooks": 37, "test_guard_corrections": 26, "test_copier": 13,
+    "test_ux_gate": 10, "test_first_commit": 10, "test_landing": 6, "test_verify_plan": 3, "test_process": 3,
+    "test_scripts": 2, "test_session_titles": 1, "test_release": 1, "test_ci": 1, "test_workflows": 0.5,
+    "test_paths": 0.5,
+}
+
+
+def weights(files: list[Path]) -> dict[str, float]:
+    """module -> its weight in seconds: SECONDS, else its size at the seconds per byte of the measured files."""
+    known = [f for f in files if f.stem in SECONDS]
+    size = sum(f.stat().st_size for f in known)
+    rate = sum(SECONDS[f.stem] for f in known) / size if size else 1.0
+    return {f.stem: SECONDS.get(f.stem, f.stat().st_size * rate) for f in files}
+
+
 def shards(k: int) -> list[list[str]]:
-    files = sorted(TESTS.glob("test_*.py"), key=lambda p: (-p.stat().st_size, p.name))
+    files = list(TESTS.glob("test_*.py"))
+    weight = weights(files)
     bins: list[list[str]] = [[] for _ in range(k)]
-    load = [0] * k
-    for f in files:
+    load = [0.0] * k
+    for name in sorted(weight, key=lambda n: (-weight[n], n)):
         i = load.index(min(load))
-        bins[i].append(f.stem)
-        load[i] += f.stat().st_size
+        bins[i].append(name)
+        load[i] += weight[name]
     return [sorted(b) for b in bins]
 
 
