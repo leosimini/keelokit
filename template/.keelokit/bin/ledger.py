@@ -2234,8 +2234,10 @@ def attribution_diffs(ctx: dict, in_range: list[dict] | None = None, on_trunk: b
         if c["story"] and not split_message(c["message"], c["trailers"])[1]:
             add("STORY_NO_BODY", c, f"closes {', '.join(c['story'])} with no body (what was decided, what was left out)")
     for c, branch, lost in squashes(ctx, in_range):
+        fix = (f" (on the trunk: `python3 .keelokit/bin/ledger.py correct {c['sha']} --story <ID> --evidence "
+               f"\"squash of {branch}\"` for each, then `ledger.py backfill --accept`)") if on_trunk else ""
         add("SQUASH_LOST_TRAILERS", c, f"its tree is the tip of {branch}, which is not integrated: a squash of it "
-            f"that lost {', '.join(lost)}; carry every Story: and Part-of: of the branch in its last paragraph")
+            f"that lost {', '.join(lost)}; carry every Story: and Part-of: of the branch in its last paragraph{fix}")
     return diffs
 
 
@@ -2261,8 +2263,9 @@ def trees_of(shas: list[str]) -> dict[str, str]:
 def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]]]:
     """(commit, origin/<branch>, lost) for each non-merge commit of `in_range` whose tree is the tree of the tip of
     an origin branch that `ctx["tip"]` does not reach (a squash of that branch, JOUNA's trains) and that, with its
-    ancestors in the range, lacks a Story: or Part-of: of that branch's own commits (those the tip does not reach).
-    A branch's Story: must stay a Story:; its Part-of: is kept by either. Two git calls, plus one log when a tree
+    ancestors in the range made since the branch forked (those the branch does not reach: a rebase merge's
+    copies), lacks a Story: or Part-of: of that branch's own commits (those the tip does not reach). A branch's
+    Story: must stay a Story:; its Part-of: is kept by either, and by an active correction row naming the commit. Two git calls, plus one log when a tree
     matches."""
     tip, graph = ctx.get("tip"), ctx["graph"]
     branches = origin_branches(ctx.get("refs") or {}, ctx.get("trunk") or "")
@@ -2284,13 +2287,18 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
     tips = sorted({loose[name] for _, name in matched})
     own = {c["sha"]: c for c in read_trunk_log(tips[0], (*tips[1:], "--not", tip))}
     ranged = {c["sha"]: c for c in in_range}
+    rowed: dict[str, set] = {}
+    for r in (ctx.get("corrections") or {}).get("active", ()):
+        rowed.setdefault(r.get("commit"), set()).add(r.get("story"))
     found = []
     for c, name in matched:
         mine = reach_until(graph, [loose[name]], reach)
         stories = {i for sha in mine if sha in own for i in own[sha]["story"]}
         parts = {i for sha in mine if sha in own for i in own[sha]["part_of"]} - stories
-        kept = [ranged[sha] for sha in reach_until(graph, [c["sha"]], set(graph) - set(ranged))]
-        kept_story = {i for k in kept for i in k["story"]}
+        forked = set(first_reach(graph, [loose[name]]))
+        kept = [ranged[sha] for sha in reach_until(graph, [c["sha"]], (set(graph) - set(ranged)) | forked)]
+        rows = rowed.get(c["sha"], set())
+        kept_story = {i for k in kept for i in k["story"]} | rows
         kept_any = kept_story | {i for k in kept for i in k["part_of"]}
         lost = [f"Story: {i}" for i in sorted(stories - kept_story)] + [f"Part-of: {i}" for i in sorted(parts - kept_any)]
         if lost:
@@ -3056,8 +3064,9 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
         tip = commit_of(parts[1])
         if tip is None:
             continue  # a deletion pushes nothing
-        exclude = [c for c in {commit_of(parts[3]), commit_of(f"refs/remotes/origin/{trunk}"),
-                               commit_of(f"refs/remotes/{remote}/{trunk}") if not remote.startswith("-") else None}
+        # What the remote this push goes to already has: its sha, and its remote-tracking trunk when it is a name.
+        named = remote and not remote.startswith("-") and "/" not in remote and ":" not in remote
+        exclude = [c for c in {commit_of(parts[3]), commit_of(f"refs/remotes/{remote}/{trunk}") if named else None}
                    if c]
         rctx = range_ctx(state, cfg, tip, exclude)
         if rctx is not None:
