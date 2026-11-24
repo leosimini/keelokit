@@ -1398,3 +1398,24 @@ exit 0
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EstimateEndToEndTest(VerifyFixture):
+    """FLEET-002 through the real verify.sh: the history records seconds per step id, the run says its estimate,
+    and the state carries the figures status.py turns into the range left."""
+
+    def test_FLEET_002_S1_S2_the_verify_says_no_estimate_then_a_range_from_its_own_runs(self):
+        self.commit_change()
+        first = self.verify()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertIn("Estimate: no estimate yet (0 past runs like this one on this machine; it needs 3).", first.stdout)
+        durations = self.history()[-1]["durations"]
+        self.assertIn("unit", durations)
+        self.assertTrue(all(isinstance(v, int) and v >= 0 for v in durations.values()), durations)
+        for _ in range(2):
+            self.assertEqual(self.verify().returncode, 0)
+        fourth = self.verify()
+        self.assertIn("Estimate: about 0–1 min (from 3 runs", fourth.stdout)
+        pairs = self.state()["estimate"].split()
+        self.assertIn("unit:0:0", pairs)
+        self.assertTrue(self.state()["step_id"] and self.state()["step_since"].isdigit(), self.state())

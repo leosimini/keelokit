@@ -53,3 +53,25 @@ Scenario: [S4] While running
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line,
 `Story: FLEET-002` trailer, addendum if the result differs.
+
+## Addendum — 2026-11-24
+What was built differs from the text above in these points (the smallest option consistent with the story):
+- **`estimate`, not `plan`.** `verify_tools.py plan`'s output is the step list verify.sh reads, and it runs
+  before the memory plan picks the workers. The range comes from a new `verify_tools.py estimate HISTORY --steps
+  --level --workers`, called right after the memory plan; verify.sh prints it as `Estimate: about 55–80 min (from
+  12 runs).` Not for a preflight (it stops long before the plan's end).
+- **Which runs count.** Green, whole runs (not partial, `--packages`, narrowed, or a rerun that kept passes) of the
+  same level, the newest 20. A red run stopped early and a partial one ran less than its plan, so their seconds
+  would pull the range down. "This machine" is this clone's history (it lives in the git common dir).
+- **Comparable workers.** The workers FLEET-001 planned must be equal for every worker step in this plan (`unit`,
+  `integration`); none planned (the runner's default) is a kind of its own. Fewer than 3 comparable runs is "no
+  estimate yet (N past runs like this one on this machine, M with other workers; it needs 3)".
+- **What is summed.** Each planned step's median (low end) and 90th percentile (high end, linear interpolation),
+  plus the setup steps the history has (`git`, `prisma`; `db` with integration). A planned step with no samples is
+  named ("no history yet for e2e"). Low end rounded down, high end up.
+- **Seconds per step id.** The history's `steps` were keyed by title; each line now also has `durations` (id →
+  seconds, e2e-stack summed over apps). Lines written before are read through the titles, so the history the
+  machine already has counts from the first run.
+- **Range left.** The state file gains `step_id`, `step_since` and `estimate` (id:median:p90 per step in run order).
+  `status.py` subtracts the time spent in the current step from its figures (none once past them), adds the later
+  steps whole, and says nothing about time when a figure is missing or doesn't parse.
