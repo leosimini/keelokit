@@ -1396,6 +1396,7 @@ LEDGER_1 = {  # the rule as the story states it (backlog/stories/LEDGER-012-rule
     "enforced_by": ["git-hook:commit-msg", "git-hook:pre-push", "ci:checks", "script:.keelokit/bin/ledger.py"],
 }
 LEDGER_HOOKS = {"commit-msg": "hook msg", "prepare-commit-msg": "hook prepare", "pre-push": "prepush"}
+LEDGER_ON = "on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n"
 LEDGER_CI = """\
 name: CI
 on:
@@ -1956,6 +1957,95 @@ class DoctorLedgerRuleTest(LedgerRepo, unittest.TestCase):
                 line = self.ledger_line(self.doctor().stdout)
                 self.assertIn('enforce = "block"', line)
                 self.assertNotIn("recommend", line)
+
+    # ── round 2: the breaker's findings (docs/escapes.md ESC-226, ESC-227) ──
+    def ci_out(self, ci: str, **files: str) -> str:
+        """The doctor's output with this ci.yml and these other workflows (removed again afterwards)."""
+        self.write(".github/workflows/ci.yml", ci)
+        for name, text in files.items():
+            self.write(f".github/workflows/{name}", text)
+        try:
+            return self.doctor("--ci").stdout
+        finally:
+            for name in files:
+                (self.root / ".github/workflows" / name).unlink()
+
+    def with_step(self, step: str) -> str:
+        return ledger_ci().replace(LEDGER_STEP, f"      - name: Ledger attribution\n        run: {step}\n")
+
+    def test_LEDGER_012_S2_ESC_226_a_live_ledger_step_in_other_shapes_is_alive(self):
+        """ESC-226: GitHub's default shell is `bash -e`: a failing check stops the step before `&&`, `;` or a later
+        line, `2>&1` is a redirection, and a guard that exits 1 first fails the job too. None of these is an error."""
+        cmd = "python3 .keelokit/bin/ledger.py check --ci"
+        cases = {"&& echo ok": self.with_step(f"{cmd} && echo ok"),
+                 "2>&1": self.with_step(f"{cmd} 2>&1"),
+                 "; echo done": self.with_step(f"{cmd}; echo done"),
+                 "a guard that exits 1 first": self.with_step(
+                     f"|\n          if [ ! -f .keelokit/bin/ledger.py ]; then\n            exit 1\n          fi\n          {cmd}")}
+        for why, ci in cases.items():
+            with self.subTest(why):
+                out = self.ci_out(ci)
+                self.assertNotRegex(out, r"rule LEDGER-1\b", out)
+
+    def test_LEDGER_012_S2_ESC_226_a_pull_request_workflow_with_the_step_and_a_called_workflow(self):
+        """ESC-226: another workflow that also runs the check (on: pull_request, sorted first) does not take the
+        snapshot jobs away from ci.yml; and a reusable workflow (on: workflow_call) that ci.yml calls on push and
+        pull_request holds a live step."""
+        job = ("  attribution:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps:\n"
+               "      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n"
+               "      - run: python3 .keelokit/bin/ledger.py check --ci\n")
+        with self.subTest("aa-pr.yml"):
+            out = self.ci_out(ledger_ci(), **{"aa-pr.yml": "name: PR ledger\non: pull_request\njobs:\n" + job})
+            self.assertNotRegex(out, r"rule LEDGER-1\b", out)
+        with self.subTest("workflow_call"):
+            ci = ledger_ci().replace(LEDGER_STEP, "").replace(LEDGER_ON, "on: [push, pull_request]\n").replace(
+                "  ledger-config:\n", "  ledger:\n    uses: ./.github/workflows/ledger.yml\n  ledger-config:\n", 1)
+            out = self.ci_out(ci, **{"ledger.yml": "name: Ledger\non:\n  workflow_call:\njobs:\n" + job})
+            self.assertNotRegex(out, r"rule LEDGER-1\b", out)
+
+    def test_LEDGER_012_S1_ESC_226_a_hook_that_calls_ledger_py_another_way_is_alive(self):
+        """ESC-226: a call guarded by `$#` (the `#` of a shell variable is no comment) and one through the repo's top
+        level both run `ledger.py hook msg`."""
+        saved = (self.root / ".githooks/commit-msg").read_text()
+        exec_line = 'exec python3 .keelokit/bin/ledger.py hook msg "$@"'
+        self.assertIn(exec_line, saved)
+        for why, line in {"$# guard": f"[ $# -ge 1 ] && {exec_line}",
+                          "top level": 'exec python3 "$(git rev-parse --show-toplevel)/.keelokit/bin/ledger.py" hook msg "$@"'}.items():
+            with self.subTest(why):
+                self.hook("commit-msg", saved.replace(exec_line, line))
+                out = self.doctor("--ci").stdout
+                self.hook("commit-msg", saved)
+                self.assertNotRegex(out, r"rule LEDGER-1\b", out)
+
+    def test_LEDGER_012_S2_ESC_227_a_step_whose_failure_is_lost_is_not_alive(self):
+        """ESC-227: under `bash -e` without pipefail a pipe's status is its last command's (`| tee`), and a folded
+        `run: >-` joins its next line `|| true` onto the command."""
+        cmd = "python3 .keelokit/bin/ledger.py check --ci"
+        for why, ci in {"| tee": self.with_step(f"{cmd} | tee ledger.log"),
+                        "folded || true": self.with_step(f">-\n          {cmd}\n          || true")}.items():
+            with self.subTest(why):
+                out = self.ci_out(ci)
+                self.assert_reported(out, "ledger.py check --ci")
+
+    def test_LEDGER_012_S2_ESC_227_a_workflow_that_never_runs_for_the_trunk_is_not_the_ci(self):
+        """ESC-227: push only for tags, `push` only in a comment, or `push` only as a workflow_dispatch input: the
+        workflow never runs for a commit or a pull request."""
+        for why, on in {"tags only": "on:\n  push:\n    tags: ['v*']\n",
+                        "push in a comment": "on:\n  workflow_dispatch:\n    # push: later, once it is fast\n",
+                        "push as an input": "on:\n  workflow_dispatch:\n    inputs:\n      push:\n"
+                                            "        description: Push the result\n        type: boolean\n"}.items():
+            with self.subTest(why):
+                out = self.ci_out(ledger_ci().replace(LEDGER_ON, on))
+                self.assert_reported(out, "ledger.py check --ci")
+
+    def test_LEDGER_012_S2_ESC_227_snapshot_jobs_in_a_pull_request_only_workflow_never_run(self):
+        """ESC-227: the only CI workflow runs on pull_request alone: its snapshot jobs never see a push to the trunk,
+        unless the snapshot is off."""
+        ci = ledger_ci().replace(LEDGER_ON, "on: pull_request\n")
+        self.assert_reported(self.ci_out(ci), "ledger-snapshot")
+        self.state(snapshot="")
+        out = self.ci_out(ci)
+        self.assertEqual(self.rule_lines(out), [], out)
 
 
 class LedgerRuleShipsTest(unittest.TestCase):
