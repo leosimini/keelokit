@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "The CI snapshot, the time each commit reached the trunk, and the deploy branches"
 wave = 16
 depends_on = ["LEDGER-010"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", "template/.github/workflows/release.yml.jinja", "skills/ship-setup/SKILL.md", "tests/test_ledger.py", "tests/test_ci.py", "scripts/test-template.sh", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", "template/.github/workflows/release.yml.jinja", "skills/ship-setup/SKILL.md", "tests/test_ledger.py", "tests/test_ci.py", "scripts/test-template.sh", "docs/design.md", "CHANGELOG.md", "template/.keelokit/verify-map.toml", "scripts/unit_shard.py"]
 dimensions = ["logic", "ops", "data", "nfr"]
 invariants = []
 origin = "docs/ledger.md — Mechanisms (CI snapshot, deploy branches); premortem failures 8 and 9"
@@ -79,3 +79,41 @@ Scenario: [S7] The whole walk in a generated project
 `scripts/verify.sh` and `scripts/test-template.sh` green, every scenario covered by a test titled with its
 id, `docs/design.md` mentions the snapshot branch, a CHANGELOG line, `Story: LEDGER-011` trailer, addendum
 if the result differs. S7 is the gate of phase 2.
+
+## Addendum — 2026-11-24
+
+Built as specified, with these differences and decisions (none changes a product rule):
+
+- **The switch is a gate job, not a missing job (S6).** A workflow cannot read `.keelokit/state.toml` when GitHub
+  plans its jobs, and copier renders the workflows before the project's state.toml exists. So a tiny
+  `ledger-config` job (read-only) prints `ledger.py snapshot --branch`, and `ledger-snapshot` runs only when that
+  is not empty: with `snapshot = ""` the writing job is skipped, never gets a write token, and the ledger reads
+  no snapshot.
+- **Every commit of a push is exact; a missed push is filled in, not exact.** The CI passes
+  `--push "$BEFORE..$AFTER"` (`github.event.before`): every first-parent commit that push brought reached the trunk
+  at the time the CI saw it (`exact = true`). GitHub's `concurrency` replaces a pending run with a newer one, so a
+  push can have no run of its own: the next run records its first-parent commits too, with its own time and
+  `exact = false` (an upper bound), so no move is lost. The first snapshot records only the trunk's head.
+- **A stale run never writes an older reading.** When the branch's `ledger.json` is of a newer trunk (a commit the
+  run does not have, or a descendant of its trunk), the run keeps it and adds only its moves. moves.toml is
+  merged (exact over not exact, then the earlier time) and kept oldest first along the trunk.
+- **The time comes from `KEELOKIT_SNAPSHOT_AT`** (epoch seconds or ISO 8601), the current time when unset, so
+  tests never assert the wall clock.
+- **The deploy move is a ledger command**, `ledger.py deploy <staging|production> <commit>`, the deploy jobs'
+  last step, only when the Fly deploy really ran. A rollback is the release workflow run again from an older tag:
+  `workflow_dispatch` was added to `release.yml.jinja` (the tag check refuses any other ref). `deploy-staging`
+  lives in `ci.yml.jinja`, so that file moves `deploy/staging`.
+- **The shallow reader proves both ways.** It starts from the snapshot's records (`as_of` its commit) and changes
+  them only where this clone proves it: a `Story:` commit or a revert after the snapshot's commit, a deploy branch
+  that moved (contained or not, else a forward move from the snapshot's head; otherwise `unknown`), a new final tag.
+  The snapshot's `ledger.json` carries the refs it saw (`snapshot.refs`) for that. `SNAPSHOT_BEHIND` says the
+  commit, when the CI saw it and how many commits behind it is. `in-progress` is as of the snapshot.
+- **`history --ensure` keeps the last quarter of its cap (at most 3 s)** for fetching the snapshot branch when
+  the history stays incomplete; the line still names the whole cap.
+- **The snapshot branch is no branch of the project.** `origin/keelokit/ledger` is left out of every reading of
+  origin's branches (in-progress, squashes, the PR check, the cut detection), so its orphan history is never read
+  as trunk work.
+- The template's `verify-map.toml` lists the two new jobs as `ci_only` (CI-2); the story's `touches` gained it and
+  `scripts/unit_shard.py`.
+- Not done: the snapshot is the CI's only; run by hand from a clone with the git hooks on, the pre-push refuses
+  its push (it is not the checked-out commit), which is intended.

@@ -151,6 +151,19 @@ attempts (`Dropped:` commits on any origin branch, also in `--json` as `attempts
 next` lists the ready stories nobody works on, by wave and id; `ledger.py --release vX.Y.Z` the stories whose
 commit is in that tag and not in the previous version tag.
 
+The CI keeps two facts git does not (LEDGER-011). The orphan branch `keelokit/ledger` (`[ledger] snapshot`; `""`
+turns it off) holds `LEDGER.md` and `ledger.json` of the trunk's latest commit and `moves.toml`, the time the CI saw
+each push reach the trunk: the template's `ledger-snapshot` job runs `ledger.py snapshot` on every push to main and
+every tag, alone with `contents: write`, one run at a time. It commits with plumbing in a temporary index (no
+checkout is touched), starts again from the new tip when its push is rejected (5 tries), never puts an older
+trunk's reading over a newer one, and fills in a push whose own run never recorded it, marked not exact. A story
+then has `since_exact = true` from `moves.toml`; a shallow session whose history fetch is cut reads the snapshot
+(`history = "snapshot:<sha>"`, each record `as_of` that commit) and proves what it can since (a later `Story:` or
+revert, a moved deploy branch or a new tag; unknown otherwise); `history --ensure` fetches it in the last quarter of
+its cap. The snapshot branch is never read as a branch of the project. The deploy jobs run `ledger.py deploy
+<staging|production> <commit>` once a deploy succeeded: `deploy/staging` and `deploy/production` point at what each
+environment runs, backwards too on a rollback (the release workflow run again from an older tag).
+
 One reader: the doctor, the dashboard and `status.py` take story states from `ledger.py --json` and compute
 none of their own, so they never disagree (LEDGER-006). The doctor's done count is the ledger's `on-trunk` or
 later; the dashboard shows a story's version and work in progress on another machine (`Part-of:` commits on an
