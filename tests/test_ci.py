@@ -204,7 +204,8 @@ class LedgerSnapshotJobTest(unittest.TestCase):
         """keelokit/ledger and deploy/* are pushed by the CI: no workflow may run on them (no loop)."""
         for rel in (".github/workflows/ci.yml", self.CI, self.RELEASE):
             with self.subTest(workflow=rel):
-                head = self.text(rel).split("\njobs:\n", 1)[0]
+                head = "\n".join(line for line in self.text(rel).split("\njobs:\n", 1)[0].splitlines()
+                                 if not line.lstrip().startswith("#"))
                 self.assertNotIn("branches-ignore", head)
                 for branches in re.findall(r"branches: \[([^\]]*)\]", head):
                     self.assertEqual([b.strip() for b in branches.split(",")], ["main"], head)
