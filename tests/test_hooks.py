@@ -600,13 +600,16 @@ class CommitHooks(unittest.TestCase):
             "source merge": ("Merge branch 'side'\n", ("merge",)),
             "only comments (the editor is about to open)": ("\n# Please enter the commit message\n#\n", ()),
             "lower-case trailer": ("x\n\npart-of: AUTH-001\n", ("message",)),
-            "dropped": ("drop(AUTH-001): no\n\nDropped: AUTH-001\n", ("message",)),
         }
         for name, (text, args) in cases.items():
             with self.subTest(name):
                 r, after = self.hook("prepare", text, *args)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual(after, text)
+        # Dropped: is no attribution (ledger.py check does not count it): prepare adds the taken story's Part-of.
+        r, after = self.hook("prepare", "drop(AUTH-001): no\n\nDropped: AUTH-001\n", "message")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(after, "drop(AUTH-001): no\n\nDropped: AUTH-001\nPart-of: AUTH-001\n")
         self.git("config", "--worktree", "keelokit.story", "not an id")
         r, after = self.hook("prepare", "x\n", "message")
         self.assertEqual((r.returncode, after), (0, "x\n"), r.stderr)
@@ -725,6 +728,20 @@ class CommitHooks(unittest.TestCase):
                 self.assert_refused(r, "UNKNOWN_STORY", before)
                 self.assertIn(sid, r.stderr)
 
+    def test_LEDGER_009_S2_a_dropped_only_message_without_a_story_is_unattributed(self):
+        """`Dropped:` alone attributes nothing (on the trunk `ledger.py check` would say UNATTRIBUTED)."""
+        before = self.head()
+        r = self.commit("drop(AUTH-001): no\n\nDropped: AUTH-001\n")
+        self.assert_refused(r, "UNATTRIBUTED", before)
+
+    def test_LEDGER_009_S5_an_untracked_story_file_is_not_known(self):
+        """Only staged or committed story files count: an untracked one never reaches the trunk `check` reads."""
+        (self.proj / "backlog/stories/NEW-003-z.md").write_text(STORY.format(id="NEW-003", epic="NEW"))
+        before = self.head()
+        r = self.commit("x\n\nPart-of: NEW-003\n")
+        self.assert_refused(r, "UNKNOWN_STORY", before)
+        self.assertIn("NEW-003", r.stderr)
+
     def test_LEDGER_009_S5_a_story_only_in_the_work_tree_is_known(self):
         self.assert_hooks_live()
         new = self.proj / "backlog/stories/NEW-002-y.md"
@@ -788,6 +805,114 @@ class CommitHooks(unittest.TestCase):
         before = self.head()
         self.assert_refused(self.commit("fixup! x\n\nNo-story: misc — y\n"), "BAD_CATEGORY", before)
 
+    # breaker round 1 ----------------------------------------------------------------------------------------
+
+    def log_trailer(self, key, cwd=None):
+        """The values of `key` as git log's %(trailers) reads them in HEAD's stored message."""
+        out = self.git("log", "-1", f"--format=%(trailers:key={key},valueonly)", cwd=cwd).stdout
+        return [l.strip() for l in out.splitlines() if l.strip()]
+
+    def test_LEDGER_009_S1_ESC_189_a_dashes_line_does_not_hide_part_of(self):
+        """interpret-trailers takes a `---` line for a patch divider and writes Part-of above it; git log does not,
+        so the stored Part-of would be outside the trailers git (and ledger.py check) reads."""
+        self.take()
+        self.stage()
+        r = self.git("commit", "-q", "-m", "x", "-m", "body\n---\nnotes", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.log_trailer("Part-of"), ["AUTH-001"], self.message())
+
+    def test_LEDGER_009_S2_ESC_189_part_of_above_a_dashes_line_is_not_accepted_unread(self):
+        """Without a story taken, `Part-of:` above a `---` line is no trailer for git log: the hook refuses it, or the
+        stored message's trailers carry it."""
+        before = self.head()
+        self.stage()
+        r = self.git("commit", "-q", "-m", "x", "-m", "Part-of: AUTH-001\n---\nnotes", check=False)
+        if r.returncode == 0:
+            self.assertEqual(self.log_trailer("Part-of"), ["AUTH-001"],
+                             f"accepted, but git log reads no Part-of:\n{self.message()}")
+        else:
+            self.assertEqual(self.head(), before)
+            self.assertIn("Keelokit: ", r.stderr)
+
+    def test_LEDGER_009_S2_ESC_190_a_hash_line_in_a_dash_m_message_is_kept_and_passes(self):
+        """Without the editor git's cleanup is `whitespace`: a `#` line stays in the message, it is no comment."""
+        for args, key in ((("-m", "#123 fix", "-m", "Part-of: AUTH-001"), "Part-of"),
+                          (("-m", "fix", "-m", "#42 why", "-m", "Story: AUTH-001"), "Story")):
+            with self.subTest(args=args):
+                self.stage()
+                r = self.git("commit", "-q", *args, check=False)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn(args[1] if args[1].startswith("#") else args[3], self.message())
+                self.assertEqual(self.log_trailer(key), ["AUTH-001"])
+        f = self.tmp / "hash-msg"
+        f.write_text("#7 from a file\n\nPart-of: AUTH-001\n")
+        self.stage()
+        r = self.git("commit", "-q", "-F", str(f), check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_LEDGER_009_S1_an_aborted_editor_commit_prints_nothing_from_keelokit(self):
+        """git's own "Aborting commit due to empty commit message" is enough."""
+        self.assert_hooks_live()
+        self.take()
+        for level in ("block", "warn"):
+            with self.subTest(enforce=level):
+                self.enforce(level)
+                r = self.commit(None, GIT_EDITOR="true")
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("Keelokit", r.stdout + r.stderr)
+
+    def test_LEDGER_009_S2_ESC_189_ESC_190_the_hook_and_ledger_check_agree(self):
+        """On the trunk after `[ledger] since`, a commit the hook accepts has no attribution error in
+        `ledger.py check`, and one it refuses (made again with --no-verify) has one: both read the trailers git reads."""
+        self.assert_hooks_live()
+        self.git("checkout", "-q", "main")
+        since = self.head()
+        self.enforce("block", f'since = "{since}"\n')
+        editor = self.tmp / "editor-agree.sh"
+        editor.write_text("#!/bin/sh\nprintf 'from the editor\\n\\nPart-of: AUTH-001\\n' | cat - \"$1\" > \"$1.new\" "
+                          "&& mv \"$1.new\" \"$1\"\n")
+        editor.chmod(0o755)
+        crlf = self.tmp / "crlf-msg"
+        crlf.write_bytes(b"x\r\n\r\nThe body.\r\n\r\nPart-of: AUTH-001\r\n")
+        corpus = {  # name: (story taken, commit args, extra env)
+            "dashes, taken": (True, ("-m", "x", "-m", "body\n---\nnotes"), {}),
+            "Part-of above dashes": (False, ("-m", "x", "-m", "Part-of: AUTH-001\n---\nnotes"), {}),
+            "dashes in the body, trailer last": (False, ("-m", "x", "-m", "a\n---\nb", "-m", "Part-of: AUTH-001"), {}),
+            "hash subject": (False, ("-m", "#123 fix", "-m", "Part-of: AUTH-001"), {}),
+            "hash body, Story": (False, ("-m", "fix", "-m", "#42 why", "-m", "Story: AUTH-001"), {}),
+            "hash line, nothing else": (False, ("-m", "#5 fix"), {}),
+            "editor -v (scissors)": (False, ("-v",), {"GIT_EDITOR": str(editor)}),
+            "editor -v, taken": (True, ("-v",), {"GIT_EDITOR": "sh -c 'printf \"subject only\\n\" > \"$1\"' -"}),
+            "CRLF": (False, ("-F", str(crlf)), {}),
+            "plain, unattributed": (False, ("-m", "x"), {}),
+            "Part-of in its own paragraph": (False, ("-m", "x", "-m", "Part-of: AUTH-001", "-m", COAUTHOR), {}),
+        }
+        codes = ("UNATTRIBUTED", "SQUASH_LOST_TRAILERS", "BAD_CATEGORY", "UNKNOWN_STORY", "STORY_NO_BODY")
+        for name, (taken, args, extra) in corpus.items():
+            with self.subTest(name):
+                self.enforce("block", f'since = "{since}"\n')  # the reset below restores the tracked state.toml
+                if taken:
+                    self.take()
+                else:
+                    self.git("config", "--worktree", "--unset-all", "keelokit.story", check=False)
+                before = self.head()
+                self.stage()
+                r = self.git("commit", "-q", *args, check=False, **extra)
+                accepted = r.returncode == 0
+                if not accepted:
+                    self.assertEqual(self.head(), before)
+                    r2 = self.git("commit", "-q", "--no-verify", *args, check=False, **extra)
+                    self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+                sha = self.head()
+                chk = subprocess.run(["python3", ".keelokit/bin/ledger.py", "check"], cwd=self.proj, env=self.env(),
+                                     capture_output=True, text=True, timeout=60)
+                mine = [l for l in chk.stdout.splitlines() if len(l.split()) > 2 and l.split()[1] in codes
+                        and sha.startswith(l.split()[2])]
+                self.assertEqual(accepted, not mine,
+                                 f"hook {'accepted' if accepted else 'refused'}: {r.stderr}\ncheck: {mine}\n"
+                                 f"stored: {self.message()!r}\n{chk.stdout}{chk.stderr}")
+                self.git("reset", "-q", "--hard", before)
+                self.git("config", "--worktree", "--unset-all", "keelokit.story", check=False)
 
 class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
     """LEDGER-009.S7: a fresh clone with .githooks/ and no core.hooksPath gets it set at the session start."""
