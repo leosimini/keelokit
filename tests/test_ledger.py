@@ -4548,6 +4548,21 @@ class LedgerPrepushTest(LedgerPrepushCase):
         self.assertEqual(prepush(self, repo, f"(delete) {ZERO} refs/heads/main {repo.sha('origin/main')}").returncode, 0)
         self.assertEqual(prepush(self, repo).returncode, 0)
 
+    def test_LEDGER_010_S1_a_push_to_another_remote_is_checked_against_that_remote_not_origin(self):
+        """origin's main ahead of the remote pushed to must not exempt commits that remote lacks (reviewer, round 1)."""
+        repo = self.project("AUTH-001")
+        other = repo.tmp / "other.git"
+        repo.run(["git", "init", "-q", "--bare", "-b", "main", str(other)], repo.tmp)
+        repo.git("remote", "add", "fork", f"file://{other}")
+        repo.git("push", "-q", "fork", "main")
+        repo.git("fetch", "-q", "fork")
+        loose = repo.commit("chore: loose")
+        repo.publish()  # origin has it now; fork does not
+        fork_main = repo.sha("fork/main")
+        r = prepush(self, repo, f"refs/heads/main {repo.sha()} refs/heads/main {fork_main}", remote="fork")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+
     def test_LEDGER_010_S6_the_trunk_is_ledger_trunk_not_always_main(self):
         repo = self.project("AUTH-001")
         since = repo.sha()
@@ -4614,6 +4629,28 @@ class LedgerSquashTest(LedgerPrepushCase):
         repo.commit("docs: after\n\nNo-story: docs")
         r = prepush(self, repo, to_main(repo))
         self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+
+    def test_LEDGER_010_S3_an_earlier_trunk_commit_with_the_trailer_does_not_hide_the_loss_INV_005(self):
+        """Only commits made since the branch forked count as keeping its trailers (reviewer, round 1)."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.commit("wip: an early part on the trunk\n\nPart-of: AUTH-006")
+        repo.publish()
+        repo.on_branch("train-4", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        self.squash(repo, "train-4", "Train 4 (#10)\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertIn("Part-of: AUTH-006", details(data, "SQUASH_LOST_TRAILERS"))
+        self.assertIn("ledger.py correct", details(data, "SQUASH_LOST_TRAILERS"), "on the trunk it says how to fix it")
+
+    def test_LEDGER_010_S3_an_approved_correction_of_the_squash_clears_it_INV_005(self):
+        repo = self.branch()
+        squash = self.squash(repo, "train-3", "Train 3 (#9)\n\nWhy.\n\nStory: AUTH-007")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-006", commit=squash, kind="late", evidence="squash of train-3"))})
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
 
 
 class LedgerCheckCiTest(LedgerPrepushCase):
