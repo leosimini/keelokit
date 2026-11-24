@@ -1396,5 +1396,40 @@ exit 0
         self.assertEqual(self.called(), [])
 
 
+class EstimateEndToEndTest(VerifyFixture):
+    """FLEET-002 through the real verify.sh: the history records seconds per step id, the run says its estimate,
+    and the state carries the figures status.py turns into the range left."""
+
+    def test_FLEET_002_S1_S2_the_verify_says_no_estimate_then_a_range_from_its_own_runs(self):
+        self.commit_change()
+        first = self.verify()
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertIn("Estimate: no estimate yet (0 past runs like this one on this machine; it needs 3).", first.stdout)
+        durations = self.history()[-1]["durations"]
+        self.assertIn("unit", durations)
+        self.assertTrue(all(isinstance(v, int) and v >= 0 for v in durations.values()), durations)
+        for _ in range(2):
+            self.assertEqual(self.verify().returncode, 0)
+        fourth = self.verify()
+        self.assertIn("Estimate: about 0–1 min (from 3 runs", fourth.stdout)
+        pairs = self.state()["estimate"].split()
+        self.assertIn("unit:0:0", pairs)
+        self.assertTrue(self.state()["step_id"] and self.state()["step_since"].isdigit(), self.state())
+
+    def test_FLEET_002_S1_a_narrowed_rerun_estimates_only_what_it_reruns(self):
+        """FLEET-002.S1 (review): --rerun-failed after a red build reruns build, e2e and audit, not lint or unit."""
+        self.commit_change()
+        for _ in range(3):
+            self.assertEqual(self.verify().returncode, 0)
+        self.assertEqual(self.verify(FAIL_ON="run build").returncode, 1)
+        r = self.verify("--rerun-failed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Rerun of what failed or never ran", r.stdout)
+        pairs = [p.split(":")[0] for p in self.state()["estimate"].split()]
+        self.assertIn("build", pairs)
+        self.assertNotIn("lint", pairs)
+        self.assertNotIn("unit", pairs)
+
+
 if __name__ == "__main__":
     unittest.main()
