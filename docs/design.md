@@ -37,6 +37,21 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `verify-map.toml` — which `pnpm verify` step runs each CI job; the doctor keeps them in step.
   `verify-routing.toml` — which files need which steps; `red-causes.toml` — the project's known causes of a red.
   `bin/verify_tools.py` plans, times and diagnoses; `scripts/verify.sh` keeps the run state, the seal and the history.
+  The memory plan (FLEET-001): each step's peak memory goes into the history (`peak_mb`, with its source). The usual
+  source is `rss`, the largest resident size of one process of the step, which is one worker's; `cgroup`, the step's
+  `memory.peak`, applies only where the own cgroup allows a child with memory accounting (cgroup v2's
+  no-internal-processes rule makes that rare), and is divided by the workers the plan passed. Before the first tool
+  runs, `verify_tools.py workers` reads the memory available (`MemAvailable`, or the cgroup's `memory.max` minus
+  `memory.current` plus its reclaimable `inactive_file` cache, the lower) and plans the worker steps, `unit` and
+  `integration` (`integration` only with an API; e2e scripts build in the same command, so their peak is not a
+  worker's and nothing is planned or refused for them). The per-worker figure is the largest of the last 10 history
+  entries that measured the step, so a small run never erases the real peak; `[verify] memory_per_worker_mb`
+  overrides it. Workers are `min(cores, available × 0.8 / peak)`, at least 1, passed through the runner's own flag
+  (`--maxWorkers`) only when memory is what limits them; a planned unit step (and the clock rerun) also runs with
+  `--workspace-concurrency=1`, so packages go one after another and the workers are the machine's, not each package's.
+  The cgroup limits read are cgroup v2 only. A step whose one worker needs more than is available stops
+  the run in seconds with exit 3 and no history line, like a busy machine (`VERIFY_FORCE=1` runs it with 1 worker);
+  with no measure and no override, or no `/proc` (macOS), nothing changes.
 - `harness/agent-brief.md` — the one page every parallel session is told to read.
 - `[landing] policy` in `state.toml` — how finished work reaches main. `direct` (the default, and
   what an absent key means): each session rebases, verifies and pushes main itself. `convoy`: each

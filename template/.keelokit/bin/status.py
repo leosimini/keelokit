@@ -167,6 +167,21 @@ def verify_line(common: Path) -> str:
     return f"verify: last {st.get('state')} (exit {st.get('rc')}) on {head}, {st.get('level')}"
 
 
+def workers_line(common: Path) -> str:
+    """The workers the last verify chose and why ("integration: 2 workers, 5.1 GB free, ..."); '' when it planned none."""
+    try:
+        history = (common / "keelokit-verify.history").read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    for raw in reversed(history):
+        try:
+            why = json.loads(raw).get("workers_why")
+        except (ValueError, AttributeError):
+            continue
+        return f"verify workers: {why}" if why else ""
+    return ""
+
+
 STATES = {"defined", "ready", "in-progress", "delivered", "unknown", "on-trunk", "in-version", "in-staging",
           "in-production"}  # docs/ledger.md, "States"
 
@@ -244,6 +259,9 @@ def main() -> int:
         lines.append("CI of main: " + ((res.stdout.strip().splitlines() or [res.stderr.strip() or "unknown"])[0]))
 
     lines.append(verify_line(lock.parent))
+    why = workers_line(lock.parent)
+    if why:
+        lines.append(why)
     # After the verify line, so the worktree lines above keep their room within the ten.
     local = {dict(l.split(" ", 1) for l in t if " " in l).get("branch", "").removeprefix("refs/heads/") for t in trees}
     lines.append(elsewhere(local - {""}))
