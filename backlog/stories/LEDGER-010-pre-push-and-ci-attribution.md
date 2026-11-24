@@ -86,11 +86,13 @@ Where the result goes beyond or differs from the text above:
   its own: a copy of one commit is a cherry-pick, and the same small change or revert is often made on the trunk
   too (ESC-202, ESC-203). So a one-commit branch squashed on the trunk is not caught. Only branches with a
   `Story:`/`Part-of:` of their own are read, and a patch only for a range commit that changes exactly the branch's
-  paths (ESC-204). Never from a branch under the unverified prefixes (`[verify] wip_branches`, `wip/` when unset,
+  paths (ESC-204); a branch costs git calls of its own only when its tip's tree, or a range commit's paths within
+  the paths it touches, match (ESC-245). Never from a branch under the unverified prefixes (`[verify] wip_branches`, `wip/` when unset,
   and `archive/`), whose work never lands as it is (ESC-241). A tree match does not count when the trunk already
   had that tree since the branch forked: a revert back to it (ESC-207). A branch's `Story:` must stay a `Story:` (a `Part-of:` would take the story off the trunk); its
   `Part-of:` is kept by either. What the squash keeps counts on it and on every trunk commit since the branch
-  forked, in the checked range or not, so the pre-push and `check` agree on the same history: a rebase merge, a
+  forked (the fork of its own oldest commits, not its merge base, which a sync merge of main moves: ESC-243,
+  ESC-244), in the checked range or not, so the pre-push and `check` agree on the same history: a rebase merge, a
   fix cherry-picked earlier, a branch stacked on one already squashed, a reapplied squash (ESC-238, ESC-239,
   ESC-242). A trunk commit before the fork does not count.
 - **Approved correction rows attribute the commit they name**, in `check`, in the summary's unattributed count
@@ -120,4 +122,5 @@ Where the result goes beyond or differs from the text above:
   squash that drops a `Story:`. Review and attack: reviewer round 1 (non-blocking, fixed), breaker round 1
   (ESC-198..ESC-201) and round 2 (ESC-202..ESC-205), each with its test; the fixture fix ESC-206 came from the
   PR's own CI. The coordinator's review of #30 ran another breaker pass on the squash check and found false
-  positives (ESC-207, ESC-238..ESC-242), each with its test; a last breaker pass on the squash check followed.
+  positives (ESC-207, ESC-238..ESC-242), each with its test; a last breaker pass on the squash check found two
+  more after a sync merge and a cost per open branch (ESC-243..ESC-245), each with its test.
