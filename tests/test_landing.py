@@ -321,8 +321,28 @@ class UnverifiedPrefixesTest(unittest.TestCase):
         self.git(self.root, "commit", "-q", "--allow-empty", "-m", "carried on from the abandoned attempt")
         r = self.push("HEAD:refs/heads/feature")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("unverified wip work", r.stderr)
+        self.assertIn("unverified archive work", r.stderr, "it names the kind of tip it found")
         self.assertFalse(self.verified(), "refused before any verify")
+
+    def tools(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["python3", ".keelokit/bin/verify_tools.py", *args], cwd=self.root,
+                              capture_output=True, text=True, env=self.env)
+
+    def test_LEDGER_008_S4_without_wip_branches_a_remote_that_cannot_be_listed_refuses_nothing_new(self):
+        """No wip_branches: the push gate never needed the listing, so its failure doesn't refuse every push;
+        archive tips this clone pushed (or tracks) still count."""
+        self.main_with(None)
+        unreachable = f"file://{self.tmp}/nowhere.git"
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "plain work")
+        plain = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.assertEqual(self.tools("wip-inside", "origin", plain, unreachable).returncode, 1, "nothing to refuse")
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "drop(AUTH-002): x\n\nDropped: AUTH-002")
+        tip = self.git(self.root, "rev-parse", "HEAD").strip()
+        self.assertEqual(self.tools("wip-record", tip, "archive").returncode, 0)
+        self.git(self.root, "commit", "-q", "--allow-empty", "-m", "carried on")
+        r = self.tools("wip-inside", "origin", self.git(self.root, "rev-parse", "HEAD").strip(), unreachable)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), [tip, "archive"])
 
 
 if __name__ == "__main__":

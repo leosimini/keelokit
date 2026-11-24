@@ -35,9 +35,9 @@ pushed=0 refused=0 lines=0 heads=0
 # Every unverified tip of this push is remembered before any other line is checked: a main listed first
 # can't carry wip work the same push is only now putting on the remote.
 while read -r local_ref local_sha remote_ref remote_sha; do
-  unverified "$remote_ref" >/dev/null || continue
+  kind=$(unverified "$remote_ref") || continue
   case $local_sha in *[!0]*) ;; *) continue ;; esac
-  python3 .keelokit/bin/verify_tools.py wip-record "$(git rev-parse --verify --quiet "$local_sha^{commit}" || echo "$local_sha")" </dev/null || true
+  python3 .keelokit/bin/verify_tools.py wip-record "$(git rev-parse --verify --quiet "$local_sha^{commit}" || echo "$local_sha")" "$kind" </dev/null || true
 done <<EOF_WIP
 $refs
 EOF_WIP
@@ -52,9 +52,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "pre-push: $remote_ref is $kind work: not verified, and it can't land until a commit that holds it passes a verify."
     continue
   fi
-  if tip=$(python3 .keelokit/bin/verify_tools.py wip-inside "$1" "$commit" "$2" </dev/null); then
+  if found=$(python3 .keelokit/bin/verify_tools.py wip-inside "$1" "$commit" "$2" </dev/null); then
     refused=$((refused + 1))
-    echo "pre-push: $remote_ref would get unverified wip work ($(printf %.7s "$tip"), pushed to one of: $prefixes; not on origin/main): run pnpm verify on this commit (green and clean, it covers the wip work in it), then push again." >&2
+    kind=${found##* } tip=${found% *}
+    echo "pre-push: $remote_ref would get unverified $kind work ($(printf %.7s "$tip"), not on origin/main): run pnpm verify on this commit (green and clean, it covers the $kind work in it), then push again." >&2
     continue
   fi
   if [ "$commit" = "$head" ]; then heads=$((heads + 1)); continue; fi

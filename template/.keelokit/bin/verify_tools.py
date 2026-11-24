@@ -36,8 +36,8 @@
     verify_tools.py wip-prefix REMOTE           print [verify] wip_branches (as REMOTE's main sets it), or exit 1
     verify_tools.py unverified-prefixes REMOTE  the branch prefixes whose pushes run no verify and never land,
                                                 space-separated: wip_branches (when set) and archive/
-    verify_tools.py wip-record SHA              remember a pushed tip of an unverified branch in this clone
-    verify_tools.py wip-inside REMOTE SHA       exit 0 (and name it) when SHA holds unverified work (wip/, archive/)
+    verify_tools.py wip-record SHA [KIND]       remember a pushed tip of an unverified branch (KIND: wip, archive)
+    verify_tools.py wip-inside REMOTE SHA       exit 0 and print "TIP KIND" when SHA holds unverified work
     verify_tools.py shared-seal --head SHA --base SHA --level LEVEL
                                                 0: a shared seal covers this commit; 1: refused (why);
                                                 3: [verify] shared_seals is not set
@@ -1145,32 +1145,50 @@ def wip_tips_file() -> Path:
     return ROOT / common / "keelokit-wip-tips"
 
 
-def wip_inside(remote: str, sha: str, url: str = "") -> str | None:
-    """The first unverified tip (a <remote>/<prefix>* branch of unverified_prefixes, or a tip this clone pushed
-    and remembers, so deleting the branch doesn't hide it) that `sha` holds, `remote`'s main lacks, and no
-    clean, full, green verify here proved. None when there's none."""
+SHA_LINE = re.compile(r"([0-9a-f]{40}|[0-9a-f]{64})(?: ([a-z0-9][\w.-]*))?")
+
+
+def wip_inside(remote: str, sha: str, url: str = "") -> tuple[str, str] | None:
+    """(tip, kind) for the first unverified tip that `sha` holds, `remote`'s main lacks, and no clean, full, green
+    verify here proved: a <remote>/<prefix>* branch of unverified_prefixes, or a tip this clone pushed and
+    remembers, so deleting the branch doesn't hide it. `kind` is the prefix without its slash ("wip", "archive").
+    None when there's none.
+
+    The remote's branches are listed, not read from tracking refs a local edit could delete. When the listing
+    fails and wip_branches is set, the answer is closed (as before archive/ existed). Without wip_branches, a
+    project never opted into the listing, so its failure isn't a new reason to refuse every push: archive/ tips
+    then come from this clone's tracking refs and the tips it pushed (drop's own attempts are among those)."""
     prefixes = unverified_prefixes(remote, url)
     main = git_lines("rev-parse", "--verify", "--quiet", "refs/keelokit/push-main")  # wip_prefix just fetched it
-    # The unverified branches the remote has now (not tracking refs a local edit could delete), plus the tips
-    # this clone pushed.
+    kinds = {p: p.rstrip("/") for p in prefixes}
     listed = subprocess.run(["git", "ls-remote", "--heads", url or remote, *(f"refs/heads/{p}*" for p in prefixes)],
                             cwd=ROOT, capture_output=True, text=True)
-    if listed.returncode:
-        return "the remote's unverified branches (they can't be listed)"
-    tips = [l.split()[0] for l in listed.stdout.splitlines() if l.split()]
+    tips: list[tuple[str, str]] = []
+    if listed.returncode == 0:
+        refs = [l.split() for l in listed.stdout.splitlines() if len(l.split()) == 2]
+    elif prefixes == [ARCHIVE_PREFIX]:
+        refs = [l.split() for l in git_lines("for-each-ref", "--format=%(objectname) %(refname)",
+                                             f"refs/remotes/{remote}/{ARCHIVE_PREFIX}") if len(l.split()) == 2]
+        refs = [[obj, "refs/heads/" + ref.split("/", 3)[3]] for obj, ref in refs]
+    else:
+        return ("the remote's unverified branches (they can't be listed)", "wip")
+    for obj, ref in refs:
+        kind = next((k for p, k in kinds.items() if ref.startswith(f"refs/heads/{p}")), "wip")
+        tips.append((obj, kind))
     try:
-        tips += [l.strip() for l in wip_tips_file().read_text(errors="replace").splitlines()
-                 if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", l.strip())]
+        for line in wip_tips_file().read_text(errors="replace").splitlines():
+            if m := SHA_LINE.fullmatch(line.strip()):
+                tips.append((m.group(1), m.group(2) or "wip"))
     except OSError:
         pass
     proven_here = {head for head, base, _ in green_runs() if main and base == main[0]}
     if sha in proven_here:  # the pushed commit itself passed: the wip work in it was verified with it
         return None
-    for tip in dict.fromkeys(tips):
+    for tip, kind in dict.fromkeys(tips):
         if tip in proven_here or (main and is_ancestor(tip, main[0])):
             continue
         if is_ancestor(tip, sha):
-            return tip
+            return tip, kind
     return None
 
 
@@ -1250,15 +1268,16 @@ def main() -> int:
     if a[0] == "unverified-prefixes" and len(a) in (2, 3):
         print(" ".join(unverified_prefixes(a[1], a[2] if len(a) == 3 else "")))
         return 0
-    if a[0] == "wip-record" and len(a) == 2:
+    if a[0] == "wip-record" and len(a) in (2, 3):
+        kind = a[2] if len(a) == 3 and WIP_PREFIX.fullmatch(a[2] + "/") else ""
         with open(wip_tips_file(), "a", encoding="utf-8") as f:
-            f.write(a[1] + "\n")
+            f.write(f"{a[1]} {kind}\n" if kind else a[1] + "\n")
         return 0
     if a[0] == "wip-inside" and len(a) in (3, 4):
-        tip = wip_inside(a[1], a[2], a[3] if len(a) == 4 else "")
-        if tip:
-            print(tip)
-        return 0 if tip else 1
+        found = wip_inside(a[1], a[2], a[3] if len(a) == 4 else "")
+        if found:
+            print(f"{found[0]} {found[1]}")
+        return 0 if found else 1
     if a[0] == "clock-plan":
         for dir_, runner, files in clock_plan(option(a, "--base", "origin/main")):
             print(f"{dir_}\t{runner}\t{' '.join(files)}")
