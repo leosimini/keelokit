@@ -1,6 +1,7 @@
 """The doctor's process checks: CI budget (CI-1), the verify map (CI-2), formatting (FMT-1), migrations
 (MIG-1), flaky-test knobs (FLAKY-1) and the pre-launch debt ledger (DEBT-1).
 Run: python3 -m unittest discover -s tests"""
+import re
 import shutil
 import subprocess
 import tempfile
@@ -555,6 +556,96 @@ class SkillsReadTheLedgerTest(unittest.TestCase):
         # No skill finds a landing by reading `Story:` trailers in git log itself.
         for rel in wants:
             self.assertNotRegex(self.read(rel), r"git log[^.]*`Story: <ID>`", rel)
+
+
+class AgentBriefFleetLessonsTest(unittest.TestCase):
+    """FLEET-006: the agent brief carries the habits the JOUNA fleet paid for (docs/fleet-lessons.md, lesson 8 and
+    coordination): push before waiting, wait on state, ranges, archive on delivery, never --no-verify; coordinate and
+    build-story say the same where they start sessions and agents. The brief stays one page (90 lines)."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+    BRIEF = "template/.keelokit/harness/agent-brief.md"
+
+    def read(self, rel: str) -> str:
+        return (self.ROOT / rel).read_text(encoding="utf-8")
+
+    def norm(self, rel: str) -> str:
+        return _norm(self.read(rel))
+
+    def waiting(self) -> str:
+        sec = _section(self.read(self.BRIEF), r"^Waiting$")
+        self.assertTrue(sec, "the brief has no Waiting section")
+        return sec
+
+    def test_FLEET_006_S1_brief_says_push_before_a_long_wait(self):
+        text = _norm(self.waiting())
+        self.assertIn("push before any wait longer than a few minutes", text)
+        self.assertIn("idle cloud session can lose its container", text)
+
+    def test_FLEET_006_S1_brief_says_how_to_push_branch_or_wip_with_the_same_commits(self):
+        text = _norm(self.waiting())
+        self.assertIn("the storys branch when verified", text.replace("'", ""))
+        self.assertIn("wip/<topic> with the same commits", text)
+        self.assertIn("never commits that exist only there", text)
+        self.assertIn("wip 1", text)
+
+    def test_FLEET_006_S2_waiting_names_state_not_log_lines(self):
+        sec = self.waiting()
+        text = _norm(sec)
+        self.assertNotIn("(a log line, an exit status", text, "a log line is no longer something to wait on")
+        self.assertNotRegex(text, r"\(a log line", "the old list of conditions is gone")
+        self.assertIn("never a log line", text)
+        for state in ("status.py", "the exit code", "a ci run's", "a remote ref", "git ls remote"):
+            self.assertIn(state, text, f"Waiting names {state!r} as a state to wait on")
+
+    def test_FLEET_006_S2_no_wait_on_a_log_line_anywhere_in_the_brief(self):
+        """Only the negation may mention a log line; no sentence lists one as a condition."""
+        text = self.norm(self.BRIEF)
+        for m in re.finditer(r"log line", text):
+            self.assertIn("never", text[max(0, m.start() - 12):m.start()], text[max(0, m.start() - 60):m.end()])
+
+    def test_FLEET_006_S3_brief_asks_for_ranges_from_status_py(self):
+        text = _norm(self.waiting())
+        self.assertIn("range status.py prints", text)
+        self.assertIn("never one figure", text)
+        # The range the brief shows is the shape status.py prints (FLEET-002).
+        self.assertIn('f"about {lo}–{hi} min left"', self.read("template/.keelokit/bin/status.py"))
+        self.assertIn("about 13–23 min left", text)
+
+    def test_FLEET_006_S3_brief_says_a_cloud_session_archives_itself_on_delivery(self):
+        report = _norm(_section(self.read(self.BRIEF), r"^The report"))
+        self.assertIn("pushed and reported, a cloud session archives itself", report)
+
+    def test_FLEET_006_S3_every_delegated_prompt_forbids_no_verify(self):
+        intro = _norm(self.read(self.BRIEF).split("\n## ", 1)[0])
+        self.assertIn("a prompt for a session or agent says", intro)
+        self.assertIn("plus one line, **never no verify**", intro)
+
+    def test_FLEET_006_S3_the_brief_stays_one_page(self):
+        self.assertLessEqual(len(self.read(self.BRIEF).splitlines()), 90, "the brief is one page")
+
+    def test_FLEET_006_S4_coordinate_repeats_it_where_it_starts_sessions(self):
+        start = _norm(_section(self.read("skills/coordinate/SKILL.md"), r"^Start sessions$"))
+        for line in ("never no verify.", "every prompt you delegate", "push before any wait longer than a few minutes",
+                     "wip/<topic> with the same commits", "never on a log line", "status.py or the verify's exit code",
+                     "a ci run's state", "a remote ref", "range status.py prints", "archive itself once its work is pushed"):
+            self.assertIn(line, start, f"coordinate's Start sessions lacks {line!r}")
+        rounds = _norm(_section(self.read("skills/coordinate/SKILL.md"), r"^Every round"))
+        self.assertIn("never on a log line", rounds)
+        self.assertNotIn("one condition", rounds)
+
+    def test_FLEET_006_S4_build_story_repeats_it_where_it_starts_agents_and_sessions(self):
+        raw = self.read("skills/build-story/SKILL.md")
+        agents = _norm(_section(raw, r"^Spend less"))
+        for line in ("every prompt you delegate says **never no verify**", "push before any wait longer than a few minutes",
+                     "wip/<topic> with the same commits", "never on a log line", "status.py or the verify's exit code",
+                     "a ci run's state", "a remote ref", "range status.py prints"):
+            self.assertIn(line, agents, f"build-story's Spend less lacks {line!r}")
+        self.assertNotIn("until on its log", agents)
+        sessions = _norm(_section(raw, r"^1\. Pick"))
+        for line in ("each prompt adds never no verify.", "push before waiting", "wait on state", "ranges",
+                     "a cloud session archives itself once its work is pushed and reported"):
+            self.assertIn(line, sessions, f"build-story's Pick lacks {line!r}")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The agent brief carries the fleet's lessons (FLEET-006).** Push before any wait longer than a few minutes
+  (the story's branch when verified, else `wip/<topic>` with the same commits); wait on state, never on a log
+  line: `status.py` or the verify's exit code, a CI run's state, a remote ref; give how long a run takes as the
+  range `status.py` prints; a cloud session archives itself once its work is pushed and reported; every
+  delegated prompt says never `--no-verify`. `coordinate` and `build-story` say the same where they start
+  sessions and agents. The brief stays at 90 lines. An existing project runs `/keelokit:harness-upgrade`.
+
 - **The doctor checks that the ledger's pieces are alive (LEDGER-012).** New house rule LEDGER-1: every commit that
   reaches the trunk is attributed, and the project's state is read only from `ledger.py`. Each doctor run checks
   its enforcers: the three hooks in `.githooks/` (present, executable, calling `ledger.py`) and git running them
