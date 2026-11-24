@@ -401,3 +401,13 @@ rule = "Before telling the owner a release candidate is ready, walk it end to en
 why = "Pieces that each passed review still failed as a journey, and the owner found it first."
 enforced_by = ["review:verifier"]
 needs = ["ui"]
+
+
+# ── The ledger: a story's state is read from git, and every trunk commit names its story (docs/ledger.md) ──
+
+[[rule]]
+id = "LEDGER-1"
+level = "MUST"
+rule = "Attribute every commit that reaches the trunk to a story (Story:, Part-of:) or a category (No-story:), and read the project's state only from ledger.py."
+why = "On 2026-11-22 a coordinator reported six trains as never shipped that had been on main for weeks: the state was read from a shallow clone and from hand-kept rows."
+enforced_by = ["git-hook:commit-msg", "git-hook:pre-push", "ci:checks", "script:.keelokit/bin/ledger.py"]
