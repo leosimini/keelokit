@@ -4825,12 +4825,14 @@ class LedgerBreakerRound1Test(LedgerPrepushCase):
         repo.commit("docs: main moves on\n\nNo-story: docs")
         squash = self.squash(repo, "train-5", "Train 5 (#11)\n\nWhy.\n\nStory: AUTH-007")
         r = prepush(self, repo, to_main(repo))
-        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.returncode, 0, "a match by patch alone warns (ESC-240)")
         self.assertIn("SQUASH_LOST_TRAILERS", r.stderr)
         self.assertIn("Part-of: AUTH-006", r.stderr)
         self.assertIn(squash[:12], r.stderr)
         repo.publish()
-        self.assertIn("AUTH-006", details(ledger_check(self, repo), "SQUASH_LOST_TRAILERS"))
+        data = ledger_check(self, repo)
+        self.assertIn("AUTH-006", details(data, "SQUASH_LOST_TRAILERS"))
+        self.assertEqual(codes(data, "warning"), ["SQUASH_LOST_TRAILERS"], data["diffs"])
 
     def test_LEDGER_010_S1_a_corrected_commit_does_not_block_a_push_of_the_trunk_to_a_new_remote_INV_007(self):
         """ESC-201: the pre-push read no correction rows, so the first push of a corrected trunk was refused."""
@@ -4932,3 +4934,114 @@ class LedgerBreakerRound2Test(LedgerPrepushCase):
         r = prepush(self, repo, to_main(repo))
         self.assertIn("its change is origin/train-5's", r.stderr)
         self.assertNotIn("its tree is the tip", r.stderr)
+
+
+class LedgerCoordinatorReviewTest(LedgerBreakerRound2Test):
+    """LEDGER-010 coordinator review of #30 (ESC-207, ESC-238..ESC-242): legitimate pushes the squash check refused.
+    Each history is checked by the pre-push and, once on the trunk, by `check`: the two must agree."""
+
+    def branch_of(self, repo: GitRepo, name: str, *commits: tuple, base: str = "main", push: bool = True) -> None:
+        repo.git("checkout", "-q", "-b", name, base)
+        for message, files in commits:
+            self.raw(repo, message, files)
+        if push:
+            repo.git("push", "-q", "origin", name)
+        repo.git("checkout", "-q", "main")
+
+    def agree(self, repo: GitRepo) -> None:
+        """The pre-push lets it through, and `check` on the trunk that results has no error either."""
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("SQUASH_LOST_TRAILERS", r.stderr)
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error"), [], data["diffs"])
+        self.assertNotIn("SQUASH_LOST_TRAILERS", codes(data))
+
+    def feat(self, repo: GitRepo, name: str = "feat") -> None:
+        self.branch_of(repo, name, ("wip: a\n\nPart-of: AUTH-001", {"a.txt": "1\n"}),
+                       ("feat: a done\n\nWhy.\n\nStory: AUTH-001", {"a.txt": "2\n", "b.txt": "1\n"}))
+
+    def test_LEDGER_010_S4_a_revert_back_to_a_squashed_tree_is_no_squash_INV_005(self):
+        """ESC-207: after feat was squashed with its Story:, reverting a later commit gives the branch tip's tree."""
+        repo = self.project("AUTH-001")
+        self.feat(repo)
+        self.squash(repo, "feat", "Feat A (#1)\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.raw(repo, "feat: z\n\nNo-story: docs", {"z.txt": "1\n"})
+        repo.publish()
+        repo.git("revert", "--no-edit", "HEAD", when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", "Revert z\n\nNo-story: harness")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_a_stacked_branch_keeps_what_the_trunk_already_has_INV_005(self):
+        """ESC-238: feat-b on feat-a; feat-a squashed first, then feat-b: A's Story: is on the trunk already."""
+        repo = self.project("AUTH-001", "AUTH-002")
+        self.feat(repo, "feat-a")
+        self.branch_of(repo, "feat-b", ("wip: b\n\nPart-of: AUTH-002", {"c.txt": "1\n"}),
+                       ("feat: b done\n\nWhy.\n\nStory: AUTH-002", {"c.txt": "2\n"}), base="origin/feat-a")
+        self.squash(repo, "feat-a", "Feat A (#1)\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.squash(repo, "feat-b", "Feat B (#2)\n\nWhy.\n\nStory: AUTH-002")
+        self.agree(repo)
+        self.assertNotIn("DONE_TWICE", codes(ledger_check(self, repo)))
+
+    def test_LEDGER_010_S4_a_fix_cherry_picked_earlier_is_kept_by_the_trunk_INV_005(self):
+        """ESC-239: a Part-of: C fix cherry-picked to main (-x), then the rest of the branch squashed."""
+        repo = self.project("AUTH-001", "AUTH-003")
+        self.branch_of(repo, "feat", ("fix: null check\n\nPart-of: AUTH-003", {"fix.txt": "1\n"}),
+                       ("wip: a\n\nPart-of: AUTH-001", {"a.txt": "1\n"}),
+                       ("feat: a done\n\nWhy.\n\nStory: AUTH-001", {"a.txt": "2\n"}))
+        repo.git("cherry-pick", "-x", "origin/feat~2")
+        repo.publish()
+        self.squash(repo, "feat", "Feat A (#4)\n\nWhy.\n\nStory: AUTH-001")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_a_patch_id_match_alone_warns_and_never_refuses_INV_005(self):
+        """ESC-240: an open branch bumps a pin to 2.32.3; a CVE fix on main makes the same bump. The same change
+        is no proof of a squash: a warning, never a refusal (and no `correct` command, which would be false)."""
+        repo = self.project("AUTH-001", "SEC-001")
+        self.raw(repo, "deps: pin\n\nNo-story: deps", {"requirements.txt": "requests==2.31.0\n"})
+        repo.publish()
+        self.branch_of(repo, "upgrade", ("wip: try 2.32.0\n\nPart-of: AUTH-001", {"requirements.txt": "requests==2.32.0\n"}),
+                       ("deps: settle on 2.32.3\n\nPart-of: AUTH-001", {"requirements.txt": "requests==2.32.3\n"}))
+        self.raw(repo, "docs: unrelated\n\nNo-story: docs", {"notes.txt": "1\n"})
+        self.raw(repo, "fix: CVE in requests\n\nWhy.\n\nStory: SEC-001", {"requirements.txt": "requests==2.32.3\n"})
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        repo.publish()
+        data = ledger_check(self, repo)
+        self.assertEqual(codes(data, "error"), [], data["diffs"])
+        self.assertNotIn("ledger.py correct", details(data, "SQUASH_LOST_TRAILERS"))
+
+    def test_LEDGER_010_S4_a_wip_or_archive_branch_is_never_a_squash_source_INV_005(self):
+        """ESC-241: wip/feat-backup keeps the old, wrong id; feat is reworded and squashed with the right one."""
+        repo = self.project("AUTH-001", "AUTH-002")
+        self.branch_of(repo, "feat", ("wip: part 1\n\nPart-of: AUTH-002", {"b.txt": "1\n"}),
+                       ("feat: part 2\n\nPart-of: AUTH-002", {"b.txt": "2\n"}), push=False)
+        repo.git("checkout", "-q", "-b", "old", "main")
+        self.raw(repo, "wip: part 1\n\nPart-of: AUTH-001", {"b.txt": "1\n"})
+        self.raw(repo, "feat: part 2\n\nPart-of: AUTH-001", {"b.txt": "2\n"})
+        repo.git("push", "-q", "origin", "old:refs/heads/wip/feat-backup", "old:refs/heads/archive/auth-001-20261124")
+        repo.git("checkout", "-q", "main")
+        repo.git("push", "-q", "origin", "feat")
+        repo.git("fetch", "-q", "origin")
+        self.squash(repo, "feat", "Feat B (#3)\n\nWhy.\n\nStory: AUTH-002")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_reapplying_a_reverted_squash_needs_no_second_story_INV_005(self):
+        """ESC-242: a squash reverted, then the revert reverted with Part-of: the Story: is on the trunk already."""
+        repo = self.project("AUTH-001")
+        self.feat(repo)
+        squash = self.squash(repo, "feat", "Feat A (#1)\n\nWhy.\n\nStory: AUTH-001")
+        self.raw(repo, "docs: other\n\nNo-story: docs", {"o.txt": "1\n"})
+        repo.publish()
+        repo.git("revert", "--no-edit", squash, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", "Revert Feat A\n\nNo-story: harness")
+        reverted = repo.sha()
+        repo.publish()
+        repo.git("revert", "--no-edit", reverted, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", "Reapply Feat A\n\nPart-of: AUTH-001")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("SQUASH_LOST_TRAILERS", r.stderr)
