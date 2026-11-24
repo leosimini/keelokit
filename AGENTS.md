@@ -31,6 +31,21 @@ the doctor in CI, the guard in your Claude sessions. Once per clone, `git config
 `/keelokit` says where things stand; stories are built with `/keelokit:build-story`, one at a time.
 None of this ships in the plugin: `scripts/package.sh` leaves it out.
 
+## Where the truth is
+
+A story's state is asked of `ledger.py`, never of memory or of a handoff file (`backlog/next.md`, a
+coordinator's notes, another session's report): it reads git. The session start prints its summary.
+
+| Question | Ask |
+|---|---|
+| Is X done, since when, in which version? | `python3 .keelokit/bin/ledger.py show X` |
+| What do I take? | `python3 .keelokit/bin/ledger.py next` |
+| Is someone on it? | `python3 .keelokit/bin/ledger.py show X` (its branches and sessions) |
+| Why did it end up this way? | `python3 .keelokit/bin/ledger.py show X` (commit bodies, addenda, escapes, findings) |
+| What went into 0.15? | `python3 .keelokit/bin/ledger.py --release v0.15.0` |
+| What is under way in the harbor? | `/harbor:log` |
+| Is the record healthy? | `python3 .keelokit/bin/ledger.py check` |
+
 ## Releases
 
 Read `docs/releasing.md` before anything that touches versions, tags or the `release` branch.
