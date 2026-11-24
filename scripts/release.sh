@@ -50,7 +50,8 @@ python3 -m unittest discover -s tests -q
 if command -v claude >/dev/null; then claude plugin validate . --strict; fi
 scripts/package.sh HEAD "$(mktemp -d)/keelokit-plugin.zip"  # the zip the Release workflow will attach
 
-git commit -q -am "release: $version"
+# The trailer goes in its own -m, the message's last paragraph: the ledger reads it there (ESC-186).
+git commit -q -am "release: $version" -m "No-story: release"
 git push origin main
 git push origin HEAD:release
 echo "release: pushed $version. The Release workflow tags v$version; the directory scans it from 'release'."
