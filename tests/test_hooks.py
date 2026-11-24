@@ -345,6 +345,38 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
         self.assertTrue(any(l.startswith("main@") for l in out), out)
         self.assertTrue(any(l.startswith("Where to look:") for l in out), out)
 
+    def test_LEDGER_007_S4_the_start_points_to_show_and_show_answers_done_and_why(self):
+        """The automatable half of S4 (the fresh session's answer is the manual half, in the addendum): in a repo
+        where a story is done in v1.0.0 and an escape row names it, the session start names `ledger.py show <ID>`,
+        and that command answers done, in which version, and why (the commit body and the escape row)."""
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        shutil.rmtree(self.proj / ".keelokit/bin")
+        shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        story = self.proj / "backlog/stories/DEMO-001-demo.md"
+        story.parent.mkdir(parents=True)
+        story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "Demo"\nwave = 1\ndepends_on = []\n+++\n')
+        (self.proj / "docs").mkdir()
+        (self.proj / "docs/escapes.md").write_text(
+            "# Escapes\n\n| Id | Date | Found by | What escaped | Class | Check added |\n|---|---|---|---|---|---|\n"
+            "| ESC-001 | 2026-11-01 | DEMO-001 reviewer | The demo leaked a widget | consistency | tests/x |\n")
+        env = {"PATH": self.path, "HOME": self.tmp, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        (self.proj / "f").write_text("x\n")
+        for argv in (["init", "-q", "-b", "main"], ["add", "backlog", "docs", ".keelokit"], ["commit", "-q", "-m", "plan"],
+                     ["add", "f"], ["commit", "-q", "-m", "DEMO-001: build it\n\nDecided: widgets are blue.\n\n"
+                                                         "Story: DEMO-001"], ["tag", "v1.0.0"]):
+            subprocess.run(["git", *argv], cwd=self.proj, env=env, check=True, capture_output=True)
+        start = self.lines(self.hook())
+        self.assertTrue(any("ledger.py show <ID>" in l for l in start), start)
+        r = run(["python3", ".keelokit/bin/ledger.py", "show", "DEMO-001"], self.proj, self.path)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("state: in-version", r.stdout)
+        self.assertIn("version: v1.0.0", r.stdout)
+        self.assertIn("Decided: widgets are blue.", r.stdout, "the why: the Story: commit's body")
+        self.assertIn("ESC-001", r.stdout, "the why: the escape row that names the story")
+        self.assertIn("The demo leaked a widget", r.stdout)
+
     def test_LEDGER_007_S2_without_python3_one_line_and_exit_0(self):
         self.stubs()
         nopy = Path(self.tmp) / "empty-bin"
