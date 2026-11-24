@@ -84,8 +84,14 @@ Scenario: [S6] drop and landing clear the story
   then it exits 1 and the story stays taken.
 - A second drop of the same story on the same day goes to `archive/<id>-<YYYYMMDD>-2` (then `-3`…).
 - `archive/` is unverified always, whatever `[verify] wip_branches` says, and is treated like `wip/` in full: a
-  later push that carries an archived tip nobody verified here is refused before any verify. Every push now
-  lists the remote's `archive/*` branches (`ls-remote`), even in a project without `wip_branches`.
+  later push that carries an archived tip nobody verified here is refused before any verify, and the refusal
+  names the kind of tip (`unverified archive work`, `unverified wip work`; the pre-push records the kind with
+  each tip it remembers). Every push now lists the remote's `archive/*` branches (`ls-remote`), even in a
+  project without `wip_branches`. When that listing fails, a project with `wip_branches` stays fail-closed, as
+  before (it opted into a gate that needs the listing). A project without it does not start refusing every push
+  on a network hiccup it never signed up for: the archived tips then come from this clone's
+  `refs/remotes/<remote>/archive/*` and the tips it pushed itself (drop's own attempts are among those). That
+  is a narrower check, but archive/ holds only abandoned attempts, and the push of HEAD is still verified.
 - `take` on a story whose state is `unknown` (a cut history) sets it with a warning instead of refusing: it
   writes local config only, and the state cannot be said either way.
 - `take` and `drop` take ids shaped like `ABC-123`; any other spelling is the usage (exit 2).
