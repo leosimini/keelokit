@@ -5045,3 +5045,69 @@ class LedgerCoordinatorReviewTest(LedgerBreakerRound2Test):
         r = prepush(self, repo, to_main(repo))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("SQUASH_LOST_TRAILERS", r.stderr)
+
+
+class LedgerBreakerRound3Test(LedgerCoordinatorReviewTest):
+    """LEDGER-010 breaker, round 3 on the squash check (ESC-243..ESC-245)."""
+
+    def test_LEDGER_010_S4_a_stacked_branch_synced_with_main_keeps_what_the_trunk_has_INV_005(self):
+        """ESC-243: b2 stacked on b1; b1 squashed; main merged into b2 (its merge base moves past b1's squash)."""
+        repo = self.project("AUTH-005", "AUTH-006")
+        self.feat_named(repo, "b1", "AUTH-005", "a")
+        repo.git("checkout", "-q", "-b", "b2", "origin/b1")
+        self.raw(repo, "wip: c1\n\nPart-of: AUTH-006", {"c.txt": "1\n"})
+        repo.git("push", "-q", "origin", "b2")
+        repo.git("checkout", "-q", "main")
+        self.squash(repo, "b1", "B1 (#1)\n\nWhy.\n\nStory: AUTH-005")
+        repo.publish()
+        repo.git("checkout", "-q", "b2")
+        repo.git("merge", "-q", "--no-edit", "main", when=repo.next_date())
+        self.raw(repo, "feat: c2\n\nWhy.\n\nStory: AUTH-006", {"c.txt": "2\n"})
+        repo.git("push", "-q", "origin", "b2")
+        repo.git("checkout", "-q", "main")
+        repo.git("fetch", "-q", "origin")
+        self.squash(repo, "b2", "B2 (#2)\n\nWhy.\n\nStory: AUTH-006")
+        self.agree(repo)
+
+    def test_LEDGER_010_S4_an_early_cherry_pick_then_a_sync_merge_keeps_the_part_of_INV_005(self):
+        """ESC-244: x1 cherry-picked to main, main merged into the branch, then the branch squashed."""
+        repo = self.project("AUTH-005", "AUTH-006")
+        self.branch_of(repo, "b", ("fix: x1\n\nPart-of: AUTH-005", {"x.txt": "1\n"}))
+        self.raw(repo, "docs: other\n\nNo-story: docs", {"o.txt": "1\n"})
+        repo.git("cherry-pick", "origin/b")
+        repo.publish()
+        repo.git("checkout", "-q", "b")
+        repo.git("merge", "-q", "--no-edit", "main", when=repo.next_date())
+        self.raw(repo, "feat: x2\n\nWhy.\n\nStory: AUTH-006", {"y.txt": "1\n"})
+        repo.git("push", "-q", "origin", "b")
+        repo.git("checkout", "-q", "main")
+        repo.git("fetch", "-q", "origin")
+        self.squash(repo, "b", "B (#3)\n\nWhy.\n\nStory: AUTH-006")
+        self.agree(repo)
+
+    def test_LEDGER_010_S3_open_story_branches_cost_no_git_call_each_when_nothing_matches(self):
+        """ESC-245: every push ran merge-base and diff-tree for each open story branch (6 s with 100 of them on
+        20,000 commits). Counted in git calls, never in seconds: branches whose tree and paths match no pushed
+        commit cost none."""
+        repo = self.project(*(f"AUTH-{n:03d}" for n in range(1, 7)))
+        for n in range(1, 7):
+            self.branch_of(repo, f"story-{n}", (f"wip\n\nPart-of: AUTH-{n:03d}", {f"s{n}.txt": "1\n"}),
+                           (f"done\n\nWhy.\n\nStory: AUTH-{n:03d}", {f"s{n}.txt": "2\n"}))
+        repo.git("fetch", "-q", "origin")
+        self.raw(repo, "docs: elsewhere\n\nNo-story: docs", {"README": "x\n"})
+        bindir = self.tmp / "wrap-bin"
+        bindir.mkdir()
+        log = self.tmp / "git-argv.log"
+        (bindir / "git").write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\nexec "{shutil.which("git")}" "$@"\n')
+        (bindir / "git").chmod(0o755)
+        env = {**clean_env(repo.tmp), "PATH": f"{bindir}{os.pathsep}{repo.env['PATH']}"}
+        r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "prepush", "origin", "x"], cwd=repo.path, env=env,
+                           input=to_main(repo) + "\n", capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = log.read_text().splitlines()
+        per_branch = [c for c in calls if {"merge-base", "diff-tree"} & set(c.split())]
+        self.assertEqual(per_branch, [], calls)
+
+    def feat_named(self, repo: GitRepo, name: str, sid: str, f: str) -> None:
+        self.branch_of(repo, name, (f"wip: {f}\n\nPart-of: {sid}", {f"{f}.txt": "1\n"}),
+                       (f"feat: {f} done\n\nWhy.\n\nStory: {sid}", {f"{f}.txt": "2\n"}))
