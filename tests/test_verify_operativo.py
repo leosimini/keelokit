@@ -3,6 +3,7 @@ exist, signals, a busy machine, --since and the routing of a change to the steps
 a bare origin and a stub pnpm; the real verify.sh and verify_tools.py. Run: python3 -m unittest discover -s tests"""
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -1411,9 +1412,15 @@ class EstimateEndToEndTest(VerifyFixture):
         for _ in range(2):
             self.assertEqual(self.verify().returncode, 0)
         fourth = self.verify()
-        self.assertIn("Estimate: about 0–1 min (from 3 runs", fourth.stdout)
-        pairs = self.state()["estimate"].split()
-        self.assertIn("unit:0:0", pairs)
+        # Durations are wall-clock seconds of the fake steps: a slow runner rounds some up to 1 s, so the test checks
+        # the shape and the order of the range, never exact values (ESC-185).
+        self.assertRegex(fourth.stdout, r"Estimate: about (\d+)–(\d+) min \(from 3 runs")
+        low, high = map(int, re.search(r"Estimate: about (\d+)–(\d+) min", fourth.stdout).groups())
+        self.assertLessEqual(low, high)
+        pairs = dict(p.split(":", 1) for p in self.state()["estimate"].split())
+        self.assertIn("unit", pairs)
+        median, p90 = (float(x) for x in pairs["unit"].split(":"))
+        self.assertLessEqual(median, p90)
         self.assertTrue(self.state()["step_id"] and self.state()["step_since"].isdigit(), self.state())
 
     def test_FLEET_002_S1_a_narrowed_rerun_estimates_only_what_it_reruns(self):
