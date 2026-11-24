@@ -166,9 +166,10 @@ environment runs, backwards too on a rollback (the release workflow run again fr
 
 House rule LEDGER-1 (LEDGER-012) ties these pieces to the doctor: each run checks that `.githooks/` ships
 `commit-msg`, `prepare-commit-msg` and `pre-push`, executable and calling their `ledger.py` command, that git runs
-them (the same "not installed" check, and the same single line, as every `git-hook:` enforcer), that a CI step runs
-`ledger.py check --ci` in a live job, and that `ledger-config` and `ledger-snapshot` exist unless
-`[ledger] snapshot = ""`; the corrections are checked as before. Its `Ledger:` line gives the share of unattributed
+them (the same "not installed" check, and the same single line, as every `git-hook:` enforcer), that a workflow for
+pushes or pull requests runs `ledger.py check --ci` in a step and a job that can fail it, that `ledger-config` and
+`ledger-snapshot` are in that workflow unless `[ledger] snapshot = ""`, and that `[ledger] since` is on the trunk;
+the corrections are checked as before. Its `Ledger:` line gives the share of unattributed
 commits since `[ledger] since` and, under `enforce = "warn"`, recommends `block` once the last 3 days of the trunk
 (ending at its newest commit's arrival: `moves.toml`'s exact time, else the committer date; never the clock) hold at
 least 20 commits, all attributed, with no difference `block` would refuse. The doctor never writes `enforce`; a
