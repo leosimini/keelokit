@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The verify says how long it will take, as a range from its own runs.** Before the first test it prints
+  "Estimate: about 55–80 min (from 12 runs)": each planned step's median to its 90th percentile over this machine's
+  last green runs of the same level and the same test workers, or "no estimate yet" with fewer than 3 such runs.
+  `status.py` shows the step a running verify is on and the range left. The history now keeps seconds per step id;
+  older lines count too. An existing project runs `/keelokit:harness-upgrade`.
 - **The verify fits its test workers to the memory the machine has.** It records each step's peak memory in
   `keelokit-verify.history`, starts the unit and integration runners with as many workers as fit in what is
   free (or in the container's cgroup limit), says so, and stops in seconds with exit 3 when even one worker would be

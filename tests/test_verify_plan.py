@@ -509,3 +509,177 @@ class Round1PlanTest(MemoryFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def run_entry(durations, level="changed", workers=None, result="pass", **extra):
+    """A history line of a finished run as cmd_record writes it (FLEET-002 adds `durations`, id → seconds)."""
+    return json.dumps({"t": 1, "level": level, "result": result, "partial": False, "scope": "", "narrowed": False,
+                       "inherited": [], "workers": workers or {}, "durations": durations, **extra})
+
+
+class EstimateTest(unittest.TestCase):
+    """FLEET-002: the verify says how long it will take, as a range from this machine's history."""
+
+    def estimate(self, lines, steps, level="changed", workers=None):
+        return fn("estimate")(lines, steps, level, workers or {})
+
+    def test_FLEET_002_S1_percentiles_are_the_median_and_the_90th_interpolated(self):
+        pct = fn("percentile")
+        self.assertEqual(pct([10, 20, 30], 0.5), 20)
+        self.assertEqual(pct([10, 20, 30, 40], 0.5), 25)
+        self.assertAlmostEqual(pct(list(range(1, 11)), 0.9), 9.1)
+        self.assertEqual(pct([7], 0.9), 7)
+
+    def test_FLEET_002_S1_twelve_runs_give_a_range_of_medians_to_90th_percentiles_and_the_count(self):
+        """FLEET-002.S1: the low end sums each step's median, the high end each step's 90th percentile."""
+        lines = [run_entry({"unit": 600 + 60 * i, "lint": 60 + 6 * i}) for i in range(12)]
+        e = self.estimate(lines, ["lint", "unit"])
+        # unit: 600..1260, median 930, p90 1194; lint: 60..126, median 93, p90 119.4
+        self.assertEqual(e["runs"], 12)
+        self.assertEqual(e["steps"]["unit"], (930, 1194))
+        self.assertEqual(e["steps"]["lint"], (93, 119.4))
+        self.assertEqual(e["text"], "about 17–22 min (from 12 runs)")
+
+    def test_FLEET_002_S1_only_the_planned_steps_count_and_a_planned_step_without_history_is_named(self):
+        lines = [run_entry({"unit": 600, "build": 300, "lint": 60}) for _ in range(5)]
+        e = self.estimate(lines, ["lint", "unit", "e2e"])
+        self.assertNotIn("build", e["steps"])
+        self.assertEqual(e["text"], "about 11 min (from 5 runs; no history yet for e2e)")
+
+    def test_FLEET_002_S1_only_the_same_level_and_whole_green_runs_count(self):
+        """FLEET-002.S1: `all` runs don't estimate a `changed` plan; a red, partial, scoped, narrowed or rerun line
+        stopped early or ran less than its plan, so it doesn't count either."""
+        good = [run_entry({"unit": 600}) for _ in range(3)]
+        noise = [run_entry({"unit": 9000}, level="all"), run_entry({"unit": 9000}, result="fail"),
+                 run_entry({"unit": 9000}, partial=True), run_entry({"unit": 9000}, scope="--packages x"),
+                 run_entry({"unit": 9000}, narrowed=True), run_entry({"unit": 9000}, inherited=["lint"])]
+        e = self.estimate(noise + good, ["unit"])
+        self.assertEqual((e["runs"], e["steps"]["unit"]), (3, (600, 600)))
+
+    def test_FLEET_002_S1_a_line_from_before_durations_is_read_from_its_step_titles(self):
+        """FLEET-002.S1: the history already kept seconds per step title; those lines count from day one."""
+        old = json.dumps({"t": 1, "level": "changed", "result": "pass", "partial": False, "scope": "",
+                          "steps": [["Up to date with origin/main (GIT-1)", 5], ["Unit tests", 600],
+                                    ["End-to-end on the real stack (web)", 100], ["End-to-end on the real stack (api)", 50]]})
+        e = self.estimate([old] * 3, ["unit", "e2e-stack"])
+        self.assertEqual(e["steps"]["unit"], (600, 600))
+        self.assertEqual(e["steps"]["e2e-stack"], (150, 150))
+        self.assertEqual(e["steps"]["git"], (5, 5))
+
+    def test_FLEET_002_S1_setup_steps_count_and_the_database_only_with_integration(self):
+        lines = [run_entry({"git": 10, "prisma": 20, "db": 30, "unit": 60, "integration": 120}) for _ in range(3)]
+        self.assertEqual(set(self.estimate(lines, ["unit"])["steps"]), {"git", "prisma", "unit"})
+        self.assertEqual(set(self.estimate(lines, ["unit", "integration"])["steps"]), {"git", "prisma", "db", "unit", "integration"})
+
+    def test_FLEET_002_S1_the_newest_twenty_runs_count(self):
+        lines = [run_entry({"unit": 9000}) for _ in range(5)] + [run_entry({"unit": 600}) for _ in range(20)]
+        e = self.estimate(lines, ["unit"])
+        self.assertEqual((e["runs"], e["steps"]["unit"]), (20, (600, 600)))
+
+    def test_FLEET_002_S1_malformed_lines_are_skipped(self):
+        lines = ["not json", "[]", '{"result": "pass"}', json.dumps({"level": "changed", "result": "pass", "durations": {"unit": "x"}}),
+                 *[run_entry({"unit": 600, "lint": -5, "build": float("inf")}) for _ in range(3)]]
+        e = self.estimate(lines, ["unit", "lint", "build"])
+        self.assertEqual(e["steps"], {"unit": (600, 600)})
+
+    def test_FLEET_002_S2_two_past_runs_give_no_estimate_yet(self):
+        e = self.estimate([run_entry({"unit": 600}) for _ in range(2)], ["unit"])
+        self.assertEqual(e["steps"], {})
+        self.assertEqual(e["text"], "no estimate yet (2 past runs like this one on this machine; it needs 3)")
+
+    def test_FLEET_002_S2_no_history_at_all_gives_no_estimate_yet(self):
+        self.assertEqual(self.estimate([], ["unit"])["text"], "no estimate yet (0 past runs like this one on this machine; it needs 3)")
+
+    def test_FLEET_002_S3_runs_with_other_workers_are_not_mixed(self):
+        """FLEET-002.S3: 12 runs with 4 unit workers, a plan with 2: no estimate, and it says why."""
+        lines = [run_entry({"unit": 600}, workers={"unit": 4}) for _ in range(12)]
+        e = self.estimate(lines, ["unit"], workers={"unit": 2})
+        self.assertEqual(e["steps"], {})
+        self.assertEqual(e["text"], "no estimate yet (0 past runs like this one on this machine, 12 with other workers; it needs 3)")
+
+    def test_FLEET_002_S3_only_the_comparable_runs_are_used(self):
+        lines = [run_entry({"unit": 300}, workers={"unit": 4}) for _ in range(12)] + \
+                [run_entry({"unit": 900}, workers={"unit": 2}) for _ in range(3)]
+        e = self.estimate(lines, ["unit"], workers={"unit": 2})
+        self.assertEqual((e["runs"], e["steps"]["unit"]), (3, (900, 900)))
+        # the runner's default (no planned workers) is its own kind: the 4- and 2-worker runs aren't it
+        self.assertEqual(self.estimate(lines, ["unit"])["runs"], 0)
+
+    def test_FLEET_002_S3_workers_of_a_step_outside_the_plan_do_not_matter(self):
+        lines = [run_entry({"lint": 60}, workers={"integration": 4}) for _ in range(3)]
+        self.assertEqual(self.estimate(lines, ["lint"])["runs"], 3)
+
+    def test_FLEET_002_S1_the_cli_prints_the_sentence_then_the_pairs_in_run_order(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        history = tmp / "history"
+        history.write_text("".join(run_entry({"git": 6, "unit": 600, "lint": 60}, workers={"unit": 2}) + "\n" for _ in range(3)))
+        out = io_capture(fn("cmd_estimate"), [str(history), "--steps", "unit lint e2e", "--level", "changed", "--workers", "unit=2"])
+        sentence, pairs = out.splitlines()
+        self.assertEqual(sentence, "about 11–12 min (from 3 runs; no history yet for e2e)")  # 666 s
+        # every step the run can be on is listed, figures or not, so status.py finds its place in the run
+        self.assertEqual(pairs, "git:6:6 prisma:: lint:60:60 unit:600:600 e2e::")
+        out = io_capture(fn("cmd_estimate"), [str(tmp / "missing"), "--steps", "unit", "--level", "all"])
+        self.assertEqual(out.splitlines(), ["no estimate yet (0 past runs like this one on this machine; it needs 3)", ""])
+
+
+def io_capture(func, args):
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        self_rc = func(args)
+    assert self_rc == 0, self_rc
+    return buf.getvalue()
+
+
+class RecordDurationsTest(MemoryFixture):
+    def test_FLEET_002_S1_the_history_records_seconds_per_step_id_summed_over_its_runs(self):
+        history = self.tmp / "history"
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("VERIFY_")}
+        ids = "5|git\n600|unit\n100|e2e-stack\n50|e2e-stack\nx|lint\n"
+        with mock.patch.dict(os.environ, {**clean, "VERIFY_STEP_IDS": ids}, clear=True):
+            fn("cmd_record")([str(history), "pass", "0", "abc", "changed", "600|Unit tests\n", "", str(self.tmp / "no.log")])
+        self.assertEqual(json.loads(history.read_text())["durations"], {"git": 5, "unit": 600, "e2e-stack": 150})
+
+
+class StatusRangeLeftTest(MemoryFixture):
+    """FLEET-002.S4: while a run goes, status.py says the step it is on and the range left."""
+
+    def line(self, state):
+        common = self.tmp / "common"
+        common.mkdir(exist_ok=True)
+        (common / "keelokit-verify.state").write_text("".join(f"{k}={v}\n" for k, v in state.items()))
+        status = runpy.run_path(str(REPO / "template/.keelokit/bin/status.py"), run_name="status")
+        return status["verify_line"](common)
+
+    def running(self, **extra):
+        import time
+        now = int(time.time())
+        return {"state": "running", "pid": os.getpid(), "step": "Unit tests", "since": now - 600, "head": "abcdef0123",
+                "level": "changed", "step_id": "unit", "step_since": now - 120,
+                "estimate": "git:6:6 lint:60:90 unit:630:900 build::300 e2e:300:600", **extra}
+
+    def test_FLEET_002_S4_status_shows_the_current_step_and_the_range_left(self):
+        # unit: 630−120=510 .. 900−120=780 left; build has no median (unknown) and is not counted; e2e 300..600
+        self.assertEqual(self.line(self.running()),
+                         "verify: running 'Unit tests' for 10 min (changed, abcdef0) · about 13–23 min left")
+
+    def test_FLEET_002_S4_a_step_past_its_90th_percentile_counts_zero_and_the_rest_still_counts(self):
+        import time
+        line = self.line(self.running(step_since=int(time.time()) - 2000))
+        self.assertTrue(line.endswith("· about 5–10 min left"), line)
+
+    def test_FLEET_002_S4_without_an_estimate_the_line_is_as_before(self):
+        state = self.running()
+        del state["estimate"]
+        self.assertEqual(self.line(state), "verify: running 'Unit tests' for 10 min (changed, abcdef0)")
+        self.assertEqual(self.line(self.running(estimate="")), "verify: running 'Unit tests' for 10 min (changed, abcdef0)")
+
+    def test_FLEET_002_S4_a_garbled_estimate_or_an_unknown_step_says_nothing_about_time_left(self):
+        for bad in ({"estimate": "unit:x:y e2e"}, {"step_id": "mystery"}, {"step_since": "soon"}):
+            self.assertEqual(self.line(self.running(**bad)), "verify: running 'Unit tests' for 10 min (changed, abcdef0)", bad)
+
+    def test_FLEET_002_S4_a_finished_run_shows_no_range(self):
+        self.assertEqual(self.line({"state": "pass", "rc": 0, "head": "abcdef0123", "level": "all", "since": 0,
+                                    "estimate": "unit:600:900"}), "verify: last pass (exit 0) on abcdef0, all")

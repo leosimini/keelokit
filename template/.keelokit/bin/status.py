@@ -152,6 +152,30 @@ def alive(pid: str) -> bool:
         return False
 
 
+def time_left(st: dict) -> str:
+    """FLEET-002: "about 13–23 min left" from the state's `estimate` ("id:median:p90" per step, in run order, as
+    `verify_tools.py estimate` printed them), the step the run is on and when it started. The current step counts
+    what is left of its median and of its 90th percentile (none once past them), the later steps count whole; a
+    step without figures counts nothing. '' when anything is missing or doesn't parse: no range beats a wrong one."""
+    try:
+        elapsed = __import__("time").time() - int(st["step_since"])
+        order = [p.split(":") for p in st["estimate"].split()]
+        ids = [p[0] for p in order]
+        at = ids.index(st["step_id"])
+        low = high = 0.0
+        for i, (sid, med, p90) in enumerate(order):
+            if i < at or not med or not p90:
+                continue
+            med_s, p90_s = float(med), float(p90)
+            if i == at:
+                med_s, p90_s = max(0.0, med_s - elapsed), max(0.0, p90_s - elapsed)
+            low, high = low + med_s, high + p90_s
+    except (KeyError, ValueError, TypeError):
+        return ""
+    lo, hi = int(low // 60), max(1, -int(-high // 60))
+    return f"about {lo} min left" if lo >= hi else f"about {lo}–{hi} min left"
+
+
 def verify_line(common: Path) -> str:
     """The last verify in this clone: running, passed, failed, or CUT (its process is gone and it never finished)."""
     try:
@@ -162,7 +186,8 @@ def verify_line(common: Path) -> str:
     head = st.get("head", "?")[:7]
     if st.get("state") == "running":
         if alive(st.get("pid", "")):
-            return f"verify: running '{st.get('step')}' for {age} min ({st.get('level')}, {head})"
+            left = time_left(st)
+            return f"verify: running '{st.get('step')}' for {age} min ({st.get('level')}, {head})" + (f" · {left}" if left else "")
         return f"verify: CUT — it stopped at '{st.get('step')}' after {age} min and nobody finished it ({head}); see {st.get('log')}"
     return f"verify: last {st.get('state')} (exit {st.get('rc')}) on {head}, {st.get('level')}"
 
