@@ -20,3 +20,6 @@ decided = "2026-09-28"
 # the release commit of 0.15.0, which scripts/release.sh wrote without a trailer (ESC-186) and which no correction
 # row can attribute (rows name stories); 8be093f..f1da5b8 had no error when it moved.
 since = "f1da5b8e7806f933205c48337d9beeb58a2522cd"
+# This repo's CI has no ledger-config/ledger-snapshot jobs (LEDGER-011 put them in the template only), so there is no
+# keelokit/ledger branch to read: the snapshot is off, and LEDGER-1 doesn't ask for its jobs (LEDGER-012).
+snapshot = ""
