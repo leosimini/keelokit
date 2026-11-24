@@ -99,8 +99,9 @@ For each confirmed finding (P0 → P3, product-rule changes excluded):
    in `domain.md` (with the user's yes: it is a product rule). If it expresses a rule, register it
    with `/keelokit:check-health` (rule + enforcer). Log the escape in `docs/escapes.md` (ESC-1): found
    by `check-bugbash`, its class, the check added.
-4. One commit per finding: `fix(<area>): … (<finding id>)`; if it completes a story's scenario,
-   add the `Story: <ID>` trailer. Re-walk the affected journeys.
+4. One commit per finding: `fix(<area>): … (<finding id>)`, its last paragraph the trailers `Finding: <finding id>`
+   and `Part-of: <ID>` of the story the finding falls under (`Story: <ID>` instead when the fix completes that
+   story's scenario; the commit then needs a body). The commit-msg hook refuses a commit that names no story. Re-walk the affected journeys.
 
 `pnpm verify` green after every few fixes and at the end; push per the project's flow.
 

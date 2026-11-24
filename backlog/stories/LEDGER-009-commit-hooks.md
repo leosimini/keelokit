@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "prepare-commit-msg writes Part-of:, commit-msg checks the trailers"
 wave = 14
 depends_on = ["LEDGER-008"]
-touches = ["template/.githooks/prepare-commit-msg", "template/.githooks/commit-msg", ".githooks/prepare-commit-msg", ".githooks/commit-msg", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "hooks/hooks.json", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "skills/ship-release/SKILL.md", "skills/check-bugbash/SKILL.md", "tests/test_hooks.py", "tests/test_first_commit.py", "tests/test_copier.py", "CHANGELOG.md"]
+touches = ["template/.githooks/prepare-commit-msg", "template/.githooks/commit-msg", ".githooks/prepare-commit-msg", ".githooks/commit-msg", "template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "hooks/hooks.json", "template/.keelokit/bin/doctor.py", ".keelokit/bin/doctor.py", "skills/project-new/SKILL.md", "skills/project-adopt/SKILL.md", "skills/harness-upgrade/SKILL.md", "skills/ship-release/SKILL.md", "skills/check-bugbash/SKILL.md", "tests/test_hooks.py", "tests/test_first_commit.py", "tests/test_copier.py", "CHANGELOG.md", "tests/test_doctor.py", "scripts/test-template.sh", "docs/escapes.md", "backlog/stories/LEDGER-009-commit-hooks.md"]
 dimensions = ["logic", "integrity", "dx"]
 invariants = ["INV-005", "INV-007"]
 origin = "docs/ledger.md — Contracts (Trailers); premortem failures 5 and 10"
@@ -85,3 +85,26 @@ Scenario: [S8] The first commit of a generated project
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, INV-005 cited, this repo's
 own `.githooks/` gets both hooks, a CHANGELOG line, `Story: LEDGER-009` trailer, addendum if the result
 differs.
+
+## Addendum — 2026-11-24
+
+Where the result goes beyond or differs from the text above:
+- **`commit-msg` also adds `Part-of:`.** `prepare-commit-msg` leaves a message with no content alone (the editor is
+  about to open, and a trailer there would turn an aborted commit into a commit called `Part-of: …`), so
+  `hook msg` first does what `hook prepare` does. The editor flow gets the trailer once a subject is written.
+- **`SQUASH_LOST_TRAILERS` at commit time.** A `Story:`/`Part-of:` line in a paragraph of its own before
+  `Co-Authored-By:` is reported as that (with the line to move), not as `UNATTRIBUTED`.
+- **`Dropped:` counts as attribution** in the hooks: it is `ledger.py drop`'s own commit, whose fallback is a
+  `git commit` on the current branch.
+- **The story is read only in the worktree that took it (ESC-188).** `git worktree add` copies `config.worktree`,
+  so a worktree added after `take` inherited `keelokit.story`. `take` now also records `keelokit.storyGitDir` and
+  the hooks ignore a story another git dir took.
+- **The hooks fail open** when they cannot run (an exception, an unreadable file): one `Keelokit:` line and the
+  commit goes through; the pre-push and the CI (LEDGER-010) check again, and agents may not use `--no-verify`.
+- **`check-bugbash` fixes carry `Part-of: <ID>`** next to `Finding: <ID>`: `Finding:` alone is not one of the
+  three attributing trailers, so `commit-msg` would refuse it.
+- **Adopted projects:** `project-adopt` writes `enforce = "warn"` with `since`, and `harness-upgrade` writes it for
+  an adopted project that has no `enforce` (absent means `block`). An adopted repo gets no `.githooks/` from the
+  template (harness mode installs `.keelokit/` only), so there the hooks arrive only if the repo wires them.
+- `scripts/test-template.sh`'s two commits made with the hooks on carry `No-story: harness`.
+- The hook messages are in English whatever `[dashboard] lang` says.
