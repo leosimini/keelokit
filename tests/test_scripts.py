@@ -13,6 +13,7 @@ import json
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -383,6 +384,30 @@ class UnitShardTest(unittest.TestCase):
         call = re.search(r"unit_shard\.py \$\{\{ matrix\.shard \}\} (\d+)", ci)
         self.assertIsNotNone(call)
         self.assertEqual(shards, list(range(1, int(call.group(1)) + 1)))
+
+    def test_LEDGER_010_the_three_shards_balance_by_measured_seconds_not_file_size(self):
+        """The size split left one of three shards at twice the others (test_verify_operativo is mid-sized and the
+        slowest) and pushed a 10-minute job over its timeout; by SECONDS the heaviest shard is within 10% of the
+        lightest. Reads the table, never a clock."""
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import unit_shard
+        finally:
+            sys.path.pop(0)
+        weight = unit_shard.weights(list((ROOT / "tests").glob("test_*.py")))
+        loads = [sum(weight[m] for m in shard) for shard in unit_shard.shards(3)]
+        self.assertLessEqual(max(loads), 1.1 * min(loads), loads)
+
+    def test_LEDGER_010_a_file_the_table_lacks_still_weighs_its_size(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import unit_shard
+        finally:
+            sys.path.pop(0)
+        files = list((ROOT / "tests").glob("test_*.py"))
+        weight = unit_shard.weights(files)
+        self.assertTrue(all(weight[f.stem] > 0 for f in files))
+        self.assertEqual(set(weight), {f.stem for f in files})
 
     def test_a_bad_shard_is_a_usage_error(self):
         for args in ([], ["0", "2"], ["3", "2"], ["x", "2"]):
