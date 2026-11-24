@@ -635,7 +635,7 @@ class CommitHooks(unittest.TestCase):
             self.assertIn(cat, err)
         self.assertIn("python3 .keelokit/bin/ledger.py take", err)
 
-    def test_LEDGER_009_S2_unattributed_commit_is_refused_with_block(self):
+    def test_LEDGER_009_S2_INV_007_unattributed_commit_is_refused_with_block(self):
         before = self.head()
         r = self.commit("x\n")
         self.assert_refused(r, "UNATTRIBUTED", before)
@@ -705,7 +705,7 @@ class CommitHooks(unittest.TestCase):
 
     # S4 ---------------------------------------------------------------------------------------------------
 
-    def test_LEDGER_009_S4_STORY_NO_BODY_for_a_story_commit_with_only_a_subject(self):
+    def test_LEDGER_009_S4_INV_005_STORY_NO_BODY_for_a_story_commit_with_only_a_subject(self):
         for text in ("x\n\nStory: AUTH-001\n", f"x\n\nStory: AUTH-001\n{COAUTHOR}\n"):
             with self.subTest(text=text):
                 before = self.head()
