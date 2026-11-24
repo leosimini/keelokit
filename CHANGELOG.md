@@ -11,6 +11,9 @@
   verify for `archive/`, as for `wip/`, and refuses a push that carries an archived attempt nobody verified.
   `build-story` and the agent brief run `take`, `drop` and `take --clear`. An existing project runs
   `/keelokit:harness-upgrade`.
+
+## 0.15.0 — 2026-11-24
+
 - **A new session knows where the truth is (LEDGER-007).** The session start now prints, under one line that
   frames it as data, the ledger's summary (story states read from git) and one line of where to look —
   `ledger.py show <ID>` for a story, `/harbor:log` for what is under way, `backlog/` for what is asked — before
