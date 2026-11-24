@@ -83,11 +83,8 @@ a diff or a log.
 - A session that ends well **does not message its parent**; the coordinator does not wait for
   messages. Every follow-up round (about every 15 minutes while sessions run) it runs
   `python3 .keelokit/bin/status.py` and checks the hashes on `origin/main`.
-- The state is asked of `ledger.py`, never of memory or of a handoff file: `python3 .keelokit/bin/ledger.py`
-  for the summary, `ledger.py show <ID>` for whether a story landed, since when, in which version and
-  who is on it, `ledger.py next` for what to hand out. A session's report is a lead, not a fact.
-- "Done" without a pushed commit on main is **not done**: the coordinator sends the session back
-  to land it, or lands it itself.
+- The state is asked of `ledger.py`, never of memory or of a handoff file: "done" is `ledger.py show <ID>`
+  saying `on-trunk` or later. **Not done**: the coordinator sends the session back to land it, or lands it.
 - With `convoy`, Harbor coordinates (`/harbor:*`); `status.py` lists the delivered branches.
 - A session that failed or got stuck reports it (what it tried, the log path) and stops; it does
   not retry the same thing a third time (execution protocol).
