@@ -2,6 +2,7 @@
 Run: python3 -m unittest discover -s tests"""
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -156,6 +157,85 @@ class LedgerStepTest(unittest.TestCase):
                 head = (self.ROOT / rel).read_text().split("\njobs:\n", 1)[0]
                 self.assertIn("pull_request:", head)
                 self.assertRegex(head, r"push:\s*\n\s+branches: \[main\]")
+
+
+class LedgerSnapshotJobTest(unittest.TestCase):
+    """LEDGER-011: the template's CI writes the snapshot on every push to main and every tag, and its deploy jobs move
+    deploy/staging and deploy/production after a deploy that succeeded. Only those jobs may write to the repo."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+    CI = "template/.github/workflows/ci.yml.jinja"
+    RELEASE = "template/.github/workflows/release.yml.jinja"
+
+    def text(self, rel: str) -> str:
+        return (self.ROOT / rel).read_text()
+
+    def jobs(self, rel: str) -> dict[str, str]:
+        return jobs_of(self.text(rel))
+
+    def test_LEDGER_011_S1_the_snapshot_job_runs_on_pushes_to_main_and_on_tags(self):
+        for rel, event in ((self.CI, "push"), (self.RELEASE, "push")):
+            with self.subTest(workflow=rel):
+                jobs = self.jobs(rel)
+                self.assertIn("ledger-snapshot", jobs)
+                job = jobs["ledger-snapshot"]
+                self.assertIn("python3 .keelokit/bin/ledger.py snapshot --run", job)
+                self.assertRegex(job, r"(?m)^\s+fetch-depth: 0\b", "the snapshot needs the full history")
+                self.assertRegex(job, r"(?m)^\s+group: ledger-snapshot\s*$")
+                self.assertRegex(job, r"(?m)^\s+cancel-in-progress: false\s*$", "a running snapshot is never cancelled")
+        head = self.text(self.RELEASE).split("\njobs:\n", 1)[0]
+        self.assertRegex(head, r"tags: \['v\*\.\*\.\*'\]")
+        ci_job = self.jobs(self.CI)["ledger-snapshot"]
+        self.assertIn("github.event.before", ci_job, "a push names what it brought: --push before..after")
+        self.assertIn("--push", ci_job)
+
+    def test_LEDGER_011_S1_only_the_writing_jobs_get_contents_write(self):
+        for rel in (self.CI, self.RELEASE):
+            with self.subTest(workflow=rel):
+                text = self.text(rel)
+                head = text.split("\njobs:\n", 1)[0]
+                self.assertRegex(head, r"(?m)^permissions:\n  contents: read\s*$", "the workflow reads by default")
+                writers = sorted(n for n, t in self.jobs(rel).items() if "contents: write" in t)
+                allowed = {"ledger-snapshot", "deploy-staging", "deploy-production"}
+                self.assertTrue(writers and set(writers) <= allowed, writers)
+                self.assertIn("ledger-snapshot", writers)
+
+    def test_LEDGER_011_S1_no_push_the_ci_makes_starts_a_workflow(self):
+        """keelokit/ledger and deploy/* are pushed by the CI: no workflow may run on them (no loop)."""
+        for rel in (".github/workflows/ci.yml", self.CI, self.RELEASE):
+            with self.subTest(workflow=rel):
+                head = self.text(rel).split("\njobs:\n", 1)[0]
+                self.assertNotIn("branches-ignore", head)
+                for branches in re.findall(r"branches: \[([^\]]*)\]", head):
+                    self.assertEqual([b.strip() for b in branches.split(",")], ["main"], head)
+                self.assertNotRegex(head, r"keelokit/|deploy/|'\*\*'|\"\*\*\"")
+
+    def test_LEDGER_011_S4_the_deploy_jobs_move_their_branch_after_a_deploy_that_succeeded(self):
+        for rel, job_name, env in ((self.CI, "deploy-staging", "staging"), (self.RELEASE, "deploy-production", "production")):
+            with self.subTest(job=job_name):
+                job = self.jobs(rel)[job_name]
+                move = f'python3 .keelokit/bin/ledger.py deploy {env} "$GITHUB_SHA"'
+                self.assertIn(move, job)
+                self.assertLess(job.index("flyctl deploy"), job.index(move), "after the deploy, never before")
+                step = job[job.rindex("- ", 0, job.index(move)):]
+                self.assertIn("steps.fly.outputs.ready == 'yes'", step, "only when a deploy really ran")
+                self.assertIn("contents: write", job)
+                self.assertRegex(job, rf"(?m)^\s+group: deploy-{env}\s*$", "deploys of one environment take turns")
+
+    def test_LEDGER_011_S5_a_rollback_is_the_release_run_again_from_an_older_tag(self):
+        head = self.text(self.RELEASE).split("\njobs:\n", 1)[0]
+        self.assertIn("workflow_dispatch:", head)
+
+    def test_LEDGER_011_S6_the_snapshot_job_runs_only_when_the_project_keeps_a_snapshot(self):
+        for rel in (self.CI, self.RELEASE):
+            with self.subTest(workflow=rel):
+                jobs = self.jobs(rel)
+                gate = jobs["ledger-config"]
+                self.assertIn("python3 .keelokit/bin/ledger.py snapshot --branch", gate)
+                self.assertNotIn("contents: write", gate)
+                job = jobs["ledger-snapshot"]
+                self.assertRegex(job, r"(?m)^    needs: ledger-config\s*$")
+                self.assertIn("if: needs.ledger-config.outputs.branch != ''", job)
 
 
 if __name__ == "__main__":
