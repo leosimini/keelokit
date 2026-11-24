@@ -155,7 +155,9 @@ class LedgerHistoryTest(unittest.TestCase):
 
     @staticmethod
     def fetches(log: Path) -> list[str]:
-        return [line for line in log.read_text().splitlines() if re.search(r"(^|\s)fetch(\s|$)", line)]
+        """The history fetches: LEDGER-011's fetch of deploy/* into a single-branch clone is not one of them."""
+        return [line for line in log.read_text().splitlines() if re.search(r"(^|\s)fetch(\s|$)", line)
+                and "refs/heads/deploy/*" not in line]
 
     FILTER_KEYS = ("remote.origin.promisor", "remote.origin.partialclonefilter", "extensions.partialclone")
 
@@ -5111,3 +5113,963 @@ class LedgerBreakerRound3Test(LedgerCoordinatorReviewTest):
     def feat_named(self, repo: GitRepo, name: str, sid: str, f: str) -> None:
         self.branch_of(repo, name, (f"wip: {f}\n\nPart-of: {sid}", {f"{f}.txt": "1\n"}),
                        (f"feat: {f} done\n\nWhy.\n\nStory: {sid}", {f"{f}.txt": "2\n"}))
+
+
+# ─────────────── LEDGER-011: the CI snapshot, arrival times and the deploy branches ───────────────
+# The snapshot branch keelokit/ledger is written by `ledger.py snapshot` (the CI's job) to a bare file:// origin; the
+# arrival time comes from KEELOKIT_SNAPSHOT_AT (epoch seconds), never the wall clock. The races are real: several
+# `ledger.py snapshot` processes push to the same bare origin at once, held together by a pre-receive barrier.
+
+SNAP = "keelokit/ledger"
+
+
+def snap_iso(epoch: int) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class SnapshotCase(LedgerCase):
+    """An origin with AUTH-001..004 planned, AUTH-001 and AUTH-002 landed; `ci` is a full clone as the CI checks out."""
+
+    def project(self) -> GitRepo:
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002", "AUTH-003", "AUTH-004")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.commit("feat: AUTH-002\n\nWhy.\n\nStory: AUTH-002")
+        repo.publish()
+        return repo
+
+    def snapshot(self, clone: GitRepo, run: str, at: int, push: str | None = None, check: bool = True,
+                 timeout: float = 120) -> subprocess.CompletedProcess:
+        args = ["snapshot", "--run", run, *(["--push", push] if push else [])]
+        r = clone.ledger(*args, extra_env={"KEELOKIT_SNAPSHOT_AT": str(at)}, timeout=timeout)
+        self.assertNotIn("Traceback", r.stderr)
+        if check:
+            self.assertEqual(r.returncode, 0, f"ledger.py snapshot failed\n{r.stdout}\n{r.stderr}")
+        return r
+
+    def remote_file(self, repo: GitRepo, name: str) -> str:
+        return repo.run(["git", "--git-dir", str(repo.bare), "show", f"{SNAP}:{name}"], repo.tmp)
+
+    def moves(self, repo: GitRepo) -> list[dict]:
+        return tomllib.loads(self.remote_file(repo, "moves.toml")).get("move", [])
+
+    def snap_json(self, repo: GitRepo) -> dict:
+        return json.loads(self.remote_file(repo, "ledger.json"))
+
+    def snap_commits(self, repo: GitRepo) -> list[str]:
+        return repo.run(["git", "--git-dir", str(repo.bare), "rev-list", SNAP], repo.tmp).split()
+
+    def land(self, repo: GitRepo, message: str) -> tuple[str, str]:
+        """(before, after) of a push of one commit to the trunk."""
+        before = repo.sha("origin/main")
+        after = repo.commit(message)
+        repo.publish()
+        return before, after
+
+
+class LedgerSnapshotWriteTest(SnapshotCase):
+    """S1: a push to the trunk is recorded on keelokit/ledger, with plumbing, never touching the checkout."""
+
+    def test_LEDGER_011_S1_a_push_is_recorded_with_its_time_its_run_and_the_ledger_files(self):
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        ci = repo.clone("ci")
+        self.snapshot(ci, "101.1", EPOCH + 50_000, f"{before}..{after}")
+        moves = self.moves(repo)
+        mine = [m for m in moves if m["sha"] == after]
+        self.assertEqual(len(mine), 1, moves)
+        self.assertEqual(mine[0]["seen"], snap_iso(EPOCH + 50_000))
+        self.assertEqual(mine[0]["run"], "101.1")
+        self.assertIs(mine[0]["exact"], True)
+        data = self.snap_json(repo)
+        self.assertEqual(data["schema"], 1)
+        self.assertEqual(data["trunk_sha"], after)
+        self.assertEqual(data["history"], "complete")
+        self.assertEqual(by_id(data)["AUTH-003"]["state"], "on-trunk")
+        self.assertEqual(by_id(data)["AUTH-003"]["since"], snap_iso(EPOCH + 50_000))
+        self.assertIs(by_id(data)["AUTH-003"]["since_exact"], True)
+        md = self.remote_file(repo, "LEDGER.md")
+        self.assertIn(after[:12], md)
+        self.assertIn("AUTH-003", md)
+
+    def test_LEDGER_011_S1_the_snapshot_never_touches_the_checkout_and_is_an_orphan_branch(self):
+        repo = self.project()
+        ci = repo.clone("ci")
+        (ci.path / "untracked.txt").write_text("mine\n")
+        ci.write("changes/1.txt", "edited in the work tree\n")
+        ci.git("add", "changes/1.txt")
+        ci.write("changes/2.txt", "edited, not staged\n")
+        status, head = ci.git("status", "--porcelain"), ci.sha()
+        index = (ci.path / ".git/index").read_bytes()
+        self.snapshot(ci, "7", EPOCH + 60_000)
+        self.assertEqual(ci.git("status", "--porcelain"), status, "the work tree and the index are as they were")
+        self.assertEqual((ci.path / ".git/index").read_bytes(), index, "the checkout's index was not written")
+        self.assertEqual(ci.sha(), head)
+        self.assertEqual(ci.git("symbolic-ref", "--short", "HEAD").strip(), "main")
+        commits = self.snap_commits(repo)
+        self.assertEqual(len(commits), 1)
+        parents = repo.run(["git", "--git-dir", str(repo.bare), "rev-list", "--parents", "-n1", commits[0]], repo.tmp)
+        self.assertEqual(parents.split(), [commits[0]], "an orphan: no trunk commit in its history")
+        tree = repo.run(["git", "--git-dir", str(repo.bare), "ls-tree", "--name-only", commits[0]], repo.tmp).split()
+        self.assertEqual(sorted(tree), ["LEDGER.md", "ledger.json", "moves.toml"])
+        message = repo.run(["git", "--git-dir", str(repo.bare), "log", "-1", "--format=%B", commits[0]], repo.tmp)
+        self.assertRegex(message, r"(?m)^No-story: ci\b", "attributed, should it ever be read as a commit to check")
+
+    def test_LEDGER_011_S1_a_second_push_appends_to_the_same_branch(self):
+        repo = self.project()
+        ci = repo.clone("ci")
+        self.snapshot(ci, "1", EPOCH + 70_000, f"{repo.sha('origin/main~1')}..{repo.sha('origin/main')}")
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        ci.git("fetch", "-q", "origin")
+        self.snapshot(ci, "2", EPOCH + 70_100, f"{before}..{after}")
+        commits = self.snap_commits(repo)
+        self.assertEqual(len(commits), 2, "a new commit on top, never a rewrite")
+        moves = self.moves(repo)
+        self.assertEqual([m["sha"] for m in moves], [before, after], "oldest first")
+        self.assertEqual([m["run"] for m in moves], ["1", "2"])
+
+    def test_LEDGER_011_S1_every_commit_of_the_push_is_exact_and_a_missed_push_is_not(self):
+        """A push of several commits: they all reached the trunk at that time. A push whose run never recorded it (a
+        pending run GitHub's concurrency replaced) is filled in by the next run, marked not exact."""
+        repo = self.project()
+        ci = repo.clone("ci")
+        self.snapshot(ci, "1", EPOCH + 80_000, f"{repo.sha('origin/main~1')}..{repo.sha('origin/main')}")
+        first = repo.sha("origin/main")
+        missed = self.land(repo, "chore: a\n\nNo-story: docs")[1]
+        before = repo.sha("origin/main")
+        a = repo.commit("feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        b = repo.commit("chore: b\n\nNo-story: docs")
+        repo.publish()
+        ci.git("fetch", "-q", "origin")
+        self.snapshot(ci, "3", EPOCH + 80_500, f"{before}..{b}")
+        moves = {m["sha"]: m for m in self.moves(repo)}
+        self.assertEqual(list(moves), [first, missed, a, b])
+        self.assertTrue(moves[a]["exact"] and moves[b]["exact"])
+        self.assertEqual(moves[a]["seen"], snap_iso(EPOCH + 80_500))
+        self.assertIs(moves[missed]["exact"], False, "seen later than it arrived: an upper bound, not exact")
+        self.assertEqual(moves[first]["run"], "1")
+
+    def test_LEDGER_011_S1_a_full_clone_takes_the_exact_arrival_from_moves(self):
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        self.snapshot(repo.clone("ci"), "9", EPOCH + 90_000, f"{before}..{after}")
+        reader = repo.clone("reader")
+        s = self.stories(reader)
+        self.assertEqual(s["AUTH-003"]["since"], snap_iso(EPOCH + 90_000))
+        self.assertIs(s["AUTH-003"]["since_exact"], True)
+        self.assertIs(s["AUTH-001"]["since_exact"], False, "AUTH-001 arrived before any snapshot")
+
+    def test_LEDGER_011_S1_the_snapshot_branch_is_no_trunk_commit_branch_or_attribution_problem(self):
+        repo = self.project()
+        repo.state(f'[ledger]\nsince = "{repo.sha("origin/main")}"\n')
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 95_000)
+        reader = repo.clone("reader")
+        reader.state(f'[ledger]\nsince = "{repo.sha("origin/main")}"\n')
+        r = reader.ledger("check", "--ci", "--json")
+        self.assertNotIn("Traceback", r.stderr)
+        diffs = json.loads(r.stdout)["diffs"]
+        self.assertEqual([d for d in diffs if d["level"] == "error"], [], diffs)
+        self.assertEqual([d for d in diffs if d["code"] in ("STALE_BRANCH", "SQUASH_LOST_TRAILERS")], [], diffs)
+        s = self.stories(reader)
+        self.assertTrue(all(SNAP not in x["branches"] for x in s.values()), s)
+        self.assertEqual(s["AUTH-003"]["state"], "ready")
+        # The pre-push of a commit to the trunk is checked as before: the snapshot's commits are not among them.
+        new = reader.commit("chore: c\n\nNo-story: docs")
+        r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "prepush", "origin", "x"], cwd=reader.path,
+                           env=clean_env(reader.tmp), capture_output=True, text=True, timeout=60,
+                           input=f"refs/heads/main {new} refs/heads/main {repo.sha('origin/main')}\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class LedgerSnapshotRaceTest(SnapshotCase):
+    """S2: snapshots racing for the branch, through a real bare origin."""
+
+    def barrier(self, repo: GitRepo, n: int) -> Path:
+        """A pre-receive hook that holds the first `n` pushes until all of them have arrived, so they all carry the
+        same old tip and all but one are rejected; later pushes go straight through."""
+        gate = self.tmp / "gate"
+        gate.mkdir()
+        hook = repo.bare / "hooks/pre-receive"
+        hook.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            cat >/dev/null
+            g="{gate}"
+            echo x >> "$g/pushes"
+            if [ ! -f "$g/open" ]; then
+              touch "$g/arrived.$$"
+              i=0
+              while [ "$(ls "$g" | grep -c '^arrived')" -lt {n} ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+              touch "$g/open"
+            fi
+            exit 0
+            """))
+        hook.chmod(0o755)
+        return gate
+
+    def test_LEDGER_011_S2_two_snapshots_racing_both_recorded_in_order(self):
+        repo = self.project()
+        ci_a = repo.clone("ci-a")
+        before_b, b = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        ci_b = repo.clone("ci-b")
+        before_c, c = self.land(repo, "feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004")
+        ci_c = repo.clone("ci-c")
+        a = ci_a.sha("origin/main")
+        gate = self.barrier(repo, 3)
+        jobs = [(ci_c, "30", EPOCH + 100_030, f"{before_c}..{c}"),
+                (ci_a, "10", EPOCH + 100_010, f"{ci_a.sha('origin/main~1')}..{a}"),
+                (ci_b, "20", EPOCH + 100_020, f"{before_b}..{b}")]
+        procs = []
+        for clone, run, at, push in jobs:
+            env = {**clean_env(clone.tmp), "KEELOKIT_SNAPSHOT_AT": str(at)}
+            args = ["python3", ".keelokit/bin/ledger.py", "snapshot", "--run", run, *(["--push", push] if push else [])]
+            procs.append(subprocess.Popen(args, cwd=clone.path, env=env, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True))
+        for p in procs:
+            out, err = p.communicate(timeout=180)
+            self.assertNotIn("Traceback", err)
+            self.assertEqual(p.returncode, 0, f"{out}\n{err}")
+        self.assertGreater(len((gate / "pushes").read_text().split()), 3, "the pushes really raced: some retried")
+        moves = self.moves(repo)
+        self.assertEqual([m["sha"] for m in moves], [a, b, c], "every move, oldest first, none lost")
+        by_sha = {m["sha"]: m for m in moves}
+        self.assertEqual((by_sha[b]["run"], by_sha[b]["exact"]), ("20", True))
+        self.assertEqual((by_sha[c]["run"], by_sha[c]["exact"]), ("30", True))
+        self.assertEqual(by_sha[b]["seen"], snap_iso(EPOCH + 100_020))
+        self.assertEqual(self.snap_json(repo)["trunk_sha"], c, "the newest trunk's ledger wins, whoever pushed last")
+        self.assertEqual(len(self.snap_commits(repo)), 3, "one commit per run")
+
+    def test_LEDGER_011_S2_an_older_run_that_pushes_last_keeps_the_newer_ledger(self):
+        repo = self.project()
+        ci_old = repo.clone("ci-old")
+        before, new = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        self.snapshot(repo.clone("ci-new"), "2", EPOCH + 110_002, f"{before}..{new}")
+        self.snapshot(ci_old, "1", EPOCH + 110_001, f"{repo.sha('origin/main~2')}..{before}")
+        data = self.snap_json(repo)
+        self.assertEqual(data["trunk_sha"], new, "a stale run never puts an older trunk's ledger back")
+        self.assertEqual(by_id(data)["AUTH-003"]["state"], "on-trunk")
+        self.assertEqual([m["sha"] for m in self.moves(repo)], [before, new])
+
+    def test_LEDGER_011_S2_five_rejected_pushes_give_up_with_exit_1(self):
+        repo = self.project()
+        log = self.tmp / "attempts"
+        hook = repo.bare / "hooks/pre-receive"
+        hook.write_text(f'#!/bin/sh\ncat >/dev/null\necho x >> "{log}"\necho "busy" >&2\nexit 1\n')
+        hook.chmod(0o755)
+        r = self.snapshot(repo.clone("ci"), "1", EPOCH + 120_000, check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(len(log.read_text().split()), 5, "exactly five tries")
+        self.assertIn("5", r.stderr)
+        self.assertIn(SNAP, r.stderr)
+
+
+class LedgerSnapshotRoundOneTest(SnapshotCase):
+    """Round 1 of the review (ESC-208, ESC-209)."""
+
+    def test_LEDGER_011_S2_an_exact_record_beats_a_filled_in_one(self):
+        """ESC-208, as ESC-246 left it: a run fills in an earlier push whose own run had not written yet; that run's
+        exact record, earlier, replaces the filled-in row (an upper bound), whichever order they write in."""
+        repo = self.project()
+        p = repo.sha("origin/main")
+        self.snapshot(repo.clone("ci-p"), "0", EPOCH + 199_000, f"{repo.sha('origin/main~1')}..{p}")
+        a = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")[1]
+        ci_a = repo.clone("ci-a")
+        b = self.land(repo, "feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004")[1]
+        self.snapshot(repo.clone("ci-b"), "2", EPOCH + 200_100, f"{a}..{b}")
+        filled = {m["sha"]: m for m in self.moves(repo)}[a]
+        self.assertEqual((filled["seen"], filled["exact"]), (snap_iso(EPOCH + 200_100), False))
+        self.snapshot(ci_a, "1", EPOCH + 200_000, f"{p}..{a}")
+        move = {m["sha"]: m for m in self.moves(repo)}[a]
+        self.assertEqual((move["seen"], move["exact"], move["run"]), (snap_iso(EPOCH + 200_000), True, "1"))
+
+    def test_LEDGER_011_S2_a_rewritten_trunk_gets_its_own_reading_back(self):
+        """ESC-209: after main is rewritten, the snapshot's old trunk commit is in no later checkout; a later run must
+        not keep that reading forever."""
+        repo = self.project()
+        self.snapshot(repo.clone("ci-old"), "1", EPOCH + 210_000)
+        repo.git("reset", "-q", "--hard", "HEAD~1")
+        new = repo.commit("feat: AUTH-002 again\n\nWhy.\n\nStory: AUTH-002")
+        repo.git("push", "-q", "-f", "origin", "main")
+        self.snapshot(repo.clone("ci-new"), "2", EPOCH + 210_100)
+        self.assertEqual(self.snap_json(repo)["trunk_sha"], new)
+
+
+class LedgerSnapshotRoundTwoTest(SnapshotCase):
+    """Round 2, the breaker on the shallow reader and the writer (ESC-212..217): never a state the clone cannot prove."""
+
+    def shallow(self, repo: GitRepo, depth: int = 2, name: str = "shallow") -> GitRepo:
+        clone = repo.clone(name, depth=depth)
+        clone.git("fetch", "-q", "origin", f"+refs/heads/{SNAP}:refs/remotes/origin/{SNAP}")
+        return clone
+
+    def snapped(self) -> GitRepo:
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 220_000, f"{before}..{after}")
+        return repo
+
+    def chores(self, repo: GitRepo, n: int = 3) -> None:
+        for i in range(n):
+            repo.commit(f"chore: later {i}\n\nNo-story: docs")
+        repo.publish()
+
+    def test_LEDGER_011_S3_a_story_landed_past_the_clone_after_the_snapshot_is_unknown(self):
+        """ESC-212: the gap between the snapshot and the trunk is past the clone's depth."""
+        repo = self.snapped()
+        repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004")
+        self.chores(repo)
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertEqual(s["AUTH-004"]["state"], "unknown")
+        self.assertIn("history --ensure", s["AUTH-004"]["reason"])
+
+    def test_LEDGER_011_S3_a_revert_past_the_clone_after_the_snapshot_is_unknown(self):
+        repo = self.snapped()
+        repo.revert(by_id(self.snap_json(repo))["AUTH-003"]["commit"])
+        self.chores(repo)
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertEqual(s["AUTH-003"]["state"], "unknown")
+
+    def test_LEDGER_011_S3_a_revert_of_a_revert_after_the_snapshot_is_never_ready(self):
+        """ESC-213: the snapshot read AUTH-003 reverted; the revert is reverted after it, within the clone."""
+        repo = self.project()
+        landed = repo.commit("feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        revert = repo.revert(landed)
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 230_000)
+        self.assertIs(by_id(self.snap_json(repo))["AUTH-003"]["reverted"], True)
+        repo.revert(revert)
+        repo.publish()
+        s = by_id(read_json(self, self.shallow(repo, depth=3)))
+        self.assertIn(s["AUTH-003"]["state"], ("on-trunk", "unknown"))
+
+    def test_LEDGER_011_S3_a_correction_after_the_snapshot_is_never_read_as_absent(self):
+        """ESC-214: a correction row the snapshot predates."""
+        repo = self.project()
+        plain = repo.commit("feat: the AUTH-003 work, no trailer\n\nNo-story: docs")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 240_000)
+        repo.commit("docs: correction\n\nNo-story: docs", {"backlog/ledger-corrections.toml":
+                    f'[[row]]\nstory = "AUTH-003"\ncommit = "{plain}"\nkind = "backfill"\nevidence = "e"\n'
+                    'approver = "Leo"\ndate = "2026-11-24"\n'})
+        repo.publish()
+        self.assertEqual(self.stories(repo.clone("full"))["AUTH-003"]["state"], "on-trunk", "fixture: the truth")
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertIn(s["AUTH-003"]["state"], ("on-trunk", "unknown"))
+
+    def test_LEDGER_011_S5_a_rollback_unseen_by_a_single_branch_clone_is_never_in_production(self):
+        """ESC-215: `git clone --depth` brings no deploy branch, and a deploy writes no snapshot."""
+        repo = self.project()
+        before_auth = repo.sha("origin/main~2")
+        self.assertEqual(repo.ledger("deploy", "production", "main").returncode, 0)
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 250_000)
+        self.assertEqual(repo.ledger("deploy", "production", before_auth).returncode, 0)
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertNotEqual(s["AUTH-001"]["state"], "in-production")
+
+    def test_LEDGER_011_S5_history_ensure_brings_the_deploy_branches_with_the_snapshot(self):
+        repo = self.project()
+        self.assertEqual(repo.ledger("deploy", "production", "main").returncode, 0)
+        self.chores(repo)
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 255_000)
+        clone = repo.clone("shallow", depth=2)
+        clone.state("[ledger]\nhistory_seconds = 8\n")
+        marker, slow = self.tmp / "slow-once", self.tmp / "slow-upload-pack"
+        slow.write_text(f'#!/bin/sh\nif [ ! -f "{marker}" ]; then touch "{marker}"; sleep 30; fi\n'
+                        'exec git-upload-pack "$@"\n')
+        slow.chmod(0o755)
+        clone.git("config", "remote.origin.uploadpack", str(slow))
+        r = clone.ledger("history", "--ensure", timeout=40)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(clone.sha("origin/deploy/production"), repo.sha("origin/main~3"))
+        self.assertEqual(by_id(read_json(self, clone))["AUTH-001"]["state"], "in-production")
+
+    def test_LEDGER_011_S4_a_tag_moved_after_the_snapshot_is_never_read_as_the_old_one(self):
+        """ESC-216: v1.0.0 moved back before AUTH-002's commit after the snapshot."""
+        repo = self.project()
+        auth1 = repo.sha("origin/main~1")
+        repo.tag("v1.0.0")
+        repo.publish("main", "v1.0.0")
+        self.chores(repo, 4)
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 260_000)
+        self.assertEqual(by_id(self.snap_json(repo))["AUTH-002"]["state"], "in-version")
+        repo.git("tag", "-f", "-a", "-m", "v1.0.0", "v1.0.0", auth1)
+        repo.git("push", "-q", "-f", "origin", "v1.0.0")
+        clone = self.shallow(repo)
+        clone.git("fetch", "-q", "-f", "--depth=2", "origin", "+refs/tags/v1.0.0:refs/tags/v1.0.0")
+        s = by_id(read_json(self, clone))
+        self.assertNotEqual(s["AUTH-002"]["state"], "in-version")
+
+    def test_LEDGER_011_S1_a_snapshot_name_that_is_a_real_branch_is_refused(self):
+        """ESC-217: `[ledger] snapshot = "main"` fast-forwarded main to a tree of three ledger files."""
+        repo = self.project()
+        repo.on_branch("feature", "feat: wip\n\nPart-of: AUTH-003", keep=True)
+        main = repo.sha("origin/main")
+        for name in ("main", "deploy/production", "feature"):
+            with self.subTest(name=name):
+                ci = repo.clone(f"ci-{name.replace('/', '-')}")
+                ci.state(f'[ledger]\nsnapshot = "{name}"\n')
+                r = self.snapshot(ci, "1", EPOCH + 270_000, check=False)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(name, r.stderr)
+        self.assertEqual(repo.run(["git", "--git-dir", str(repo.bare), "rev-parse", "main"], repo.tmp).strip(), main)
+        self.assertEqual(self.stories(repo.clone("reader"))["AUTH-001"]["state"], "on-trunk")
+
+
+class LedgerSnapshotRoundThreeTest(SnapshotCase):
+    """Round 3, the coordinator's breaker on #31 (ESC-246..ESC-257): exact times, rewritten trunks, single-branch clones,
+    stories the snapshot cannot tell about, and a hand-edited snapshot."""
+
+    def shallow(self, repo: GitRepo, depth: int = 2, name: str = "shallow", all_branches: bool = False) -> GitRepo:
+        dest = self.tmp / name
+        repo.run(["git", "clone", "-q", f"--depth={depth}", *(["--no-single-branch"] if all_branches else []),
+                  f"file://{repo.bare}", str(dest)], self.tmp)
+        clone = GitRepo(self.tmp, existing=dest)
+        clone.git("fetch", "-q", "origin", f"+refs/heads/{SNAP}:refs/remotes/origin/{SNAP}")
+        return clone
+
+    def pad(self, repo: GitRepo, n: int = 2) -> None:
+        for i in range(n):
+            repo.commit(f"chore: pad {i}\n\nNo-story: docs")
+
+    def test_LEDGER_011_S2_a_run_never_dates_a_later_push_it_saw_in_its_checkout(self):
+        """ESC-246: push A's run checks out after push B landed; B's commit must keep B's own exact time."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.publish()
+        self.snapshot(repo.clone("ci0"), "1", EPOCH + 100_000)
+        p = repo.sha("origin/main")
+        a = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        b = repo.commit("feat: two\n\nWhy.\n\nStory: AUTH-002")
+        repo.publish()
+        self.snapshot(repo.clone("ci-a"), "A.1", EPOCH + 200_000, f"{p}..{a}")
+        self.snapshot(repo.clone("ci-b"), "B.1", EPOCH + 200_600, f"{a}..{b}")
+        moves = {m["sha"]: m for m in self.moves(repo)}
+        self.assertEqual((moves[b]["seen"], moves[b]["run"], moves[b]["exact"]), (snap_iso(EPOCH + 200_600), "B.1", True))
+        s = self.stories(repo.clone("reader"))
+        self.assertEqual((s["AUTH-002"]["since"], s["AUTH-002"]["since_exact"]), (snap_iso(EPOCH + 200_600), True))
+
+    def test_LEDGER_011_S2_a_run_without_a_push_records_no_move(self):
+        """ESC-246: a tag's run (or a run by hand) has no push to date: it writes the ledger and records no move."""
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        self.snapshot(repo.clone("ci-tag"), "9", EPOCH + 205_000)
+        self.assertEqual(self.moves(repo), [])
+        self.assertEqual(self.snap_json(repo)["trunk_sha"], after)
+        self.snapshot(repo.clone("ci-push"), "8", EPOCH + 204_000, f"{before}..{after}")
+        self.assertEqual([(m["sha"], m["exact"]) for m in self.moves(repo)], [(after, True)])
+
+    def test_LEDGER_011_S1_a_commit_landed_again_takes_its_new_arrival(self):
+        """ESC-247: pushed, force-pushed away, pushed again days later: its arrival is the second landing."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        base = repo.sha("origin/main")
+        x = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.snapshot(repo.clone("ci1"), "1", EPOCH + 200_000, f"{base}..{x}")
+        repo.git("push", "-q", "-f", "origin", f"{base}:main")
+        self.snapshot(repo.clone("ci2"), "2", EPOCH + 300_000, f"{x}..{base}")
+        repo.git("push", "-q", "origin", f"{x}:main")
+        self.snapshot(repo.clone("ci3"), "3", EPOCH + 600_000, f"{base}..{x}")
+        s = self.stories(repo.clone("reader"))
+        self.assertEqual(s["AUTH-001"]["since"], snap_iso(EPOCH + 600_000))
+        moves = {m["sha"]: m for m in self.moves(repo)}
+        self.assertNotIn(base, [m["sha"] for m in self.moves(repo) if m["exact"]],
+                         "a rewind to an old commit brings nothing new: it is no arrival")
+        self.assertEqual(moves[x]["run"], "3")
+
+    def rewound(self) -> tuple[GitRepo, str, str]:
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        self.pad(repo, 3)
+        repo.publish()
+        base = repo.sha("origin/main")
+        x = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        repo.git("push", "-q", "origin", f"{x}:refs/heads/feature/wip")
+        self.snapshot(repo.clone("ci1"), "1", EPOCH + 100_000, f"{base}..{x}")
+        repo.git("reset", "-q", "--hard", base)
+        repo.git("push", "-q", "-f", "origin", "main")
+        return repo, base, x
+
+    def test_LEDGER_011_S2_a_rewound_trunk_gets_its_own_ledger(self):
+        """ESC-248: main forced back to an ancestor of the snapshot's trunk: the newer run writes its reading."""
+        repo, base, x = self.rewound()
+        self.snapshot(repo.clone("ci2"), "2", EPOCH + 100_600, f"{x}..{base}")
+        self.assertEqual(self.snap_json(repo)["trunk_sha"], base)
+
+    def test_LEDGER_011_S3_a_snapshot_whose_trunk_is_no_ancestor_of_the_trunk_is_unknown(self):
+        """ESC-248: the snapshot is of a commit main no longer holds; nothing it says can be read as of now."""
+        repo, base, x = self.rewound()
+        d = read_json(self, self.shallow(repo, all_branches=True))
+        s = by_id(d)
+        self.assertEqual(s["AUTH-001"]["state"], "unknown")
+        behind = [x for x in d["diffs"] if x["code"] == "SNAPSHOT_BEHIND"]
+        self.assertTrue(behind and "0 commits" not in behind[0]["detail"], d["diffs"])
+
+    def test_LEDGER_011_S4_history_ensure_brings_the_deploy_branches_to_a_single_branch_clone(self):
+        """ESC-249: `git clone --depth 1` and `git clone --single-branch` have no deploy branch; once --ensure completed
+        the history, in-production read as in-version."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        x = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.tag("v1.0.0")
+        repo.publish("main", "v1.0.0")
+        repo.git("push", "-q", "origin", f"{x}:refs/heads/deploy/production")
+        for name, flags in (("depth1", ["--depth=1"]), ("single", ["--single-branch"])):
+            with self.subTest(clone=name):
+                dest = self.tmp / name
+                repo.run(["git", "clone", "-q", *flags, f"file://{repo.bare}", str(dest)], self.tmp)
+                clone = GitRepo(self.tmp, existing=dest)
+                r = clone.ledger("history", "--ensure", timeout=40)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.stories(clone)["AUTH-001"]["state"], "in-production")
+
+    def test_LEDGER_011_S4_history_ensure_prunes_a_deploy_branch_gone_from_origin(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        x = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        repo.git("push", "-q", "origin", f"{x}:refs/heads/deploy/staging")
+        dest = self.tmp / "single"
+        repo.run(["git", "clone", "-q", "--single-branch", f"file://{repo.bare}", str(dest)], self.tmp)
+        clone = GitRepo(self.tmp, existing=dest)
+        self.assertEqual(clone.ledger("history", "--ensure", timeout=40).returncode, 0)
+        self.assertEqual(self.stories(clone)["AUTH-001"]["state"], "in-staging")
+        repo.git("push", "-q", "origin", ":refs/heads/deploy/staging")
+        self.assertEqual(clone.ledger("history", "--ensure", timeout=40).returncode, 0)
+        self.assertEqual(self.stories(clone)["AUTH-001"]["state"], "on-trunk")
+
+    def test_LEDGER_011_S3_a_revert_of_one_of_two_story_commits_keeps_the_story(self):
+        """ESC-250: AUTH-001 has two Story: commits before the snapshot; reverting the first one after it."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        self.pad(repo)
+        repo.publish()
+        p = repo.sha("origin/main")
+        s1 = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        s2 = repo.commit("fix: one, the rest\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 100_000, f"{p}..{s2}")
+        repo.revert(s1)
+        repo.publish()
+        self.assertEqual(self.stories(repo.clone("full"))["AUTH-001"]["state"], "on-trunk", "fixture: the truth")
+        s = by_id(read_json(self, self.shallow(repo, depth=3)))
+        self.assertIn(s["AUTH-001"]["state"], ("on-trunk", "unknown"))
+
+    def test_LEDGER_011_S3_a_story_file_written_after_its_story_commit_and_the_snapshot(self):
+        """ESC-251: a hotfix lands with Story: BUG-7, the snapshot runs, then BUG-7's story file is written."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        self.pad(repo)
+        repo.publish()
+        p = repo.sha("origin/main")
+        h = repo.commit("fix: the outage\n\nWhy.\n\nStory: BUG-7")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 100_000, f"{p}..{h}")
+        repo.plan("BUG-7")
+        repo.publish()
+        self.assertEqual(self.stories(repo.clone("full"))["BUG-7"]["state"], "on-trunk", "fixture: the truth")
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertIn(s["BUG-7"]["state"], ("on-trunk", "unknown"))
+
+    def test_LEDGER_011_S3_a_correction_removed_after_the_snapshot(self):
+        """ESC-252: the row that reconstructed AUTH-001 at the snapshot is gone (the file deleted)."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        self.pad(repo)
+        c = repo.commit("feat: one, trailer forgotten\n\nNo-story: docs")
+        p = repo.sha()
+        k = repo.commit("docs: correction\n\nNo-story: docs", {"backlog/ledger-corrections.toml":
+                        f'[[row]]\nstory = "AUTH-001"\ncommit = "{c}"\nkind = "backfill"\nevidence = "the PR"\n'
+                        'approver = "Ana"\ndate = "2026-01-02"\n'})
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 100_000, f"{p}..{k}")
+        self.assertEqual(by_id(self.snap_json(repo))["AUTH-001"]["state"], "on-trunk")
+        repo.git("rm", "-q", "backlog/ledger-corrections.toml")
+        repo.git("commit", "-q", "-m", "docs: drop corrections\n\nNo-story: docs", when=repo.next_date())
+        repo.publish()
+        self.assertEqual(self.stories(repo.clone("full"))["AUTH-001"]["state"], "ready", "fixture: the truth")
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertIn(s["AUTH-001"]["state"], ("ready", "unknown"))
+
+    def test_LEDGER_011_S3_a_hand_edited_snapshot_is_never_a_crash(self):
+        """ESC-253: `"signals": null` in a story of ledger.json crashed `show` with a TypeError."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        self.pad(repo)
+        repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 100_000)
+        for key, value in (("signals", None), ("branches", "x"), ("since", 12345), ("reverted", "no"),
+                           ("attempts", None), ("reason", 3), ("since_exact", None)):
+            with self.subTest(key=key):
+                ed = self.tmp / f"ed-{key}"
+                repo.run(["git", "clone", "-q", "-b", SNAP, f"file://{repo.bare}", str(ed)], self.tmp)
+                data = json.loads((ed / "ledger.json").read_text())
+                for story in data["stories"]:
+                    story[key] = value
+                (ed / "ledger.json").write_text(json.dumps(data))
+                env = {**clean_env(self.tmp), "GIT_AUTHOR_NAME": "e", "GIT_AUTHOR_EMAIL": "e@x",
+                       "GIT_COMMITTER_NAME": "e", "GIT_COMMITTER_EMAIL": "e@x"}
+                repo.run(["git", "commit", "-qam", "edit"], ed, env)
+                repo.run(["git", "push", "-q", "origin", SNAP], ed, env)
+                clone = self.shallow(repo, depth=1, name=f"s-{key}")
+                for args in (("show", "AUTH-001"), (), ("--json",), ("next",)):
+                    r = clone.ledger(*args)
+                    self.assertNotIn("Traceback", r.stderr)
+                    self.assertNotIn("failed (", r.stderr, f"{args}: {r.stderr}")
+                    self.assertNotEqual(r.returncode, 2, f"{args}: {r.stderr}")
+
+    def test_LEDGER_011_S1_a_time_out_of_range_or_without_a_zone_is_refused(self):
+        """ESC-254: a huge KEELOKIT_SNAPSHOT_AT crashed in iso(); a zoneless ISO time was read as local time."""
+        repo = self.project()
+        ci = repo.clone("ci")
+        for at in ("99999999999999999", "2026-01-01T00:00:00", "-5"):
+            with self.subTest(at=at):
+                r = ci.ledger("snapshot", "--run", "1", extra_env={"KEELOKIT_SNAPSHOT_AT": at})
+                self.assertNotIn("Traceback", r.stderr)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("KEELOKIT_SNAPSHOT_AT", r.stderr)
+        refs = repo.run(["git", "--git-dir", str(repo.bare), "for-each-ref", f"refs/heads/{SNAP}"], repo.tmp)
+        self.assertEqual(refs, "")
+        r = ci.ledger("snapshot", "--run", "1", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-01-01T00:00:00+01:00"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("2025-12-31T23:00:00Z", r.stdout)
+
+    def test_LEDGER_011_S1_a_snapshot_name_that_clashes_with_deploy_or_the_trunk_is_refused(self):
+        """ESC-255: `snapshot = "deploy"` is a prefix of the deploy branches (and "main/x" of the trunk's)."""
+        repo = self.project()
+        for name in ("deploy", "main/ledger"):
+            with self.subTest(name=name):
+                ci = repo.clone(f"ci-{name.replace('/', '-')}")
+                ci.state(f'[ledger]\nsnapshot = "{name}"\n')
+                r = self.snapshot(ci, "1", EPOCH + 280_000, check=False)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(name, r.stderr)
+
+    def test_LEDGER_011_S3_history_ensure_names_only_a_snapshot_it_can_read(self):
+        """ESC-256: the line said "the ledger reads the CI's snapshot" for a ledger.json the reader rejects."""
+        repo = self.project()
+        self.pad(repo, 4)
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 290_000)
+        ed = self.tmp / "ed"
+        repo.run(["git", "clone", "-q", "-b", SNAP, f"file://{repo.bare}", str(ed)], self.tmp)
+        (ed / "ledger.json").write_text('{"schema": 1, "trunk_sha": "' + "a" * 40 + '", "stories": "no"}\n')
+        env = {**clean_env(self.tmp), "GIT_AUTHOR_NAME": "e", "GIT_AUTHOR_EMAIL": "e@x", "GIT_COMMITTER_NAME": "e",
+               "GIT_COMMITTER_EMAIL": "e@x"}
+        repo.run(["git", "commit", "-qam", "edit"], ed, env)
+        repo.run(["git", "push", "-q", "origin", SNAP], ed, env)
+        clone = repo.clone("shallow", depth=2)
+        clone.state("[ledger]\nhistory_seconds = 8\n")
+        marker, slow = self.tmp / "slow-once", self.tmp / "slow-upload-pack"
+        slow.write_text(f'#!/bin/sh\nif [ ! -f "{marker}" ]; then touch "{marker}"; sleep 30; fi\n'
+                        'exec git-upload-pack "$@"\n')
+        slow.chmod(0o755)
+        clone.git("config", "remote.origin.uploadpack", str(slow))
+        r = clone.ledger("history", "--ensure", timeout=40)
+        self.assertIn("cut at 8s", r.stdout)
+        self.assertNotIn("snapshot", r.stdout)
+
+
+class LedgerSnapshotRoundFourTest(SnapshotCase):
+    """Round 4, the breaker after round 3 (ESC-257 and the coordinator's agreed extension, see the addendum)."""
+
+    def shallow(self, repo: GitRepo, depth: int, name: str = "shallow") -> GitRepo:
+        clone = repo.clone(name, depth=depth)
+        clone.git("fetch", "-q", "origin", f"+refs/heads/{SNAP}:refs/remotes/origin/{SNAP}")
+        return clone
+
+    def test_LEDGER_011_S1_a_commit_merged_back_by_a_pull_keeps_its_own_arrival(self):
+        """A foxtrot merge: B lands (recorded exact), then someone's `git pull` merges main into their commit and
+        pushes M, so B is M's second parent. B arrived with its own push, not with M."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        other = repo.clone("other")
+        p = repo.sha("origin/main")
+        b = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.snapshot(repo.clone("ci-b"), "1", EPOCH + 100_000, f"{p}..{b}")
+        other.commit("chore: local\n\nNo-story: docs")
+        other.git("pull", "-q", "--no-rebase", "--no-edit", "origin", "main", when=other.next_date())
+        m = other.sha()
+        other.git("push", "-q", "origin", "main")
+        self.snapshot(repo.clone("ci-m"), "2", EPOCH + 190_000, f"{b}..{m}")
+        s = self.stories(repo.clone("reader"))
+        self.assertEqual((s["AUTH-001"]["since"], s["AUTH-001"]["since_exact"]), (snap_iso(EPOCH + 100_000), True))
+
+    def test_LEDGER_011_S1_a_run_whose_push_left_the_first_parent_chain_still_records_it(self):
+        """B's own run checks out after the foxtrot merge M: B is no longer on main's first-parent chain, yet it is
+        what that push brought."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        other = repo.clone("other")
+        p = repo.sha("origin/main")
+        b = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        other.commit("chore: local\n\nNo-story: docs")
+        other.git("pull", "-q", "--no-rebase", "--no-edit", "origin", "main", when=other.next_date())
+        other.git("push", "-q", "origin", "main")
+        self.snapshot(repo.clone("ci-b"), "1", EPOCH + 100_000, f"{p}..{b}")
+        moves = {m["sha"]: m for m in self.moves(repo)}
+        self.assertEqual((moves[b]["seen"], moves[b]["exact"]), (snap_iso(EPOCH + 100_000), True))
+
+    def test_LEDGER_011_S3_a_revert_of_an_old_revert_with_a_later_story_commit(self):
+        """c0 (Story), R reverts c0, c1 (Story), snapshot, then R is reverted: c0 is back and is the story's commit."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        for n in range(3):
+            repo.commit(f"chore: pad {n}\n\nNo-story: docs")
+        c0 = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        r = repo.revert(c0)
+        p = repo.sha()
+        c1 = repo.commit("feat: one again\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 100_000, f"{p}..{c1}")
+        repo.revert(r)
+        repo.publish()
+        self.assertEqual(self.stories(repo.clone("full"))["AUTH-001"]["commit"], c0, "fixture: the truth")
+        s = by_id(read_json(self, self.shallow(repo, 5)))
+        self.assertTrue(s["AUTH-001"]["state"] == "unknown" or s["AUTH-001"]["commit"] == c0, s["AUTH-001"])
+
+    def test_LEDGER_011_S1_a_commit_landed_again_without_a_run_of_its_own_is_not_its_first_landing(self):
+        """X lands (exact), is forced away, lands again in a push whose run concurrency replaced; the next push's run
+        fills in: X's arrival is not its first landing."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        base = repo.sha("origin/main")
+        x = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        repo.publish()
+        repo.git("push", "-q", "origin", f"{x}:refs/heads/keep")
+        self.snapshot(repo.clone("ci1"), "1", EPOCH + 200_000, f"{base}..{x}")
+        repo.git("push", "-q", "-f", "origin", f"{base}:main")
+        self.snapshot(repo.clone("ci2"), "2", EPOCH + 300_000, f"{x}..{base}")
+        repo.git("push", "-q", "origin", f"{x}:main")  # its run never runs
+        y = repo.commit("chore: next\n\nNo-story: docs")
+        repo.publish()
+        self.snapshot(repo.clone("ci4"), "4", EPOCH + 700_000, f"{x}..{y}")
+        s = self.stories(repo.clone("reader"))["AUTH-001"]
+        self.assertFalse(s["since"] == snap_iso(EPOCH + 200_000) and s["since_exact"], s)
+
+    def test_LEDGER_011_S3_snapshot_behind_names_no_time_the_snapshot_commit_does_not_have(self):
+        """Push 1's run checks out after push 2: its reading is of push 2's commit, so push 1's time is not when that
+        commit was seen."""
+        repo = self.project()
+        p0 = repo.sha("origin/main")
+        x1 = self.land(repo, "chore: one\n\nNo-story: docs")[1]
+        self.land(repo, "chore: two\n\nNo-story: docs")
+        ci1 = repo.clone("ci1")
+        self.snapshot(ci1, "1", EPOCH + 300_000, f"{p0}..{x1}")
+        for n in range(3):
+            repo.commit(f"chore: later {n}\n\nNo-story: docs")
+        repo.publish()
+        d = read_json(self, self.shallow(repo, 4))
+        behind = [x for x in d["diffs"] if x["code"] == "SNAPSHOT_BEHIND"]
+        self.assertTrue(behind, d["diffs"])
+        self.assertNotIn(snap_iso(EPOCH + 300_000), behind[0]["detail"])
+
+    def test_LEDGER_011_S1_a_first_push_to_a_new_remote_dates_only_its_tip(self):
+        """`before` all zeros (a history pushed to a new remote): its old commits did not just get written."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        old = repo.commit("feat: one\n\nWhy.\n\nStory: AUTH-001")
+        tip = repo.commit("chore: tip\n\nNo-story: docs")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 400_000, f"{'0' * 40}..{tip}")
+        self.assertEqual([(m["sha"], m["exact"]) for m in self.moves(repo)], [(tip, True)])
+        self.assertIs(self.stories(repo.clone("reader"))["AUTH-001"]["since_exact"], False)
+
+
+class LedgerSnapshotReadTest(SnapshotCase):
+    """S3: a shallow session whose fetch is cut reads the snapshot."""
+
+    def published(self) -> tuple[GitRepo, str]:
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        for n in range(4):
+            repo.commit(f"chore: {n}\n\nNo-story: docs")
+        repo.publish()
+        tip = repo.sha("origin/main")
+        self.snapshot(repo.clone("ci"), "5", EPOCH + 130_000, f"{after}..{tip}")
+        return repo, tip
+
+    def shallow(self, repo: GitRepo, name: str = "shallow") -> GitRepo:
+        clone = repo.clone(name, depth=2)
+        clone.git("fetch", "-q", "origin", f"+refs/heads/{SNAP}:refs/remotes/origin/{SNAP}")
+        return clone
+
+    def test_LEDGER_011_S3_a_shallow_clone_reads_the_snapshot_and_says_so(self):
+        repo, tip = self.published()
+        d = read_json(self, self.shallow(repo))
+        self.assertEqual(d["history"], f"snapshot:{tip}")
+        s = by_id(d)
+        self.assertEqual(s["AUTH-001"]["state"], "on-trunk")
+        self.assertEqual(s["AUTH-003"]["state"], "on-trunk")
+        self.assertEqual(s["AUTH-004"]["state"], "ready")
+        self.assertTrue(all(x.get("as_of") == tip for x in s.values()), "each state says which trunk it is of")
+        r = self.shallow(repo, "again").ledger()
+        self.assertIn("snapshot", r.stdout.splitlines()[0].lower())
+        self.assertIn(tip[:7], r.stdout.splitlines()[0])
+
+    def test_LEDGER_011_S3_without_the_snapshot_branch_it_stays_unknown(self):
+        repo = self.project()
+        for n in range(4):
+            repo.commit(f"chore: {n}\n\nNo-story: docs")
+        repo.publish()
+        d = read_json(self, repo.clone("shallow", depth=2))
+        self.assertEqual(d["history"], "incomplete")
+        self.assertTrue(all(x["state"] == "unknown" for x in d["stories"]))
+
+    def test_LEDGER_011_S3_a_snapshot_behind_the_trunk_says_how_old_and_lifts_what_it_sees(self):
+        repo, tip = self.published()
+        landed = repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004")
+        repo.publish()
+        d = read_json(self, self.shallow(repo))
+        self.assertEqual(d["history"], f"snapshot:{tip}")
+        self.assertEqual(d["trunk_sha"], landed, "the trunk is the current one, never the snapshot's")
+        behind = [x for x in d["diffs"] if x["code"] == "SNAPSHOT_BEHIND"]
+        self.assertEqual(len(behind), 1, d["diffs"])
+        self.assertIn(tip[:7], behind[0]["detail"])
+        self.assertIn("1 commit", behind[0]["detail"])
+        self.assertIn(snap_iso(EPOCH + 130_000), behind[0]["detail"])
+        s = by_id(d)
+        self.assertEqual(s["AUTH-004"]["state"], "on-trunk", "a Story: commit after the snapshot, in the clone")
+        self.assertEqual(s["AUTH-004"]["commit"], landed)
+        self.assertEqual(s["AUTH-001"]["state"], "on-trunk")
+
+    def test_LEDGER_011_S3_a_revert_after_the_snapshot_lowers_the_story(self):
+        repo, tip = self.published()
+        landed = by_id(self.snap_json(repo))["AUTH-003"]["commit"]
+        repo.revert(landed)
+        repo.publish()
+        s = by_id(read_json(self, self.shallow(repo)))
+        self.assertNotEqual(s["AUTH-003"]["state"], "on-trunk")
+        self.assertIs(s["AUTH-003"]["reverted"], True)
+
+    def test_LEDGER_011_S3_history_ensure_reads_the_snapshot_when_the_fetch_is_cut(self):
+        repo, tip = self.published()
+        clone = repo.clone("shallow", depth=2)
+        clone.state("[ledger]\nhistory_seconds = 8\n")
+        marker = self.tmp / "slow-once"
+        slow = self.tmp / "slow-upload-pack"
+        slow.write_text(f'#!/bin/sh\nif [ ! -f "{marker}" ]; then touch "{marker}"; sleep 30; fi\n'
+                        'exec git-upload-pack "$@"\n')
+        slow.chmod(0o755)
+        clone.git("config", "remote.origin.uploadpack", str(slow))
+        r = clone.ledger("history", "--ensure", timeout=40)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cut at 8s", r.stdout)
+        self.assertIn("snapshot", r.stdout)
+        self.assertIn(tip[:7], r.stdout)
+        self.assertEqual(len(r.stdout.strip().splitlines()), 1, r.stdout)
+        d = read_json(self, clone)
+        self.assertEqual(d["history"], f"snapshot:{tip}")
+
+
+class LedgerDeployBranchTest(SnapshotCase):
+    """S4 and S5: `ledger.py deploy <env> <commit>` is what the template's deploy jobs run after a deploy succeeds."""
+
+    def deployed(self) -> tuple[GitRepo, str, str]:
+        repo = self.project()
+        auth1 = repo.sha("origin/main~1")
+        before_auth = repo.sha("origin/main~2")
+        r = repo.ledger("deploy", "production", repo.sha("origin/main"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return repo, auth1, before_auth
+
+    def test_LEDGER_011_S4_a_production_deploy_makes_the_story_in_production(self):
+        repo, auth1, _ = self.deployed()
+        self.assertEqual(repo.run(["git", "--git-dir", str(repo.bare), "rev-parse", "deploy/production"], repo.tmp).strip(),
+                         repo.sha("origin/main"))
+        s = self.stories(repo.clone("reader"))
+        self.assertEqual(s["AUTH-001"]["state"], "in-production")
+        self.assertEqual(s["AUTH-001"]["environments"]["production"], repo.sha("origin/main"))
+        self.assertEqual(s["AUTH-003"]["state"], "ready")
+
+    def test_LEDGER_011_S4_staging_moves_its_own_branch(self):
+        repo = self.project()
+        self.assertEqual(repo.ledger("deploy", "staging", "main").returncode, 0)
+        s = self.stories(repo.clone("reader"))
+        self.assertEqual(s["AUTH-002"]["state"], "in-staging")
+
+    def test_LEDGER_011_S4_logic_an_unknown_environment_or_commit_is_refused(self):
+        repo = self.project()
+        for args in (("deploy", "prod", "main"), ("deploy", "production", "0" * 40), ("deploy", "production", "nope")):
+            with self.subTest(args=args):
+                r = repo.ledger(*args)
+                self.assertNotEqual(r.returncode, 0)
+        refs = repo.run(["git", "--git-dir", str(repo.bare), "for-each-ref", "refs/heads/deploy"], repo.tmp)
+        self.assertEqual(refs, "")
+
+    def test_LEDGER_011_S5_a_rollback_takes_the_story_out_of_production(self):
+        repo, auth1, before_auth = self.deployed()
+        r = repo.ledger("deploy", "production", before_auth)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        s = self.stories(repo.clone("reader"))
+        self.assertNotEqual(s["AUTH-001"]["state"], "in-production")
+        self.assertEqual(s["AUTH-001"]["environments"]["production"], None)
+
+    def test_LEDGER_011_S5_a_rollback_after_the_snapshot_is_never_read_as_in_production(self):
+        repo, auth1, before_auth = self.deployed()
+        for n in range(4):
+            repo.commit(f"chore: {n}\n\nNo-story: docs")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 140_000)
+        self.assertEqual(by_id(self.snap_json(repo))["AUTH-001"]["state"], "in-production")
+        self.assertEqual(repo.ledger("deploy", "production", before_auth).returncode, 0)
+        clone = repo.clone("shallow", depth=2)
+        clone.git("fetch", "-q", "origin", f"+refs/heads/{SNAP}:refs/remotes/origin/{SNAP}")
+        clone.git("fetch", "-q", "--depth=2", "origin", "+refs/heads/deploy/*:refs/remotes/origin/deploy/*")
+        s = by_id(read_json(self, clone))
+        self.assertNotEqual(s["AUTH-001"]["state"], "in-production", "a rollback after the snapshot")
+
+
+class LedgerSnapshotOffTest(SnapshotCase):
+    """S6: `[ledger] snapshot = ""` turns the writing and the reading off."""
+
+    def test_LEDGER_011_S6_snapshot_off_writes_nothing(self):
+        repo = self.project()
+        ci = repo.clone("ci")
+        ci.state('[ledger]\nsnapshot = ""\n')
+        r = self.snapshot(ci, "1", EPOCH + 150_000)
+        self.assertIn("off", r.stdout + r.stderr)
+        refs = repo.run(["git", "--git-dir", str(repo.bare), "for-each-ref", f"refs/heads/{SNAP}"], repo.tmp)
+        self.assertEqual(refs, "")
+        r = ci.ledger("snapshot", "--branch")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, ""))
+        ci.state("")
+        r = ci.ledger("snapshot", "--branch")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, SNAP), "the default")
+
+    def test_LEDGER_011_S6_snapshot_off_reads_none(self):
+        repo = self.project()
+        before, after = self.land(repo, "feat: AUTH-003\n\nWhy.\n\nStory: AUTH-003")
+        for n in range(4):
+            repo.commit(f"chore: {n}\n\nNo-story: docs")
+        repo.publish()
+        self.snapshot(repo.clone("ci"), "1", EPOCH + 160_000, f"{before}..{after}")
+        full = repo.clone("full")
+        full.state('[ledger]\nsnapshot = ""\n')
+        self.assertIs(self.stories(full)["AUTH-003"]["since_exact"], False)
+        shallow = repo.clone("shallow", depth=2)
+        shallow.git("fetch", "-q", "origin", f"+refs/heads/{SNAP}:refs/remotes/origin/{SNAP}")
+        shallow.state('[ledger]\nsnapshot = ""\n')
+        d = read_json(self, shallow)
+        self.assertEqual(d["history"], "incomplete")
+        self.assertTrue(all(x["state"] == "unknown" for x in d["stories"]))
+
+
+class LedgerWalkTest(unittest.TestCase):
+    """S7 runs in scripts/test-template.sh; here, that the walk is there and reaches in-production."""
+
+    def test_LEDGER_011_S7_the_template_walk_exists(self):
+        text = (REPO / "scripts/test-template.sh").read_text()
+        self.assertIn("LEDGER-011.S7", text)
+        walk = text[text.index("LEDGER-011.S7"):]
+        for needle in ("ledger.py take", "Story:", "ledger.py snapshot", "git push", "ledger.py deploy production",
+                       "ledger.py show", "in-production"):
+            self.assertIn(needle, walk, f"the walk has {needle!r}")

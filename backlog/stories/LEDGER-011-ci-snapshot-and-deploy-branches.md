@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "The CI snapshot, the time each commit reached the trunk, and the deploy branches"
 wave = 16
 depends_on = ["LEDGER-010"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", "template/.github/workflows/release.yml.jinja", "skills/ship-setup/SKILL.md", "tests/test_ledger.py", "tests/test_ci.py", "scripts/test-template.sh", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "template/.github/workflows/ci.yml.jinja", "template/.github/workflows/release.yml.jinja", "skills/ship-setup/SKILL.md", "tests/test_ledger.py", "tests/test_ci.py", "scripts/test-template.sh", "docs/design.md", "CHANGELOG.md", "template/.keelokit/verify-map.toml", "scripts/unit_shard.py"]
 dimensions = ["logic", "ops", "data", "nfr"]
 invariants = []
 origin = "docs/ledger.md — Mechanisms (CI snapshot, deploy branches); premortem failures 8 and 9"
@@ -79,3 +79,66 @@ Scenario: [S7] The whole walk in a generated project
 `scripts/verify.sh` and `scripts/test-template.sh` green, every scenario covered by a test titled with its
 id, `docs/design.md` mentions the snapshot branch, a CHANGELOG line, `Story: LEDGER-011` trailer, addendum
 if the result differs. S7 is the gate of phase 2.
+
+## Addendum — 2026-11-24
+
+Built as specified, with these differences and decisions (none changes a product rule):
+
+- **The switch is a gate job, not a missing job (S6).** A workflow cannot read `.keelokit/state.toml` when GitHub
+  plans its jobs, and copier renders the workflows before the project's state.toml exists. So a tiny
+  `ledger-config` job (read-only) prints `ledger.py snapshot --branch`, and `ledger-snapshot` runs only when that
+  is not empty: with `snapshot = ""` the writing job is skipped, never gets a write token, and the ledger reads
+  no snapshot.
+- **Every commit of a push is exact; a missed push is filled in, not exact.** The CI passes
+  `--push "$BEFORE..$AFTER"` (`github.event.before`): every first-parent commit that push brought (from AFTER down to
+  what BEFORE holds) reached the trunk at the push's time (`exact = true`). GitHub's `concurrency` replaces a pending
+  run with a newer one, so a push can have no run of its own: the next push's run fills in the first-parent commits
+  below its own back to a recorded move, with its push time and `exact = false` (an upper bound). A run records
+  nothing above its own AFTER, even what its checkout already sees, nothing without a push (a tag's run) and nothing
+  when it lacks BEFORE (a forced push) (ESC-246, ESC-247). Exact beats not exact; of two exact records of one commit
+  the later wins, which only a commit landed again has. Round 4 (ESC-257): the walk follows AFTER's own first-parent
+  chain (a later foxtrot merge may have taken it off main's); an all-zero BEFORE dates only AFTER; a recorded commit
+  that a later push's trunk no longer holds is marked `left` and loses to any later record. A story takes its
+  commit's own exact move first, else its first-parent arrival's (not exact when an earlier move already held it).
+- **A stale run never writes an older reading.** When the branch's `ledger.json` is of a trunk commit this run's
+  trunk does not hold and was seen later (a newer push), the run keeps it and adds only its moves; a reading of an
+  ancestor, or of a trunk since forced back, is replaced (ESC-209, ESC-248). The snapshot also records every live
+  `Story:` commit of every id (`snapshot.story_commits`) and the corrections file it was computed with
+  (`snapshot.corrections`), and each id's reverted Story: commits (`snapshot.reverted_commits`), which a revert of
+  an old revert after the snapshot makes unknown. `SNAPSHOT_BEHIND` names a time only from the snapshot's commit's
+  own move: a run's time is its push's, and its checkout may already hold a later push. moves.toml is
+  merged (exact over not exact, then the earlier time) and kept oldest first along the trunk.
+- **The time comes from `KEELOKIT_SNAPSHOT_AT`** (epoch seconds or ISO 8601), the current time when unset, so
+  tests never assert the wall clock. The CI sets it to the push event's `repository.pushed_at`: when the push
+  happened, not when the job got to run (ESC-210). It must carry its zone and fall in 1970..9999 (ESC-254).
+- **The deploy move is a ledger command**, `ledger.py deploy <staging|production> <commit>`, the deploy jobs'
+  last step, only when the Fly deploy really ran. A rollback is the release workflow run again from an older tag:
+  `workflow_dispatch` was added to `release.yml.jinja` (the tag check refuses any other ref). `deploy-staging`
+  lives in `ci.yml.jinja`, so that file moves `deploy/staging`.
+- **The shallow reader proves both ways.** It starts from the snapshot's records (`as_of` its commit) and changes
+  them only where this clone proves it: a `Story:` commit or a revert after the snapshot's commit, a deploy branch
+  that moved (contained or not, else a forward move from the snapshot's head; otherwise `unknown`), a new final tag.
+  The snapshot's `ledger.json` carries the refs it saw (`snapshot.refs`) for that. `SNAPSHOT_BEHIND` says the
+  commit, when the CI saw it and how many commits behind it is. `in-progress` is as of the snapshot. After the
+  breaker's round 2 (ESC-212..216) it never keeps a state the clone cannot prove: a clone that does not reach back
+  to the snapshot's commit reads every story unknown; a revert after it of an older commit that is no story's makes
+  the reverted stories unknown; a correction row the snapshot may predate makes its story unknown; an environment
+  the snapshot saw with no deploy branch in the clone is unknown (`history --ensure` now fetches deploy/* with the
+  snapshot); a story's tag that moved is read again. Round 3 (ESC-248..253): a snapshot of a commit the trunk no
+  longer holds reads unknown; a revert of one `Story:` commit while the snapshot lists another reads unknown; a story
+  file written after the snapshot takes its commit from `story_commits` (every ref read for it), else unknown; a
+  changed corrections file makes reconstructed stories and stories a row names unknown; a snapshot whose story
+  records do not have `--json`'s types is not read. `history --ensure` adds deploy/* to origin's fetch of a
+  single-branch clone and fetches it, pruned, on every path (ESC-249). One limit, deliberate: a clone with no tags at all keeps the
+  snapshot's version (release tags do not move, REL-1, and fetching every tag's history would not fit the cap).
+- **`history --ensure` keeps the last quarter of its cap (at most 3 s)** for fetching the snapshot branch (then
+  deploy/*) when the history stays incomplete; the line still names the whole cap.
+- **The snapshot never overwrites a branch of the project** (ESC-217, ESC-255): the trunk, "deploy", names under
+  deploy/ or the trunk (or that the trunk is under) are refused as its name, and an existing branch holding anything but the three snapshot files is never written.
+- **The snapshot branch is no branch of the project.** `origin/keelokit/ledger` is left out of every reading of
+  origin's branches (in-progress, squashes, the PR check, the cut detection), so its orphan history is never read
+  as trunk work.
+- The template's `verify-map.toml` lists the two new jobs as `ci_only` (CI-2); the story's `touches` gained it and
+  `scripts/unit_shard.py`.
+- Not done: the snapshot is the CI's only; run by hand from a clone with the git hooks on, the pre-push refuses
+  its push (it is not the checked-out commit), which is intended.

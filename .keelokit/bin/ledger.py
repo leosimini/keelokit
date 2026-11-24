@@ -23,6 +23,13 @@
     python3 .keelokit/bin/ledger.py prepush <remote> [<url>]
                                                        pre-push: git's lines on stdin; a push to the trunk
                                                        must be attributed; exit 1 refuses under enforce = "block"
+    python3 .keelokit/bin/ledger.py snapshot [--run ID] [--push BEFORE..AFTER]
+                                                       the CI only: write the snapshot branch ([ledger] snapshot,
+                                                       keelokit/ledger) with the push's arrival time; --branch
+                                                       prints that branch, empty when the snapshot is off
+    python3 .keelokit/bin/ledger.py deploy <staging|production> <commit>
+                                                       a deploy job, once its deploy succeeded: deploy/<env> points
+                                                       at that commit (backwards too, for a rollback)
     python3 .keelokit/bin/ledger.py check [--ci] [--json]
                                                        every difference (exit 1 on an error-level one); --ci
                                                        in a pull request into the trunk checks its commits too
@@ -88,6 +95,8 @@ if sys.version_info < (3, 11):
 
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import random  # noqa: E402
+import tempfile  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -196,15 +205,22 @@ def restore_config(snapshot: dict[str, str | None]) -> None:
             git_out("config", "--local", key, value)
 
 
-def ensure(trunk: str, cap: float) -> str:
-    """Complete the history; the one line to print."""
+def ensure(trunk: str, cap: float, snapshot_branch: str = "") -> str:
+    """Complete the history; the one line to print. With a snapshot branch, the last quarter of the cap (at most 3 s)
+    is kept for fetching it when the history stays incomplete (LEDGER-011), so the ledger can read it instead."""
     fix = f"`git fetch --unshallow origin {trunk}`"
     if git_out("remote", "get-url", "origin")[0]:
         return f"Keelokit: no origin: history incomplete; add a remote, then run {fix}"
     snapshot = {k: config_get(k) for k in KEYS}
     honoured = False
+    start = time.monotonic()
+    reserve = min(3.0, cap / 4) if snapshot_branch else 0.0
     try:
-        line, honoured = fetch_history(trunk, cap, fix)
+        line, honoured = fetch_history(trunk, cap - reserve, fix, shown=cap)
+        if snapshot_branch and not line.startswith("Keelokit: history completed"):
+            line += read_snapshot_line(trunk, snapshot_branch, cap - (time.monotonic() - start))
+        elif line.startswith("Keelokit: history completed"):
+            ensure_deploy_branches(cap - (time.monotonic() - start))
         return line
     finally:
         # git writes the promisor config before it contacts the server: whatever does not end as a
@@ -214,8 +230,41 @@ def ensure(trunk: str, cap: float) -> str:
             restore_config(snapshot)
 
 
-def fetch_history(trunk: str, cap: float, fix: str) -> tuple[str, bool]:
-    """(the one line, whether a complete fetch's filter was honoured)."""
+def ensure_deploy_branches(remaining: float) -> None:
+    """A clone whose fetch leaves deploy/* out (`git clone --depth`, `--single-branch`) never sees where staging and
+    production are, so its stories read in-version (ESC-249): add deploy/* to origin's fetch and fetch it, pruned. A
+    clone that fetches every branch already has them."""
+    code, out = git_out("config", "--get-all", "remote.origin.fetch")
+    sources = {line.lstrip("+").split(":", 1)[0] for line in out.splitlines()} if code == 0 else set()
+    if remaining <= 0.2 or "refs/heads/*" in sources or git_out("remote", "get-url", "origin")[0]:
+        return
+    spec = "+refs/heads/deploy/*:refs/remotes/origin/deploy/*"
+    if "refs/heads/deploy/*" not in sources:
+        git_out("config", "--add", "remote.origin.fetch", spec)
+    run_git(["fetch", "-q", "--prune", "--no-tags", "origin", spec], remaining)
+
+
+def read_snapshot_line(trunk: str, name: str, remaining: float) -> str:
+    """What `history --ensure` adds to its line when it fetched origin/<name> in the time left: which trunk commit the
+    ledger now reads from; nothing when it could not."""
+    if remaining <= 0.2 or name.startswith("-") or git_out("check-ref-format", f"refs/heads/{name}")[0] \
+            or not snapshot_usable(name, trunk):
+        return ""
+    start = time.monotonic()
+    code, _ = run_git(["fetch", "-q", "--no-tags", "origin", f"+refs/heads/{name}:refs/remotes/origin/{name}"], remaining)
+    if code != 0:
+        return ""
+    ensure_deploy_branches(remaining - (time.monotonic() - start))  # where each environment is now (ESC-215)
+    try:
+        snap = parse_snapshot(git_read(["show", f"refs/remotes/origin/{name}:ledger.json"]))
+    except LedgerError:
+        snap = None
+    # ESC-256: named only when the reader will take it
+    return f"; the ledger reads the CI's snapshot of {trunk}@{snap['trunk_sha'][:7]} ({name})" if snap else ""
+
+
+def fetch_history(trunk: str, cap: float, fix: str, shown: float | None = None) -> tuple[str, bool]:
+    """(the one line, whether a complete fetch's filter was honoured). `shown`: the cap the line names."""
     start = time.monotonic()
     deadline = start + cap
     spec = f"+refs/heads/{trunk}:refs/remotes/origin/{trunk}"  # also fills origin/<trunk> in a single-branch clone
@@ -235,7 +284,7 @@ def fetch_history(trunk: str, cap: float, fix: str) -> tuple[str, bool]:
         if i == 0 and "filter" not in err.lower():
             break
     if code is None:
-        return f"Keelokit: cut at {cap:g}s: history incomplete; run {fix}", False
+        return f"Keelokit: cut at {shown or cap:g}s: history incomplete; run {fix}", False
     if code != 0:
         msg = " ".join(last_error(err).split())
         kind = "offline" if any(n in err.lower() for n in NETWORK) else "fetch failed"
@@ -254,6 +303,8 @@ def history(do_ensure: bool, state: dict, trunk: str) -> int:
             print("Keelokit: not a git repository.", file=sys.stderr)
         return 0 if do_ensure else 2
     if not shallow:
+        if do_ensure:
+            ensure_deploy_branches(cap_seconds(state))
         return 0
     if trunk.startswith("-") or git_out("check-ref-format", "--branch", trunk)[0]:
         print(f"Keelokit: trunk {trunk!r} is not a branch name: history incomplete")
@@ -261,7 +312,7 @@ def history(do_ensure: bool, state: dict, trunk: str) -> int:
     if not do_ensure:
         print("Keelokit: history incomplete (shallow clone); run `python3 .keelokit/bin/ledger.py history --ensure`")
         return 1
-    print(ensure(trunk, cap_seconds(state)))
+    print(ensure(trunk, cap_seconds(state), read_config(state)["snapshot"]))
     return 0
 
 
@@ -342,12 +393,14 @@ LABELS = {
            "stories": "stories", "progress": "in progress", "ready": "ready", "reverted": "reverted",
            "unknown": "unknown", "stale": "stale", "more": "more", "none": "no stories found",
            "unattributed": "unattributed commits since", "reconstructed": "reconstructed",
-           "by_person": "reconstructed (person)", "by_delegated": "reconstructed (delegated)"},
+           "by_person": "reconstructed (person)", "by_delegated": "reconstructed (delegated)",
+           "snapshot": "history incomplete: states read from the CI's snapshot of {sha}"},
     "es": {"complete": "historia completa", "cut": "historia INCOMPLETA: todos los estados son desconocidos",
            "stories": "historias", "progress": "en curso", "ready": "listas", "reverted": "revertidas",
            "unknown": "desconocidas", "stale": "estancada", "more": "más", "none": "no hay historias",
            "unattributed": "commits sin atribuir desde", "reconstructed": "reconstruidas",
-           "by_person": "reconstruidas (persona)", "by_delegated": "reconstruidas (delegada)"},
+           "by_person": "reconstruidas (persona)", "by_delegated": "reconstruidas (delegada)",
+           "snapshot": "historia incompleta: estados leídos de la instantánea del CI de {sha}"},
 }
 
 
@@ -355,12 +408,13 @@ class LedgerError(Exception):
     """A fact could not be read: the run ends with exit 2 and this reason, never a partial answer."""
 
 
-def git_read(args: list[str], data: bytes | None = None, ok: tuple = (0,)) -> bytes:
-    """stdout of one git call (LC_ALL=C, no prompts); LedgerError when it cannot run or exits outside `ok`."""
+def git_read(args: list[str], data: bytes | None = None, ok: tuple = (0,), env: dict | None = None) -> bytes:
+    """stdout of one git call (LC_ALL=C, no prompts); LedgerError when it cannot run or exits outside `ok`. `env`:
+    extra variables (the snapshot's temporary index and identity)."""
     kwargs = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     try:
         r = subprocess.run(["git", *NOPROMPT, *READ_CONFIG, *args], cwd=ROOT,
-                           env={**git_env(), "GIT_NO_LAZY_FETCH": "1"},  # reading never fetches a missing object
+                           env={**git_env(), "GIT_NO_LAZY_FETCH": "1", **(env or {})},  # reading never fetches
                            capture_output=True, **kwargs)
     except OSError as e:
         raise LedgerError(f"cannot run git ({e})") from e
@@ -420,8 +474,10 @@ def iso(epoch: int) -> str:
 
 # ── reading the facts: a fixed number of git calls ──
 
-def read_refs(trunk: str) -> dict[str, str]:
-    """Commit of each ref that matters: v* tags (fully peeled), every origin branch, the local trunk."""
+def read_refs(trunk: str, snapshot: str = "") -> dict[str, str]:
+    """Commit of each ref that matters: v* tags (fully peeled), every origin branch, the local trunk. The snapshot
+    branch (LEDGER-011) is no branch of the project: origin/<snapshot> (and the default name's) is left out, and the
+    configured one's commit is under the key "snapshot", which no `refs/` filter matches."""
     patterns = ["refs/tags/v*", "refs/remotes/origin/", f"refs/heads/{trunk}"]
     fmt = "%(refname)%09%(objectname)%09%(objecttype)%09%(*objectname)%09%(*objecttype)"
     refs, nested = {}, []
@@ -435,7 +491,26 @@ def read_refs(trunk: str) -> dict[str, str]:
             refs[name] = sha
     if nested:
         refs.update(peel_nested(nested))
+    snapshot = snapshot if snapshot_usable(snapshot, trunk) else ""
+    for name in hidden_snapshots(snapshot):
+        if not snapshot_usable(name, trunk):
+            continue
+        head = refs.pop(f"refs/remotes/origin/{name}", None)
+        if head and name == snapshot:
+            refs["snapshot"] = head
     return refs
+
+
+def snapshot_usable(name: str, trunk: str) -> bool:
+    """A snapshot name that is not the trunk nor a deploy branch, nor a prefix or child of either's name (ESC-217,
+    ESC-255): those are the project's own."""
+    return (bool(name) and name not in (trunk, "HEAD", "deploy") and not name.startswith(("deploy/", f"{trunk}/"))
+            and not trunk.startswith(f"{name}/"))
+
+
+def hidden_snapshots(snapshot: str) -> list[str]:
+    """The origin branches that hold a snapshot, never read as the project's: the configured one and the default."""
+    return sorted({snapshot, DEFAULT_SNAPSHOT} - {""})
 
 
 def peel_nested(names: list[str]) -> dict[str, str]:
@@ -481,15 +556,19 @@ def cut_reason(graph: dict, shallow: bool) -> str | None:
     file with a parent the graph lacks (as the doctor's cut_commits; %P hides it, so raw objects)."""
     if not shallow:
         return None
-    path = Path(git_read(["rev-parse", "--git-path", "shallow"]).decode().strip() or "shallow")
-    try:
-        marked = set((path if path.is_absolute() else ROOT / path).read_text().split())
-    except OSError as e:  # shallow, yet its file cannot be read: no answer from a possibly cut history
-        raise LedgerError(f"the shallow file cannot be read ({e.strerror or e})") from e
-    reach = sorted(marked & set(graph))
+    reach = sorted(shallow_marks() & set(graph))
     if reach and git_cut(reach, graph):
         return f"the clone is shallow and cut the history ({len(graph)} commits reachable); {FIX}"
     return None
+
+
+def shallow_marks() -> set[str]:
+    """The commits of the shallow file: where a shallow clone's history stops (their parents are not here)."""
+    path = Path(git_read(["rev-parse", "--git-path", "shallow"]).decode().strip() or "shallow")
+    try:
+        return set((path if path.is_absolute() else ROOT / path).read_text().split())
+    except OSError as e:  # shallow, yet its file cannot be read: no answer from a possibly cut history
+        raise LedgerError(f"the shallow file cannot be read ({e.strerror or e})") from e
 
 
 def git_cut(shas: list[str], graph: dict) -> bool:
@@ -698,14 +777,15 @@ def split_message(message: str, trailers: list) -> tuple[str, list[str]]:
     return subject, [line.rstrip() for line in body]
 
 
-def read_branches(trunk_sha: str, refs: dict, graph: dict, on_trunk: set) -> dict[str, dict]:
+def read_branches(trunk_sha: str, refs: dict, graph: dict, on_trunk: set, snapshot: str = "") -> dict[str, dict]:
     """story id -> {branches, newest, commits, dropped}: every origin branch whose commits off the trunk include a
     Part-of commit of the story, and those commits and the story's `Dropped:` commits there (for `show`). One log
     finds them; each branch tip gets a bit, and the bits flow from the tips to their parents in one pass over the
     off-trunk commits (children before parents)."""
     fmt = ("%H%x00%ct%x00%(trailers:key=Part-of,valueonly,separator=%x2C,unfold)%x00"
            "%(trailers:key=Dropped,valueonly,separator=%x2C,unfold)%x00%(trailers:only,unfold)%x00%B")
-    out = git_read(["log", "-z", f"--format={fmt}", "--remotes=origin", "--not", trunk_sha]).decode(errors="replace")
+    hide = [f"--exclude=origin/{name}" for name in hidden_snapshots(snapshot) if f"refs/remotes/origin/{name}" not in refs]
+    out = git_read(["log", "-z", f"--format={fmt}", *hide, "--remotes=origin", "--not", trunk_sha]).decode(errors="replace")
     parts = out.split("\0")
     if parts and parts[-1] == "":
         parts.pop()
@@ -891,7 +971,7 @@ def new_story(story: dict) -> dict:
             "state": "defined", "since": None, "since_exact": False, "commit": None, "convoy": None,
             "version": None, "candidate": None, "environments": dict.fromkeys(ENVIRONMENTS),
             "reconstructed": False, "reconstructed_by": None, "correction": None, "reverted": False, "branches": [], "attempts": [],
-            "swarm": [], "signals": [], "reason": None, "path": story["path"]}
+            "swarm": [], "signals": [], "reason": None, "path": story["path"], "arrival": None, "as_of": None}
 
 
 def mark_unknown(records: list[dict], reason: str) -> None:
@@ -901,7 +981,7 @@ def mark_unknown(records: list[dict], reason: str) -> None:
 
 def on_trunk_facts(rec: dict, sha: str, arrival: dict, ct: dict, tags: tuple, deploys: dict) -> None:
     """Fill what a Story: commit on the trunk gives: its approximate date, the first final tag, the deploys."""
-    rec.update(commit=sha, since=iso(ct[arrival[sha]]), since_exact=False, version=tags[0].get(sha),
+    rec.update(commit=sha, arrival=arrival[sha], since=iso(ct[arrival[sha]]), since_exact=False, version=tags[0].get(sha),
                candidate=tags[1].get(sha), state="on-trunk")
     for env, (head, reach) in deploys.items():
         if sha in reach:
@@ -1081,7 +1161,7 @@ def read_all(state: dict) -> dict:
     trunk = trunk_name(state)
     shallow = git_read(["rev-parse", "--is-shallow-repository"]).decode().strip() == "true"
     check_trunk(trunk)
-    refs = read_refs(trunk)
+    refs = read_refs(trunk, cfg["snapshot"])
     trunk_sha = resolve_trunk(trunk, refs)
     tree = read_tree(trunk_sha)
     stories, unreadable = read_stories(trunk_sha, cfg, tree)
@@ -1094,9 +1174,16 @@ def read_all(state: dict) -> dict:
     facts = {"schema": 1, "trunk": trunk, "trunk_sha": trunk_sha, "history": "incomplete" if reason else "complete",
              "stories": [], "unattributed": {"since": cfg["since"], "commits": 0, "ratio": 0.0}, "diffs": []}
     if reason:
+        level = "error" if os.environ.get("CI", "").lower() not in ("", "0", "false") else "warning"
+        view = snapshot_view(cfg, trunk, trunk_sha, refs, graph, stories, tree)
+        if view is not None:  # LEDGER-011: the CI's snapshot answers, as of its trunk commit, and says so
+            facts.update(history=f"snapshot:{view['sha']}", stories=view["stories"])
+            facts["diffs"].append({"level": level, "code": "HISTORY_INCOMPLETE",
+                                   "detail": f"{reason}; read from the snapshot of {short(view['sha'])} ({cfg['snapshot']})"})
+            facts["diffs"] += view["diffs"]
+            return {"facts": facts, "reason": reason, "snapshot": view}
         facts["stories"] = [new_story(s) for s in stories]
         mark_unknown(facts["stories"], reason)
-        level = "error" if os.environ.get("CI", "").lower() not in ("", "0", "false") else "warning"
         facts["diffs"].append({"level": level, "code": "HISTORY_INCOMPLETE", "detail": reason})
         return {"facts": facts, "reason": reason}
     log = read_trunk_log(trunk_sha)
@@ -1105,9 +1192,10 @@ def read_all(state: dict) -> dict:
                   "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"])}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
-    branches = read_branches(trunk_sha, refs, graph, set(placed[0]))
+    branches = read_branches(trunk_sha, refs, graph, set(placed[0]), cfg["snapshot"])
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, branches,
                                       cfg["stale_days"], time.time(), corrections, trunk)
+    apply_moves(facts["stories"], snapshot_moves(refs), graph)
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
@@ -2399,7 +2487,7 @@ def range_ctx(state: dict, cfg: dict, tip: str, exclude: list[str]) -> dict | No
     the trunk, or a pull request over it. None without a `since` naming one commit tip reaches (attribution is not
     required there). Stories are read from tip's tree, where a new story file already is."""
     trunk = trunk_name(state)
-    refs = read_refs(trunk)
+    refs = read_refs(trunk, cfg["snapshot"])
     graph = read_graph(sorted({tip, *exclude, *origin_branches(refs, trunk).values()}))
     since = cfg["since"]
     matches = [s for s in graph if s.startswith(since.lower())] if since else []
@@ -2445,7 +2533,7 @@ def snapshot_behind(ctx: dict) -> list[dict]:
     """SNAPSHOT_BEHIND: origin/<snapshot> exists and its ledger.json is not of the trunk's head (one `cat-file`,
     only when the branch exists)."""
     name = ctx["cfg"]["snapshot"]
-    head = ctx["refs"].get(f"refs/remotes/origin/{name}") if name else None
+    head = ctx["refs"].get("snapshot") if name else None
     if not head:
         return []
     content = cat_specs([f"{head}:ledger.json"]).get(f"{head}:ledger.json")
@@ -2507,6 +2595,660 @@ def cmd_check(state: dict, args: tuple) -> int:
         for d in diffs:
             print(f"{d['level']} {d['code']} {d['detail']}")
     return 1 if any(d["level"] == "error" for d in diffs) else 0
+
+
+# ── the CI snapshot and the deploy branches (LEDGER-011) ──
+# keelokit/ledger (`[ledger] snapshot`) is an orphan branch only the CI writes: LEDGER.md and ledger.json (the facts of a
+# trunk commit, for a session whose history is cut) and moves.toml (when each trunk commit reached the trunk, as the
+# CI saw it). It is written with plumbing in a temporary index, never through a checkout, and a push the remote rejects
+# starts again from the new tip, up to SNAPSHOT_TRIES times. deploy/staging and deploy/production point at the commit
+# each environment runs; the template's deploy jobs move them with `ledger.py deploy`.
+
+MOVES = "moves.toml"
+SNAPSHOT_TRIES = 5
+SNAPSHOT_AT = "KEELOKIT_SNAPSHOT_AT"  # the time the CI saw the push (epoch seconds or ISO 8601); now when unset
+SNAPSHOT_IDENTITY = {"GIT_AUTHOR_NAME": "Keelokit ledger", "GIT_AUTHOR_EMAIL": "ledger@keelokit.invalid",
+                     "GIT_COMMITTER_NAME": "Keelokit ledger", "GIT_COMMITTER_EMAIL": "ledger@keelokit.invalid"}
+ISO_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+MOVES_HEADER = ("# Written by `ledger.py snapshot` in the CI, never by hand: when each trunk commit reached the trunk.\n"
+                "# seen: the time the CI saw it; exact = false when a later run filled it in (its own run never\n"
+                "# recorded it), so it reached the trunk at or before `seen`. left: a later run found it off the trunk\n"
+                "# (forced away), so this row no longer says when it arrived.\n")
+NULL_SHA = re.compile(r"0+")
+
+
+def parse_moves(content: bytes | None) -> list[dict] | None:
+    """The rows of a moves.toml ([] when there is none); None when it cannot be read or a row is malformed."""
+    if content is None:
+        return []
+    try:
+        data = tomllib.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    rows = data.get("move", [])
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for r in rows:
+        if not (isinstance(r, dict) and isinstance(r.get("sha"), str) and FULL_SHA.fullmatch(r["sha"])
+                and isinstance(r.get("seen"), str) and ISO_TIME.fullmatch(r["seen"])
+                and isinstance(r.get("run"), str) and isinstance(r.get("exact"), bool)
+                and ("left" not in r or isinstance(r["left"], str) and ISO_TIME.fullmatch(r["left"]))):
+            return None
+        out.append({k: r[k] for k in ("sha", "seen", "run", "exact", "left") if k in r})
+    return out
+
+
+def moves_toml(moves: list[dict]) -> str:
+    rows = [f'[[move]]\nsha = "{m["sha"]}"\nseen = "{m["seen"]}"\nrun = {toml_str(m["run"])}\n'
+            f'exact = {"true" if m["exact"] else "false"}\n' + (f'left = "{m["left"]}"\n' if "left" in m else "")
+            for m in moves]
+    return MOVES_HEADER + "".join(f"\n{r}" for r in rows)
+
+
+def better_move(old: dict, new: dict) -> bool:
+    """True when `new` says more about the same commit than `old`. Exact beats not exact: a not-exact row is filled in
+    by a later push's run, so its time is an upper bound and the exact one is the truth (ESC-246). Of two exact rows
+    the later wins: only a commit that landed again (pushed, forced away, pushed again) has two, and its arrival is
+    the last landing (ESC-247). Of two not-exact rows the earlier, the tighter bound."""
+    if "left" in old and new["seen"] > old["left"]:
+        return True  # the commit came back after it was forced away: the old row says nothing now (round 4)
+    if "left" in new and new["seen"] > new["left"]:
+        return False
+    if (new["sha"], new["seen"], new["run"]) == (old["sha"], old["seen"], old["run"]):
+        return new.get("left", "") > old.get("left", "")  # the same row, now known to have left
+    if new["exact"] != old["exact"]:
+        return new["exact"]
+    return new["seen"] > old["seen"] if new["exact"] else new["seen"] < old["seen"]
+
+
+def moves_map(moves: list[dict] | None) -> dict[str, dict]:
+    found: dict[str, dict] = {}
+    for m in moves or ():
+        if m["sha"] not in found or better_move(found[m["sha"]], m):
+            found[m["sha"]] = m
+    return found
+
+
+def snapshot_moves(refs: dict) -> dict[str, dict]:
+    """sha -> move of origin/<snapshot>'s moves.toml (one `cat-file`, only when the branch is here); {} otherwise."""
+    head = refs.get("snapshot")
+    if not head:
+        return {}
+    return moves_map(parse_moves(cat_specs([f"{head}:{MOVES}"]).get(f"{head}:{MOVES}")))
+
+
+def apply_moves(records: list[dict], moves: dict[str, dict], graph: dict) -> None:
+    """A story's time from the recorded moves (a row marked `left` says nothing). Its commit's own exact move first:
+    that push brought it, even when a later merge made it a second parent (a foxtrot merge, round 4). Else its
+    first-parent arrival's move, exact as that move is, when no earlier move already held the commit; when one did,
+    the commit was on the trunk by then: that time, not exact. A commit whose arrival has no move keeps its date."""
+    live = sorted((m for m in moves.values() if "left" not in m), key=lambda m: m["seen"])
+    if not live:
+        return
+    held = first_reach(graph, [m["sha"] for m in live])
+    for rec in records:
+        commit = rec.get("commit")
+        own = moves.get(commit or "")
+        if not commit:
+            continue
+        if own and own["exact"] and "left" not in own:
+            rec["since"], rec["since_exact"] = own["seen"], True
+            continue
+        at = moves.get(rec.get("arrival") or "")
+        if not at or "left" in at or commit not in held:
+            continue
+        first = live[held[commit]]
+        rec["since"], rec["since_exact"] = first["seen"], first is at and at["exact"]
+
+
+def parse_snapshot(content: bytes | None) -> dict | None:
+    """A snapshot's ledger.json when it is schema 1 of a full trunk sha with well-formed stories; else None."""
+    try:
+        data = json.loads(content.decode("utf-8")) if content is not None else None
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not (isinstance(data, dict) and data.get("schema") == 1 and not isinstance(data.get("schema"), bool)
+            and isinstance(data.get("trunk_sha"), str) and FULL_SHA.fullmatch(data["trunk_sha"])
+            and isinstance(data.get("stories"), list)):
+        return None
+    for rec in data["stories"]:
+        env = rec.get("environments") if isinstance(rec, dict) else None
+        if not (isinstance(rec, dict) and isinstance(rec.get("id"), str) and rec.get("state") in (*STATES, "unknown")
+                and (rec.get("commit") is None or isinstance(rec["commit"], str) and FULL_SHA.fullmatch(rec["commit"]))
+                and isinstance(env, dict) and set(env) == set(ENVIRONMENTS)
+                and all(v is None or isinstance(v, str) and FULL_SHA.fullmatch(v) for v in env.values())
+                and (rec.get("version") is None or isinstance(rec["version"], str))
+                and all(k not in rec or carried_ok(k, rec[k]) for k in CARRIED)):
+            return None
+    return data
+
+
+def carried_ok(key: str, value) -> bool:
+    """A value of a story record a snapshot carries has the type `--json` gives it (ESC-253: a hand edit is no crash)."""
+    if key in ("since_exact", "reconstructed", "reverted"):
+        return isinstance(value, bool)
+    if key in ("since",):
+        return value is None or isinstance(value, str) and bool(ISO_TIME.fullmatch(value))
+    if key in ("commit", "arrival"):
+        return value is None or isinstance(value, str) and bool(FULL_SHA.fullmatch(value))
+    if key == "convoy":
+        return value is None or isinstance(value, int) and not isinstance(value, bool)
+    if key in ("version", "candidate", "reconstructed_by", "reason"):
+        return value is None or isinstance(value, str)
+    if key == "correction":
+        return value is None or isinstance(value, dict)
+    if key in ("branches", "signals"):
+        return isinstance(value, list) and all(isinstance(x, str) for x in value)
+    if key == "attempts":
+        return isinstance(value, list) and all(isinstance(x, dict) and isinstance(x.get("commit"), str)
+                                               and isinstance(x.get("date"), str) and isinstance(x.get("reason"), str)
+                                               and isinstance(x.get("branches"), list) for x in value)
+    if key == "swarm":
+        return isinstance(value, list)
+    return value is None or isinstance(value, str)
+
+
+def reach_info(graph: dict, cut: set, head: str) -> tuple[set, bool]:
+    """(what `head` reaches in this clone, whether the walk met the end of the clone's history)."""
+    seen, stack, met = set(), [head], False
+    while stack:
+        sha = stack.pop()
+        if sha in seen:
+            continue
+        seen.add(sha)
+        if sha not in graph or sha in cut:
+            met = True
+        stack.extend(graph.get(sha, ()))
+    return seen, met
+
+
+def contains(info: tuple[set, bool], sha: str) -> bool | None:
+    """True or False when this clone proves it, None when the commit may be past the end of its history."""
+    reached, met = info
+    return True if sha in reached else None if met else False
+
+
+CARRIED = ("state", "since", "since_exact", "commit", "arrival", "convoy", "version", "candidate", "reconstructed",
+           "reconstructed_by", "correction", "reverted", "branches", "attempts", "swarm", "signals", "reason")
+
+
+def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict, stories: list[dict],
+                  tree: list | None = None) -> dict | None:
+    """The states of a shallow clone from origin/<snapshot>: each as of the snapshot's trunk commit (`as_of`), then
+    what this clone can still prove since: a Story: commit or a revert after it, a tag or a deploy branch that moved
+    (proved both ways, else unknown, never a lower state). None when there is no readable snapshot."""
+    head = refs.get("snapshot") if cfg["snapshot"] else None
+    if not head:
+        return None
+    blobs = cat_specs([f"{head}:ledger.json", f"{head}:{MOVES}"])
+    snap = parse_snapshot(blobs.get(f"{head}:ledger.json"))
+    if snap is None:
+        return None
+    moves = moves_map(parse_moves(blobs.get(f"{head}:{MOVES}")))
+    sha = snap["trunk_sha"]
+    meta = snap.get("snapshot") if isinstance(snap.get("snapshot"), dict) else {}
+    # When the snapshot's own commit was seen, from its move only: a run's time is its push's, and its checkout may
+    # already hold a later push (round 4).
+    seen = moves[sha]["seen"] if sha in moves and "left" not in moves[sha] else None
+    old = {r["id"]: r for r in snap["stories"]}
+    story_shas = meta.get("story_commits")
+    if not (isinstance(story_shas, dict) and all(isinstance(v, list) and all(isinstance(x, str) and FULL_SHA.fullmatch(x)
+                                                                              for x in v) for v in story_shas.values())):
+        story_shas = None
+    undone_shas = meta.get("reverted_commits")
+    if not (isinstance(undone_shas, dict) and all(isinstance(v, list) for v in undone_shas.values())):
+        undone_shas = None
+    cut = shallow_marks() & set(graph)
+    records = {}
+    for story in stories:
+        rec = new_story(story)
+        if story["id"] in old and not story.get("unreadable"):
+            rec.update({k: old[story["id"]].get(k, rec[k]) for k in CARRIED})
+            rec["environments"] = dict(old[story["id"]]["environments"])
+        elif not story.get("unreadable"):  # ESC-251: a story file written after the snapshot
+            if story_shas is None:
+                mark_unknown([rec], f"the snapshot predates the story file and does not list its commits; {FIX}")
+            elif story_shas.get(story["id"]):
+                rec.update(commit=story_shas[story["id"]][0], state="on-trunk", _fresh=True)
+        rec["as_of"] = sha
+        records[story["id"]] = rec
+    diffs = []
+    # What reached the trunk after the snapshot's commit, as far as this clone sees.
+    if sha != trunk_sha and sha in graph and sha not in first_reach(graph, [trunk_sha]):
+        # ESC-248: the snapshot is of a commit the trunk no longer holds (forced back or rewritten)
+        diffs.append({"level": "warning", "code": "SNAPSHOT_BEHIND",
+                      "detail": f"origin/{cfg['snapshot']} is of {short(sha)}, which {trunk} ({short(trunk_sha)}) no "
+                                "longer holds: the trunk was rewritten since, so nothing it says holds now"})
+        mark_unknown(list(records.values()), f"the snapshot is of {short(sha)}, which {trunk} no longer holds; {FIX}")
+    elif sha != trunk_sha:
+        if sha in graph:
+            newer = reach_until(graph, [trunk_sha], set(first_reach(graph, [sha])))
+            complete = not (newer & cut)
+            log = read_trunk_log(trunk_sha, ("--not", sha))
+        else:
+            complete, log = False, read_trunk_log(trunk_sha)
+        count = (f"{len(log)} commit{'s' if len(log) != 1 else ''} behind" if complete
+                 else "behind by a number of commits this clone cannot count")
+        diffs.append({"level": "warning", "code": "SNAPSHOT_BEHIND",
+                      "detail": f"origin/{cfg['snapshot']} is of {trunk}@{short(sha)}"
+                                f"{f', seen {seen}' if seen else ''}, {count} ({trunk} is at {short(trunk_sha)}); "
+                                "states are as of that commit, with what this clone proves since"})
+        if not complete:  # ESC-212: what reached the trunk since may be past this clone; nothing can be proved
+            mark_unknown([r for r in records.values() if r["state"] != "unknown"],
+                         f"the snapshot is of {short(sha)} and this clone does not reach back to it, so what reached "
+                         f"{trunk} since cannot be read; {FIX}")
+        else:
+            settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas, undone_shas)
+    settle_corrections(records, tree or [], trunk_sha, meta)
+    settle_refs(records, refs, graph, cut, meta.get("refs") if isinstance(meta.get("refs"), dict) else {})
+    settle_snapshot_states(stories, records)
+    return {"sha": sha, "stories": list(records.values()), "diffs": diffs, "seen": seen}
+
+
+def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sha: str, moves: dict,
+                 story_shas: dict | None = None, undone_shas: dict | None = None) -> None:
+    """Story: commits and reverts in the trunk commits after the snapshot's commit (the log holds exactly those). A
+    revert of a commit older than the snapshot that is no story's commit may undo an old revert (ESC-213) or a merge
+    this clone cannot read: the stories it could change are unknown."""
+    reverted = revert_status(log, graph)
+    in_log = {c["sha"] for c in log}
+    landed = {r["commit"] for r in records.values() if r["commit"]}
+    undone, unsure, unrevert = set(), False, False
+    for c in log:
+        if reverted[c["sha"]]:
+            continue
+        for target in c["reverts"]:
+            if target in in_log:
+                continue  # revert_status already read it
+            parents = graph.get(target)
+            if parents is None or target in cut or len(parents) > 1 and reach_info(graph, cut, target)[1]:
+                unsure = unrevert = True  # past this clone: a merge, a revert, anything
+            elif len(parents) < 2 and target not in landed:
+                unrevert = True
+            undone.update(brought_by(graph, target))
+    placed = arrivals(graph, trunk_sha)
+    ct = {c["sha"]: c["ct"] for c in log}
+    commits, _ = story_commits(log, reverted, *placed)
+    for sid, rec in records.items():
+        if rec["state"] == "unknown":
+            continue
+        if unrevert and ((rec["reverted"] and not rec["commit"]) or undone_shas is None or undone_shas.get(sid)):
+            # a reverted Story: commit of it may be back (round 4: also when a later one is its commit now)
+            mark_unknown([rec], "a revert after the snapshot may undo the revert the snapshot read; " + FIX)
+            continue
+        others = None if story_shas is None else [c for c in story_shas.get(sid, ()) if c not in undone]
+        if rec["commit"] and rec["commit"] in undone and others != []:
+            # ESC-250: another Story: commit of it may still be on the trunk (or the snapshot does not say)
+            mark_unknown([rec], f"a revert after the snapshot undid {short(rec['commit'])}, and another Story: commit of "
+                                f"it may still be on the trunk; {FIX}")
+            continue
+        if rec["commit"] and rec["commit"] in undone:
+            rec.update(commit=None, arrival=None, since=None, since_exact=False, version=None, candidate=None,
+                       environments=dict.fromkeys(ENVIRONMENTS), reverted=True, reconstructed=False, correction=None,
+                       reconstructed_by=None, state="ready")
+        elif rec["commit"] and unsure and rec["commit"] not in ct:
+            mark_unknown([rec], "a revert of a merge after the snapshot reaches past this clone's history; " + FIX)
+            continue
+        if sid in commits and not rec["commit"]:
+            c = commits[sid]
+            arrival = placed[0][c]
+            rec.update(commit=c, arrival=arrival, since=iso(ct.get(arrival, ct[c])), since_exact=False,
+                       reverted=False, state="on-trunk", environments=dict.fromkeys(ENVIRONMENTS), version=None,
+                       candidate=None)
+            own = moves.get(c)
+            if own and own["exact"] and "left" not in own:
+                rec["since"], rec["since_exact"] = own["seen"], True
+            elif arrival in moves and "left" not in moves[arrival]:
+                rec["since"], rec["since_exact"] = moves[arrival]["seen"], moves[arrival]["exact"]
+
+
+def settle_corrections(records: dict, tree: list, trunk_sha: str, meta: dict | None = None) -> None:
+    """The trunk's corrections file, which this clone can read even when its history is cut, against the one the
+    snapshot was computed with (`meta["corrections"]`, its blob). The same file: nothing to do. Otherwise (ESC-214,
+    ESC-252) a reconstructed story may have lost its row, and a story a row names that the snapshot has no commit for
+    may have gained one: unknown. An unreadable file makes every story without a commit unknown too."""
+    blob = next((sha for path, sha in tree if path == CORRECTIONS), None)
+    if isinstance(meta, dict) and "corrections" in meta and meta["corrections"] == blob:
+        return
+    why = f"{CORRECTIONS} changed since the snapshot; {FIX}"
+    for rec in records.values():
+        if rec["state"] != "unknown" and rec["reconstructed"]:
+            mark_unknown([rec], why)
+    if blob is None:
+        return
+    content = read_blobs([blob], trunk_sha).get(blob)
+    rows, err = parse_rows(content) if content is not None else (None, "not in this clone")
+    named = {r.get("story") for r in rows or () if isinstance(r, dict) and r.get("kind") != "retract"}
+    for sid, rec in records.items():
+        if rec["state"] != "unknown" and not rec["commit"] and (rows is None or sid in named):
+            mark_unknown([rec], why if rows is not None else f"{CORRECTIONS} cannot be read ({err}); {FIX}")
+
+
+def settle_refs(records: dict, refs: dict, graph: dict, cut: set, then: dict) -> None:
+    """Deploy branches and version tags against what the snapshot saw (`then`: its refs). A deploy branch this clone
+    does not have keeps the snapshot's reading; one that moved is proved to contain the commit or not, else (or a
+    forward move from the snapshot's head) the state is unknown. A new tag can give a version the snapshot lacked."""
+    deploys = then.get("deploy") if isinstance(then.get("deploy"), dict) else None
+    tags_then = then.get("tags") if isinstance(then.get("tags"), dict) else None
+    infos: dict[str, tuple] = {}
+
+    def info(head: str) -> tuple:
+        if head not in infos:
+            infos[head] = reach_info(graph, cut, head)
+        return infos[head]
+
+    local_tags = {name: sha for key, name, sha in version_tags(refs)}
+    new_tags = [(name, sha) for key, name, sha in version_tags(refs) if key[1] == 1
+                and (tags_then is None or tags_then.get(name) != sha)]
+    all_tags = [(name, sha) for key, name, sha in version_tags(refs) if key[1] == 1]
+    for rec in records.values():
+        fresh = rec.pop("_fresh", False)  # a commit the snapshot read for no story: every ref is read for it
+        if rec["state"] == "unknown" or not rec["commit"]:
+            continue
+        for env in ENVIRONMENTS:
+            head = refs.get(f"refs/remotes/origin/deploy/{env}")
+            was = deploys.get(env) if deploys is not None else None
+            if head is None and (rec["environments"][env] or was):
+                # ESC-215: the snapshot saw this environment and the clone has no branch to say where it is now (a
+                # single-branch clone; a deploy writes no snapshot): a rollback may have happened.
+                mark_unknown([rec], f"this clone has no origin/deploy/{env} to tell where {env} is now; {FIX}")
+                break
+            if head is None or (not fresh and deploys is not None and env in deploys and head == was):
+                continue
+            proved = contains(info(head), rec["commit"])
+            if proved is None and rec["environments"][env] and was and contains(info(head), was):
+                proved = True  # a forward move from a head that already held the commit
+            if proved is None:
+                mark_unknown([rec], f"deploy/{env} moved to {short(head)} after the snapshot and this clone's history "
+                                    f"cannot tell whether it holds {short(rec['commit'])}; {FIX}")
+                break
+            rec["environments"][env] = head if proved else None
+        version = rec["version"]
+        if version and version in local_tags and tags_then is not None and local_tags[version] != tags_then.get(version):
+            rec["version"] = None  # ESC-216: the tag moved since the snapshot; read it again with the new tags
+        if rec["state"] == "unknown" or rec["version"]:
+            continue
+        for name, sha in (all_tags if fresh else new_tags):
+            proved = contains(info(sha), rec["commit"])
+            if proved is None:
+                mark_unknown([rec], f"tag {name} came after the snapshot and this clone's history cannot tell whether "
+                                    f"it holds {short(rec['commit'])}; {FIX}")
+                break
+            if proved:
+                rec["version"] = name
+                break
+
+
+def settle_snapshot_states(stories: list[dict], records: dict) -> None:
+    """The state from the facts carried and proved: an environment, a version, the trunk; without a commit, ready when
+    every dependency has one (unknown when one is unknown), in progress when the snapshot saw a branch."""
+    for rec in records.values():
+        if rec["state"] == "unknown" or not rec["commit"]:
+            continue
+        envs = rec["environments"]
+        rec["state"] = ("in-production" if envs["production"] else "in-staging" if envs["staging"]
+                        else "in-version" if rec["version"] else "on-trunk")
+    for story in stories:
+        rec = records[story["id"]]
+        if story.get("unreadable"):
+            mark_unknown([rec], f"the story file {story['path']} cannot be read from the trunk's tree")
+        if rec["state"] == "unknown" or rec["commit"]:
+            continue
+        deps = [records.get(d) for d in story["depends_on"]]
+        if any(d is not None and d["state"] == "unknown" for d in deps):
+            mark_unknown([rec], "a dependency is unknown")
+            continue
+        ready = all(d is not None and d["commit"] for d in deps)
+        rec["state"] = "in-progress" if rec["branches"] else "ready" if ready else "defined"
+
+
+def snapshot_time() -> int:
+    """KEELOKIT_SNAPSHOT_AT as epoch seconds: digits, or an ISO 8601 time with its zone (a zoneless one would be read
+    in the runner's zone), between 1970 and 9999 (ESC-254); now when unset."""
+    raw = os.environ.get(SNAPSHOT_AT, "").strip()
+    if not raw:
+        return int(time.time())
+    epoch = None
+    if raw.isdigit():
+        epoch = int(raw)
+    else:
+        try:
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            epoch = int(when.timestamp()) if when.tzinfo is not None else None
+        except (ValueError, OverflowError):
+            epoch = None
+    if epoch is None or not 0 < epoch <= 253402300799:
+        raise LedgerError(f"{SNAPSHOT_AT}={raw[:40]!r} is not epoch seconds nor an ISO 8601 time with its zone, "
+                          "between 1970 and 9999")
+    return epoch
+
+
+def check_snapshot_name(name: str) -> None:
+    if name.startswith("-") or git_out("check-ref-format", f"refs/heads/{name}")[0]:
+        raise LedgerError(f"[ledger] snapshot = {name!r} is not a branch name")
+
+
+def fetch_snapshot(name: str) -> tuple[bool, str | None, str]:
+    """(fetched, origin/<name>'s commit or None when origin has no such branch, git's error)."""
+    code, err = run_git(["fetch", "-q", "--no-tags", "origin", f"+refs/heads/{name}:refs/remotes/origin/{name}"], 60)
+    if code == 0:
+        return True, commit_of(f"refs/remotes/origin/{name}"), ""
+    if code is not None and "couldn't find remote ref" in err.lower():
+        git_out("update-ref", "-d", f"refs/remotes/origin/{name}")
+        return True, None, ""
+    return False, None, last_error(err) if code is not None else "the fetch took over 60s"
+
+
+def new_moves(graph: dict, known: dict, push: tuple, seen: str, run: str) -> list[dict]:
+    """The moves this run records, only from its own push (`push`: before, after, whether before was all zeros), along
+    `after`'s own first-parent chain (a later foxtrot merge may have taken it off the trunk's, round 4). Exact: the
+    commits from `after` down that `before` does not hold, which that push brought. Not exact: the commits below them
+    back to the newest recorded one still on the trunk (`known`), which a run of their own never recorded (GitHub's
+    concurrency replaces a pending run with a newer one): they had arrived by this push. Nothing above `after` (later
+    pushes this checkout already sees, ESC-246), nothing without a push (a tag's run), nothing when this clone lacks
+    `before` (a forced push: what it brought cannot be told), and only `after` for an all-zero `before` (a history
+    pushed to a new remote: its old commits were not just written)."""
+    before, after, null = push
+    if after is None or after not in graph or (before is None and not null):
+        return []
+    if null:
+        return [{"sha": after, "seen": seen, "run": run, "exact": True}]
+    chain = first_parent_chain(graph, after)
+    held = set(first_reach(graph, [before]))
+    i, rows = 0, []
+    while i < len(chain) and chain[i] not in held:
+        rows.append({"sha": chain[i], "seen": seen, "run": run, "exact": True})
+        i += 1
+    filled = []
+    while i < len(chain) and chain[i] not in known:
+        filled.append(chain[i])
+        i += 1
+    if i < len(chain):  # bounded by a recorded move: never back to the root on a first snapshot
+        rows += [{"sha": sha, "seen": seen, "run": run, "exact": False} for sha in filled]
+    return rows
+
+
+def merge_moves(old: list[dict], new: list[dict], graph: dict, trunk_sha: str) -> list[dict]:
+    """Every move once (the better one of the same commit), oldest first along this trunk; the moves of commits this
+    clone does not have (pushed after its checkout) keep their order after them."""
+    pos = {sha: i for i, sha in enumerate(reversed(first_parent_chain(graph, trunk_sha)))}
+    merged: dict[str, dict] = {}
+    order: dict[str, int] = {}
+    for i, m in enumerate(old + new):
+        if m["sha"] not in merged or better_move(merged[m["sha"]], m):
+            merged[m["sha"]] = m
+        order.setdefault(m["sha"], i)
+    return sorted(merged.values(), key=lambda m: (pos.get(m["sha"], len(pos)), order[m["sha"]]))
+
+
+def keep_theirs(theirs: dict | None, mine: str, seen: str, graph: dict) -> bool:
+    """True when the branch's ledger.json is of a newer trunk than this run's (a descendant of its trunk, or a commit
+    this run does not have that a later push brought), so a stale run never puts an older reading back. A commit this
+    run does not have counts as newer only when it was seen later: after a rewrite of the trunk the old reading's
+    commit never comes back, and the current trunk gets its reading again (ESC-209)."""
+    if theirs is None:
+        return False
+    sha = theirs["trunk_sha"]
+    meta = theirs.get("snapshot") if isinstance(theirs.get("snapshot"), dict) else {}
+    later = isinstance(meta.get("seen"), str) and meta["seen"] > seen
+    if sha != mine and sha in graph and sha in first_reach(graph, [mine]):
+        return False  # theirs is of an ancestor of this trunk
+    return later  # the same commit, or one this trunk does not hold (newer, or a trunk forced back: ESC-248)
+
+
+def ledger_md(facts: dict, meta: dict) -> str:
+    lines = [f"# Ledger — {facts['trunk']}@{short(facts['trunk_sha'])}", "",
+             f"Written by `ledger.py snapshot` in the CI (run {meta['run']}, for the push of {meta['seen']}), never by "
+             "hand. Ask "
+             "`python3 .keelokit/bin/ledger.py`: a session reads this only when its history is incomplete.", "",
+             "| Story | State | Since | Commit | Version | Staging | Production |", "|---|---|---|---|---|---|---|"]
+    for r in sorted(facts["stories"], key=lambda r: id_key(r["id"])):
+        since = f"{r['since']} ({'exact' if r['since_exact'] else 'approximate'})" if r["since"] else "—"
+        cells = [r["id"], r["state"], since, short(r["commit"]) if r["commit"] else "—", r["version"] or "—",
+                 *(short(r["environments"][e]) if r["environments"][e] else "—" for e in ENVIRONMENTS)]
+        lines.append("| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def snapshot_commit(files: dict[str, bytes], parent: str | None, message: str, epoch: int) -> str:
+    """A commit of exactly these files, on `parent`: blobs, a temporary index, a tree and commit-tree. The checkout,
+    its index and HEAD are never touched."""
+    with tempfile.TemporaryDirectory(prefix="keelokit-snapshot-") as tmp:
+        env = {"GIT_INDEX_FILE": os.path.join(tmp, "index"), **SNAPSHOT_IDENTITY,
+               "GIT_AUTHOR_DATE": f"@{epoch} +0000", "GIT_COMMITTER_DATE": f"@{epoch} +0000"}
+        entries = []
+        for path, data in sorted(files.items()):
+            blob = git_read(["hash-object", "-w", "--stdin"], data, env=env).decode().strip()
+            entries.append(f"100644 {blob}\t{path}\n")
+        git_read(["update-index", "--add", "--index-info"], "".join(entries).encode(), env=env)
+        tree = git_read(["write-tree"], env=env).decode().strip()
+        return git_read(["commit-tree", tree, *(["-p", parent] if parent else []), "-F", "-"], message.encode(),
+                        env=env).decode().strip()
+
+
+def push_range(text: str | None) -> tuple[str | None, str | None, bool]:
+    """(before, after, before is all zeros) of `--push BEFORE..AFTER` as commits here; an unknown sha is None."""
+    if not text:
+        return None, None, False
+    before, sep, after = text.partition("..")
+    if not sep:
+        raise LedgerError(f"--push {text!r}: expected BEFORE..AFTER")
+    null = bool(NULL_SHA.fullmatch(before))
+    return (commit_of(before) if before and not null else None,
+            commit_of(after) if after and not NULL_SHA.fullmatch(after) else None, null)
+
+
+def cmd_snapshot(state: dict, args: tuple) -> int:
+    """`snapshot [--run ID] [--push BEFORE..AFTER]`: the CI's job. `snapshot --branch`: the branch, empty when off."""
+    run, push, branch_only = args
+    cfg = read_config(state)
+    name = cfg["snapshot"]
+    if branch_only:
+        print(name)
+        return 0
+    if not name:
+        print('Keelokit: [ledger] snapshot = "": the snapshot is off; nothing written.')
+        return 0
+    check_snapshot_name(name)
+    if not snapshot_usable(name, trunk_name(state)):
+        raise LedgerError(f"[ledger] snapshot = {name!r} is the trunk or a deploy branch: the snapshot needs a branch "
+                          f"of its own (the default is {DEFAULT_SNAPSHOT})")
+    if not run:
+        gh = os.environ.get("GITHUB_RUN_ID", "").strip()
+        run = f"{gh}.{os.environ.get('GITHUB_RUN_ATTEMPT', '1').strip() or '1'}" if gh else "local"
+    if not RUN_ID.fullmatch(run):
+        raise LedgerError(f"--run {run!r}: letters, digits, dots, dashes and underscores")
+    epoch = snapshot_time()
+    seen = iso(epoch)
+    fetched, tip, err = fetch_snapshot(name)
+    ctx = read_all(state)
+    if ctx["reason"] is not None:
+        raise LedgerError(f"the snapshot needs the trunk's whole history (the CI checks out with fetch-depth: 0): "
+                          f"{ctx['reason']}")
+    push_at = push_range(push)
+    trunk, trunk_sha, graph = ctx["trunk"], ctx["trunk_sha"], ctx["graph"]
+    refs_seen = {"tags": {n: sha for _, n, sha in version_tags(ctx["refs"])},
+                 "deploy": {e: ctx["refs"].get(f"refs/remotes/origin/deploy/{e}") for e in ENVIRONMENTS}}
+    reverted = revert_status(ctx["log"], graph)
+    story_shas: dict[str, list[str]] = {}
+    undone_shas: dict[str, list[str]] = {}
+    for c in reversed(ctx["log"]):  # oldest first
+        for sid in c["story"]:
+            (undone_shas if reverted[c["sha"]] else story_shas).setdefault(sid, []).append(c["sha"])
+    corrections_blob = next((sha for path, sha in ctx["tree"] if path == CORRECTIONS), None)
+    # What a shallow reader needs to prove a state since: every live Story: commit of every id, also ids with no story
+    # file yet (ESC-250, ESC-251), and the corrections file the states were computed with (ESC-252).
+    meta = {"seen": seen, "run": run, "refs": refs_seen, "story_commits": story_shas, "reverted_commits": undone_shas,
+            "corrections": corrections_blob}
+    for attempt in range(1, SNAPSHOT_TRIES + 1):
+        if attempt > 1:
+            time.sleep(random.uniform(0.05, 0.3) * attempt)
+            fetched, tip, err = fetch_snapshot(name)
+        if not fetched:
+            continue
+        if tip and not set(git_read(["ls-tree", "--name-only", tip]).decode().split()) <= {MOVES, "ledger.json", "LEDGER.md"}:
+            raise LedgerError(f"origin/{name} holds files other than a snapshot's ({MOVES}, ledger.json, LEDGER.md): it "
+                              "is a branch of the project, never overwritten; set [ledger] snapshot to a branch of its own")
+        blobs = cat_specs([f"{tip}:ledger.json", f"{tip}:{MOVES}", f"{tip}:LEDGER.md"]) if tip else {}
+        old = parse_moves(blobs.get(f"{tip}:{MOVES}"))
+        if old is None:
+            raise LedgerError(f"{MOVES} on origin/{name} ({short(tip)}) cannot be read: nothing written, so no move "
+                              "recorded there is lost; fix it there first")
+        on_trunk = set(first_reach(graph, [trunk_sha]))
+        # Round 4: a recorded commit this trunk no longer holds, recorded before this push, was forced away: its row
+        # is marked `left` and says nothing about when it came back.
+        old = [{**m, "left": seen} if "left" not in m and m["seen"] <= seen and m["sha"] not in on_trunk else m
+               for m in old]
+        known = {sha: m for sha, m in moves_map(old).items() if "left" not in m}
+        moves = merge_moves(old, new_moves(graph, known, push_at, seen, run), graph, trunk_sha)
+        theirs = parse_snapshot(blobs.get(f"{tip}:ledger.json"))
+        files = {MOVES: moves_toml(moves).encode()}
+        if keep_theirs(theirs, trunk_sha, seen, graph):
+            files["ledger.json"] = blobs[f"{tip}:ledger.json"]
+            files["LEDGER.md"] = blobs.get(f"{tip}:LEDGER.md") or b""
+        else:
+            facts = json.loads(json.dumps(ctx["facts"]))
+            apply_moves(facts["stories"], moves_map(moves), graph)
+            facts["snapshot"] = meta
+            files["ledger.json"] = (json.dumps(facts, indent=1) + "\n").encode()
+            files["LEDGER.md"] = ledger_md(facts, meta).encode()
+        message = (f"ledger: snapshot of {trunk}@{short(trunk_sha)} (run {run})\n\n"
+                   "No-story: ci — written by `ledger.py snapshot` in the CI\n")
+        commit = snapshot_commit(files, tip, message, epoch)
+        code, err = run_git(["push", "-q", "origin", f"{commit}:refs/heads/{name}"], 60)
+        if code == 0:
+            git_out("update-ref", f"refs/remotes/origin/{name}", commit)
+            print(f"Keelokit: {name} at {short(commit)}: {trunk}@{short(trunk_sha)} seen {seen} (run {run}, "
+                  f"try {attempt})")
+            return 0
+        err = last_error(err) if code is not None else "the push took over 60s"
+    print(f"Keelokit: the snapshot was not written to {name} after {SNAPSHOT_TRIES} tries ({err}); the next run "
+          "records this push too, not exact", file=sys.stderr)
+    return 1
+
+
+def cmd_deploy(state: dict, env: str, rev: str) -> int:
+    """`deploy <staging|production> <commit>`: what a deploy job runs once its deploy succeeded. deploy/<env> points
+    at that commit, backwards too (a rollback deploys an older tag)."""
+    if env not in ENVIRONMENTS:
+        print(f"Keelokit: no environment {env!r} (one of {', '.join(ENVIRONMENTS)})", file=sys.stderr)
+        return 1
+    sha = commit_of(rev)
+    if sha is None:
+        print(f"Keelokit: {rev!r} is no commit of this clone", file=sys.stderr)
+        return 1
+    err = ""
+    for attempt in range(1, SNAPSHOT_TRIES + 1):
+        code, err = run_git(["push", "-q", "origin", f"+{sha}:refs/heads/deploy/{env}"], 60)
+        if code == 0:
+            git_out("update-ref", f"refs/remotes/origin/deploy/{env}", sha)
+            print(f"Keelokit: deploy/{env} at {short(sha)}")
+            return 0
+        err = last_error(err) if code is not None else "the push took over 60s"
+        time.sleep(0.5 * attempt)
+    print(f"Keelokit: deploy/{env} was not moved to {short(sha)} ({err})", file=sys.stderr)
+    return 1
 
 
 # ── show, next, --release ──
@@ -2580,6 +3322,8 @@ def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
     if rec["branches"]:
         lines.append(f"{t['branches']}: {', '.join(rec['branches'])}")
     lines.append(f"{t['file']}: {rec['path']}")
+    if rec.get("as_of"):
+        lines.append(LABELS[lang]["snapshot"].format(sha=short(rec["as_of"])))
     if ctx["reason"] is not None:
         return lines
     blobs = read_blobs([sha for path, sha in ctx["tree"] if path == rec["path"] or path == ESCAPES
@@ -2667,9 +3411,11 @@ def cmd_next(state: dict) -> int:
     """The ready stories (ready already excludes in-progress), by wave (none last) and id."""
     lang = read_config(state)["lang"]
     ctx = read_all(state)
-    if ctx["reason"] is not None:
+    if ctx["reason"] is not None and "snapshot" not in ctx:
         print(f"Keelokit: {ctx['reason']}")
         return 1
+    if "snapshot" in ctx:  # as of the snapshot's commit: who took a story since is not seen
+        print(f"Keelokit: {LABELS[lang]['snapshot'].format(sha=short(ctx['snapshot']['sha']))}", file=sys.stderr)
     unknown = [r for r in ctx["facts"]["stories"] if r["state"] == "unknown"]
     if unknown:
         print(f"Keelokit: {len(unknown)} stories are unknown, so what is ready cannot be said: "
@@ -3201,6 +3947,16 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "show", (argv[1], len(argv) == 3)
     if argv == ["next"]:
         return "next", None
+    if argv == ["snapshot", "--branch"]:
+        return "snapshot", (None, None, True)
+    if argv[:1] == ["snapshot"]:
+        opts = dict(zip(argv[1::2], argv[2::2]))
+        if len(argv) % 2 == 1 and len(opts) == len(argv[1::2]) and set(opts) <= {"--run", "--push"} \
+                and all(v and not v.startswith("-") for v in opts.values()):
+            return "snapshot", (opts.get("--run"), opts.get("--push"), False)
+        return None
+    if argv[:1] == ["deploy"] and len(argv) == 3 and not argv[2].startswith("-"):
+        return "deploy", (argv[1], argv[2])
     if argv[:1] == ["prepush"] and len(argv) in (2, 3):
         return "prepush", argv[1]
     if argv[:2] == ["hook", "prepare"] and 3 <= len(argv) <= 5:
@@ -3252,6 +4008,10 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_prepush(state, args, [] if sys.stdin.isatty() else sys.stdin.read().splitlines())
         if command == "take":
             return cmd_take(state, args)
+        if command == "snapshot":
+            return cmd_snapshot(state, args)
+        if command == "deploy":
+            return cmd_deploy(state, *args)
         if command == "drop":
             return cmd_drop(state, *args)
         if command == "release":
@@ -3286,7 +4046,10 @@ def summary(facts: dict, lang: str) -> list[str]:
     if facts["history"] == "incomplete":
         return [f"{head}: {t['cut']}", stories[0]["reason"] if stories else FIX,
                 f"{len(stories)} {t['stories']}: {STATE_NAMES[lang]['unknown']} {len(stories)}"]
-    lines = [f"{head}: {t['complete']}"]
+    if facts["history"].startswith("snapshot:"):
+        lines = [f"{head}: {t['snapshot'].format(sha=facts['history'][9:16])}"]
+    else:
+        lines = [f"{head}: {t['complete']}"]
     counts = {s: sum(1 for r in stories if r["state"] == s) for s in (*STATES, "unknown")}
     shown = ", ".join(f"{STATE_NAMES[lang][s]} {n}" for s, n in counts.items() if n)
     lines.append(f"{len(stories)} {t['stories']}: {shown}" if stories else t["none"])
