@@ -1,9 +1,9 @@
 # Agent brief — how a session works when several run at once
 
-One page, shared. A prompt for a session says **"read `.keelokit/harness/agent-brief.md`, then do
-<story or job>"** and nothing more about process: repeating these rules in prompts makes them drift
-apart. The rules of the project (`AGENTS.md`, `rules.toml`) still apply; this is about running in
-parallel. (SESS-1)
+One page, shared. A prompt for a session or agent says **"read `.keelokit/harness/agent-brief.md`,
+then do <story or job>"**, plus one line, **never `--no-verify`** (subagents tried it; the guard
+blocks it), and nothing more about process: rules repeated in prompts drift apart. The project's
+rules (`AGENTS.md`, `rules.toml`) still apply; this is about running in parallel. (SESS-1)
 
 ## One session, one finished job
 
@@ -17,9 +17,7 @@ parallel. (SESS-1)
 - **Names.** A session that starts another titles it with `python3 .keelokit/bin/status.py title
   <ID>` (`create_session`'s `title`; `--role coordinator` for the coordinator), renames itself with
   its own title on starting when its tool can, and starts each Agent's description `<ID> · <role>`.
-- Cut off mid-work? Push it to `wip/<topic>` (when `[verify] wip_branches` is set): unverified, never
-  lands; whoever takes it over verifies it before it goes anywhere else (WIP-1). Giving the story up:
-  `ledger.py drop <ID> --motivo "…"` keeps the attempt and its reason on `archive/`, for `ledger.py show`.
+- Giving the story up: `ledger.py drop <ID> --motivo "…"` keeps the attempt and why on `archive/`.
 - Stories that add a **migration** run one at a time (MIG-1): the second waits for the first to
   land, rebases, and takes a timestamp after it; one that sorts before main's last fails the doctor.
 
@@ -45,8 +43,7 @@ main. The session **never pushes to main**:
 
 ## Models
 
-By role and tier, whatever the landing policy. The conductor of a session runs on Sonnet, except
-for full design (Opus).
+By role and tier, whatever the landing policy; a session's conductor runs on Sonnet (full design: Opus).
 
 | Work | light | full |
 |---|---|---|
@@ -57,26 +54,29 @@ for full design (Opus).
 
 ## Machine limits
 
-Respect the machine: at most **2** sessions running tests at once on a laptop (one verify at a
-time is enforced), no more than the `parallel` count in `.keelokit/state.toml`. Never kill a
-process or container you did not start.
+At most **2** sessions running tests at once on a laptop (one verify at a time is enforced), and no
+more than `parallel` in `.keelokit/state.toml`. Never kill a process or container you did not start.
 
 ## Waiting
 
-One `until` loop on one condition (a log line, an exit status, `gh`/`ci.py` state), with a sleep
-inside. Never poll with repeated short calls, never `sleep` alone.
+**Push before any wait longer than a few minutes**: an idle cloud session can lose its container and
+all it hasn't pushed. The story's branch when verified, else `wip/<topic>` with the same commits,
+never commits that exist only there (WIP-1: unverified, never lands; whoever takes it verifies it).
 
-A run that lasts more than a few minutes (`pnpm verify --all`) goes in the background with a log,
+One `until` loop on one state, with a sleep inside: the verify's (`status.py`, the exit code), a CI
+run's (`gh`/`ci.py`), a remote ref (`git ls-remote`). Never a log line, never repeated short calls,
+never `sleep` alone. A run of more than a few minutes (`pnpm verify --all`) goes in the background,
 because a command a tool keeps in the foreground is killed at about 30 minutes and the run is lost:
-`nohup pnpm verify --all > run.log 2>&1 &`, then wait with one `until`. Read its result from the
-exit code and from `status.py` (`verify: last pass`, or `CUT` when it died), never by searching
-the log for a phrase. Run `pnpm verify --preflight` first: a red there costs minutes, not an hour.
-`--keep-going` lists every red of a run at once.
+`nohup pnpm verify --all > run.log 2>&1 &`; its result is the exit code and `status.py` (`verify:
+last pass`, or `CUT` when it died). How long it takes is the range `status.py` prints (`about 13–23
+min left`), never one figure. Run `pnpm verify --preflight` first: a red there costs minutes, not an
+hour. `--keep-going` lists every red of a run at once.
 
 ## The report: 8 lines at most
 
 The story id, the commit hash on `origin/main` (convoy: branch and hash), tier, what `verify` ran,
 anything the person must decide. **Paths, not contents:** point at the file or commit; never paste a diff or a log.
+Pushed and reported, a cloud session archives itself, so the list shows only what is alive.
 
 ## The coordinator trusts nothing but origin/main
 

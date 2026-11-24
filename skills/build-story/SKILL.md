@@ -50,13 +50,17 @@ Rules for the choice:
   instead of launching one that rereads everything; the verifier reproduces ALL the round's
   findings in one pass, not one agent per finding.
 - Each Agent's description starts `<ID> · <role>` (`AUTH-003 · reviewer`), so a list of agents reads
-  by story.
+  by story, and every prompt you delegate says **never `--no-verify`** (subagents tried it; the guard
+  blocks it).
 - Agents get **paths**, not pasted files: the story, the contract, the base sha. Reports are at
   most 10 lines with `file:line` and commit hashes; the full detail stays in the commit or file.
 - Roles read only what the story needs: the `dimensions.md` rows of its declared dimensions, the
   `invariants.md` classes of its invariants. Not the whole catalogue.
 - NON-BLOCKING findings are batched into one commit at the end, never a round of their own.
-- Wait on a background run once (`until` on its log or exit status); don't poll.
+- Push before any wait longer than a few minutes: the story's branch when verified, else `wip/<topic>`
+  with the same commits. Then wait on a background run once, on state, never on a log line:
+  `status.py` or the verify's exit code, a CI run's state, a remote ref. Don't poll. Say how long as
+  the range `status.py` prints, never one figure.
 
 ## 1. Pick
 
@@ -74,6 +78,8 @@ For parallel *sessions* (one per story, possibly on several terminals) the share
 migration go one per wave (MIG-1). Names follow the brief: a session you start gets the title
 `python3 .keelokit/bin/status.py title <ID>` prints (`<project> · wave <n> · <ID>`), this session
 renames itself with its story's title when its tool can, and the branch stays the id in lowercase.
+Each prompt adds `Never --no-verify.`; the brief's other habits (push before waiting, wait on state,
+ranges) come with it, and a cloud session archives itself once its work is pushed and reported.
 
 How many at once comes from `[run]` in `.keelokit/state.toml`: `build = "serial"` → one;
 `build = "parallel"` → up to `parallel` ready stories of the wave. A count the user gives now

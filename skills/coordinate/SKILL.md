@@ -15,8 +15,13 @@ the rest of this skill is for `direct`.
 
 - One session per story, from the same wave (the doctor guarantees their `touches` don't overlap).
   Stories that add migrations go one at a time (MIG-1).
-- The prompt is short: `Read .keelokit/harness/agent-brief.md, then /keelokit:build-story <ID>.` Pass paths, not
-  contents; don't repeat the brief's rules.
+- The prompt is short: `Read .keelokit/harness/agent-brief.md, then /keelokit:build-story <ID>. Never
+  --no-verify.` Every prompt you delegate, to a session or an agent, carries that last line (subagents
+  tried it; the guard blocks it). Pass paths, not contents; don't repeat the brief's other rules.
+- What the brief asks of each session, from the fleet's lessons: push before any wait longer than a few
+  minutes (its branch when verified, else `wip/<topic>` with the same commits); wait on state, never on
+  a log line: `status.py` or the verify's exit code, a CI run's state, a remote ref; give times as the
+  range `status.py` prints, never one figure; archive itself once its work is pushed and reported.
 - Title each session with `python3 .keelokit/bin/status.py title <ID>` (`create_session`'s `title`),
   and rename this one with `title --role coordinator` when the tool can. Exit 2 means the story or
   its wave is missing: fix the backlog, never type a title by hand. Branches stay the id in lowercase.
@@ -35,7 +40,8 @@ the rest of this skill is for `direct`.
    not "not landed": `ledger.py` says why (a cut history: `ledger.py history --ensure`); fix it and ask again.
 3. CI of main red, or two runs in a row without a green: stop starting stories; `python3
    .keelokit/bin/ci.py jobs` says which job and step; fix that first.
-4. Wait with one `until` loop on one condition, never with repeated polling.
+4. Push before you wait. Wait with one `until` loop on one state (`status.py`, a CI run's state, a remote
+   ref), never on a log line, never with repeated polling.
 
 ## Integrating interface work
 
