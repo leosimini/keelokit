@@ -34,8 +34,10 @@
                                                 REMOTE's main as it is now (the pre-push hook, for a
                                                 commit pushed to a branch from another checkout)
     verify_tools.py wip-prefix REMOTE           print [verify] wip_branches (as REMOTE's main sets it), or exit 1
-    verify_tools.py wip-record SHA              remember a pushed wip tip in this clone
-    verify_tools.py wip-inside REMOTE SHA       exit 0 (and name it) when SHA holds unverified wip work
+    verify_tools.py unverified-prefixes REMOTE  the branch prefixes whose pushes run no verify and never land,
+                                                space-separated: wip_branches (when set) and archive/
+    verify_tools.py wip-record SHA              remember a pushed tip of an unverified branch in this clone
+    verify_tools.py wip-inside REMOTE SHA       exit 0 (and name it) when SHA holds unverified work (wip/, archive/)
     verify_tools.py shared-seal --head SHA --base SHA --level LEVEL
                                                 0: a shared seal covers this commit; 1: refused (why);
                                                 3: [verify] shared_seals is not set
@@ -1128,25 +1130,33 @@ def wip_prefix(remote: str, url: str = "") -> str | None:
     return prefix if isinstance(prefix, str) and WIP_PREFIX.fullmatch(prefix) else None
 
 
+ARCHIVE_PREFIX = "archive/"  # ledger.py drop keeps abandoned attempts there (LEDGER-008)
+
+
+def unverified_prefixes(remote: str, url: str = "") -> list[str]:
+    """The branch prefixes whose pushes run no verify and never land: [verify] wip_branches (as `remote`'s main
+    sets it, when it does) and archive/, always, where `ledger.py drop` pushes an abandoned attempt."""
+    wip = wip_prefix(remote, url)
+    return list(dict.fromkeys([*([wip] if wip else []), ARCHIVE_PREFIX]))
+
+
 def wip_tips_file() -> Path:
     common = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     return ROOT / common / "keelokit-wip-tips"
 
 
 def wip_inside(remote: str, sha: str, url: str = "") -> str | None:
-    """The first wip tip (a <remote>/<prefix>* branch, or a tip this clone pushed and remembers, so
-    deleting the branch doesn't hide it) that `sha` holds, `remote`'s main lacks, and no clean, full,
-    green verify here proved. None when there's none, or wip branches are off."""
-    prefix = wip_prefix(remote, url)
-    if prefix is None:
-        return None
+    """The first unverified tip (a <remote>/<prefix>* branch of unverified_prefixes, or a tip this clone pushed
+    and remembers, so deleting the branch doesn't hide it) that `sha` holds, `remote`'s main lacks, and no
+    clean, full, green verify here proved. None when there's none."""
+    prefixes = unverified_prefixes(remote, url)
     main = git_lines("rev-parse", "--verify", "--quiet", "refs/keelokit/push-main")  # wip_prefix just fetched it
-    # The wip branches the remote has now (not tracking refs a local edit could delete), plus the tips
+    # The unverified branches the remote has now (not tracking refs a local edit could delete), plus the tips
     # this clone pushed.
-    listed = subprocess.run(["git", "ls-remote", "--heads", url or remote, f"refs/heads/{prefix}*"], cwd=ROOT,
-                            capture_output=True, text=True)
+    listed = subprocess.run(["git", "ls-remote", "--heads", url or remote, *(f"refs/heads/{p}*" for p in prefixes)],
+                            cwd=ROOT, capture_output=True, text=True)
     if listed.returncode:
-        return "the remote's wip branches (it can't be listed)"
+        return "the remote's unverified branches (they can't be listed)"
     tips = [l.split()[0] for l in listed.stdout.splitlines() if l.split()]
     try:
         tips += [l.strip() for l in wip_tips_file().read_text(errors="replace").splitlines()
@@ -1237,6 +1247,9 @@ def main() -> int:
         if prefix:
             print(prefix)
         return 0 if prefix else 1
+    if a[0] == "unverified-prefixes" and len(a) in (2, 3):
+        print(" ".join(unverified_prefixes(a[1], a[2] if len(a) == 3 else "")))
+        return 0
     if a[0] == "wip-record" and len(a) == 2:
         with open(wip_tips_file(), "a", encoding="utf-8") as f:
             f.write(a[1] + "\n")
