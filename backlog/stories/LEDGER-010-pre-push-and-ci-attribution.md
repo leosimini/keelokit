@@ -73,3 +73,39 @@ Scenario: [S6] Other branches
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, INV-005 cited, this repo's
 own pre-push and CI get the same step, a CHANGELOG line, `Story: LEDGER-010` trailer, addendum if the
 result differs.
+
+## Addendum — 2026-11-24
+
+Where the result goes beyond or differs from the text above:
+- **A squash is found two ways.** By tree, as written (the commit's tree is the tip of an unintegrated origin
+  branch), and, since a train usually lands after the trunk moved, by the patch-id of the branch's change since
+  its merge base with the trunk (ESC-200). Never from a commit the branch itself reaches, nor from a branch whose
+  tip has its base's tree, i.e. one that changes nothing (ESC-199). Only branches with a `Story:`/`Part-of:` of their
+  own are read. A branch's `Story:` must stay a `Story:` (a `Part-of:` would take the story off the trunk); its
+  `Part-of:` is kept by either. What the squash keeps counts on it and on the range's commits made since the
+  branch forked, so a rebase merge, whose copies each keep their own trailer, is no squash loss.
+- **Approved correction rows attribute the commit they name**, in `check`, in the summary's unattributed count
+  and in the pre-push (ESC-201). Without it, the `ledger.py correct` command the CI prints could never turn the
+  CI green again. A correction row naming a squash keeps the story it names.
+- **A merge attributes what it brings wherever it sits.** A merge with a trailer nested in a branch (brought by
+  GitHub's trailerless "Merge pull request") covers the commits it brings, as docs/ledger.md's "Trailers" says;
+  before, only the first-parent merge that brought a commit counted.
+- **The pull request check.** `check --ci` on a `pull_request` run into the trunk (`GITHUB_EVENT_NAME`,
+  `GITHUB_BASE_REF`) also checks the commits the checked-out `refs/pull/N/merge` reaches and the trunk does not;
+  GitHub's merge commit stands for the one to come. A pull request into another branch is not checked (S6).
+  GitHub's default shallow checkout fails the step (no trunk, a cut history), never passes it.
+- **The fix hint.** On the trunk, the exact `ledger.py correct <sha> --story <ID> --evidence "…"`; for a commit
+  not on the trunk yet (pre-push, pull request), how to reword it or bring it with an attributed merge.
+- **The pre-push** checks the commits the remote it pushes to lacks (its sha and its remote-tracking trunk; not
+  origin's when the push goes elsewhere). Without a `since` nothing is checked, as in `check`. A shallow clone
+  cut before `since` checks what the remote lacks, and fails when nothing bounds it (ESC-198). When `ledger.py` is
+  missing or cannot run (exit 2) the hook says so in one line and goes on to the verify: the CI, which fails
+  closed, checks the same. This repo's own `.githooks/pre-push`, which runs `scripts/verify.sh` and has none of the
+  template's verify logic, got the same block before its verify.
+- **Not caught (no git-side fix):** a squash made on GitHub's server ("Squash and merge") whose head branch is
+  deleted before the push-to-main CI checks out (GitHub's "automatically delete head branches"): no origin branch
+  is left to compare with, and the pre-push never sees a server-side merge. A project that squashes on GitHub keeps
+  the branch until the CI ran, or writes every trailer of the branch in the squash message's last paragraph.
+- **Invariants.** INV-007 is enforced where work enters the trunk (pre-push, then CI); INV-005 by refusing a
+  squash that drops a `Story:`. Review and attack: reviewer round 1 (non-blocking, fixed) and breaker round 1
+  (ESC-198..ESC-201, each with its test).
