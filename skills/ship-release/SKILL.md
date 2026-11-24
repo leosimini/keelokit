@@ -78,11 +78,12 @@ sets it up.
 
 On a clear yes:
 ```bash
-git commit -am "release: vX.Y.Z" && git tag -a vX.Y.Z -m "vX.Y.Z"
+git commit -am "release: vX.Y.Z" -m "No-story: release" && git tag -a vX.Y.Z -m "vX.Y.Z"
 python3 .keelokit/bin/ledger.py --release vX.Y.Z   # the version's stories, from the local tag
 git push origin main vX.Y.Z
 ```
-The notes name exactly the stories `ledger.py --release` lists. If they differ, push nothing: `git tag -d
+`No-story: release` is the trailer `ledger.py check` asks of every commit after `[ledger] since`; its own `-m`
+makes it the last paragraph, the only one git reads trailers from. The notes name exactly the stories `ledger.py --release` lists. If they differ, push nothing: `git tag -d
 vX.Y.Z`, fix the notes and show them again.
 Mobile apps: bump `version` in the app config and let EAS number the build; store submissions stay
 with the human (AGENT-1).
