@@ -80,12 +80,16 @@ Where the result goes beyond or differs from the text above:
 - **A squash is found two ways.** By tree, as written (the commit's tree is the tip of an unintegrated origin
   branch), and, since a train usually lands after the trunk moved, by the patch-id of the branch's change since
   its merge base with the trunk (ESC-200). Never from a commit the branch itself reaches, nor from a branch whose
-  tip has its base's tree, i.e. one that changes nothing (ESC-199). Only branches with a `Story:`/`Part-of:` of their
-  own are read. A branch's `Story:` must stay a `Story:` (a `Part-of:` would take the story off the trunk); its
+  tip has its base's tree, i.e. one that changes nothing (ESC-199), nor from a branch of fewer than two commits of
+  its own: a copy of one commit is a cherry-pick, and the same small change or revert is often made on the trunk
+  too (ESC-202, ESC-203). So a one-commit branch squashed on the trunk is not caught. Only branches with a
+  `Story:`/`Part-of:` of their own are read, and a patch only for a range commit that changes exactly the branch's
+  paths (ESC-204). A branch's `Story:` must stay a `Story:` (a `Part-of:` would take the story off the trunk); its
   `Part-of:` is kept by either. What the squash keeps counts on it and on the range's commits made since the
   branch forked, so a rebase merge, whose copies each keep their own trailer, is no squash loss.
 - **Approved correction rows attribute the commit they name**, in `check`, in the summary's unattributed count
-  and in the pre-push (ESC-201). Without it, the `ledger.py correct` command the CI prints could never turn the
+  and in the pre-push (ESC-201), which reads them from the trunk the remote or origin already has, never from the
+  pushed tip (ESC-205). Without it, the `ledger.py correct` command the CI prints could never turn the
   CI green again. A correction row naming a squash keeps the story it names.
 - **A merge attributes what it brings wherever it sits.** A merge with a trailer nested in a branch (brought by
   GitHub's trailerless "Merge pull request") covers the commits it brings, as docs/ledger.md's "Trailers" says;
@@ -107,5 +111,6 @@ Where the result goes beyond or differs from the text above:
   is left to compare with, and the pre-push never sees a server-side merge. A project that squashes on GitHub keeps
   the branch until the CI ran, or writes every trailer of the branch in the squash message's last paragraph.
 - **Invariants.** INV-007 is enforced where work enters the trunk (pre-push, then CI); INV-005 by refusing a
-  squash that drops a `Story:`. Review and attack: reviewer round 1 (non-blocking, fixed) and breaker round 1
-  (ESC-198..ESC-201, each with its test).
+  squash that drops a `Story:`. Review and attack: reviewer round 1 (non-blocking, fixed), breaker round 1
+  (ESC-198..ESC-201) and round 2 (ESC-202..ESC-205), each with its test. Round 2's fixes were not attacked again
+  (two rounds at most).
