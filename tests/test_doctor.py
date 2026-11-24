@@ -2867,5 +2867,54 @@ class DoctorScaleTest(unittest.TestCase):
             self.assertIn("Story E0000-003", page)  # a story a bug bash made is listed under its run
 
 
+class DoctorRootTest(unittest.TestCase):
+    """HARN-004: `doctor.py --root DIR` checks that project with this copy, and runs this copy's ledger.py and
+    ux_gate.py (with the same --root), never the project's: the plugin's hooks run their own doctor this way."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.proj = self.tmp / "a project"
+        shutil.copytree(DOCTOR.parent, self.proj / ".keelokit/bin")
+        story = self.proj / "backlog/stories/DEMO-001-x.md"
+        story.parent.mkdir(parents=True)
+        story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "x"\nwave = 1\ndepends_on = []\n+++\n')
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(HOME=str(self.tmp), GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                   GIT_COMMITTER_EMAIL="t@t")
+        self.env = env
+        for argv in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "x"]):
+            subprocess.run(["git", *argv], cwd=self.proj, env=env, check=True, capture_output=True)
+
+    def doctor(self, *args):
+        return subprocess.run([sys.executable, str(DOCTOR), "--root", str(self.proj), *args], cwd=self.tmp,
+                              env=self.env, capture_output=True, text=True, timeout=120)
+
+    def test_HARN_004_S1_doctor_with_root_reads_the_project_and_runs_none_of_its_scripts(self):
+        mark = self.tmp / "ran"
+        for name in ("ledger.py", "ux_gate.py"):
+            f = self.proj / ".keelokit/bin" / name
+            f.write_text(f"import pathlib; pathlib.Path({str(mark)!r}).write_text({name!r})\n" + f.read_text())
+        r = self.doctor("--brief")
+        self.assertIn("Backlog: 0/1 done", r.stdout, r.stderr)
+        self.assertIn("DEMO-001", r.stdout)
+        r = self.doctor()
+        self.assertFalse(mark.exists(), "the project's ledger.py or ux_gate.py ran")
+        self.assertNotIn("ledger.py could not answer", r.stdout + r.stderr)
+
+    def test_HARN_004_S2_doctor_with_root_says_what_the_project_s_own_copy_says(self):
+        """rules.local.toml and the rest of the project's data are read from --root, as the project's copy reads them."""
+        (self.proj / ".keelokit/rules.local.toml").write_text(
+            '[[rule]]\nid = "LOCAL-9"\nlevel = "MUST"\nrule = "x"\nwhy = "y"\nenforced_by = ["test:nowhere.spec.ts"]\n')
+        own = subprocess.run([sys.executable, ".keelokit/bin/doctor.py"], cwd=self.proj, env=self.env,
+                             capture_output=True, text=True, timeout=120)
+        rooted = self.doctor()
+        self.assertIn("LOCAL-9", own.stdout + own.stderr)
+        self.assertEqual((rooted.returncode, rooted.stdout, rooted.stderr), (own.returncode, own.stdout, own.stderr))
+        self.assertEqual(self.doctor("--brief").stdout, subprocess.run(
+            [sys.executable, ".keelokit/bin/doctor.py", "--brief"], cwd=self.proj, env=self.env, capture_output=True,
+            text=True, timeout=120).stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

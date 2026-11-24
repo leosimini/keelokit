@@ -56,7 +56,27 @@ import subprocess  # noqa: E402
 import tomllib  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def root_of(argv: list[str]) -> Path:
+    """The project this runs on: `--root DIR`, first on the command line, or the one this file sits in. The plugin's
+    hooks run their own copy with `--root <project>` (hooks/trusted.py, HARN-004)."""
+    if argv[1:2] == ["--root"] and len(argv) > 2:
+        root = Path(argv[2]).resolve()
+        del argv[1:3]
+        return root
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = root_of(sys.argv)
+HERE = Path(__file__).resolve().parent
+
+
+def sibling(name: str) -> list[str]:
+    """How to run another .keelokit/bin script: the copy next to this one, never the project's when this copy runs
+    with `--root` (the plugin's hooks: HARN-004), and then with the same `--root` and `-I`."""
+    if HERE == (ROOT / ".keelokit/bin").resolve():
+        return [sys.executable, str(HERE / name)]
+    return [sys.executable, "-I", str(HERE / name), "--root", str(ROOT)]
 CONTEXT_FILES = ["product.md", "domain.md", "constraints.md", "environments.md", "gaps.md"]
 VAGUE = [
     "best practices", "clean code", "as appropriate", "where possible", "if needed", "etc.",
@@ -635,7 +655,7 @@ def ledger_json(*args: str) -> tuple[dict | None, str]:
     if args not in _ledger_runs:
         why, data = "", None
         try:
-            out = subprocess.run([sys.executable, str(ROOT / ".keelokit/bin/ledger.py"), *args, "--json"], cwd=ROOT,
+            out = subprocess.run([*sibling("ledger.py"), *args, "--json"], cwd=ROOT,
                                  capture_output=True, text=True, timeout=60)
             why = (out.stderr.strip().splitlines() or [""])[-1]
             data = json.loads(out.stdout) if out.returncode in (0, 1) else None
@@ -1269,7 +1289,7 @@ def ledger_states() -> tuple[dict[str, dict] | None, str | None]:
     if not ledger.is_file():
         return {}, "no .keelokit/bin/ledger.py to read story states from (`/keelokit:harness-upgrade` brings it)"
     try:
-        out = subprocess.run([sys.executable, str(ledger), "--json"], cwd=ROOT, capture_output=True, text=True,
+        out = subprocess.run([*sibling("ledger.py"), "--json"], cwd=ROOT, capture_output=True, text=True,
                              timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
         return {}, f"ledger.py could not answer ({e.__class__.__name__})"
@@ -1775,7 +1795,7 @@ def check_ux() -> None:
     gate = ROOT / ".keelokit/bin/ux_gate.py"
     if not gate.exists():
         return
-    out = subprocess.run([sys.executable, str(gate)], cwd=ROOT, capture_output=True, text=True)
+    out = subprocess.run(sibling("ux_gate.py"), cwd=ROOT, capture_output=True, text=True)
     text = (out.stdout + out.stderr).strip()
     if out.returncode == 1:
         errors.append("UX-3: " + text)

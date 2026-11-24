@@ -36,8 +36,22 @@ import tempfile  # noqa: E402
 import tomllib  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def root_of(argv: list[str]) -> Path:
+    """The project this runs on: `--root DIR`, first on the command line, or the one this file sits in. The plugin's
+    hooks run their own copy with `--root <project>` (hooks/trusted.py, HARN-004)."""
+    if argv[1:2] == ["--root"] and len(argv) > 2:
+        root = Path(argv[2]).resolve()
+        del argv[1:3]
+        return root
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = root_of(sys.argv)
 ENV_OK = {".env.example", ".env.ci"}
+# HARN-004: which copy of the guard, doctor and ledger the plugin's hooks run is approved on a terminal, by a person.
+TRUST_WHY = ("AGENT-1: approving the code Keelokit's hooks run (hooks/trusted.py trust/untrust) is the human's call: "
+             "they run it in their own terminal, where it shows the diff; `trusted.py show` is yours to read")
 SECRETS = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
@@ -658,6 +672,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                     rf"(?i){GIT}config\b{GIT_ARGS}['\"]?keelokit\.allowtamper"):
         if re.search(pattern, cmd):  # quoted spellings, which `bare` has emptied
             return "QA-4: only a human may allow a skipped test or silenced check"
+    if re.search(r"trusted\.py\b", cmd) and re.search(r"(?<![\w.-])(?:un)?trust(?![\w.-])", cmd):
+        return TRUST_WHY
     for pattern, why in GIT_NO_HOOKS:
         if re.search(pattern, bare):
             return why

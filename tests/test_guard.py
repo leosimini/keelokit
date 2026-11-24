@@ -5,8 +5,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 GUARD = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/guard.py"
@@ -1151,6 +1153,328 @@ class GuardDoctorAgreementTest(unittest.TestCase):
                 self.assertEqual(guard_active, doctor_active, out.getvalue())
                 if expected is not None:
                     self.assertEqual(guard_active, expected)
+
+
+
+# HARN-004: which copy the plugin's hooks run. hooks/hooks.json runs hooks/trusted.py, which runs the plugin's copy
+# of the guard, the doctor and the ledger against the project (`--root`), or the project's own copy only when a
+# person approved it as it is now; a project's file never runs before that check.
+REPO = Path(__file__).resolve().parents[1]
+BUNDLED = REPO / "template/.keelokit/bin"
+TRUSTED = REPO / "hooks/trusted.py"
+BLOCKED = {"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m x"}}
+HARMLESS = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
+
+
+def load_trusted():
+    spec = importlib.util.spec_from_file_location("keelokit_trusted", TRUSTED)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def hook_command(event: str) -> str:
+    data = json.loads((REPO / "hooks/hooks.json").read_text())
+    return next(h["command"] for g in data["hooks"][event] for h in g["hooks"] if h.get("type") == "command")
+
+
+class HooksRunTrustedCode(unittest.TestCase):
+    """A project whose .keelokit/bin is the template's, in a git repo, under a path with a space and a quote."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.proj = self.tmp / "a proj's dir"
+        shutil.copytree(BUNDLED, self.proj / ".keelokit/bin")
+        story = self.proj / "backlog/stories/DEMO-001-x.md"
+        story.parent.mkdir(parents=True)
+        story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "x"\nwave = 1\ndepends_on = []\n+++\n')
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "x")
+        self.store = self.tmp / "store/trusted.json"
+        self.marks = self.tmp / "marks"
+        self.marks.mkdir()
+
+    def env(self, **extra) -> dict:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "CLAUDE_", "PYTHON"))}
+        env.update({"HOME": str(self.tmp), "CLAUDE_PROJECT_DIR": str(self.proj), "CLAUDE_PLUGIN_ROOT": str(REPO),
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                    "GIT_COMMITTER_EMAIL": "t@t"})
+        env.update(extra)
+        return env
+
+    def git(self, *args):
+        subprocess.run(["git", *args], cwd=self.proj, env=self.env(), check=True, capture_output=True)
+
+    def mark_code(self, name: str) -> str:
+        return f"import pathlib; pathlib.Path({str(self.marks / name)!r}).write_text('ran')\n"
+
+    def tamper(self, *names: str) -> None:
+        """Each named script, first writing a mark when it runs, then doing what the plugin's copy does."""
+        for name in names:
+            f = self.proj / ".keelokit/bin" / name
+            f.write_text(self.mark_code(name) + f.read_text())
+
+    def ran(self) -> list[str]:
+        return sorted(p.name for p in self.marks.iterdir())
+
+    def hook(self, event: str, stdin: dict | None = None, **env) -> subprocess.CompletedProcess:
+        return subprocess.run(["/bin/sh", "-c", hook_command(event)], cwd=self.proj, env=self.env(**env),
+                              input=json.dumps(stdin or {}), capture_output=True, text=True, timeout=60)
+
+    def with_store(self, *argv: str, stdin: dict | None = None, answer: str | None = None) -> subprocess.CompletedProcess:
+        """trusted.py's main with the trust store in this test's directory (and `ask` answering `answer`)."""
+        code = ("import importlib.util, pathlib, sys\n"
+                f"spec = importlib.util.spec_from_file_location('t', {str(TRUSTED)!r})\n"
+                "t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)\n"
+                f"t.store_path = lambda: pathlib.Path({str(self.store)!r})\n"
+                f"t.ask = lambda prompt: {answer!r}\n"
+                f"sys.exit(t.main({list(argv)!r}))\n")
+        return subprocess.run([sys_python(), "-I", "-c", code], cwd=self.proj, env=self.env(),
+                              input=json.dumps(stdin or {}), capture_output=True, text=True, timeout=60)
+
+    # S1 -------------------------------------------------------------------------------------------------------------
+
+    def test_HARN_004_S1_a_tampered_guard_is_not_executed_and_its_rules_still_hold(self):
+        self.tamper("guard.py")
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("QA-2", r.stderr)
+        r = self.hook("PreToolUse", HARMLESS)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_the_session_start_runs_none_of_the_project_s_copy_and_says_so_once(self):
+        self.tamper("guard.py", "doctor.py", "ledger.py", "ux_gate.py")
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        out = r.stdout.splitlines()
+        self.assertLessEqual(len(out), 12, out)
+        warned = [l for l in out if "differ from the plugin's" in l]
+        self.assertEqual(len(warned), 1, out)
+        for name in ("guard.py", "doctor.py", "ledger.py", "ux_gate.py", "trust", "harness-upgrade"):
+            self.assertIn(name, warned[0])
+        self.assertIn("Backlog: 0/1 done", r.stdout, "the doctor still reads this project's backlog")
+        self.assertTrue(any(l.startswith("main@") for l in out), "the ledger still reads this project's git")
+
+    def test_HARN_004_S1_only_the_doctor_s_children_tampered_still_run_nothing(self):
+        """The doctor runs ledger.py and ux_gate.py: the plugin's doctor runs the plugin's, never the project's."""
+        self.tamper("ledger.py", "ux_gate.py")
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertIn("Backlog: 0/1 done", r.stdout)
+
+    def test_HARN_004_S1_an_approved_copy_runs_from_its_checked_bytes_until_it_changes(self):
+        self.tamper("guard.py")
+        r = self.with_store("check")
+        self.assertIn("differ from the plugin's", r.stdout)
+        trusted = load_trusted()
+        fp = trusted.fingerprint(self.proj)
+        self.assertEqual(self.with_store("trust", str(self.proj), answer="nope").returncode, 1)
+        self.assertFalse(self.store.exists(), "a wrong answer approves nothing")
+        r = self.with_store("trust", str(self.proj), answer=fp[:8])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(oct(self.store.stat().st_mode & 0o777), oct(0o600))
+        self.assertEqual(self.with_store("check").stdout, "", "an approved copy is not warned about")
+        r = self.with_store("run", "guard", "--claude", stdin=BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), ["guard.py"], "the approved copy is the one that ran")
+        (self.marks / "guard.py").unlink()
+        (self.proj / ".keelokit/bin/guard.py").write_text(self.mark_code("again") + (BUNDLED / "guard.py").read_text())
+        r = self.with_store("run", "guard", "--claude", stdin=BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [], "a change after the approval is not approved")
+        self.assertIn("differ from the plugin's", self.with_store("check").stdout)
+        (self.proj / ".keelokit/bin/notes.txt").write_text("a new file in bin\n")
+        self.assertNotEqual(trusted.fingerprint(self.proj), fp, "the fingerprint covers the whole of .keelokit/bin")
+        self.assertEqual(self.with_store("untrust", str(self.proj)).returncode, 0)
+        self.assertEqual(json.loads(self.store.read_text())["projects"], {})
+
+    def test_HARN_004_S1_trust_asks_a_person_on_a_terminal_and_the_guard_refuses_it_to_agents(self):
+        self.tamper("guard.py")
+        fp = load_trusted().fingerprint(self.proj)
+        r = subprocess.run([sys_python(), "-I", str(TRUSTED), "trust", str(self.proj)], cwd=self.proj,
+                           env=self.env(), input=fp[:8] + "\n", capture_output=True, text=True, timeout=60,
+                           start_new_session=True)  # no controlling terminal, as in an agent's shell
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("own terminal", r.stderr)
+        self.assertEqual(self.ran(), [])
+        for cmd in (f"python3 -I {TRUSTED} trust .", "python3 hooks/trusted.py untrust",
+                    "python3 -I '/x y/hooks/trusted.py' 'trust' /p"):
+            with self.subTest(cmd=cmd):
+                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("AGENT-1", r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": f"python3 -I {TRUSTED} show"}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_HARN_004_S1_show_escapes_what_a_terminal_would_hide(self):
+        f = self.proj / ".keelokit/bin/guard.py"
+        f.write_text(f.read_text() + "x = 1  # ‮)(lave‬ ​ \x1b[2K\r tab\there\n")
+        out = self.with_store("show", str(self.proj)).stdout
+        self.assertIn("\\u202e", out)
+        self.assertIn("\\u200b", out)
+        self.assertIn("\\x1b", out)
+        self.assertIn("\\x0d", out)
+        self.assertIn("\\x09", out)
+        for raw in ("‮", "‬", "​", "\x1b", "\r", "\t"):
+            self.assertNotIn(raw, out)
+        self.assertIn("approved: no", out)
+
+    # S2 -------------------------------------------------------------------------------------------------------------
+
+    def test_HARN_004_S2_a_matching_project_sees_what_it_saw_before(self):
+        """The plugin's copy with --root says what the project's own copy says, and nothing is warned about."""
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("differ from the plugin's", r.stdout)
+        today = subprocess.run([sys_python(), ".keelokit/bin/doctor.py", "--brief"], cwd=self.proj, env=self.env(),
+                               capture_output=True, text=True, timeout=60).stdout.splitlines()
+        self.assertTrue(today)
+        self.assertEqual(r.stdout.splitlines()[-len(today):], today)
+        summary = subprocess.run([sys_python(), ".keelokit/bin/ledger.py"], cwd=self.proj, env=self.env(),
+                                 capture_output=True, text=True, timeout=60).stdout.splitlines()
+        for line in summary:
+            self.assertIn(line, r.stdout.splitlines())
+        for payload in (BLOCKED, HARMLESS, {"tool_name": "Write", "tool_input": {"file_path": ".env", "content": "A=1"}},
+                        {"tool_name": "Bash", "tool_input": {"command": "rm .keelokit/guard-allow.toml"}}):
+            with self.subTest(payload=payload):
+                hooked = self.hook("PreToolUse", payload)
+                direct = subprocess.run([sys_python(), ".keelokit/bin/guard.py", "--claude"], cwd=self.proj,
+                                        env=self.env(), input=json.dumps(payload), capture_output=True, text=True,
+                                        timeout=60)
+                self.assertEqual((hooked.returncode, hooked.stdout, hooked.stderr),
+                                 (direct.returncode, direct.stdout, direct.stderr))
+        self.assertEqual(self.with_store("check").stdout, "")
+
+    def test_HARN_004_S2_the_choice_runs_the_plugin_s_bytes_with_root(self):
+        trusted = load_trusted()
+        trusted.store_path = lambda: self.store
+        for tool in ("guard", "doctor", "ledger"):
+            with self.subTest(tool=tool):
+                path, data, before = trusted.choose(tool, self.proj)
+                self.assertEqual(path, BUNDLED / f"{tool}.py")
+                self.assertEqual(data, (BUNDLED / f"{tool}.py").read_bytes())
+                self.assertEqual(before, ["--root", str(self.proj)])
+        (self.proj / ".keelokit/bin/ledger.py").unlink()
+        self.assertIsNone(trusted.choose("ledger", self.proj), "a project without the script: the hook does nothing")
+
+    # Breaker round: ways to get the project's code run before, or instead of, the check. --------------------------
+
+    def test_HARN_004_S1_breaker_planted_modules_and_python_variables_are_never_imported(self):
+        planted = ("json", "hashlib", "pathlib", "subprocess", "tomllib", "re", "sitecustomize", "usercustomize",
+                   "difflib", "types", "pwd", "shlex", "stat", "tempfile", "unicodedata", "builtins")
+        for where in (self.proj, self.proj / ".keelokit/bin", self.proj / ".keelokit"):
+            for name in planted:
+                (where / f"{name}.py").write_text(self.mark_code(f"{name}-{where.name}"))
+        startup = self.proj / "startup.py"
+        startup.write_text(self.mark_code("startup"))
+        env = {"PYTHONPATH": f"{self.proj}{os.pathsep}{self.proj / '.keelokit/bin'}", "PYTHONSTARTUP": str(startup),
+               "PYTHONINSPECT": "1", "PYTHONHOME": str(self.proj)}
+        r = self.hook("PreToolUse", BLOCKED, **env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("SessionStart", **env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_breaker_relative_path_entries_find_no_python3_or_git_of_the_project(self):
+        for name in ("python3", "git", "sh", "head", "wc"):
+            exe = self.proj / name
+            exe.write_text(f"#!/bin/sh\n: > {str(self.marks / name)!r}\nexit 1\n")
+            exe.chmod(0o755)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "planted")
+        real = os.environ["PATH"]
+        for path in (f".{os.pathsep}{real}", f"{os.pathsep}{real}", f"{real}{os.pathsep}", f"bin{os.pathsep}.{os.pathsep}{real}"):
+            with self.subTest(path=path):
+                r = self.hook("PreToolUse", BLOCKED, PATH=path)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                r = self.hook("SessionStart", PATH=path)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("Backlog: 0/1 done", r.stdout)
+                self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_breaker_symlinks_and_special_files_run_nothing_and_hang_nothing(self):
+        evil = self.tmp / "evil.py"
+        evil.write_text(self.mark_code("evil") + (BUNDLED / "guard.py").read_text())
+        guard = self.proj / ".keelokit/bin/guard.py"
+        guard.unlink()
+        guard.symlink_to(evil)
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        guard.unlink()
+        guard.symlink_to(BUNDLED / "guard.py")  # a link to the plugin's own copy is the plugin's copy
+        self.assertEqual(self.hook("PreToolUse", BLOCKED).returncode, 2)
+        ledger = self.proj / ".keelokit/bin/ledger.py"
+        ledger.unlink()
+        os.mkfifo(ledger)  # opened blocking, a FIFO would hang every session start
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("differ from the plugin's", r.stdout)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_breaker_the_bytes_checked_are_the_bytes_run(self):
+        """A swap between the check and the run changes nothing: what runs is the bytes read for the check."""
+        trusted = load_trusted()
+        trusted.store_path = lambda: self.store
+        guard = self.proj / ".keelokit/bin/guard.py"
+        guard.write_text(self.mark_code("checked"))
+        trusted.ask = lambda prompt: trusted.fingerprint(self.proj)[:8]
+        with open(os.devnull, "w") as quiet, unittest.mock.patch("sys.stdout", quiet):
+            self.assertEqual(trusted.trust(str(self.proj)), 0)
+        path, data, before = trusted.choose("guard", self.proj)
+        self.assertEqual((path, before), (guard, []))
+        guard.write_text(self.mark_code("swapped"))
+        saved = sys.modules["__main__"], list(sys.argv)
+        try:
+            trusted.execute(path, data, before)
+        finally:
+            sys.modules["__main__"], sys.argv[:] = saved[0], saved[1]
+        self.assertEqual(self.ran(), ["checked"])
+
+    def test_HARN_004_S1_breaker_hook_environment_edge_cases(self):
+        self.tamper("guard.py", "doctor.py", "ledger.py")
+        for env in ({"CLAUDE_PLUGIN_ROOT": ""}, {"CLAUDE_PLUGIN_ROOT": str(self.proj)},
+                    {"CLAUDE_PLUGIN_ROOT": str(self.tmp / "missing")}):
+            for event in ("PreToolUse", "SessionStart"):
+                with self.subTest(env=env, event=event):
+                    r = self.hook(event, BLOCKED, **env)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    if env["CLAUDE_PLUGIN_ROOT"] != str(self.proj):
+                        self.assertIn("Reinstall the plugin", r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        odd = self.tmp / "-x $(touch pwned) `id` 'q\""
+        self.proj.rename(odd)
+        self.proj = odd
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertFalse((self.tmp / "pwned").exists())
+        self.assertFalse(Path("pwned").exists())
+
+    def test_HARN_004_S1_breaker_a_store_others_can_write_is_not_believed(self):
+        self.tamper("guard.py")
+        trusted = load_trusted()
+        trusted.store_path = lambda: self.store
+        trusted.write_store({str(self.proj): {"fingerprint": trusted.fingerprint(self.proj), "approved": "x"}})
+        self.assertTrue(trusted.approved(self.proj))
+        self.store.chmod(0o666)
+        self.assertFalse(trusted.approved(self.proj))
+        self.store.chmod(0o600)
+        self.assertFalse(trusted.approved(self.tmp), "an approval is for one project")
+        with unittest.mock.patch.dict(os.environ, {"HOME": str(self.tmp), "XDG_CONFIG_HOME": str(self.tmp)}):
+            where = load_trusted().store_path()
+        self.assertEqual(where.parent.name, "keelokit")
+        self.assertNotIn(str(self.tmp), str(where), "found from the password database, not from $HOME")
+
+
+def sys_python() -> str:
+    return shutil.which("python3") or "python3"
 
 
 if __name__ == "__main__":

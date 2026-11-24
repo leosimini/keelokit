@@ -37,8 +37,8 @@ def project(tmp, name="my project's dir"):
     return proj
 
 
-def run(argv, proj, path, stdin=""):
-    env = {"PATH": path, "HOME": str(proj.parent), "CLAUDE_PROJECT_DIR": str(proj)}
+def run(argv, proj, path, stdin="", plugin=ROOT):
+    env = {"PATH": path, "HOME": str(proj.parent), "CLAUDE_PROJECT_DIR": str(proj), "CLAUDE_PLUGIN_ROOT": str(plugin)}
     return subprocess.run(argv, cwd=proj, env=env, input=stdin, capture_output=True, text=True, timeout=60)
 
 
@@ -120,9 +120,15 @@ class HooksWithoutPython(unittest.TestCase):
 
 
 SESSION_LOG = "calls.log"
+# A stub stands in for a script both in the project and in the plugin (HARN-004: the hooks run the plugin's copy
+# when the project's matches it, with `--root <project>` first), and logs into the project it ran on.
 STUB = """import sys
 from pathlib import Path
-with open(Path(__file__).resolve().parents[2] / "calls.log", "a") as f:
+root = Path(__file__).resolve().parents[2]
+if sys.argv[1:2] == ["--root"]:
+    root = Path(sys.argv[2])
+    del sys.argv[1:3]
+with open(root / "calls.log", "a") as f:
     f.write(" ".join([Path(__file__).name, *sys.argv[1:]]) + "\\n")
 """
 
@@ -134,7 +140,8 @@ def session_start():
 
 
 class SessionStartHook:
-    """A project with stub scripts in .keelokit/bin, and the SessionStart command run in it."""
+    """A project with stub scripts in .keelokit/bin, a plugin whose bundled scripts are the same stubs, and the
+    SessionStart command run in the project."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -142,9 +149,14 @@ class SessionStartHook:
         self.proj = Path(self.tmp) / "my project's dir"
         (self.proj / ".keelokit/bin").mkdir(parents=True)
         self.path = os.environ["PATH"]
+        self.plugin = Path(self.tmp) / "the plugin"
+        (self.plugin / "hooks").mkdir(parents=True)
+        (self.plugin / "template/.keelokit/bin").mkdir(parents=True)
+        shutil.copy(ROOT / "hooks/trusted.py", self.plugin / "hooks/trusted.py")
 
     def stub(self, name, extra=""):
-        (self.proj / ".keelokit/bin" / name).write_text(STUB + extra)
+        for d in (self.proj / ".keelokit/bin", self.plugin / "template/.keelokit/bin"):
+            (d / name).write_text(STUB + extra)
 
     def calls(self):
         log = self.proj / SESSION_LOG
@@ -153,7 +165,7 @@ class SessionStartHook:
     def hook(self, path=None, sh="/bin/sh"):
         hooks = session_start()
         self.assertEqual(len(hooks), 1, "one SessionStart command runs both, in order")
-        return run([sh, "-c", hooks[0]["command"]], self.proj, path or self.path)
+        return run([sh, "-c", hooks[0]["command"]], self.proj, path or self.path, plugin=self.plugin)
 
 
 class SessionStartCompletesHistory(SessionStartHook, unittest.TestCase):
@@ -226,7 +238,7 @@ class SessionStartCompletesHistory(SessionStartHook, unittest.TestCase):
         hooks = session_start()
         for path in (self.path, str(Path(self.tmp))):
             with self.subTest(path=path):
-                r = run(["/bin/sh", "-c", hooks[0]["command"]], other, path)
+                r = run(["/bin/sh", "-c", hooks[0]["command"]], other, path, plugin=self.plugin)
                 self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
 
 
@@ -335,6 +347,7 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
             self.skipTest("git not installed")
         shutil.rmtree(self.proj / ".keelokit/bin")
         shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        self.plugin = ROOT
         story = self.proj / "backlog/stories/DEMO-001-x.md"
         story.parent.mkdir(parents=True)
         story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "x"\nwave = 1\ndepends_on = []\n+++\n')
@@ -357,6 +370,7 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
             self.skipTest("git not installed")
         shutil.rmtree(self.proj / ".keelokit/bin")
         shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        self.plugin = ROOT
         story = self.proj / "backlog/stories/DEMO-001-demo.md"
         story.parent.mkdir(parents=True)
         story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "Demo"\nwave = 1\ndepends_on = []\n+++\n')
@@ -423,6 +437,7 @@ class CommitHooks(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.proj = self.tmp / "my repo"
         shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        self.plugin = ROOT
         shutil.copytree(ROOT / "template/.githooks", self.proj / ".githooks")
         story = self.proj / "backlog/stories/AUTH-001-x.md"
         story.parent.mkdir(parents=True)

@@ -107,7 +107,18 @@ import tomllib  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def root_of(argv: list[str]) -> Path:
+    """The project this runs on: `--root DIR`, first on the command line, or the one this file sits in. The plugin's
+    hooks run their own copy with `--root <project>` (hooks/trusted.py, HARN-004)."""
+    if argv[1:2] == ["--root"] and len(argv) > 2:
+        root = Path(argv[2]).resolve()
+        del argv[1:3]
+        return root
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = root_of(sys.argv)
 DEFAULT_CAP = 20
 MAX_CAP = 20
 GRACE = 2.0
