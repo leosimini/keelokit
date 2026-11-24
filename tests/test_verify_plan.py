@@ -603,6 +603,10 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(e["steps"], {})
         self.assertEqual(e["text"], "no estimate yet (2 past runs like this one on this machine; it needs 3)")
 
+    def test_FLEET_002_S2_one_past_run_is_singular(self):
+        e = self.estimate([run_entry({"unit": 600})], ["unit"])
+        self.assertEqual(e["text"], "no estimate yet (1 past run like this one on this machine; it needs 3)")
+
     def test_FLEET_002_S2_no_history_at_all_gives_no_estimate_yet(self):
         self.assertEqual(self.estimate([], ["unit"])["text"], "no estimate yet (0 past runs like this one on this machine; it needs 3)")
 

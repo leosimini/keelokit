@@ -536,8 +536,11 @@ def estimate(history_lines: list[str], steps: list[str], level: str, workers: di
     runs = runs[-ESTIMATE_RUNS:]
     if len(runs) < ESTIMATE_MIN_RUNS:
         others = f", {other_workers} with other workers" if other_workers else ""
+
+        def plural(n: int, word: str) -> str:
+            return f"{n} {word}{'' if n == 1 else 's'}"
         return {"runs": len(runs), "steps": {}, "order": considered,
-                "text": f"no estimate yet ({len(runs)} past runs like this one on this machine{others}; it needs {ESTIMATE_MIN_RUNS})"}
+                "text": f"no estimate yet ({plural(len(runs), 'past run')} like this one on this machine{others}; it needs {ESTIMATE_MIN_RUNS})"}
     per_step: dict[str, tuple[float, float]] = {}
     for s in considered:
         # A run that planned the step and didn't run it (no critical code for mutation, no Docker for e2e-stack)
