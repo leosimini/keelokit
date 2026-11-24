@@ -74,6 +74,9 @@ if [ -n "$from" ]; then
   commit_all "generated at $from"
   step 'Update to HEAD'
   (cd "$dir" && "${copier[@]}" update -a .keelokit/answers.yml --vcs-ref HEAD --defaults --conflict rej)
+  # FLEET-003.S6, checked below: what the update did to the arch-specs, against the project as generated at $from
+  # (committed just above). A project from 0.15.0 on already has them; one from before has none (ESC-187).
+  arch_changes=$(git -C "$dir" status --porcelain --untracked-files=all -- packages/shared/src/arch)
   rejects=$(find "$dir" -name '*.rej' -not -path '*/node_modules/*')
   if [ -n "$rejects" ]; then
     printf 'update left conflicts:\n%s\n' "$rejects" >&2
@@ -153,7 +156,7 @@ pnpm verify --all
 if [ -n "$from" ]; then
   # copier.yml leaves the arch-specs out of an update: an existing codebase must not turn red.
   step 'FLEET-003.S6 an update neither adds nor removes the arch-specs'
-  [ ! -e packages/shared/src/arch ] || { echo 'copier update added packages/shared/src/arch' >&2; exit 1; }
+  [ -z "$arch_changes" ] || { printf 'copier update changed packages/shared/src/arch:\n%s\n' "$arch_changes" >&2; exit 1; }
 else
   step 'FLEET-003.S6 arch-specs run in verify and catch a planted literal date'
   for spec in no-literal-dates no-sleeps-in-specs no-random-test-data no-inherited-git-env; do
