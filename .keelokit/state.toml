@@ -14,7 +14,9 @@ build = "serial"     # one story at a time: most stories touch the guard, the do
 decided = "2026-09-28"
 
 [ledger]
-# Attribution is required from this commit on: the merge of the ledger's merge-attribution fix (#19).
-# Before it, main holds hand-made history, the ESC-090 junk commits and trailers written outside the
-# last paragraph; corrections (backfill) cover what matters there, `since` keeps it out of `check`.
-since = "8be093f1c2bcabcbb2adedc0354a149f9b6b8344"
+# `check` requires attribution on the trunk commits after this one (it is exclusive). It was 8be093f, the merge
+# of the ledger's merge-attribution fix (#19): before it, main holds hand-made history, the ESC-090 junk commits
+# and trailers written outside the last paragraph; corrections (backfill) cover what matters there. It moved to
+# the release commit of 0.15.0, which scripts/release.sh wrote without a trailer (ESC-186) and which no correction
+# row can attribute (rows name stories); 8be093f..f1da5b8 had no error when it moved.
+since = "f1da5b8e7806f933205c48337d9beeb58a2522cd"

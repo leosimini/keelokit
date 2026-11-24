@@ -136,5 +136,44 @@ class ChangelogEntryCheckTest(unittest.TestCase):
                                          ("missed its entry" if has_entry else "took another version's entry for its own"))
 
 
+
+def release_commit_commands():
+    """The release commit of scripts/release.sh (Keelokit's own) and of ship-release (a generated project's), as
+    written there, with the version filled in."""
+    script = [l.strip() for l in (ROOT / "scripts/release.sh").read_text().splitlines()
+              if l.strip().startswith("git commit")]
+    skill = [l.strip().split(" && ")[0] for l in (ROOT / "skills/ship-release/SKILL.md").read_text().splitlines()
+             if l.strip().startswith('git commit -am "release:')]
+    return [("scripts/release.sh", c.replace("$version", "9.9.9")) for c in script] + \
+           [("skills/ship-release/SKILL.md", c.replace("vX.Y.Z", "v9.9.9")) for c in skill]
+
+
+class ReleaseCommitTrailerTest(unittest.TestCase):
+    def test_ESC_186_the_release_commit_names_no_story_release(self):
+        """ESC-186: release.sh committed "release: 0.15.0" with no trailer, and `ledger.py check` reported it
+        UNATTRIBUTED on main. Each release commit command runs for real in a throwaway repo, and git must read
+        `No-story: release` from the message it makes (git reads trailers from the last paragraph only)."""
+        commands = release_commit_commands()
+        self.assertEqual([w for w, _ in commands], ["scripts/release.sh", "skills/ship-release/SKILL.md"],
+                         "expected one release commit in each; update release_commit_commands")
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash not installed")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+        for where, command in commands:
+            with self.subTest(where), tempfile.TemporaryDirectory() as tmp:
+                run = lambda *a: subprocess.run(a, cwd=tmp, env=env, capture_output=True, text=True)
+                run("git", "init", "-q")
+                Path(tmp, "f").write_text("1\n")
+                run("git", "add", "f")
+                run("git", "commit", "-qm", "base")
+                Path(tmp, "f").write_text("2\n")
+                made = run(bash, "-c", command)
+                self.assertEqual(made.returncode, 0, f"{where}: `{command}` failed: {made.stderr}")
+                trailers = run("git", "log", "-1", "--format=%(trailers:key=No-story,valueonly)").stdout.split()
+                self.assertEqual(trailers, ["release"], f"{where}: `{command}` makes no `No-story: release` trailer")
+
+
 if __name__ == "__main__":
     unittest.main()
