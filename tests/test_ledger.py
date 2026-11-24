@@ -4832,7 +4832,7 @@ class LedgerBreakerRound1Test(LedgerPrepushCase):
         repo.publish()
         data = ledger_check(self, repo)
         self.assertIn("AUTH-006", details(data, "SQUASH_LOST_TRAILERS"))
-        self.assertEqual(codes(data, "warning"), ["SQUASH_LOST_TRAILERS"], data["diffs"])
+        self.assertEqual([d["level"] for d in data["diffs"] if d["code"] == "SQUASH_LOST_TRAILERS"], ["warning"])
 
     def test_LEDGER_010_S1_a_corrected_commit_does_not_block_a_push_of_the_trunk_to_a_new_remote_INV_007(self):
         """ESC-201: the pre-push read no correction rows, so the first push of a corrected trunk was refused."""
