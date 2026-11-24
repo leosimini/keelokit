@@ -133,7 +133,8 @@ A story has one state: the most advanced one the facts prove. From lowest to hig
 | `ledger.py review --filter` / `backfill --accept --delegated <run>` / `review --reject-sample <run>` | The delegated review's mechanical filter / writing its approved rows / sending a run back (a person) |
 | `ledger.py attribution <a>..<b> [--json]` | Whether every commit of a range is attributed (Harbor's `convoy add` calls it) |
 | `ledger.py hook prepare\|msg`, `ledger.py prepush` | The git hooks' logic |
-| `ledger.py snapshot` | Writes the snapshot branch (the CI only) |
+| `ledger.py snapshot [--run ID] [--push BEFORE..AFTER]` / `snapshot --branch` | Writes the snapshot branch (the CI only; the time from `KEELOKIT_SNAPSHOT_AT`, the push event's) / prints its name, empty when off (the CI's gate) |
+| `ledger.py deploy <staging\|production> <commit>` | Moves `deploy/<env>` to the deployed commit (the deploy jobs only, after a deploy that ran; backwards on a rollback) |
 
 ### `--json` (schema 1)
 
