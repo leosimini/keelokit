@@ -4844,3 +4844,91 @@ class LedgerBreakerRound1Test(LedgerPrepushCase):
         repo.git("remote", "add", "backup", f"file://{backup}")
         r = prepush(self, repo, f"refs/heads/main {repo.sha()} refs/heads/main {ZERO}", remote="backup")
         self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+
+class LedgerBreakerRound2Test(LedgerPrepushCase):
+    """LEDGER-010 breaker, round 2 (ESC-202..ESC-205): each finding reproduced before its fix."""
+
+    def raw(self, repo: GitRepo, message: str, files: dict) -> str:
+        """A commit of exactly these files (GitRepo.commit adds a file of its own to each commit)."""
+        for rel, text in files.items():
+            repo.write(rel, text)
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", message, when=repo.next_date())
+        return repo.sha()
+
+    def test_LEDGER_010_S4_the_same_small_change_on_the_trunk_is_no_squash_of_a_one_commit_branch(self):
+        """ESC-202: a trunk commit making the change a one-commit story branch makes (same tree, or same patch)."""
+        repo = self.project("AUTH-007")
+        self.raw(repo, "chore: version 1\n\nNo-story: release", {"VERSION": "1\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "auth-7")
+        self.raw(repo, "feat: version 2\n\nPart-of: AUTH-007", {"VERSION": "2\n"})
+        repo.git("push", "-q", "origin", "auth-7")
+        repo.git("checkout", "-q", "main")
+        self.raw(repo, "release: 2\n\nNo-story: release", {"VERSION": "2\n"})
+        self.assertEqual(prepush(self, repo, to_main(repo)).returncode, 0, "same tree")
+        repo.git("reset", "-q", "--hard", "origin/main")
+        self.raw(repo, "docs: x\n\nNo-story: docs", {"README": "x\n"})
+        self.raw(repo, "release: 2\n\nNo-story: release", {"VERSION": "2\n"})
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), "same patch")
+
+    def test_LEDGER_010_S4_two_independent_reverts_are_no_squash(self):
+        """ESC-203: a branch reverting a trunk commit, and the trunk reverting it too."""
+        repo = self.project("AUTH-005", "AUTH-008")
+        added = self.raw(repo, "feat: add a\n\nWhy.\n\nStory: AUTH-005", {"a.txt": "a\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "auth-8")
+        repo.git("revert", "--no-edit", added, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert add a\n\nThis reverts commit {added}.\n\nPart-of: AUTH-008")
+        repo.git("push", "-q", "origin", "auth-8")
+        repo.git("checkout", "-q", "main")
+        repo.git("revert", "--no-edit", added, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert add a\n\nThis reverts commit {added}.\n\nNo-story: harness")
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        repo.publish()
+        self.assertEqual(codes(ledger_check(self, repo), "error"), [])
+
+    def test_LEDGER_010_S3_patches_are_read_only_for_commits_that_touch_the_branch_s_paths(self):
+        """ESC-204: check read every patch since `since` into memory (19 s, 1.7 GB on 1,000 commits). Counted in git
+        calls, never in seconds: no range commit touches the branch's paths, so no patch is read."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        for n in range(30):
+            repo.commit(f"docs: unrelated {n}\n\nNo-story: docs")
+        repo.publish()
+        repo.on_branch("train-6", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        bindir = self.tmp / "wrap-bin"
+        bindir.mkdir()
+        log = self.tmp / "git-argv.log"
+        real = shutil.which("git")
+        (bindir / "git").write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        (bindir / "git").chmod(0o755)
+        r = repo.ledger("check", "--json", path=f"{bindir}{os.pathsep}{repo.env['PATH']}")
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        calls = log.read_text().splitlines()
+        self.assertFalse([c for c in calls if " -p" in f" {c}" or c.startswith("patch-id")], calls)
+
+    def test_LEDGER_010_S1_a_correction_row_in_the_same_push_does_not_attribute_INV_007(self):
+        """ESC-205: the pre-push read rows from the pushed tip, so a row nobody accepted, pushed with its commit,
+        passed. Rows count from the trunk the remote already has."""
+        repo = self.project("AUTH-001")
+        loose = repo.commit("feat: the login, no trailer")
+        repo.commit("chore: correction\n\nNo-story: harness", {CORR: corrections(
+            toml_row(story="AUTH-001", commit=loose, kind="late", evidence="nobody accepted this"))})
+        r = prepush(self, repo, to_main(repo))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(loose[:12], r.stderr)
+
+    def test_LEDGER_010_S3_a_patch_id_match_says_it_is_the_branch_s_change(self):
+        """ESC-200's message said "its tree is the tip of" for a match by patch."""
+        repo = self.project("AUTH-006", "AUTH-007")
+        repo.on_branch("train-5", "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        repo.commit("docs: main moves on\n\nNo-story: docs")
+        self.squash(repo, "train-5", "Train 5 (#11)\n\nWhy.\n\nStory: AUTH-007")
+        r = prepush(self, repo, to_main(repo))
+        self.assertIn("its change is origin/train-5's", r.stderr)
+        self.assertNotIn("its tree is the tip", r.stderr)
