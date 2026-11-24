@@ -6,7 +6,8 @@
   `ledger.py prepush` before the verify, for a push to the trunk only: each new commit needs a `Story:`,
   `Part-of:` or `No-story:`, or a merge carrying one that brings it (`UNATTRIBUTED`, with its hash), and a commit
   whose tree is the tip of an unintegrated origin branch is a squash of it that must keep every `Story:` and
-  `Part-of:` of that branch (`SQUASH_LOST_TRAILERS`). The CI's doctor job (`fetch-depth: 0`) gets a
+  `Part-of:` of that branch, or that the trunk already carries (`SQUASH_LOST_TRAILERS`; the same change as the
+  branch's, without the same tree, only warns; `wip/` and `archive/` branches never count). The CI's doctor job (`fetch-depth: 0`) gets a
   `ledger.py check --ci` step: on a pull request it checks the branch's commits (GitHub's "Merge pull request"
   and sync merges of main count as attributed when what they bring is), on a push to main the trunk since
   `[ledger] since`, printing the exact `ledger.py correct` command for a commit that got through. An approved
