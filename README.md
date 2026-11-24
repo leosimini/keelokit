@@ -132,9 +132,13 @@ reconnect by itself. Android has no such prompt.
   `build-story` picks the lightest checks that fit each story's risk (trivial, light or full) on its own; anything touching money, permissions, quotas or notices always gets the full process.
 - The guard that stops agents from bypassing hooks or writing secrets is a speed bump, not a
   sandbox. The git hooks and CI are the real backstop.
-- The plugin's hooks run the project's own `.keelokit/bin/guard.py` and `doctor.py`, on every
-  session and every tool call. Opening a repo with Keelokit on means running its `.keelokit/`
-  code, so only do it with repos whose `.keelokit/` you trust, as you would with their tests.
+- Opening a repo doesn't run its code. The plugin's hooks (the guard on every tool call, the ledger and
+  the doctor at the session start) run the plugin's own copy against the project's rules and data, or
+  the project's `.keelokit/bin` when it is the same as the plugin's. A project whose copy differs (an
+  older harness, or rules you changed in code) gets one line at the session start; you upgrade it with
+  `/keelokit:harness-upgrade`, or review and approve its copy in your own terminal with the
+  `trusted.py trust` command that line prints. Running the project's tests, scripts or commands is still
+  trusting it.
 - `doctor` can tell a check is present and switched on, not that it's a good check. For the
   critical code, mutation testing measures that; elsewhere, reviews and bug hunts cover it.
 - Bugs come in classes, so the harness aims at classes: the rules that must always hold

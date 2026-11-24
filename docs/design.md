@@ -27,6 +27,15 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `bin/guard.py` — one guard, two callers: Claude Code's PreToolUse hook and git's pre-commit.
   Without python3 every Claude hook turns off and says so, and pre-commit stops the commit
   with the reason (`tests/test_hooks.py` runs each hook without it).
+- Which copy the plugin's hooks run (HARN-004): never the opened repo's unchecked. `hooks/hooks.json` runs
+  `hooks/trusted.py` (with `python3 -I`, after a `cd` into the plugin), which reads bytes before anything runs:
+  where the project's `guard.py`, `ledger.py`, `doctor.py` and the `ux_gate.py` the doctor runs are the plugin's
+  byte for byte, the plugin's copy runs with `--root <project>`; where they differ, the plugin's copy runs against
+  the project's data (rules, `rules.local.toml`, state, backlog) and the session start says so in one line, unless
+  a person approved the project's `.keelokit/bin` as it is now with `trusted.py trust` (on a terminal; the guard
+  refuses it to agents; the store is `~/.config/keelokit/trusted.json`, per project and fingerprint). An approved
+  copy runs from the bytes that were checked. guard, doctor, ledger and ux_gate take `--root DIR` first; the
+  doctor runs the ledger and ux_gate next to itself, with the same `--root`.
 - `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
   runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).

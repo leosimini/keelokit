@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Opening a repo no longer runs its own guard, doctor or ledger (HARN-004).** The hooks run the plugin's copy
+  against the project's data, or the project's copy only when it matches the plugin's or you approved it with
+  `hooks/trusted.py trust` in your terminal (it shows the diff, control characters escaped). A project whose
+  `.keelokit/bin` differs gets one line at the session start saying so.
 - **The agent brief carries the fleet's lessons (FLEET-006).** Push before any wait longer than a few minutes
   (the story's branch when verified, else `wip/<topic>` with the same commits); wait on state, never on a log
   line: `status.py` or the verify's exit code, a CI run's state, a remote ref; give how long a run takes as the
