@@ -94,8 +94,12 @@ Where the result goes beyond or differs from the text above:
   `hook msg` first does what `hook prepare` does. The editor flow gets the trailer once a subject is written.
 - **`SQUASH_LOST_TRAILERS` at commit time.** A `Story:`/`Part-of:` line in a paragraph of its own before
   `Co-Authored-By:` is reported as that (with the line to move), not as `UNATTRIBUTED`.
-- **`Dropped:` counts as attribution** in the hooks: it is `ledger.py drop`'s own commit, whose fallback is a
-  `git commit` on the current branch.
+- **The hook reads trailers as `git log` does** (`--no-divider`: a `---` line hides nothing, ESC-189) and keeps
+  `#` lines unless git will drop them (`commit.cleanup`; unset: a `-m` message keeps them, the editor's comments
+  go, so both readings are tried, ESC-190). `Dropped:` alone does not attribute (as in `check`): `drop`'s fallback
+  commit gets `Part-of:` from the story still taken. A `fixup!` commit passes the hook but `check` has no such
+  exemption: it is meant to be squashed before it lands.
+- An aborted editor commit (only comments) gets no Keelokit text: git's own "empty commit message" says it.
 - **The story is read only in the worktree that took it (ESC-188).** `git worktree add` copies `config.worktree`,
   so a worktree added after `take` inherited `keelokit.story`. `take` now also records `keelokit.storyGitDir` and
   the hooks ignore a story another git dir took.
