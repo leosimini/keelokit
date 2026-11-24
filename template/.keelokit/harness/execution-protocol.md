@@ -50,6 +50,9 @@ inherits it; change it in the Keelokit template, not here.
   message). That trailer, reachable from `main`, is what makes the story done — mentioning the id
   anywhere else doesn't count. With `[landing] policy = "convoy"`, that is when the convoy holding
   the story reaches main.
+- Whether a story is done is asked of the ledger, never of memory or of a handoff file:
+  `python3 .keelokit/bin/ledger.py show <ID>` (state, commit, version, why). A story is not done
+  until it says `on-trunk` or later.
 - If what was built differs from the story, append `## Addendum — <date>` to the story saying how.
 - Report: what changed, how it was verified, what is left, and anything the human must decide.
 - Every finding is fixed or decided with a recommendation, never left as a "known issue"; before a
