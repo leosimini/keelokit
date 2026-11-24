@@ -43,5 +43,9 @@ they exist.
    yet) with a `mobile` trait: the script arrives with the upgrade, but `profile.toml` is the
    project's, so no `[local]` block comes with it and the doctor warns (RUN-1). Offer
    `/keelokit:run-local`, which detects it and writes the block after a yes.
-6. Commit `chore: upgrade Keelokit <from> → <to>` and report: rules added/changed, conflicts
+   An adopted project (`mode: harness` in `.keelokit/answers.yml`) whose `[ledger]` has no `enforce` gets
+   `enforce = "warn"` written in the same change: absent means `block`, which a repo used to commits without
+   trailers isn't ready for.
+6. Commit `git commit -m "chore: upgrade Keelokit <from> → <to>" -m "No-story: harness"` (the trailer the
+   commit-msg hook asks for) and report: rules added/changed, conflicts
    resolved, and anything the user must decide.

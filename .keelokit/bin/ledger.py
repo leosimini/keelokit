@@ -16,6 +16,10 @@
     python3 .keelokit/bin/ledger.py drop <ID> --motivo "..."
                                                        record an abandoned attempt: an empty commit with
                                                        `Dropped: <ID>`, pushed to archive/<id>-<YYYYMMDD>
+    python3 .keelokit/bin/ledger.py hook prepare <file> [<source> [<sha>]]
+                                                       prepare-commit-msg: Part-of: <keelokit.story>; exit 0
+    python3 .keelokit/bin/ledger.py hook msg <file>    commit-msg: the trailer grammar (docs/ledger.md,
+                                                       "Trailers"); exit 1 refuses under enforce = "block"
     python3 .keelokit/bin/ledger.py check [--ci] [--json]
                                                        every difference (exit 1 on an error-level one)
     python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
@@ -2525,6 +2529,7 @@ def clear_story() -> None:
     """Unset keelokit.story in this worktree's own config (nothing to do when take never enabled it)."""
     if git_out("config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")[1] == "true":
         git_out("config", "--worktree", "--unset-all", "keelokit.story")
+        git_out("config", "--worktree", "--unset-all", "keelokit.storyGitDir")
 
 
 def cmd_take(state: dict, sid: str | None) -> int:
@@ -2553,7 +2558,13 @@ def cmd_take(state: dict, sid: str | None) -> int:
         print(t["elsewhere"].format(id=sid, branches=listed(others, "more")))
     code, old = git_out("config", "--get", "keelokit.story")
     old = old if code == 0 else None
-    for args in (("config", "extensions.worktreeConfig", "true"), ("config", "--worktree", "keelokit.story", sid)):
+    # keelokit.storyGitDir: which worktree took it. `git worktree add` copies config.worktree into the new worktree
+    # (git 2.4x), and a copied story there is none (ESC-188): the commit hooks read it only in the worktree that took it.
+    code, gitdir = git_out("rev-parse", "--absolute-git-dir")
+    if code != 0 or not gitdir:
+        raise LedgerError("git rev-parse --absolute-git-dir failed")
+    for args in (("config", "extensions.worktreeConfig", "true"), ("config", "--worktree", "keelokit.story", sid),
+                 ("config", "--worktree", "keelokit.storyGitDir", gitdir)):
         code, err = run_git(list(args))
         if code != 0:
             raise LedgerError(f"git {' '.join(args)} failed: {last_error(err)}")
@@ -2624,6 +2635,267 @@ def cmd_drop(state: dict, sid: str, reason: str, day: str | None = None) -> int:
     return 0
 
 
+# ── the git hooks: prepare-commit-msg and commit-msg (LEDGER-009) ──
+
+ATTRIBUTING = ("story", "part-of", "no-story")  # as `check` counts them (a Dropped: commit gets Part-of: too)
+EXEMPT_SUBJECT = ("fixup! ", "squash! ", "amend! ")
+LEDGER_CMD = "python3 .keelokit/bin/ledger.py"
+
+
+def comment_char() -> str:
+    """core.commentChar when it is one character, else `#` (git's default; "auto" picks per message and
+    leaves `#` for every message an editor did not touch)."""
+    # core.commentString (git 2.45+) and core.commentChar are one setting: the last one git reads wins.
+    code, out = git_out("config", "--get-regexp", r"^core\.comment(char|string)$")
+    values = [line.split(" ", 1)[1] for line in out.splitlines() if " " in line] if code == 0 else []
+    return values[-1] if values and values[-1] != "auto" else "#"
+
+
+def readings(raw: str, source: str | None) -> str:
+    """The message as git will store it, nothing from the scissors line of `commit -v` on. Git drops comment lines
+    only when it cleans up with `strip`, which by default it does only when the editor ran: `-m "#123 fix"` keeps
+    its line (ESC-190). `commit.cleanup`, when set, decides; else git's source, as prepare-commit-msg got it: none
+    or `template` (the editor) or `message-edit` (-e with -m) → without comment lines, `message` (-m, -F) → with
+    them; unknown (no record, an
+    amend, a merge) → without them, unless nothing else is left."""
+    c = comment_char()
+    scissors = re.compile(rf"^{re.escape(c)} -+ >8 -+$")
+    kept = []
+    for line in raw.replace("\r\n", "\n").split("\n"):
+        if scissors.match(line):
+            break
+        kept.append(line)
+    stripped = "\n".join(line for line in kept if not line.startswith(c)).strip("\n") + "\n"
+    whole = "\n".join(kept).strip("\n") + "\n"
+    mode = git_out("config", "--get", "commit.cleanup")[1].strip().lower()
+    if mode == "strip":
+        return stripped
+    if mode in ("verbatim", "whitespace", "scissors") or source == "message":
+        return whole
+    return stripped if stripped.strip() or source in ("", "template", "message-edit") else whole
+
+
+def message_trailers(text: str) -> list[tuple[str, str]]:
+    """(key, value) of the trailers git reads from the message (its last paragraph): `interpret-trailers --parse`,
+    with `--no-divider`, as `git log`'s %(trailers) reads them: a `---` line is no patch divider there (ESC-189)."""
+    r = subprocess.run(["git", "interpret-trailers", "--parse", "--no-divider"], cwd=ROOT, env=git_env(), input=text,
+                       capture_output=True, text=True, errors="replace")
+    if r.returncode != 0:
+        raise LedgerError(f"git interpret-trailers failed: {last_error(r.stderr)}")
+    return parse_trailers(r.stdout)
+
+
+def merging() -> bool:
+    code, path = git_out("rev-parse", "--git-path", "MERGE_HEAD")
+    return code == 0 and bool(path) and (Path(path) if os.path.isabs(path) else ROOT / path).is_file()
+
+
+def exempt_subject(text: str) -> bool:
+    return text.lstrip("\n").startswith(EXEMPT_SUBJECT)
+
+
+def attributed(trailers: list[tuple[str, str]]) -> bool:
+    return any(k.lower() in ATTRIBUTING for k, _ in trailers)
+
+
+def taken_story() -> str | None:
+    """keelokit.story, unless keelokit.storyGitDir says another worktree took it: `git worktree add` copies
+    config.worktree, story included, into the new worktree (ESC-188). A story set by hand, without the key, counts."""
+    code, sid = git_out("config", "--get", "keelokit.story")
+    if code != 0 or not STORY_ID.fullmatch(sid):
+        return None
+    code, owner = git_out("config", "--get", "keelokit.storyGitDir")
+    if code == 0 and owner:
+        here = git_out("rev-parse", "--absolute-git-dir")[1]
+        if os.path.realpath(owner) != os.path.realpath(here):
+            return None
+    return sid
+
+
+SOURCE_FILE = "keelokit-commit-source"
+
+
+def source_path() -> Path | None:
+    code, path = git_out("rev-parse", "--git-path", SOURCE_FILE)
+    return (Path(path) if os.path.isabs(path) else ROOT / path) if code == 0 and path else None
+
+
+def editor_template(raw: str) -> bool:
+    """Whether git appended its help text for the editor (`commit -e -m …`): the message ends in a paragraph of
+    comment lines only, at least two (git's shortest, with commit.status off, has two; the words are in the
+    person's language, so they are not read). A `-m` message alone gets no such paragraph."""
+    c = comment_char()
+    paragraphs = [q for q in re.split(r"\n[ \t]*\n", raw.replace("\r\n", "\n").strip("\n")) if q.strip()]
+    last = paragraphs[-1].split("\n") if len(paragraphs) > 1 else []
+    return len(last) >= 2 and all(line.startswith(c) for line in last)
+
+
+def recorded_source() -> str | None:
+    """git's source for this commit as prepare-commit-msg wrote it, read once (the file goes, so a later commit
+    whose prepare did not run reads no stale value); None when there is no record."""
+    where = source_path()
+    if where is None:
+        return None
+    try:
+        source = where.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        where.unlink()
+    except OSError:
+        pass
+    return source
+
+
+def add_part_of(path: Path, source: str = "") -> None:
+    """prepare-commit-msg's work: `Part-of: <keelokit.story>` when the message has content, is no merge or
+    fixup!, and names no story yet. A message with only comments (the editor is about to open) is left alone:
+    a trailer there would turn an aborted commit into a commit called `Part-of: …`; commit-msg adds it after."""
+    if source == "merge" or merging():
+        return
+    sid = taken_story()
+    if sid is None:
+        return
+    text = readings(path.read_text(encoding="utf-8", errors="replace"), source)
+    if not text.strip() or exempt_subject(text) or attributed(message_trailers(text)):
+        return
+    code, err = run_git(["interpret-trailers", "--in-place", "--no-divider", "--if-missing", "add", "--trailer",
+                         f"Part-of: {sid}", str(path)])
+    if code != 0:
+        raise LedgerError(f"git interpret-trailers failed: {last_error(err)}")
+
+
+def known_story_ids(state: dict, cfg: dict) -> tuple[set[str], bool]:
+    """(the ids of the configured stories, whether some story file could not be read): the trunk's tree, read as
+    every other command reads it, plus the story files staged or committed here (a branch may add the story it works on; an untracked one
+    would never reach the trunk, where `check` looks)."""
+    ids, unreadable = set(), False
+    trunk = trunk_name(state)
+    for ref in (f"refs/remotes/origin/{trunk}", f"refs/heads/{trunk}"):
+        code, sha = git_out("rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
+        if code == 0 and sha:
+            stories, bad = read_stories(sha, cfg)
+            ids |= {s["id"] for s in stories}
+            unreadable = bool(bad)
+            break
+    pattern = glob_regex(cfg["stories"])
+    code, out = git_out("ls-files", "-z", "--cached")
+    for rel in out.split("\0") if code == 0 else []:
+        if rel and pattern.fullmatch(rel):
+            try:
+                story = build_story(rel, (ROOT / rel).read_bytes(), cfg["id_from"])
+            except OSError:
+                continue
+            if story:
+                ids.add(story["id"])
+    return ids, unreadable
+
+
+def trailer_lines(cfg: dict, sid: str = "<ID>") -> list[str]:
+    return [f"    Part-of: {sid}", f"    Story: {sid}", "    No-story: <category> — <reason>"]
+
+
+def message_problems(state: dict, cfg: dict, text: str) -> list[tuple[str, list[str]]]:
+    """(code, lines that explain it and name what to write) for each rule of docs/ledger.md, "Trailers", the
+    message breaks. A merge and a fixup!/squash!/amend! need no attribution; their trailers are still checked."""
+    trailers = message_trailers(text)
+    categories = ", ".join(cfg["no_story"])
+    last = ("as the message's last paragraph: after a blank line, together with any Co-Authored-By: or "
+            "Claude-Session: line, with no blank line between them (git reads trailers only there)")
+    problems: list[tuple[str, list[str]]] = []
+    story = trailer_ids(trailers, "Story")
+    named = story + trailer_ids(trailers, "Part-of")
+    junk = sorted({p.strip() for key in ("Story", "Part-of") for v in trailer_values(trailers, key)
+                   for p in v.split(",") if not STORY_ID.fullmatch(p.strip())})
+    squashed = SQUASHED_TRAILER.findall(text)
+    if not attributed(trailers) and not merging() and not exempt_subject(text):
+        if squashed:
+            moved = sorted({f"{k.capitalize() if k.lower() == 'story' else 'Part-of'}: {i}" for k, i in squashed})
+            problems.append(("SQUASH_LOST_TRAILERS", [
+                f"{', '.join(moved)} is not in the message's last paragraph, so git does not read it and the commit "
+                "names no story.", f"Move it {last}:", *(f"    {m}" for m in moved)]))
+        else:
+            problems.append(("UNATTRIBUTED", [
+                "this commit names no story: the message has no Story:, Part-of: or No-story: trailer.",
+                f"Add one of these lines {last}:", *trailer_lines(cfg),
+                "Part-of: <ID> is work of story <ID> that does not close it; Story: <ID> closes it (the message then "
+                "needs a body); No-story: is work outside stories, its category one of: " + categories + ".",
+                f"`{LEDGER_CMD} take <ID>` makes this worktree's commits carry Part-of: <ID> by themselves."]))
+    else:
+        lost = sorted({i for k, i in squashed if k.lower() == "story" and i not in story})
+        if lost:
+            problems.append(("SQUASH_LOST_TRAILERS", [
+                f"Story: {', '.join(lost)} is not in the message's last paragraph, so git does not read it and the "
+                "story is not closed.", f"Move it {last}:", *(f"    Story: {i}" for i in lost)]))
+    ids, unreadable = known_story_ids(state, cfg)
+    unknown = sorted({i for i in named if i not in ids})
+    if unknown and not unreadable:
+        problems.append(("UNKNOWN_STORY", [
+            f"{', '.join(unknown)} is no story of [ledger] stories ({cfg['stories']}).",
+            f"Name a story that exists (`{LEDGER_CMD} next` lists the ready ones), or write No-story: <category> — "
+            f"<reason> for work outside stories (categories: {categories})."]))
+    if junk:
+        problems.append(("UNKNOWN_STORY", [
+            f"Story:/Part-of: {', '.join(map(repr, junk))} is not a story id (EPIC-NNN, e.g. AUTH-001).",
+            "Write it as:", *trailer_lines(cfg)[:2]]))
+    bad = [v for v in trailer_values(trailers, "No-story") if not v.strip() or category(v) not in cfg["no_story"]]
+    if bad:
+        problems.append(("BAD_CATEGORY", [
+            f"No-story: {bad[0]!r} is not one of [ledger] no_story: {categories}.",
+            "Write it as `No-story: <category> — <reason>`, for example:", f"    No-story: {cfg['no_story'][0]} — <reason>"
+            if cfg["no_story"] else "    (the list [ledger] no_story is empty: name a story instead)"]))
+    if story and not split_message(text, trailers)[1]:
+        problems.append(("STORY_NO_BODY", [
+            f"Story: {', '.join(story)} closes the story, and a closing commit needs a body: at least one line "
+            "between the subject and the trailers, saying what was decided and what was left out.",
+            "For example:", "    <subject>", "", "    Decided: … Left out: …", "", f"    Story: {story[0]}"]))
+    return problems
+
+
+def cmd_hook(state: dict, args: tuple) -> int:
+    """`hook prepare <file> [<source> [<sha>]]` (prepare-commit-msg): always exit 0. `hook msg <file>`
+    (commit-msg): exit 1 when the message breaks the trailer grammar under `enforce = "block"`, else 0. Either
+    one, when it cannot run (no git, an unreadable file), says so in one line and lets the commit through: the
+    pre-push and the CI check again (LEDGER-010), and a broken hook must not stop every commit."""
+    which, given, source = args
+    try:
+        path = Path(os.path.abspath(given))
+        where = source_path()
+        if which == "prepare" and source == "message" and editor_template(path.read_text(encoding="utf-8",
+                                                                                         errors="replace")):
+            source = "message-edit"  # -e with -m/-F: the editor runs, so git drops the comment lines
+        if which == "prepare" and where:
+            where.write_text(source + "\n", encoding="utf-8")
+        if which == "msg":
+            source = recorded_source()
+        add_part_of(path, source)
+        if which == "prepare":
+            return 0
+        cfg = read_config(state)
+        text = readings(path.read_text(encoding="utf-8", errors="replace"), source)
+        if not text.strip():
+            return 0  # only the editor's comments: git aborts the commit itself ("empty commit message")
+        problems = message_problems(state, cfg, text)
+    except Exception as e:  # noqa: BLE001 - a broken hook must not stop every commit
+        hook = "prepare-commit-msg" if which == "prepare" else "commit-msg"
+        print(f"Keelokit: the {hook} hook could not check this commit ({' '.join(str(e).split())[:160]}); "
+              "it goes through unchecked", file=sys.stderr)
+        return 0
+    if not problems:
+        return 0
+    for code, lines in problems:
+        print(f"Keelokit: {code} — {lines[0]}", file=sys.stderr)
+        for line in lines[1:]:
+            print(f"  {line}" if line else "", file=sys.stderr)
+    if cfg["enforce"] == "warn":
+        print('Keelokit: the commit goes through ([ledger] enforce = "warn"); `git commit --amend` adds the line.',
+              file=sys.stderr)
+        return 0
+    print('Keelokit: commit refused ([ledger] enforce = "block"): fix the message and commit again '
+          f"(git keeps it: `git commit -e -F {given}`).", file=sys.stderr)
+    return 1
+
+
 def parse_command(argv: list[str]) -> tuple | None:
     """(command, arguments) for the corrections commands and check, or None for any other spelling."""
     if argv[:1] == ["check"] and len(set(argv[1:])) == len(argv[1:]) and set(argv[1:]) <= {"--json", "--ci"}:
@@ -2632,6 +2904,10 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "show", (argv[1], len(argv) == 3)
     if argv == ["next"]:
         return "next", None
+    if argv[:2] == ["hook", "prepare"] and 3 <= len(argv) <= 5:
+        return "hook", ("prepare", argv[2], argv[3] if len(argv) > 3 else "")
+    if argv[:2] == ["hook", "msg"] and len(argv) == 3:
+        return "hook", ("msg", argv[2], "")
     if argv == ["take", "--clear"]:
         return "take", None
     if argv[:1] == ["take"] and len(argv) == 2 and STORY_ID.fullmatch(argv[1]):
@@ -2671,6 +2947,8 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_show(state, args)
         if command == "next":
             return cmd_next(state)
+        if command == "hook":
+            return cmd_hook(state, args)
         if command == "take":
             return cmd_take(state, args)
         if command == "drop":

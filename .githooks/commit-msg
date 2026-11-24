@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# checks the trailers of docs/ledger.md ("Trailers"): one of Story:, Part-of:, No-story:. The logic is `ledger.py hook msg`; without python3 the commit stops.
+command -v python3 >/dev/null 2>&1 || { echo 'Keelokit: python3 not found, so the commit-msg hook cannot check this commit. Install Python 3.11+.' >&2; exit 1; }
+exec python3 .keelokit/bin/ledger.py hook msg "$@"

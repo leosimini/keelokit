@@ -943,8 +943,9 @@ class DoctorTest(unittest.TestCase):
         self.write(".keelokit/bin/guard.py", "")
         cases = {
             "no package.json, no hooks": ({}, "add a 'pre-commit' hook that runs `python3 .keelokit/bin/guard.py git-pre-commit`"),
+            # LEDGER-009: the plugin's SessionStart turns them on; the command is for a clone used without the plugin.
             "the hooks ship in .githooks": ({".githooks/pre-commit": "#!/bin/sh\n", ".githooks/pre-push": "#!/bin/sh\n"},
-                                            "a human runs `git config core.hooksPath .githooks`"),
+                                            ("SessionStart", "`git config core.hooksPath .githooks`")),
             "generated project": ({"package.json": json.dumps({"packageManager": "pnpm@10.33.0", "scripts": {
                 "prepare": "git config core.hooksPath .githooks || true", "doctor": "python3 .keelokit/bin/doctor.py"}}),
                 ".githooks/pre-commit": "#!/bin/sh\n"}, "run `pnpm install`"),
@@ -964,7 +965,9 @@ class DoctorTest(unittest.TestCase):
                 for f, text in files.items():
                     self.write(f, text)
                 out, brief = self.doctor(), self.doctor("--brief")
-                self.assertIn(hint, out)
+                for h in (hint,) if isinstance(hint, str) else hint:
+                    self.assertIn(h, out)
+                self.assertNotIn("a human runs `git config core.hooksPath", out)
                 self.assertNotIn("Traceback", out + brief)
                 self.assertIn("Harness errors:", brief)
                 if name != "package.json that isn't JSON":
