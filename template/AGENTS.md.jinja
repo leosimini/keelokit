@@ -21,6 +21,22 @@ This file is for every agent and every human. It points; the detail lives in the
 | Running several sessions at once | `.keelokit/harness/agent-brief.md` |
 | What must be fixed or decided before a launch | `docs/prelaunch-debt-ledger.md` |
 
+## Where the truth is
+
+A story's state is asked of `ledger.py`, never of memory or of a handoff file (a board, a
+"where things stand" note, another session's report): it reads git, which is the only record.
+The session start prints its summary.
+
+| Question | Ask |
+|---|---|
+| Is X done, since when, in which version? | `python3 .keelokit/bin/ledger.py show X` |
+| What do I take? | `python3 .keelokit/bin/ledger.py next` |
+| Is someone on it? | `python3 .keelokit/bin/ledger.py show X` (its branches and sessions) |
+| Why did it end up this way? | `python3 .keelokit/bin/ledger.py show X` (commit bodies, addenda, escapes, findings) |
+| What went into 1.16? | `python3 .keelokit/bin/ledger.py --release v1.16.0` |
+| What is under way in the harbor? | `/harbor:log` |
+| Is the record healthy? | `python3 .keelokit/bin/ledger.py check` |
+
 ## Layout
 
 ```
