@@ -42,6 +42,10 @@ Anything in the PRD's "out" list never becomes a story.
   4. **Testable units** — table: unit · test type (unit / integration / e2e) · file.
   5. **Definition of done** — `pnpm verify` green, every scenario covered by a test titled with
      its id, `Story: <ID>` trailer on the completing commit, addendum if the result differs.
+  6. **Breaker rounds** — only when `python3 .keelokit/bin/ledger.py risky <ID>` says risky: a
+     `## Breaker rounds` heading, filled by build-story with one line per cold breaker round. The
+     last round decides, whatever its number; the cap in `.keelokit/risky.toml` is where the build
+     must stop and ask a person, whose `Decision` line is recorded there.
 - A story that needs an unknown fact gets the `[GAP-nnn]` reference and depends on answering it
   (record the gap in `docs/context/gaps.md`); never fill the hole with a guess.
 

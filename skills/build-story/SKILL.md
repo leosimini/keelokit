@@ -213,15 +213,18 @@ For a story `ledger.py risky <ID>` calls risky, after step 5's round is clean an
    ```
    One top-level line per round; detail goes on indented lines under it. `clean` means nothing reproduced, and it is
    the round's whole result (a round that lists findings is not clean).
-5. **Loop** with a new breaker on the new head until a round is clean, at most `rounds` rounds
-   (`.keelokit/risky.toml`, default 3). The cap hit with findings left: the story does not close silently. Stop
-   (`mode = "auto"` too), tell the person what is left, and record their call as a `Decision` line naming them
-   (another round past the cap, or land as it is with the findings in a follow-up story). An agent never writes a
-   Decision of its own.
+5. **Loop** with a new breaker on the new head until a round is clean. The last round decides, whatever its
+   number: a clean last round closes the story, past the cap too. The cap (`rounds` in `.keelokit/risky.toml`,
+   default 3) is where you stop and ask: at round `rounds` with findings left the story does not close silently.
+   Stop (`mode = "auto"` too), tell the person what is left, and record their call as a `Decision` line naming them
+   (another round past the cap, or land as it is with the findings in a follow-up story). If they choose another
+   round and it is clean, that round decides; no Decision is needed after it. An agent never writes a Decision of
+   its own.
 
 `ledger.py check` (the CI) reports a risky story closed with no round (`BREAKER_MISSING`, error) and one whose last
-round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A pull request is judged by the
-trunk's `risky.toml`, never its own.
+round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A risky change under the trailer of a
+story already closed is new work (`RISKY_AFTER_CLOSE`, error): give it an open story, with its own rounds. A pull
+request is judged by the trunk's `risky.toml`, never its own.
 
 ## 6. Verify — verifier, mode B
 

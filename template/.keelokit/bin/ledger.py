@@ -419,7 +419,36 @@ BUGBASH = "docs/bugbash/"
 ADDENDUM_HEADING = re.compile(r"#{1,6}\s+Addendum\b")
 SQUASHED_TRAILER = re.compile(r"(?m)^[ \t*-]*((?i:story|part-of)):[ \t]*([A-Z][A-Z0-9]*-[0-9]+)")
 TRAILER_LINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*:|\(cherry picked from commit ")
-CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+class Screen:
+    """What may not reach a terminal or a snapshot as it is: control characters (Cc, C0 and C1), format characters (Cf:
+    bidi overrides and isolates such as U+202E and U+2066..2069, zero-width characters, the BOM) and the line and
+    paragraph separators (Zl, Zp: U+2028, U+2029), by Unicode category, whatever this Python's Unicode version
+    (HARN-022). `keep`: characters let through (the tab and the newline, which the callers turn into what they mean).
+    `.search` and `.sub` read as a regex's."""
+
+    CATEGORIES = ("Cc", "Cf", "Zl", "Zp")
+
+    def __init__(self, keep: str = ""):
+        self.keep = keep
+        self.ascii = re.compile("[%s]" % "".join(re.escape(chr(c)) for c in [*range(0x20), 0x7f] if chr(c) not in keep))
+
+    def bad(self, ch: str) -> bool:
+        return ch not in self.keep and unicodedata.category(ch) in self.CATEGORIES
+
+    def search(self, text: str) -> str | None:
+        """The first such character (truthy), else None."""
+        if text.isascii():
+            m = self.ascii.search(text)
+            return m.group(0) if m else None
+        return next((ch for ch in text if self.bad(ch)), None)
+
+    def sub(self, repl: str, text: str) -> str:
+        if text.isascii():
+            return self.ascii.sub(repl, text)
+        return "".join(repl if self.bad(ch) else ch for ch in text)
+
+
+CONTROL = Screen(keep="\t\n")
 FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
 CORRECTIONS = "backlog/ledger-corrections.toml"
 PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
@@ -1323,7 +1352,7 @@ def ledger_facts(state: dict) -> dict:
     return read_all(state)["facts"]
 
 
-def read_all(state: dict, rules_sha: str | None = None) -> dict:
+def read_all(state: dict, rules_sha: str | None = None, show: str | None = None) -> dict:
     """The facts and what they were computed from (for the commands that propose or accept corrections):
     facts, and with a complete history also stories, log, graph, placed (arrivals), corrections, records."""
     cfg = read_config(state)
@@ -1377,8 +1406,16 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
     book = read_logbook(refs)
     apply_logbook({r["id"]: r for r in facts["stories"]}, book, refs, log, placed)
     facts["harbor"] = {"logbook": book["head"], "skipped": book["skipped"], "error": book["error"]}
+    # `show <ID>` asks for the authors of the story's commits in the same git call as the swarm's (HARN-022): a
+    # superset of what why_of lists (every id equal to it but for case, as story_named reads it).
+    asked = set()
+    if show is not None:
+        same = lambda ids: any(i.casefold() == show.casefold() for i in ids)  # noqa: E731
+        asked = {c["sha"] for c in log if same(c["story"] + c["part_of"])}
+        asked |= {c["sha"] for sid, entry in branches.items() if same([sid]) for c in entry["commits"]}
+    authors: dict = {}
     facts["swarm"] = {"error": apply_swarm({r["id"]: r for r in facts["stories"]}, branches, log, graph, placed,
-                                           refs, book)}
+                                           refs, book, asked, authors)}
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
@@ -1387,7 +1424,7 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
             "unverified": unverified_prefixes(state), "stories": stories, "log": log,
             "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
             "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation,
-            "harbor": book, "risky": extra["risky"]}
+            "harbor": book, "risky": extra["risky"], "authors": authors}
 
 
 # ── Harbor's logbook (LEDGER-013) ──
@@ -1643,7 +1680,7 @@ SWARM_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")   # a task id that 
 SWARM_AUTHOR = 200             # longest author name kept
 SWARM_MERGES = 2000            # at most this many attributing merges are walked to find a delivery's story
 SWARM_STATES = ("in-progress", "on-trunk", "reverted")
-SWARM_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f]")   # in a name: control characters, tab and newline too (ESC-348)
+SWARM_UNSAFE = Screen()   # in a name: control and format characters, tab and newline too (ESC-348, HARN-022)
 SWARM_KEYS = {"task", "state", "branch", "head", "commits", "authors", "convoy"}
 
 
@@ -1677,8 +1714,10 @@ def placed_anchor(placed: tuple) -> str:
 
 def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: list[str]) -> dict[str, set[str]]:
     """commit -> the story ids of the trunk merges that bring it (their trailers cover it: docs/ledger.md, "Trailers").
-    Only the commits of its own arrival can bring a commit, so each walk stays inside one arrival's group; at most
-    SWARM_MERGES merges are walked."""
+    Only the commits of its own arrival can bring a commit, so everything stays inside one arrival's group; at most
+    SWARM_MERGES merges are asked. One pass per group (HARN-022): each commit of the group gets the set of wanted
+    commits it reaches (a bit mask, parents before children), and a merge brings what its other parents reach and its
+    first parent does not, so the cost is the group's size, never merges × group."""
     by_sha = {c["sha"]: c for c in log}
     groups: dict[str, set[str]] = {}
     for sha in wanted:
@@ -1691,22 +1730,57 @@ def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: l
     for a, group in sorted(groups.items()):
         merges = sorted(m for m in group if len(graph.get(m, ())) > 1 and m in by_sha
                         and (by_sha[m]["story"] or by_sha[m]["part_of"]))
-        outside = {p for x in group for p in graph.get(x, ())} - group if merges else set()
+        if not merges:
+            continue
+        want = sorted({sha for sha in wanted if arrival_of[sha] == a})
+        bit = {sha: 1 << i for i, sha in enumerate(want)}
+        parents_of = {x: [p for p in graph.get(x, ()) if p in group] for x in group}
+        reach: dict[str, int] = {}
+        for x in group_order(parents_of):
+            mask = bit.get(x, 0)
+            for p in parents_of[x]:
+                mask |= reach[p]
+            reach[x] = mask
         for m in merges:
             if budget <= 0:
                 return found
             budget -= 1
             parents = graph[m]
-            mainline = reach_until(graph, parents[:1], outside)
-            brought = reach_until(graph, parents[1:], outside | mainline)
-            for sha in wanted:
-                if sha in brought:
-                    found.setdefault(sha, set()).update(by_sha[m]["story"], by_sha[m]["part_of"])
+            mainline = reach.get(parents[0], 0) if parents[0] in group else 0
+            other = 0
+            for p in parents[1:]:
+                if p in group:
+                    other |= reach[p]
+            brought = other & ~mainline
+            ids = by_sha[m]["story"] + by_sha[m]["part_of"]
+            for i in set_bits(brought):
+                found.setdefault(want[i], set()).update(ids)
     return found
 
 
+def group_order(parents_of: dict[str, list[str]]) -> list[str]:
+    """The commits of a group (commit -> its parents inside the group), each after its parents; each visited once."""
+    done: set[str] = set()
+    out: list[str] = []
+    for root in parents_of:
+        if root in done:
+            continue
+        stack = [(root, False)]
+        while stack:
+            x, finished = stack.pop()
+            if finished:
+                out.append(x)
+                continue
+            if x in done:
+                continue
+            done.add(x)
+            stack.append((x, True))
+            stack.extend((p, False) for p in parents_of[x] if p not in done)
+    return out
+
+
 def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph: dict, placed: tuple, refs: dict,
-                book: dict) -> str | None:
+                book: dict, asked: set = frozenset(), known: dict | None = None) -> str | None:
     """Fill each story's `swarm` list (docs/ledger.md, "Harbor and Swarm"): a delivery not yet integrated is an origin
     branch swarm/<task> holding commits off the trunk with `Part-of: <ID>` and `Swarm-Task: <task>` (that task, the
     branch's), with its head, and the open convoy whose vessel is that branch sealed on that head; an integrated one is
@@ -1758,7 +1832,10 @@ def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph
                 if sid in records:
                     add(sid, task, "reverted" if reverted.get(c["sha"]) else "on-trunk",
                         convoy_sailed(places, arrival_of[c["sha"]]), None, None, c)
-        authors = authors_of(sorted({sha for e in entries.values() for sha in e["commits"]}), placed_anchor(placed))
+        wanted = {sha for e in entries.values() for sha in e["commits"]} | set(asked)
+        authors = authors_of(sorted(wanted), placed_anchor(placed))
+        if known is not None:  # what `show` reuses: the commits asked and their authors (`asked` and `names`)
+            known.update(asked=wanted, names=authors)
         for (sid, *_), e in sorted(entries.items(), key=lambda x: (x[0][0], x[0][1], SWARM_STATES.index(x[0][2]), x[0][3])):
             shas = sorted(e["commits"], key=lambda sha: (e["commits"][sha], sha))
             records[sid]["swarm"].append({**e, "commits": shas,
@@ -3172,9 +3249,14 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     stories = {s["id"]: s for s in base}
     stories.update({s["id"]: s for s in read_stories(head, cfg)[0]})
     hits = risky_commits(rules, head, [])
-    found = risky_no_story(log, hits, merge_own_hits(rules, head, [ctx["trunk_sha"]]))
+    own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
+    found = risky_no_story(log, hits, own)
+    every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
+    arrival, order = ctx["placed"]
+    found += risky_after_close(log, every, graph, hits, own,
+                               lambda sha: order[arrival[sha]] if sha in arrival else len(order))
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
-    return found + breaker_diffs(rules, log, log + read_trunk_log(ctx["trunk_sha"]), graph, list(stories.values()),
+    return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
                                  config_diffs=False, hits=hits, earlier=earlier)
 
 
@@ -3219,8 +3301,8 @@ def cmd_check(state: dict, args: tuple) -> int:
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
     else:
-        for d in diffs:
-            print(f"{d['level']} {d['code']} {d['detail']}")
+        for d in diffs:  # details quote paths, subjects and names: nothing in them reaches the terminal (HARN-022)
+            print(CONTROL.sub("?", f"{d['level']} {d['code']} {d['detail']}"))
     return 1 if any(d["level"] == "error" for d in diffs) else 0
 
 
@@ -3229,8 +3311,8 @@ def cmd_check(state: dict, args: tuple) -> int:
 # commits change) closes only after cold breaker rounds, recorded in its file under `## Breaker rounds`: one line per
 # round, `- Round <n> · head <sha> · clean` or `· <findings> · <fixes>`, and when the last round left findings, a
 # person's `- Decision · <name> · <YYYY-MM-DD> · <what>`. `check` gives BREAKER_MISSING (error) for a risky story
-# closed with no round, BREAKER_UNRESOLVED (warning) when its last round is not clean, or it went past the cap, with no
-# Decision after it, BREAKER_CONFIG for a risky.toml it cannot use (an error: every closed story counts as risky then)
+# closed with no round, BREAKER_UNRESOLVED (warning) when its last round is not clean with no Decision after it (the
+# last round decides, whatever its number: HARN-022), BREAKER_CONFIG for a risky.toml it cannot use (an error: every closed story counts as risky then)
 # and BREAKER_BAD_ENTRY (warning) for a line under the heading that is neither. The rule holds for Story: commits after
 # `[ledger] since` that the commit which brought risky.toml to the trunk (or its `since`) does not reach; without
 # risky.toml on the trunk, nothing. The line is a record, as a trailer is: the ledger checks it is there, not that the
@@ -3394,7 +3476,41 @@ def touch_meets(touch: str, pattern: str) -> bool:
         a, b = literal_prefix(t), literal_prefix(pattern)
         return a.startswith(b) or b.startswith(a)
     regex = glob_regex(pattern)
-    return bool(regex.fullmatch(t) or regex.fullmatch(t + "/") or literal_prefix(pattern).startswith(t + "/"))
+    if regex.fullmatch(t) or regex.fullmatch(t + "/") or literal_prefix(pattern).startswith(t + "/"):
+        return True
+    # A touch that names a directory touches everything under it (HARN-022): it meets every glob that can match a path
+    # beneath it (`apps/api` for `**/migrations/**`). A directory is a touch ending in `/`, or whose last part has no
+    # extension (`apps/api`, `.github`, `scripts`); `apps/api/page.ts` stays a file.
+    last = t.rsplit("/", 1)[-1]
+    if touch.rstrip().endswith("/") or "." not in last.lstrip("."):
+        return glob_beneath(pattern, t)
+    return False
+
+
+def glob_beneath(pattern: str, directory: str) -> bool:
+    """Whether the glob can match some path strictly beneath `directory` (`*` and `?` within one part, `**` any number
+    of parts; a part with `**` inside it may cross parts, so it counts as matching: when in doubt, risky)."""
+    pat, parts = pattern.split("/"), directory.split("/")
+    seen: set = set()
+    stack = [(0, 0)]
+    while stack:
+        i, j = stack.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if j == len(parts):
+            if i < len(pat) and any(pat[i:]):
+                return True
+            continue
+        if i == len(pat):
+            continue
+        if pat[i] == "**":
+            stack += [(i + 1, j), (i, j + 1)]
+        elif "**" in pat[i]:
+            return True
+        elif glob_regex(pat[i]).fullmatch(parts[j]):
+            stack.append((i + 1, j + 1))
+    return False
 
 
 def risky_reasons(story: dict, rules: dict | None, changed: set, hits: list | tuple = ()) -> list[str]:
@@ -3494,16 +3610,19 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                    else "a person, never an agent or a model")
             diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY",
                           "detail": f"{sid} ({story['path']}): {refused[0][2]!r}: a Decision is taken by {who}"})
+        # The last round decides, whatever its number (HARN-022): clean, the story is resolved, past the cap too. The
+        # cap is where the build stops and asks: findings left there wait for a person's Decision.
         last_at, last = rounds[-1]
         if not last[3] and not any(i > last_at for i in decisions):
+            if len(rounds) >= rules["rounds"]:
+                then = (f"the cap of {rules['rounds']} rounds ({RISKY_FILE}) is reached, so a person decides: another "
+                        "round, or land as it is (`- Decision · <person> · <YYYY-MM-DD> · <what>`)")
+            else:
+                then = (f"below the cap of {rules['rounds']}: round {len(rounds) + 1} runs with a new cold breaker on "
+                        "the fixed head (or a person's Decision line lands it as it is)")
             diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
                 f"{sid}: its last breaker round ({last[1]}, head {short(last[2])}) left findings, and no person's "
-                f"Decision line follows it in {story['path']}; a person decides: another round, or land as it is "
-                "(`- Decision · <person> · <YYYY-MM-DD> · <what>`)")})
-        elif len(rounds) > rules["rounds"] and not any(i > rounds[rules["rounds"] - 1][0] for i in decisions):
-            diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
-                f"{sid}: {len(rounds)} breaker rounds, past the cap of {rules['rounds']} ({RISKY_FILE}), with no "
-                f"person's Decision line after round {rules['rounds']} in {story['path']}")})
+                f"Decision line follows it in {story['path']}; {then}")})
     return diffs
 
 
@@ -3558,6 +3677,43 @@ def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
             f"{short(c['sha'])} {subject!r}: {what} a risky path ({RISKY_FILE}, or one of {', '.join(ALWAYS_RISKY)}) "
             "and names no story; such a change is work of a story (Part-of:/Story:), which then needs its breaker "
             "rounds")})
+    return diffs
+
+
+def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
+                      landing) -> list[dict]:
+    """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
+    merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
+    commit of `log` with an earlier landing (`landing(sha)`: the position of the trunk commit that brought it; a pull
+    request's commits land after every trunk commit). The closed story's rounds never saw the change, and it is not
+    closed again: such a change is new work of an open story, which then needs its rounds. The closing branch's own
+    later commits land with the close and are judged with it; a revert restores what was judged before."""
+    reverted = revert_status(log, graph)
+    closed: dict[str, tuple[int, str]] = {}
+    for c in log:
+        if reverted.get(c["sha"], False):
+            continue
+        for sid in c["story"]:
+            at = landing(c["sha"])
+            if sid not in closed or at < closed[sid][0]:
+                closed[sid] = (at, c["sha"])
+    diffs = []
+    for c in reversed(in_range):
+        ids = list(dict.fromkeys(c["story"] + c["part_of"]))
+        merge = len(c["parents"]) > 1
+        if not ids or c["reverts"] or reverted.get(c["sha"], False) \
+                or not (c["sha"] in merges if merge else c["sha"] in hits):
+            continue
+        at = landing(c["sha"])
+        if not all(sid in closed and closed[sid][0] < at for sid in ids):
+            continue  # it names an open story: that story records the rounds when it closes
+        subject = c["message"].split("\n", 1)[0].strip()[:80]
+        what = "a merge whose own resolution changes" if merge else "a commit that changes"
+        by = ", ".join(f"{sid} ({short(closed[sid][1])})" for sid in ids)
+        diffs.append({"level": "error", "code": "RISKY_AFTER_CLOSE", "detail": (
+            f"{short(c['sha'])} {subject!r}: {what} a risky path ({RISKY_FILE}) under stories already closed: {by}; "
+            "their breaker rounds never saw it and they are not closed again, so name an open story (Part-of:/Story:) "
+            "for it, which then needs its own breaker rounds")})
     return diffs
 
 
@@ -3661,7 +3817,10 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
         first = order[arrival[starts[0]]]
         in_range = [c for c in in_range if c["sha"] not in held and order[arrival[c["sha"]]] >= first]
     hits = risky_commits(rules, ctx["trunk_sha"], [])
-    diffs += risky_no_story(in_range, hits, merge_own_hits(rules, ctx["trunk_sha"], []))
+    own = merge_own_hits(rules, ctx["trunk_sha"], [])
+    diffs += risky_no_story(in_range, hits, own)
+    arrival, order = ctx["placed"]
+    diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]])
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
@@ -3752,7 +3911,8 @@ def cmd_risky(state: dict, sid: str) -> int:
         print(f"Keelokit: {rules['problem']} (every story counts as risky until it is fixed)")
     if why:
         print(f"{sid}: risky — {'; '.join(why[:6])}{f'; +{len(why) - 6} more' if len(why) > 6 else ''}")
-        print(f"  build it with the cold breaker loop: up to {cap} rounds, each recorded under `## Breaker rounds`")
+        print(f"  build it with the cold breaker loop, each round recorded under `## Breaker rounds`: the last round "
+              f"decides; at round {cap} with findings left, stop and ask a person")
     else:
         print(f"{sid}: not risky (breaker rounds: optional; cap {cap})")
     return 0
@@ -4110,7 +4270,9 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
                                 "longer holds: the trunk was rewritten since, so nothing it says holds now"})
         mark_unknown(list(records.values()), f"the snapshot is of {short(sha)}, which {trunk} no longer holds; {FIX}")
         trunk_swarm_stale(records)
+        in_progress_stale(records, None)
     elif sha != trunk_sha:
+        newer: set = set()
         if sha in graph:
             newer = reach_until(graph, [trunk_sha], set(first_reach(graph, [sha])))
             complete = not (newer & cut)
@@ -4131,6 +4293,7 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
             settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas, undone_shas)
         if not complete or any(c["reverts_said"] for c in log):  # ESC-349: what landed since may undo a delivery
             trunk_swarm_stale(records)
+        in_progress_stale(records, newer if complete else None)
     settle_corrections(records, tree or [], trunk_sha, meta)
     settle_refs(records, refs, graph, cut, meta.get("refs") if isinstance(meta.get("refs"), dict) else {})
     settle_snapshot_states(stories, records)
@@ -4143,6 +4306,16 @@ def trunk_swarm_stale(records: dict) -> None:
     never guessed (ESC-349); a full history reads them again."""
     for rec in records.values():
         rec["swarm"] = [e for e in rec["swarm"] if e["state"] == "in-progress"]
+
+
+def in_progress_stale(records: dict, landed: set | None) -> None:
+    """Leave out a snapshot's in-progress deliveries that may have landed since (HARN-022): one whose head or any commit
+    is among the trunk commits after the snapshot's (`landed`), or every one when this clone cannot list those (None:
+    the trunk was rewritten, or what landed since is past the clone). A delivery merged since is on the trunk or was
+    reverted, never in progress; information only, so it is dropped, never guessed (as ESC-349)."""
+    for rec in records.values():
+        rec["swarm"] = [e for e in rec["swarm"] if e["state"] != "in-progress" or landed is not None
+                        and e["head"] not in landed and not landed.intersection(e["commits"])]
 
 
 def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sha: str, moves: dict,
@@ -4700,10 +4873,14 @@ def why_of(ctx: dict, sid: str, rec: dict) -> dict:
     found_commits.sort(key=lambda x: (sid not in x[0].get("story", []), -x[0]["ct"], x[0]["sha"]))
     commits, findings = [], set()
     tasks = {sha: e["task"] for e in rec.get("swarm") or [] for sha in e["commits"]}
-    try:
-        authors = authors_of([c["sha"] for c, _ in found_commits], ctx["trunk_sha"])
-    except LedgerError:
-        authors = {}
+    known = ctx.get("authors") or {}
+    if known and known["asked"].issuperset(c["sha"] for c, _ in found_commits):
+        authors = known["names"]  # read_all asked for them with the swarm's (HARN-022): one git call per show
+    else:
+        try:
+            authors = authors_of([c["sha"] for c, _ in found_commits], ctx["trunk_sha"])
+        except LedgerError:
+            authors = {}
     for c, held in found_commits:
         subject, body = split_message(c["message"], c["trailers"])
         commits.append({"sha": c["sha"], "date": iso(c["ct"]), "kind": "Story" if sid in c.get("story", []) else "Part-of",
@@ -4756,7 +4933,7 @@ def cmd_show(state: dict, args: tuple) -> int:
     trunk has no such story."""
     sid, mode = args
     lang = read_config(state)["lang"]
-    ctx = read_all(state)
+    ctx = read_all(state, show=sid)
     found = story_named(ctx, sid)
     if found is None:
         message = SHOW_LABELS[lang]['no_story'].format(id=sid)

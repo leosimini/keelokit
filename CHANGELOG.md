@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The last breaker round decides** (HARN-022): a risky story whose last recorded round is clean is resolved,
+  whatever its number; past the cap no `Decision` is needed after a clean round. A last round with findings is still
+  `BREAKER_UNRESOLVED`, and its detail says what comes next (the next round below the cap, a person at or past it).
+  The cap stays where the build stops and asks.
+- **`RISKY_AFTER_CLOSE`** (error, `ledger.py check`, in a pull request too): a risky change committed under the
+  trailer of a story already closed (before the rule, or with its rounds) needs an open story with its own rounds.
+  A story touching a directory (`apps/api`) now meets the risky globs beneath it (`**/migrations/**`).
+- The ledger's swarm reading: finding a delivery's story through its merges is one pass per arrival (it was one walk
+  per merge); a shallow clone no longer shows a snapshot's delivery in progress after it landed; bidi overrides,
+  zero-width characters and line separators in authors and subjects never reach the terminal (`show`, `check`); and
+  `show` asks git for authors once.
+
 - **The ledger sees the swarm's deliveries (LEDGER-014).** A swarm helper's branch `swarm/<task>` with `Part-of:` and
   `Swarm-Task:` commits shows in its story's record (`ledger.py --json`'s `swarm` list: the task, the branch and its
   head, the commits, who made them, and the Harbor convoy that carries it), and once integrated `ledger.py show`

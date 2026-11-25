@@ -257,16 +257,19 @@ and the security, auth, integrity and data dimensions; rounds = 3) says what is 
 dimension, a touch, or a path a trunk commit of the story changes. `ledger.py risky <ID>` says whether and why.
 
 `build-story` (step 5b) runs the loop: a NEW breaker (mode C) per head, briefed with the story, the diff and the
-invariants only; reproduced findings only; each fix starts with a failing test; until a clean round or the cap; one
-line per round under `## Breaker rounds` in the story file, and a person's `Decision` line when the cap is hit with
-findings left. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
+invariants only; reproduced findings only; each fix starts with a failing test; until a clean round; one line per
+round under `## Breaker rounds` in the story file. The last round decides, whatever its number (HARN-022): clean, the
+story is resolved, past the cap too; the cap is where the build must stop and ask, and a person's `Decision` line
+records their call when it is hit with findings left. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
 own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
-no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision. History is exempt by
+no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision after it. History is exempt by
 position: only `Story:` commits that the commit which brought `risky.toml` does not reach, after `[ledger] since`.
 The files that decide what is judged (`risky.toml`, `state.toml`, the corrections) are always risky, so loosening
 them is work of a story with its own rounds; `RISKY_NO_STORY` refuses a risky change that names no story, in a commit
-or in a merge's own resolution. A revert counts only when its change is the reverted commit's inverted.
+or in a merge's own resolution, and `RISKY_AFTER_CLOSE` one under the trailer of stories already closed by an
+earlier landing (it is new work: an open story with its own rounds). A touch that names a directory meets every glob
+beneath it. A revert counts only when its change is the reverted commit's inverted.
 
 ## Lifecycle
 

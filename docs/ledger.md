@@ -167,7 +167,8 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
 | `RISKY_NO_STORY` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path and names no story; a `No-story: release` commit touching only the release files excepted) | error | `check` (a pull request too) |
-| `BREAKER_UNRESOLVED` (the last round left findings, or the rounds went past the cap, with no person's Decision after it), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
+| `RISKY_AFTER_CLOSE` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path under `Story:`/`Part-of:` of stories all closed by a live `Story:` commit of an earlier landing; the closing branch's own later commits and reverts excepted) | error | `check` (a pull request too) |
+| `BREAKER_UNRESOLVED` (the last round left findings with no person's Decision after it; the last round decides, past the cap too), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
 
@@ -184,6 +185,15 @@ closes only with its cold breaker rounds recorded in its file:
 - Round 2 · head <full sha> · clean
 - Decision · <person> · <YYYY-MM-DD> · <what was decided>      (only when the last round left findings)
 ```
+
+The last round decides, whatever its number (HARN-022): a clean last round resolves the story, past the cap too. A
+last round with findings is `BREAKER_UNRESOLVED` until a later round is clean or a person's Decision follows it; its
+detail says which comes next (below the cap: the next round; at or past it: a person). The cap is where the build
+must stop and ask. A touch that names a directory (it ends in `/`, or its last part has no extension: `apps/api`,
+`.github`) meets every glob that can match a path beneath it (`**/migrations/**`). A risky change committed under
+the trailer of stories already closed by an earlier landing (before the rule, or with their rounds) is
+`RISKY_AFTER_CLOSE`: their rounds never saw it and nothing closes them again, so it names an open story, which then
+needs its own rounds; commits of the closing branch that land with the close are judged with it.
 
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
 for a pull request the base's `risky.toml` and committed `[ledger]` with the pull request's story file. The rule holds
