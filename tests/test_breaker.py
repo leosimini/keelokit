@@ -679,7 +679,7 @@ class BreakerRound3Test(BreakerCase):
                 self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
 
     def test_HARN_021_S4_names_with_digits_or_lookalike_letters_are_no_decision_ESC_329(self):
-        for name in ("o3", "o4-mini", "C1aude", "Сlaude", "Bard", "Jules"):
+        for name in ("o3", "o4-mini", "C1aude", "Сlaude", "Bard"):  # Jules is also a person's name: list deciders
             with self.subTest(name=name):
                 repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
                 self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
