@@ -175,7 +175,15 @@ on-trunk story's convoy, with the exact time from `main.toml`'s convoy move. The
 no content anyone pushes to it changes what `check` says or an exit code; a malformed file is left out, an unreadable
 logbook is none. Three contracts are Harbor's to read: `ledger.py attribution <a>..<b> --json` (`convoy add`'s
 `NO_STORY`; the same attribution function `check` uses), `ledger.py show <ID> --json` (`STORY_ON_TRUNK`) and
-`ledger.py check --json` (the harbormaster's round and the ok, HRB-3), whose schema is fixed in ledger.md.
+`ledger.py check [--ci] --json` (the harbormaster's round and the ok, HRB-3): `{"schema": 1, "diffs": [{"level":
+"error"|"warning", "code", "detail"}]}`, exit 1 iff a diff is an error; keys may be added, none changes meaning
+within schema 1. `check --rules-ref <rev>` reads every rule file the ledger takes from the trunk's committed tree
+(`[ledger.approval]` in `.keelokit/state.toml`, `.keelokit/critical.toml`, the review files in
+`.keelokit/ledger-reviews/`, and `critical.toml` as of a delegated row's arrival) from `<rev>` instead, with the same
+parsing and the same hardened git calls; a correction row that arrived in commits `<rev>` does not reach is judged by
+`<rev>`'s critical areas. Harbor's ok runs main's ledger in a clone whose trunk is the convoy as landed: without it
+the convoy's own tree would hold the rules it is judged by, so a convoy could relax them. A `<rev>` that is no commit
+here is exit 2. The data (stories, corrections, commits) is still the trunk's.
 
 harbor.py is code the ledger runs, so only one explicit command runs it: `ledger.py take` (and `take --clear`), when
 `git config --local harbor.py` names an absolute path to a `harbor.py` and `harbor.py story take --help` exits 0

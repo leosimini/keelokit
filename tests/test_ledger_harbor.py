@@ -15,7 +15,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from test_ledger import GitRepo, LedgerCase, by_id, clean_env, read_json
+from test_ledger import (CORR, CRITICAL, REVIEWS, GitRepo, LedgerCase, approval, build_delegated, by_id, clean_env,
+                         commit_harness, corrections, delegated_row, read_json, review_row, review_text)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -707,6 +708,48 @@ class LedgerCheckJsonSchemaTest(LedgerCase):
             self.assertIn(x["level"], ("error", "warning"))
             self.assertRegex(x["code"], r"^[A-Z][A-Z_]+$")
             self.assertIsInstance(x["detail"], str)
+
+
+class LedgerRulesRefTest(LedgerCase):
+    """`check --rules-ref REV` (Harbor's ok, HRB-3): the rule files of the committed tree come from REV, so a convoy
+    judged as landed cannot relax its own rules."""
+
+    def test_LEDGER_013_S10_a_convoy_that_relaxes_critical_toml_is_judged_by_the_rules_at_rules_ref(self):
+        repo, c = build_delegated(self.tmp, approval("delegated"))
+        commit_harness(repo, "chore: a review\n\nNo-story: ledger",
+                       {f"{REVIEWS}/rpay.json": review_text("rpay", [review_row("UXC-303", c["UXC-303"])])})
+        repo.publish()
+        rules = repo.sha()
+        commit_harness(repo, "chore: convoy relaxes the rules\n\nNo-story: ledger",
+                       {CRITICAL: "", CORR: corrections(delegated_row("UXC-303", c["UXC-303"], "rpay"))})
+        repo.publish()  # origin/main is the convoy's tip, as landed
+        own = json_of(self, repo.ledger("check", "--json"))
+        self.assertFalse([d for d in own["diffs"] if d["code"] == "CORRECTION_INVALID"],
+                         "by its own rules the relaxed convoy passes: the hole --rules-ref closes")
+        r = repo.ledger("check", "--json", "--rules-ref", rules)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        invalid = [d["detail"] for d in json_of(self, r)["diffs"] if d["code"] == "CORRECTION_INVALID"]
+        self.assertEqual(len(invalid), 1, invalid)
+        self.assertIn("UXC-303", invalid[0])
+        ci = repo.ledger("check", "--ci", "--rules-ref", rules, "--json")
+        self.assertEqual(json_of(self, ci)["diffs"], json_of(self, r)["diffs"], "any order of the flags")
+
+    def test_LEDGER_013_S10_the_same_rules_give_the_same_verdict(self):
+        repo, _ = build_delegated(self.tmp, approval("delegated"))
+        plain = repo.ledger("check", "--json")
+        same = repo.ledger("check", "--json", "--rules-ref", "main")
+        self.assertEqual((plain.returncode, plain.stdout), (same.returncode, same.stdout))
+
+    def test_LEDGER_013_S10_an_unknown_rules_ref_is_exit_2(self):
+        repo, _ = build_delegated(self.tmp, approval("delegated"))
+        for rev in ("nope", "-x", "main..main", "0" * 40):
+            with self.subTest(rev=rev):
+                r = repo.ledger("check", "--json", "--rules-ref", rev)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+        for bad in (["check", "--rules-ref"], ["check", "--rules-ref", "main", "--rules-ref", "main"]):
+            with self.subTest(bad=bad):
+                self.assertEqual(repo.ledger(*bad).returncode, 2)
 
 
 class LedgerTemplateCopyTest(unittest.TestCase):

@@ -33,9 +33,10 @@
     python3 .keelokit/bin/ledger.py deploy <staging|production> <commit>
                                                        a deploy job, once its deploy succeeded: deploy/<env> points
                                                        at that commit (backwards too, for a rollback)
-    python3 .keelokit/bin/ledger.py check [--ci] [--json]
+    python3 .keelokit/bin/ledger.py check [--ci] [--json] [--rules-ref REV]
                                                        every difference (exit 1 on an error-level one); --ci
-                                                       in a pull request into the trunk checks its commits too
+                                                       in a pull request into the trunk checks its commits too;
+                                                       --rules-ref: the committed rule files from REV
     python3 .keelokit/bin/ledger.py attribution <a>..<b> [--json]
                                                        is every commit of the range attributed, as `check` says
                                                        (exit 0 answered, 2 usage or unresolved, 3 history cut)
@@ -1230,7 +1231,7 @@ def ledger_facts(state: dict) -> dict:
     return read_all(state)["facts"]
 
 
-def read_all(state: dict) -> dict:
+def read_all(state: dict, rules_sha: str | None = None) -> dict:
     """The facts and what they were computed from (for the commands that propose or accept corrections):
     facts, and with a complete history also stories, log, graph, placed (arrivals), corrections, records."""
     cfg = read_config(state)
@@ -1241,7 +1242,9 @@ def read_all(state: dict) -> dict:
     trunk_sha = resolve_trunk(trunk, refs)
     tree = read_tree(trunk_sha)
     stories, unreadable = read_stories(trunk_sha, cfg, tree)
-    extra = read_trunk_files(trunk_sha, tree)
+    # The rules the committed tree holds ([ledger.approval], critical.toml, the review files): the trunk's, or with
+    # `check --rules-ref` (LEDGER-013) another commit's, so a tree under judgment never relaxes its own rules.
+    extra = read_trunk_files(rules_sha, read_tree(rules_sha)) if rules_sha else read_trunk_files(trunk_sha, tree)
     reviews = {run: parse_review(data, run) for run, data in extra["reviews"].items()}
     tags = [sha for _, _, sha in version_tags(refs)]
     remotes = [sha for name, sha in refs.items() if name.startswith("refs/remotes/origin/")]
@@ -1266,7 +1269,8 @@ def read_all(state: dict) -> dict:
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
     delegation = {"reviews": reviews, "stories": {s["id"]: s for s in stories if not s.get("unreadable")},
-                  "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"])}
+                  "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"]),
+                  "rules_reach": set(read_graph([rules_sha])) if rules_sha else None}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
     branches = read_branches(trunk_sha, refs, graph, set(placed[0]), cfg["snapshot"])
@@ -1758,6 +1762,9 @@ def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) 
                 first[key] = commit
     stories = delegation.get("stories", {})
     specs = []
+    reach = delegation.get("rules_reach")
+    if reach is not None:  # `--rules-ref`: a row that arrived after that commit is judged by its rules, not its own
+        first = {key: commit for key, commit in first.items() if commit in reach}
     for key, commit in first.items():
         story = stories.get(wanted[key][0])
         specs += [f"{commit}:{CRITICAL_FILE}"] + ([f"{commit}:{story['path']}"] if story else [])
@@ -2867,10 +2874,10 @@ def pull_request_diffs(state: dict, ctx: dict) -> list[dict]:
     return attribution_diffs(rctx, rctx["log"], on_trunk=False)
 
 
-def all_diffs(state: dict, ci: bool) -> list[dict]:
+def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
     """The facts' differences and those only `check` gives (docs/ledger.md: the "Given by" column). `ci` in a pull
-    request into the trunk: its commits too (LEDGER-010)."""
-    ctx = read_all(state)
+    request into the trunk: its commits too (LEDGER-010). `rules_sha`: the rule files from that commit (--rules-ref)."""
+    ctx = read_all(state, rules_sha)
     diffs = list(ctx["facts"]["diffs"])
     if ctx["reason"] is None:
         diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
@@ -2883,9 +2890,17 @@ def all_diffs(state: dict, ci: bool) -> list[dict]:
 
 def cmd_check(state: dict, args: tuple) -> int:
     """Every difference: one line each, or `{"schema": 1, "diffs": [...]}`. Exit 1 on an error-level one. `--ci`
-    reads as the CI does (HISTORY_INCOMPLETE is an error)."""
-    as_json, ci = args
-    diffs = all_diffs(state, ci)
+    reads as the CI does (HISTORY_INCOMPLETE is an error). `--rules-ref REV` (LEDGER-013, Harbor's ok): every rule file
+    the ledger reads from the trunk's committed tree ([ledger.approval] in state.toml, critical.toml, the review
+    files, and critical.toml at a delegated row's arrival) is read from REV instead; a REV that is no commit: exit 2."""
+    as_json, ci, rules_ref = args
+    rules_sha = None
+    if rules_ref is not None:
+        rules_sha = resolve_commit(rules_ref)
+        if rules_sha is None:
+            print(f"Keelokit: check: --rules-ref {rules_ref!r} does not resolve to a commit here", file=sys.stderr)
+            return 2
+    diffs = all_diffs(state, ci, rules_sha)
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
     else:
@@ -2899,6 +2914,15 @@ def cmd_check(state: dict, args: tuple) -> int:
 # unattributed commits; 2 for a usage error or a range whose ends do not resolve; 3 when the history is incomplete.
 
 RANGE_END = re.compile(r"[^\s.\-~^:][^\s]*")
+
+
+def resolve_commit(rev: str) -> str | None:
+    """The full sha of the commit `rev` names here, or None (an option-like or malformed rev included)."""
+    if not RANGE_END.fullmatch(rev) or ".." in rev:
+        return None
+    sha = git_read(["rev-parse", "--verify", "-q", "--end-of-options", f"{rev}^{{commit}}"], ok=(0, 1, 128))
+    sha = sha.decode().strip()
+    return sha if FULL_SHA.fullmatch(sha) else None
 
 
 def via_of(in_range: list[dict], fixed: set, covered: set) -> dict:
@@ -2924,9 +2948,8 @@ def cmd_attribution(state: dict, args: tuple) -> int:
         return 2
     shas = []
     for end in ends:
-        sha = git_read(["rev-parse", "--verify", "-q", "--end-of-options", f"{end}^{{commit}}"],
-                       ok=(0, 1, 128)).decode().strip()
-        if not FULL_SHA.fullmatch(sha):
+        sha = resolve_commit(end)
+        if sha is None:
             print(f"Keelokit: attribution: {end!r} does not resolve to a commit here", file=sys.stderr)
             return 2
         shas.append(sha)
@@ -4523,8 +4546,17 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
 
 def parse_command(argv: list[str]) -> tuple | None:
     """(command, arguments) for the corrections commands and check, or None for any other spelling."""
-    if argv[:1] == ["check"] and len(set(argv[1:])) == len(argv[1:]) and set(argv[1:]) <= {"--json", "--ci"}:
-        return "check", ("--json" in argv, "--ci" in argv)
+    if argv[:1] == ["check"]:
+        rest, rules = list(argv[1:]), None
+        if "--rules-ref" in rest:
+            at = rest.index("--rules-ref")
+            if at + 1 >= len(rest) or rest[at + 1].startswith("-"):
+                return None
+            rules = rest[at + 1]
+            del rest[at:at + 2]
+        if len(set(rest)) == len(rest) and set(rest) <= {"--json", "--ci"}:
+            return "check", ("--json" in rest, "--ci" in rest, rules)
+        return None
     if argv[:1] == ["show"] and len(argv) in (2, 3) and not argv[1].startswith("-") \
             and argv[2:] in ([], ["--full"], ["--json"]):
         return "show", (argv[1], argv[2][2:] if len(argv) == 3 else "card")

@@ -297,9 +297,11 @@ says of those commits besides `UNATTRIBUTED` (`BAD_CATEGORY`, `UNKNOWN_STORY`, `
 `SQUASH_LOST_TRAILERS`): a `No-story:` with an unknown category is attributed and still an error there. Without
 `--json`: a line per unattributed commit, those diffs, and a summary line.
 
-**`ledger.py check [--ci] --json`** (Harbor's harbormaster round and the ok, HRB-3) prints
+**`ledger.py check [--ci] --json [--rules-ref <rev>]`** (Harbor's harbormaster round and the ok, HRB-3) prints
 `{"schema": 1, "diffs": [{"level": "error"|"warning", "code": "<CODE>", "detail": "…"}]}`; keys may be added,
-none changes meaning within schema 1; exit 1 iff a diff is an error.
+none changes meaning within schema 1; exit 1 iff a diff is an error. `--rules-ref <rev>`: the rule files of the
+committed tree (`[ledger.approval]`, `critical.toml`, the review files, `critical.toml` at a row's arrival) come from
+`<rev>` (Harbor passes main's tip when it judges a convoy as landed); exit 2 when `<rev>` is no commit here.
 
 **`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
 `harbor.py` (Harbor records it when it adopts a project) and `harbor.py story take --help` exits 0 (asked by

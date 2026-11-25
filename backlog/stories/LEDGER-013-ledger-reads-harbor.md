@@ -76,6 +76,12 @@ Scenario: [S8] Hostile logbook content and harbor.py output
 
 Scenario: [S9] check --json keeps its schema (Harbor's HRB-3)
   Then `ledger.py check --json` is {"schema": 1, "diffs": [{level, code, detail}]}, exit 1 iff an error
+
+Scenario: [S10] check --rules-ref (Harbor's ok judges a convoy as landed)
+  Given main's tip M marks apps/api/pay critical and a convoy commit relaxes critical.toml and adds a delegated
+    correction row for a story under it
+  Then `ledger.py check --json --rules-ref M` judges that row by M's rules (CORRECTION_INVALID, exit 1), while the
+    convoy's own rules would pass it; the same rules give the same verdict; a rev that is no commit is exit 2
 ```
 
 ## Testable units
