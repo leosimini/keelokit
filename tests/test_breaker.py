@@ -841,5 +841,73 @@ class BreakerRound4Test(BreakerCase):
         self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
 
 
+class BreakerRound5Test(BreakerCase):
+    """Breaker round 5 (ESC-336..341): each finding reproduced as a failing test first."""
+
+    def test_HARN_021_S6_a_renamed_story_file_keeps_the_risk_of_its_old_name_ESC_336(self):
+        repo = self.project({"DOC-001": story("DOC-001")})
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001", risky="true")})
+        repo.git("mv", path_of("AUTH-001"), "backlog/stories/AUTH-001-renamed.md")
+        repo.write("backlog/stories/AUTH-001-renamed.md", story("AUTH-001"))
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "docs: rename\n\nNo-story: docs", when=repo.next_date())
+        repo.publish()
+        self.close(repo, "AUTH-001", publish=False)
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S5_risky_toml_added_by_a_merges_own_resolution_starts_the_rule_ESC_337(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))}, risky=None)
+        repo.git("checkout", "-q", "-b", "side")
+        repo.commit("docs: y\n\nNo-story: docs", {"docs/y.md": "y\n"})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "side")
+        harness(repo, "Merge branch 'side'\n\nPart-of: AUTH-001", {RISKY: RISKY_TOML})
+        repo.git("rm", "-q", RISKY)
+        repo.git("commit", "-q", "-m", "chore: tidy\n\nPart-of: AUTH-001", when=repo.next_date())
+        self.close(repo, "AUTH-001")
+        found = self.breaker(self.check(repo)[1])
+        self.assertIn("BREAKER_CONFIG", [c for lvl, c, _ in found if lvl == "error"])
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)
+
+    def test_HARN_021_S3_a_revert_that_differs_only_in_whitespace_reverts_nothing_ESC_338(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.commit("chore: auth\n\nPart-of: AUTH-001", {"scripts/verify.sh": "if x:\n    skip = False\n"})
+        # harness(): exactly this file changes, so the "revert" below differs from the inverse in whitespace only
+        close = harness(repo, "feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {"scripts/verify.sh": "if x:\n    skip = True\n"})
+        repo.write("scripts/verify.sh", "if x:\nskip = False\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", f"Revert\n\nThis reverts commit {close}.\n\nPart-of: AUTH-001",
+                 when=repo.next_date())
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S7_a_nul_in_a_path_is_a_config_error_not_a_crash_ESC_339(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")}, risky='paths = ["scripts/\\u0000x"]\n')
+        self.close(repo, "AUTH-001")
+        code, diffs = self.check(repo)
+        self.assertIn("BREAKER_CONFIG", [c for lvl, c, _ in self.breaker(diffs) if lvl == "error"])
+        self.assertEqual(repo.ledger("risky", "AUTH-001").returncode, 0)
+
+    def test_HARN_021_S5_a_since_set_later_never_exempts_what_was_already_closed_ESC_340(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",)), "DOC-002": story("DOC-002")})
+        close = self.close(repo, "AUTH-001")
+        harness(repo, "chore: since\n\nPart-of: DOC-002", {RISKY: f'since = "{close}"\n' + RISKY_TOML})
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S4_more_non_people_and_a_clean_with_findings_ESC_341(self):
+        for name in ("Dependabot", "GitHub Actions", "Keelokit", "The CI", "Robot", "Automation", "Devstral",
+                     "Nemotron", "Renovate"):
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+                self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
+                           + f"- Decision · {name} · 2026-11-25 · land it\n")
+                self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+        self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "clean · 3 HIGH findings · not fixed"))
+        self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+
 if __name__ == "__main__":
     unittest.main()
