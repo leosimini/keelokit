@@ -118,6 +118,8 @@ What differs from the story as first written, all from the three cold breaker ro
   RISKY_NO_STORY; risk is sticky across every version of the story file; a revert counts by its content, ledger-wide.
 - Round 5: story versions are followed through renames; a merge's own add of risky.toml starts the rule; reverts
   match byte for byte; only the first version's `since` counts; `clean` is a round's whole result.
+- Round 6: reverts compare blob ids (no binary or `.gitattributes` trick); deciders are NFKC-normalized and non-Latin
+  letters need `deciders`; every story-file version is read by its own front-matter id.
 - Not covered: a round line is a record, not a proof that the round ran; a person's name in a Decision is not
   verified beyond `deciders`; the pre-push hook does not check breaker rounds (the pull request and the trunk's CI do).
 
@@ -146,9 +148,15 @@ What differs from the story as first written, all from the three cold breaker ro
   judged; a story planned risky after the rule dropped its risk while closing; a revert by message only reopened a
   story. Held: a PR's own risky.toml edit, Part-of and merge attribution, planned risk, one path-limited git log,
   casefolded deciders, CRLF, broken configs. The coordinator decided each fix (ESC-331..335).
-- Round 5 · head c81018280020adc96a08c61e030faf6c339a6e73 · 6 findings: ESC-336 (HIGH), ESC-337 (HIGH), ESC-338, ESC-339, ESC-340, ESC-341 · fixed in the commit after f46c2a6
+- Round 5 · head c81018280020adc96a08c61e030faf6c339a6e73 · 6 findings: ESC-336 (HIGH), ESC-337 (HIGH), ESC-338, ESC-339, ESC-340, ESC-341 · fixed in 78a6718
   A new agent, cold, 13 attacks. Reproduced: a story file renamed before the close lost its old risk; a risky.toml
   added only by a merge's own resolution never started the rule; patch-id's whitespace blindness let a dedenting
   "revert" count; a NUL in a path crashed check; a later `since` exempted a judged closure; more non-people as
   deciders and a `clean` round listing findings. Held: hunk-by-hunk merge resolutions, partial clones, 22 odd configs
   across every command, 9001-commit runtime (1.4 s vs 0.6 s).
+- Round 6 · head 78a6718ad3bf36b70d3d25af0797c8d25ccbbc82 · 4 findings: ESC-342, ESC-343, ESC-344, ESC-345 · fixed in the commit after dd1ad6b; not attacked since
+  A new agent, cold, 12 attacks. Reproduced: a binary change "reverted" to other bytes; a PR's own `* -diff`
+  attribute faking a revert; look-alike letters of other scripts as deciders; a story re-added under a name without
+  its id. Held: risky.toml as a directory, symlink or gitlink; partial clones; 16 odd configs across commands; 8000
+  commits (1.6 s vs 0.6 s). Seen, not counted (outside the invariants as written): risky changes under `Part-of:` of a
+  story closed before the rule, or of one already closed with rounds; a directory touch under `**/migrations/**`.

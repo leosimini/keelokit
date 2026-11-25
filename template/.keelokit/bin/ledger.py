@@ -854,19 +854,25 @@ REVERT_CACHE: dict[frozenset, set] = {}
 
 
 def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
-    """commit -> a hash of its change, byte for byte (a merge: against its first parent); `reverse`: of the change
-    inverted. One git call; a commit with no change has none. Not `git patch-id`: it ignores whitespace, and a
-    "revert" that only dedents a line changes what the code does (ESC-338)."""
-    # --no-prefix: `-R` swaps the a/ b/ prefixes. The `index` lines name the blobs in the other order: left out.
-    out = git_read(["log", "--no-walk=unsorted", "--stdin", "-p", "--no-prefix", "--no-color", "--no-ext-diff",
-                    "--no-textconv", "--full-index", "--diff-merges=first-parent", "--format=%x00commit %H",
-                    *(["-R"] if reverse else [])], "".join(f"{x}\n" for x in shas).encode())
+    """commit -> a hash of its change as git records it: each path with its old and new mode and blob id (a merge:
+    against its first parent); `reverse`: of the change inverted. One `git log --raw`, so neither a binary file nor
+    a `.gitattributes` the change under judgment brings (`* -diff`) can make two changes look alike (ESC-338,
+    ESC-342, ESC-343). A commit with no change has none."""
+    out = git_read(["-c", "core.quotePath=false", "log", "--no-walk=unsorted", "--stdin", "--raw", "--no-abbrev",
+                    "--no-renames", "--diff-merges=first-parent", "--format=%x00%H"],
+                   "".join(f"{x}\n" for x in shas).encode()).decode(errors="replace")
     ids = {}
-    for chunk in out.split(b"\0commit ")[1:]:
-        head, _, diff = chunk.partition(b"\n")
-        body = b"\n".join(line for line in diff.split(b"\n") if not line.startswith(b"index "))
-        if body.strip():
-            ids[head.decode(errors="replace").strip()] = hashlib.sha256(body.strip()).hexdigest()
+    for chunk in out.split("\0")[1:]:
+        head, _, rest = chunk.partition("\n")
+        rows = []
+        for line in rest.splitlines():
+            meta, tab, path = line.partition("\t")
+            fields = meta.lstrip(":").split()
+            if line.startswith(":") and tab and len(fields) >= 4:
+                old, new = (fields[0], fields[2]), (fields[1], fields[3])
+                rows.append((path, *(new + old if reverse else old + new)))
+        if rows:
+            ids[head.strip()] = hashlib.sha256(repr(sorted(rows)).encode()).hexdigest()
     return ids
 
 
@@ -3127,8 +3133,16 @@ def breaker_record(body: str) -> dict:
 
 def agent_like(name: str) -> bool:
     """A name that reads as an agent's or a model's, never a person's (AGENT_WORDS, AGENT_SHORT)."""
+    name = unicodedata.normalize("NFKC", name)  # fullwidth and other compatibility forms read as what they show
     if re.search(r"[0-9]", name):  # people's names carry no digits: `o3`, `C1aude`, `Breaker2` (ESC-329)
         return True
+    # A letter of another script (Cherokee `Ꮯ`, small capitals, …) cannot be told from a look-alike here: only a name
+    # in `deciders` can carry one (ESC-344). Latin letters with accents (José) are letters of a person's name.
+    if any(ch.isalpha() and not unicodedata.name(ch, "").startswith("LATIN ") for ch in name):
+        return True
+    if any(unicodedata.name(ch, "").startswith("LATIN LETTER SMALL CAPITAL") for ch in name):
+        return True
+    name = "".join(ch for ch in unicodedata.normalize("NFKD", name) if not unicodedata.combining(ch))
     if any(not ch.isascii() and unicodedata.name(ch, "").startswith(("CYRILLIC", "GREEK")) for ch in name) \
             and re.search(r"[A-Za-z]", name):  # Latin mixed with look-alike letters: `Сlaude` with a Cyrillic С
         return True
@@ -3376,7 +3390,7 @@ def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
     return diffs
 
 
-def story_versions(tip: str, paths: set[str], cfg: dict, ids: set[str] = frozenset(), cap: int = 4000) -> list[dict]:
+def story_versions(tip: str, paths: set[str], cfg: dict, ids: set[str] = frozenset(), cap: int = 20000) -> list[dict]:
     """Every committed version of these story files that `tip` reaches, under their earlier names too (renames are
     followed back, ESC-336), and of any story file named after one of `ids` (one `git log --raw -M` over the stories'
     glob and one `cat-file`, at most `cap` versions): risk is sticky, a risky version keeps the story risky (ESC-334)."""
@@ -3384,18 +3398,15 @@ def story_versions(tip: str, paths: set[str], cfg: dict, ids: set[str] = frozens
         return []
     out = git_read(["-c", "core.quotePath=false", "log", "--full-history", "--format=%x00%H", "--raw", "--no-abbrev",
                     "-M", tip, "--", f":(glob){cfg['stories']}"]).decode(errors="replace")
-    wanted, named = set(paths), tuple(f"{i}{sep}" for i in ids for sep in ("-", "_", "."))
+    # Every version of every story file is read, and each counts for the id its own front matter gives: a story moved
+    # to a name that says nothing of its id keeps the risk of its earlier versions (ESC-345).
     versions: dict[str, str] = {}
-    for line in out.splitlines():  # newest first: a rename adds its old name before that name's older versions
+    for line in out.splitlines():
         meta, tab, rest = line.partition("\t")
         fields, names = meta.split(), rest.split("\t")
         if not line.startswith(":") or not tab or len(fields) < 5:
             continue
         old, new = names[0], names[-1]
-        if not (new in wanted or old in wanted or new.rsplit("/", 1)[-1].startswith(named)
-                or old.rsplit("/", 1)[-1].startswith(named)):
-            continue
-        wanted.update((old, new))
         for blob, path in ((fields[3], new), (fields[2], old)):
             if set(blob) != {"0"} and len(versions) < cap:
                 versions.setdefault(blob, path)
