@@ -1,0 +1,37 @@
+# Risky stories (HARN-021). A story is risky when its front matter says `risky = true`, when one of its
+# `dimensions` is listed below, when one of its `touches` meets a path below (the file, a directory that holds
+# one, a glob), or when a commit of it on the trunk changes such a path. The front matter can only add risk.
+#
+# A risky story is built with the cold breaker loop (/keelokit:build-story, step 5): a NEW breaker agent on each
+# head, briefed with the story, the diff and the invariants only; reproduced findings only; each fix starts with a
+# test that fails before it; until a round is clean or `rounds` rounds have run. Each round is a line under
+# `## Breaker rounds` in the story file; when the last one left findings, a person decides and a
+# `- Decision · <person> · <YYYY-MM-DD> · <what>` line records it.
+#
+# `python3 .keelokit/bin/ledger.py risky <ID>` says whether a story is risky and why. `ledger.py check` (CI)
+# reports a risky story closed with no round (BREAKER_MISSING, error) and one whose last round left findings
+# with no decision (BREAKER_UNRESOLVED, warning), for stories closed after this file reached the trunk.
+#
+# The product owns this file: add the paths where a bug runs code, refuses or lets through a push, writes from
+# CI, moves money, or decides what reaches a model. A pull request is judged by the trunk's copy, never its own.
+
+rounds = 3   # the cap: a fourth round, or a last round with findings, needs a person's Decision
+
+dimensions = ["security", "auth", "integrity", "data"]
+
+paths = [
+  ".githooks/**",            # what runs on every commit and push
+  ".github/workflows/**",    # CI: what runs, what it may write, what it lets through
+  ".keelokit/bin/**",        # the harness: guard, doctor, ledger, verify tools
+  ".keelokit/harness/**",    # the rules the agents follow
+  ".claude/**",              # agent hooks and permissions
+  "scripts/**",              # verify.sh and what it runs
+  "**/migrations/**",        # schema changes
+  "**/auth/**",              # who may do what
+  "infra/**",
+  "**/Dockerfile*",
+  "docker-compose*.yml",
+]
+
+# since = "<sha>"   # optional: the rule holds only for stories closed after this commit (an adopted project's
+#                   # start). Without it, from the commit that brought this file to the trunk.

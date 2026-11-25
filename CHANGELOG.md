@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A risky story closes only after cold breaker rounds, and the ledger says when one didn't (HARN-021).**
+  `.keelokit/risky.toml` (new, the project's; the template ships defaults for hooks, the harness, CI, scripts,
+  migrations and auth) says what is risky, and `ledger.py risky <ID>` says whether a story is and why. For a risky
+  story `/keelokit:build-story` runs a new breaker per head, briefed with the story, the diff and the invariants
+  only; it keeps reproduced findings only, fixes each starting with a failing test, and records each round under
+  `## Breaker rounds` in the story file, up to 3 rounds; past that, a person decides. `ledger.py check` reports a
+  risky story closed with no round (`BREAKER_MISSING`, error) and a last round with findings and no decision
+  (`BREAKER_UNRESOLVED`, warning), in a pull request too, by the base's rules. Stories closed before the file
+  arrived are not flagged.
+
 - **The ledger reads Harbor's logbook, and taking a story is Harbor's lock (LEDGER-013).** With Harbor, a story is
   `delivered` when a vessel sealed on its exact head sits in an open convoy, `in-progress` when an active worker holds
   it, and an on-trunk story names the convoy that sailed it, with the exact time Harbor saw it reach main;

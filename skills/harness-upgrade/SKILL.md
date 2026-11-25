@@ -12,7 +12,7 @@ project, on a branch, and never rewrites their product.
 
 The template owns infrastructure (CI, lint/format/ts base configs, `scripts/verify.sh`, git
 hooks, `.keelokit/` except the project's own choices: `rules.local.toml`, `exceptions.toml`,
-`guard-allow.toml`, `critical.toml`, `profile.toml`, `verify-routing.toml`, `red-causes.toml`, `verify-clock.toml` and `ux.toml`).
+`guard-allow.toml`, `critical.toml`, `risky.toml`, `profile.toml`, `verify-routing.toml`, `red-causes.toml`, `verify-clock.toml` and `ux.toml`).
 The product owns its code (apps' `src/`, e2e, prisma schema
 and migrations, locale files, packages' `src/`) and its knowledge (`docs/context/`, `docs/prd.md`,
 `docs/escapes.md`, `backlog/`, `README.md`, `CHANGELOG.md`) — Copier never overwrites those once
@@ -34,6 +34,9 @@ they exist.
    `docs/prelaunch-debt-ledger.md`, `docs/ci.md`, `.keelokit/bin/ci.py`, `status.py` and the agent brief
    arrive as new files. `verify` now also takes a per-machine lock; the CI gains a nightly
    trigger, a manual trigger and a `ci-report` job.
+   An update that brings `.keelokit/risky.toml` (HARN-021) brings the cold breaker rule for risky stories with it:
+   it holds only for stories closed after the commit that lands the file on the trunk, so no existing story is
+   flagged and none is edited. Read its `paths` with the person and add the project's own risky code.
 4. Resolve every `*.rej`: keep the project's intent, take the template's structure; delete the
    `.rej` files. Read the Keelokit CHANGELOG entries between the two versions for what changed and
    why.

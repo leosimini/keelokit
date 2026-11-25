@@ -11,6 +11,8 @@
     python3 .keelokit/bin/ledger.py show <ID> --json   the same record and why, schema 1 (exit 1 no such story)
     python3 .keelokit/bin/ledger.py next               the ready stories nobody works on, by wave and id
     python3 .keelokit/bin/ledger.py --release vX.Y.Z   the stories that entered that version
+    python3 .keelokit/bin/ledger.py risky <ID>         is the story risky (.keelokit/risky.toml), why, and the
+                                                       breaker round cap (HARN-021); exit 0, 2 no such story
     python3 .keelokit/bin/ledger.py take <ID>          this worktree works on <ID> (git config --worktree
                                                        keelokit.story); exit 1 if it is no story or on the trunk
                                                        with Harbor: harbor.py story take <ID> first (a refusal
@@ -418,6 +420,9 @@ KINDS = ("backfill", "late", "retract")
 REVIEWS = ".keelokit/ledger-reviews"
 STATE_FILE = ".keelokit/state.toml"
 CRITICAL_FILE = ".keelokit/critical.toml"
+RISKY_FILE = ".keelokit/risky.toml"  # HARN-021: what makes a story risky, and its breaker round cap
+DEFAULT_ROUNDS = 3
+MAX_ROUNDS = 20
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 MODES = ("human", "delegated", "mixed")
 HUMAN_FOR = ("critical", "disagreement", "low-confidence")
@@ -720,7 +725,7 @@ def build_story(path: str, content: bytes | None, id_from: str) -> dict | None:
             raise LedgerError(f"the story file {path} cannot be read and its name has no EPIC-NNN id")
         sid = m.group(0)
         return {"id": sid, "title": sid, "epic": sid.split("-")[0], "wave": None, "depends_on": [], "path": path,
-                "unreadable": True, "touches": [], "dimensions": []}
+                "unreadable": True, "touches": [], "dimensions": [], "risky": False, "breaker": None}
     meta, body = front_matter(content.decode("utf-8", errors="replace"))
     if id_from == "filename":
         m = STORY_ID.match(base)
@@ -739,7 +744,8 @@ def build_story(path: str, content: bytes | None, id_from: str) -> dict | None:
             "wave": wave if isinstance(wave, int) and not isinstance(wave, bool) else None,
             "depends_on": [d for d in deps if isinstance(d, str)] if isinstance(deps, list) else [],
             "path": path, "unreadable": False, "touches": text_list(meta.get("touches")),
-            "dimensions": text_list(meta.get("dimensions"))}
+            "dimensions": text_list(meta.get("dimensions")), "risky": meta.get("risky") is True,
+            "breaker": breaker_record(body)}
 
 
 def text_list(value) -> list[str]:
@@ -762,7 +768,7 @@ def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]], strict: bool =
     """What the approval modes read from the trunk's tree, in one `cat-file`: state.toml, critical.toml and the
     review files ({run: bytes}). A file the clone lacks reads as absent; `strict` (the rules of `check --rules-ref`):
     LedgerError instead, since a rule read as absent is a looser rule (no critical area, the default enforce)."""
-    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE, CORRECTIONS)
+    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE, CORRECTIONS, RISKY_FILE)
               or (path.startswith(REVIEWS + "/") and path.endswith(".json")
                   and RUN_ID.fullmatch(path[len(REVIEWS) + 1:-5]) and "/" not in path[len(REVIEWS) + 1:])}
     blobs = read_blobs(list(wanted.values()), trunk_sha)
@@ -774,7 +780,8 @@ def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]], strict: bool =
     reviews = {path[len(REVIEWS) + 1:-5]: data for path, data in content.items()
                if path.startswith(REVIEWS + "/") and data is not None}
     return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews,
-            "corrections": content.get(CORRECTIONS)}
+            "corrections": content.get(CORRECTIONS),
+            "risky": risky_config(content.get(RISKY_FILE), RISKY_FILE in wanted)}
 
 
 def read_stories(trunk_sha: str, cfg: dict, tree: list[tuple[str, str]] | None = None) -> tuple[list[dict], list[str]]:
@@ -1299,7 +1306,7 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
             "unverified": unverified_prefixes(state), "stories": stories, "log": log,
             "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
             "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation,
-            "harbor": book}
+            "harbor": book, "risky": extra["risky"]}
 
 
 # ── Harbor's logbook (LEDGER-013) ──
@@ -2897,7 +2904,10 @@ def pull_request_diffs(state: dict, ctx: dict) -> list[dict]:
     if cut_reason(rctx["graph"], is_shallow() is not False):
         return [{"level": "error", "code": "HISTORY_INCOMPLETE",
                  "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
-    return attribution_diffs(rctx, rctx["log"], on_trunk=False)
+    # HARN-021: a risky story the pull request closes, judged by the trunk's risky.toml (or --rules-ref's), never
+    # the pull request's own, and by its story file as the pull request leaves it.
+    return attribution_diffs(rctx, rctx["log"], on_trunk=False) + breaker_diffs(
+        ctx.get("risky"), rctx["log"], rctx["log"], rctx["graph"], rctx["stories"], config_diffs=False)
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -2907,6 +2917,7 @@ def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]
     diffs = list(ctx["facts"]["diffs"])
     if ctx["reason"] is None:
         diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
+        diffs += trunk_breaker_diffs(ctx)
         if ci and pull_request(trunk_name(state)):
             diffs += pull_request_diffs(state, ctx)
     if ci:
@@ -2936,6 +2947,300 @@ def cmd_check(state: dict, args: tuple) -> int:
         for d in diffs:
             print(f"{d['level']} {d['code']} {d['detail']}")
     return 1 if any(d["level"] == "error" for d in diffs) else 0
+
+
+# ── breaker rounds (HARN-021) ──
+# A risky story (`risky = true`, a dimension or a path of .keelokit/risky.toml, in its touches or in what its trunk
+# commits change) closes only after cold breaker rounds, recorded in its file under `## Breaker rounds`: one line per
+# round, `- Round <n> · head <sha> · clean` or `· <findings> · <fixes>`, and when the last round left findings, a
+# person's `- Decision · <name> · <YYYY-MM-DD> · <what>`. `check` gives BREAKER_MISSING (error) for a risky story
+# closed with no round, BREAKER_UNRESOLVED (warning) when its last round is not clean, or it went past the cap, with no
+# Decision after it, BREAKER_CONFIG for a risky.toml it cannot use (an error: every closed story counts as risky then)
+# and BREAKER_BAD_ENTRY (warning) for a line under the heading that is neither. The rule holds for Story: commits after
+# `[ledger] since` that the commit which brought risky.toml to the trunk (or its `since`) does not reach; without
+# risky.toml on the trunk, nothing. The line is a record, as a trailer is: the ledger checks it is there, not that the
+# round happened.
+
+ROUND_LINE = re.compile(r"- Round ([0-9]{1,3}) · head ([0-9a-f]{40}|[0-9a-f]{64}) · (.+)")
+DECISION_LINE = re.compile(r"- Decision · ([^·]*\S[^·]*) · ([0-9]{4}-[0-9]{2}-[0-9]{2}) · (.*\S.*)")
+NOT_A_PERSON = re.compile(r"\b(?:claude|agent|bot|breaker|builder|reviewer|verifier|orchestrator|coordinator|"
+                          r"delegated|ai|llm|gpt|copilot|assistant)\b", re.I)
+ROUNDS_HEADING = re.compile(r"##[ \t]+Breaker rounds[ \t]*")
+ROUND_FORMAT = ("`- Round <n> · head <full sha> · clean` (or `· <findings> · <fixes>`), or "
+                "`- Decision · <person> · <YYYY-MM-DD> · <what was decided>`")
+
+
+def breaker_record(body: str) -> dict:
+    """The `## Breaker rounds` section(s) of a story's text, outside code fences: entries in order (("round", n, head,
+    clean) or ("decision", name)), and the lines under it that are neither (`bad`, with why). Only top-level `- ` lines
+    are entries; indented and other lines are the round's detail."""
+    entries, bad = [], []
+    inside, fence = False, None
+    for raw in body.splitlines():
+        line = raw.rstrip()
+        mark = line.lstrip()[:3]
+        if fence:
+            fence = None if mark == fence else fence
+            continue
+        if mark in ("```", "~~~"):
+            fence = mark
+            continue
+        if ROUNDS_HEADING.fullmatch(line):
+            inside = True
+            continue
+        if line.startswith(("# ", "## ")):
+            inside = False
+            continue
+        if not inside or not line.startswith("- "):
+            continue
+        m = ROUND_LINE.fullmatch(line)
+        if m:
+            result = m.group(3).split(" · ")[0].strip()
+            entries.append(("round", int(m.group(1)), m.group(2), result == "clean"))
+            continue
+        m = DECISION_LINE.fullmatch(line)
+        if m and valid_date(m.group(2)) and not NOT_A_PERSON.search(m.group(1)):
+            entries.append(("decision", m.group(1).strip()))
+        elif m and valid_date(m.group(2)):
+            bad.append(f"{line[:80]!r}: a Decision names the person who took it, never an agent")
+        else:
+            bad.append(f"{line[:80]!r} is not {ROUND_FORMAT}")
+    numbers = [e[1] for e in entries if e[0] == "round"]
+    if numbers != list(range(1, len(numbers) + 1)):
+        bad.append(f"its rounds are numbered {', '.join(map(str, numbers))}, not 1, 2, … in order")
+    return {"entries": entries, "bad": bad}
+
+
+def risky_config(content: bytes | None, present: bool) -> dict | None:
+    """.keelokit/risky.toml as the ledger uses it: None when the tree has no such file. `problem` when it cannot be
+    used as written (not TOML, unreadable here, a wrong type): then `all`, every closed story counts as risky."""
+    if not present:
+        return None
+    rules = {"rounds": DEFAULT_ROUNDS, "paths": [], "dimensions": [], "since": None, "problem": None, "all": False}
+    data = load_toml(content) if content is not None else None
+    if not isinstance(data, dict):
+        return {**rules, "problem": f"{RISKY_FILE} cannot be read as TOML here", "all": True}
+    problems = []
+    rounds = data.get("rounds", DEFAULT_ROUNDS)
+    if is_int(rounds) and 1 <= rounds <= MAX_ROUNDS:
+        rules["rounds"] = rounds
+    else:
+        problems.append(f"`rounds` is a whole number from 1 to {MAX_ROUNDS}")
+    for key in ("paths", "dimensions"):
+        value = data.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+            problems.append(f"`{key}` is a list of non-empty strings")
+        else:
+            rules[key] = sorted({v.strip().lstrip("/") for v in value} - {""})
+    since = data.get("since", "")
+    if not isinstance(since, str) or since.strip() and not HEX_SHA.fullmatch(since.strip()):
+        problems.append("`since` is a commit sha")
+    elif since.strip():
+        rules["since"] = since.strip().lower()
+    if problems:
+        rules.update(problem=f"{RISKY_FILE}: {'; '.join(problems)}", all=True)
+    return rules
+
+
+def literal_prefix(pattern: str) -> str:
+    """What a glob says before its first wildcard."""
+    m = re.search(r"[*?]", pattern)
+    return pattern[:m.start()] if m else pattern
+
+
+def touch_meets(touch: str, pattern: str) -> bool:
+    """A story's touch can name a file the pattern covers: the file itself, a directory that holds one (`scripts`
+    for `scripts/verify.sh`, `apps/api/auth` for `**/auth/**`), or, for a touch that is a glob, one whose literal start
+    and the pattern's run into each other (when in doubt, risky)."""
+    t = touch.strip()
+    while t.startswith("./"):
+        t = t[2:]
+    t = t.lstrip("/").rstrip("/")
+    if not t:
+        return False
+    if re.search(r"[*?]", t):
+        a, b = literal_prefix(t), literal_prefix(pattern)
+        return a.startswith(b) or b.startswith(a)
+    regex = glob_regex(pattern)
+    return bool(regex.fullmatch(t) or regex.fullmatch(t + "/") or literal_prefix(pattern).startswith(t + "/"))
+
+
+def risky_reasons(story: dict, rules: dict | None, changed: set) -> list[str]:
+    """Why a story is risky (empty: it is not): its front matter, a dimension, a touch or a changed path."""
+    if rules is None:
+        return ["risky = true"] if story.get("risky") else []
+    why = [f"{RISKY_FILE} cannot be used, so every story counts"] if rules["all"] else []
+    why += ["risky = true"] if story.get("risky") else []
+    why += [f"dimension {d}" for d in story["dimensions"] if d in rules["dimensions"]]
+    for pattern in rules["paths"]:
+        regex = glob_regex(pattern)
+        why += [f"touches {t} ({pattern})" for t in story["touches"] if touch_meets(t, pattern)]
+        why += [f"changes {p} ({pattern})" for p in sorted(changed) if regex.fullmatch(p)]
+    return list(dict.fromkeys(why))
+
+
+def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], graph: dict, stories: list[dict],
+                  config_diffs: bool = True) -> list[dict]:
+    """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them)."""
+    if rules is None:
+        return []
+    diffs = []
+    if rules["problem"] and config_diffs:
+        diffs.append({"level": "error", "code": "BREAKER_CONFIG", "detail": f"{rules['problem']}; until it is fixed "
+                      "every story closed after the rule holds counts as risky"})
+    reverted = revert_status(log, graph)
+    closing: dict[str, str] = {}
+    naming: dict[str, list[str]] = {}
+    for c in reversed(in_range):  # oldest first
+        for sid in dict.fromkeys(c["story"] + c["part_of"]):
+            naming.setdefault(sid, []).append(c["sha"])
+        if not reverted.get(c["sha"], False):
+            for sid in c["story"]:
+                closing.setdefault(sid, c["sha"])
+    by_id = {s["id"]: s for s in stories}
+    closing = {sid: sha for sid, sha in closing.items() if sid in by_id}
+    wanted = sorted({sha for sid in closing for sha in naming.get(sid, ())}) if rules["paths"] else []
+    paths = changed_paths(wanted)
+    for sid, sha in sorted(closing.items()):
+        story = by_id[sid]
+        if story["unreadable"]:
+            diffs.append({"level": "error", "code": "BREAKER_MISSING", "detail": f"{sid}: closed by {short(sha)}, and "
+                          f"its file {story['path']} cannot be read here, so its breaker rounds cannot be checked"})
+            continue
+        changed = set().union(*(paths.get(x, set()) for x in naming.get(sid, ())))
+        why = risky_reasons(story, rules, changed)
+        if not why:
+            continue
+        reason = "; ".join(why[:3]) + (f"; +{len(why) - 3} more" if len(why) > 3 else "")
+        record = story["breaker"]
+        if record["bad"]:
+            diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY",
+                          "detail": f"{sid} ({story['path']}): {record['bad'][0]}"})
+        rounds = [(i, e) for i, e in enumerate(record["entries"]) if e[0] == "round"]
+        if not rounds:
+            diffs.append({"level": "error", "code": "BREAKER_MISSING", "detail": (
+                f"{sid} is risky ({reason}) and {short(sha)} closed it with no breaker round recorded; fix: run the "
+                f"cold breaker rounds (/keelokit:build-story, step 5) and record each under `## Breaker rounds` in "
+                f"{story['path']}: {ROUND_FORMAT}")})
+            continue
+        decisions = [i for i, e in enumerate(record["entries"]) if e[0] == "decision"]
+        last_at, last = rounds[-1]
+        if not last[3] and not any(i > last_at for i in decisions):
+            diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
+                f"{sid}: its last breaker round ({last[1]}, head {short(last[2])}) left findings, and no person's "
+                f"Decision line follows it in {story['path']}; a person decides: another round, or land as it is "
+                "(`- Decision · <person> · <YYYY-MM-DD> · <what>`)")})
+        elif len(rounds) > rules["rounds"] and not any(i > rounds[rules["rounds"] - 1][0] for i in decisions):
+            diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
+                f"{sid}: {len(rounds)} breaker rounds, past the cap of {rules['rounds']} ({RISKY_FILE}), with no "
+                f"person's Decision line after round {rules['rounds']} in {story['path']}")})
+    return diffs
+
+
+def breaker_start(ctx: dict, rules: dict) -> tuple[list[str], list[dict]]:
+    """The commits that mark where the rule starts on the trunk: those that added risky.toml (one path-limited `git
+    log`), and its `since` when it names exactly one commit (else a warning). Empty: the trunk's history never added
+    it (a merge's own resolution, a rules ref that brings it): no start, so every commit after `[ledger] since`."""
+    graph = ctx["graph"]
+    out = git_read(["log", "--format=%H", "--diff-filter=A", ctx["trunk_sha"], "--", RISKY_FILE]).decode()
+    starts = [sha for sha in out.split() if sha in graph]
+    diffs = []
+    if rules["since"]:
+        matches = [sha for sha in graph if sha.startswith(rules["since"])]
+        if len(matches) == 1:
+            starts.append(matches[0])
+        else:
+            diffs.append({"level": "warning", "code": "BREAKER_CONFIG", "detail": (
+                f"{RISKY_FILE}: since = {rules['since']!r} names {'no commit' if not matches else 'several commits'} "
+                "of the trunk's history; it exempts nothing")})
+    return starts, diffs
+
+
+def trunk_breaker_diffs(ctx: dict) -> list[dict]:
+    """BREAKER_* for the trunk: the risky stories closed after the rule holds (`[ledger] since`, and the commit that
+    brought risky.toml or its `since`), judged by the committed risky.toml (`--rules-ref`'s when given)."""
+    rules = ctx.get("risky")
+    in_range = since_range(ctx["cfg"], ctx["log"], ctx["graph"])
+    if rules is None or in_range is None:
+        return [{"level": "error", "code": "BREAKER_CONFIG", "detail": rules["problem"]}] \
+            if rules is not None and rules["problem"] else []
+    starts, diffs = breaker_start(ctx, rules)
+    if starts:
+        held = set(first_reach(ctx["graph"], starts))
+        in_range = [c for c in in_range if c["sha"] not in held]
+    return diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"])
+
+
+def work_tree_story(cfg: dict, sid: str) -> dict | None:
+    """The story <ID> as the work tree's file has it (the branch may have just written it), else None."""
+    pattern = glob_regex(cfg["stories"])
+    base = Path(ROOT)
+    head = cfg["stories"].split("*", 1)[0].rsplit("/", 1)[0]
+    folder = base / head if head else base
+    if not folder.is_dir():
+        return None
+    for path in sorted(folder.rglob("*")):
+        rel = path.relative_to(base).as_posix()
+        if path.is_file() and not path.is_symlink() and pattern.fullmatch(rel):
+            try:
+                story = build_story(rel, path.read_bytes(), cfg["id_from"])
+            except (OSError, LedgerError):
+                continue
+            if story and story["id"] == sid:
+                return story
+    return None
+
+
+def merge_rules(a: dict | None, b: dict | None) -> dict | None:
+    """The stricter reading of two risky.toml: either's paths and dimensions, the lower round cap."""
+    if a is None or b is None:
+        return a or b
+    return {**a, "paths": sorted(set(a["paths"]) | set(b["paths"])),
+            "dimensions": sorted(set(a["dimensions"]) | set(b["dimensions"])),
+            "rounds": min(a["rounds"], b["rounds"]), "all": a["all"] or b["all"],
+            "problem": a["problem"] or b["problem"]}
+
+
+def cmd_risky(state: dict, sid: str) -> int:
+    """`risky <ID>`: is the story risky, why, and the round cap. Rules: the trunk's committed risky.toml and the work
+    tree's, the stricter of the two; the story: the work tree's file, else the trunk's; what changes: its touches and
+    the branch's commits since it left the trunk (`git diff --name-only <trunk>...HEAD`). Exit 0, 2 no such story."""
+    cfg = read_config(state)
+    trunk = trunk_name(state)
+    refs = read_refs(trunk, cfg["snapshot"])
+    trunk_sha = refs.get(f"refs/remotes/origin/{trunk}") or refs.get(f"refs/heads/{trunk}")
+    committed, story = None, work_tree_story(cfg, sid)
+    if trunk_sha:
+        tree = read_tree(trunk_sha)
+        committed = read_trunk_files(trunk_sha, tree)["risky"]
+        if story is None:
+            story = next((s for s in read_stories(trunk_sha, cfg, tree)[0] if s["id"] == sid), None)
+    local_path = Path(ROOT) / RISKY_FILE
+    try:
+        local = risky_config(local_path.read_bytes(), True) if local_path.is_file() else None
+    except OSError:
+        local = risky_config(None, True)
+    rules = merge_rules(committed, local)
+    if story is None:
+        print(f"Keelokit: no story {sid} in the work tree or on the trunk", file=sys.stderr)
+        return 2
+    changed: set[str] = set()
+    if trunk_sha:
+        out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{trunk_sha}...HEAD"],
+                       ok=(0, 128)).decode(errors="replace")
+        changed = {line for line in out.splitlines() if line.strip()}
+    why = risky_reasons(story, rules, changed)
+    cap = rules["rounds"] if rules else DEFAULT_ROUNDS
+    if rules is None:
+        print(f"Keelokit: no {RISKY_FILE} on the trunk or in the work tree: only `risky = true` makes a story risky")
+    if rules and rules["problem"]:
+        print(f"Keelokit: {rules['problem']} (every story counts as risky until it is fixed)")
+    if why:
+        print(f"{sid}: risky — {'; '.join(why[:6])}{f'; +{len(why) - 6} more' if len(why) > 6 else ''}")
+        print(f"  build it with the cold breaker loop: up to {cap} rounds, each recorded under `## Breaker rounds`")
+    else:
+        print(f"{sid}: not risky (breaker rounds: optional; cap {cap})")
+    return 0
 
 
 # ── attribution of a range (LEDGER-013: Harbor's `convoy add` asks it before it records a vessel) ──
@@ -4611,6 +4916,8 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "show", (argv[1], argv[2][2:] if len(argv) == 3 else "card")
     if argv == ["next"]:
         return "next", None
+    if argv[:1] == ["risky"] and len(argv) == 2 and STORY_ID.fullmatch(argv[1]):
+        return "risky", argv[1]
     if argv[:1] == ["attribution"] and len(argv) >= 2 and not argv[1].startswith("-"):
         rest, rules = list(argv[2:]), None
         if "--rules-ref" in rest:
@@ -4677,6 +4984,8 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_show(state, args)
         if command == "next":
             return cmd_next(state)
+        if command == "risky":
+            return cmd_risky(state, args)
         if command == "attribution":
             return cmd_attribution(state, args)
         if command == "hook":

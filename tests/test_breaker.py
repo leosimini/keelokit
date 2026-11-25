@@ -366,7 +366,9 @@ class BreakerPullRequestTest(BreakerCase):
         self.close(repo, "AUTH-001")
         self.assertEqual(self.breaker(self.check(repo)[1]), [])
         repo.git("checkout", "-q", "-b", "rules")
-        rules = harness(repo, "chore: stricter\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        # --rules-ref reads [ledger] from REV's committed state.toml too (LEDGER-013), so REV commits it.
+        rules = harness(repo, "chore: stricter\n\nNo-story: harness",
+                        {RISKY: RISKY_TOML, ".keelokit/state.toml": f'[ledger]\nsince = "{self.since}"\n'})
         repo.git("checkout", "-q", "main")
         found = self.breaker(self.check(repo, "--rules-ref", rules)[1])
         self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)

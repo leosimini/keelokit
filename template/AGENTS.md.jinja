@@ -82,7 +82,10 @@ backlog/     epics.md, stories/<ID>-<slug>.md
 7. Invariants (`docs/context/domain.md`, `INV-nnn`) are proven by the test their class calls for:
    property tests for totals, `race()` on the real database for limits, replays for one-time
    side effects. Critical areas (`.keelokit/critical.toml`) go one story at a time, in full mode,
-   with `pnpm mutation` green.
+   with `pnpm mutation` green. A risky story (`.keelokit/risky.toml`; `python3 .keelokit/bin/ledger.py risky
+   <ID>`) closes only after cold breaker rounds — a new breaker per head, reproduced findings only, each fix
+   starting with a failing test — recorded under `## Breaker rounds` in its file; the CI's `ledger.py check`
+   reports one closed without them.
 8. A bug that escaped leaves a check for its whole class, logged in `docs/escapes.md`. An
    intermittent test is a race: never raise its timeout, retry or skip it. A slow CI job is split,
    never given a longer timeout.

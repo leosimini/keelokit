@@ -164,8 +164,31 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `CORRECTION_UNCHECKED` (a partial clone lacks earlier versions of the corrections file, so append-only is checked in CI only) | warning | `check`, the doctor |
 | `HISTORY_INCOMPLETE` | error in CI, warning in a session | every reader |
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
+| `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
+| `BREAKER_UNRESOLVED` (the last round left findings, or the rounds went past the cap, with no person's Decision after it), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
+
+### Breaker rounds (HARN-021)
+
+A story is **risky** when its front matter says `risky = true`, when one of its `dimensions` is in
+`.keelokit/risky.toml`'s `dimensions`, when one of its `touches` meets a glob of its `paths`, or when a trunk commit
+of the story (`Story:` or `Part-of:`) changes such a path; `ledger.py risky <ID>` says whether and why. A risky story
+closes only with its cold breaker rounds recorded in its file:
+
+```
+## Breaker rounds
+- Round 1 · head <full sha> · 2 findings: ESC-312, ESC-313 · fixed in a1b2c3d, e4f5a6b
+- Round 2 · head <full sha> · clean
+- Decision · <person> · <YYYY-MM-DD> · <what was decided>      (only when the last round left findings)
+```
+
+`check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
+for a pull request the base's `risky.toml` with the pull request's story file. The rule holds for `Story:` commits
+after `[ledger] since` that the commit which brought `risky.toml` to the trunk does not reach (or its `since` key,
+which can only move the start later): stories closed before are exempt by position, never by editing them. No
+`risky.toml` on the trunk: no rule. The line is a record, as a trailer is: `check` asks that it is there and well
+formed, not that the round happened.
 
 ### Corrections file
 
