@@ -281,9 +281,15 @@ class BreakerHistoryTest(BreakerCase):
     def test_HARN_021_S5_risky_toml_since_exempts_up_to_that_commit(self):
         stories = {"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",)),
                    "AUTH-002": story("AUTH-002", touches=("scripts/verify.sh",))}
-        repo = self.project(stories)
-        first = self.close(repo, "AUTH-001")
+        # Since ESC-340 only the first version's `since` counts: it names work already done on a branch that lands
+        # after the file (an adopted project's start); a story closed after that is judged.
+        repo = self.project(stories, risky=None)
+        repo.git("checkout", "-q", "-b", "old")
+        first = repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.git("checkout", "-q", "main")
         harness(repo, "chore: the rule from here\n\nNo-story: harness", {RISKY: f'since = "{first}"\n' + RISKY_TOML})
+        repo.merge("old", "Merge pull request #2 from x/old")
+        repo.publish()
         self.close(repo, "AUTH-002")
         self.assertEqual(self.breaker(self.check(repo)[1]), [("error", "BREAKER_MISSING", "AUTH-002")])
 
