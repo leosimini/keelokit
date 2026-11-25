@@ -628,5 +628,73 @@ class BreakerRound2Test(BreakerCase):
         self.assertFalse([c for c in calls if "--name-only" in c], calls)
 
 
+class BreakerRound3Test(BreakerCase):
+    """Breaker round 3 (ESC-324..330): each finding reproduced as a failing test first."""
+
+    def test_HARN_021_S3_a_second_file_with_the_same_id_does_not_shadow_the_risky_one_ESC_324(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))})
+        self.close(repo, "AUTH-001", {"backlog/stories/AUTH-001-a.md": story("AUTH-001")})
+        found = self.breaker(self.check(repo)[1])
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)
+
+    def test_HARN_021_S3_a_commit_of_the_story_before_the_rule_still_makes_it_risky_ESC_325(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")}, risky=None)
+        repo.commit("wip\n\nPart-of: AUTH-001", {"scripts/verify.sh": "echo\n"})
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        self.close(repo, "AUTH-001")
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S6_a_pull_request_reads_the_storys_commits_already_on_the_trunk_ESC_326(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        repo.commit("wip\n\nPart-of: AUTH-001", {"scripts/verify.sh": "echo\n"})
+        repo.publish()
+        BreakerPullRequestTest.branch(self, repo, "AUTH-001", {"apps/web/a.ts": "x\n"})
+        code, diffs = self.check(BreakerPullRequestTest.pull_request(self, repo, "feature"), "--ci", env=PR_ENV)
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
+
+    def test_HARN_021_S6_rewriting_the_front_matter_while_closing_does_not_opt_out_ESC_327(self):
+        planned = story("AUTH-001", touches=(".keelokit/bin/guard.py",), dimensions=("security",))
+        tame = story("AUTH-001", touches=("docs/a.md",))
+        repo = self.project({"AUTH-001": planned})
+        self.close(repo, "AUTH-001", {path_of("AUTH-001"): tame})
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+        repo = self.project({"AUTH-001": planned})
+        BreakerPullRequestTest.branch(self, repo, "AUTH-001", {path_of("AUTH-001"): tame})
+        code, diffs = self.check(BreakerPullRequestTest.pull_request(self, repo, "feature"), "--ci", env=PR_ENV)
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
+
+    def test_HARN_021_S7_what_is_not_a_round_never_counts_ESC_328(self):
+        cases = {
+            "round 0": "- Round 0 · head " + HEAD + " · clean\n",
+            "round 999": "- Round 999 · head " + HEAD + " · clean\n",
+            "duplicate": round_line(1, HEAD, "1 finding") + round_line(1, HEAD),
+            "long fence": "````md\n```\n" + round_line(1, HEAD) + "````\n",
+            "html comment": "<!--\n" + round_line(1, HEAD) + "-->\n",
+            "one-line comment": "<!-- " + round_line(1, HEAD).strip() + " -->\n",
+        }
+        for name, rounds in cases.items():
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+                self.close(repo, "AUTH-001", rounds=rounds)
+                self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S4_names_with_digits_or_lookalike_letters_are_no_decision_ESC_329(self):
+        for name in ("o3", "o4-mini", "C1aude", "Сlaude", "Bard", "Jules"):
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+                self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
+                           + f"- Decision · {name} · 2026-11-25 · land it\n")
+                self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S7_a_path_that_leaves_the_repo_is_a_config_error_not_a_crash_ESC_330(self):
+        for bad in ("docs/../../x", ":(top)x", "../x"):
+            with self.subTest(bad=bad):
+                repo = self.project({"AUTH-001": story("AUTH-001")}, risky=f"paths = [{json.dumps(bad)}]\n")
+                self.close(repo, "AUTH-001")
+                code, diffs = self.check(repo)
+                self.assertIn("BREAKER_CONFIG", [c for lvl, c, _ in self.breaker(diffs) if lvl == "error"])
+                self.assertEqual(repo.ledger("risky", "AUTH-001").returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
