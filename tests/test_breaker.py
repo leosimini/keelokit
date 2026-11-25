@@ -304,8 +304,8 @@ class BreakerHistoryTest(BreakerCase):
         repo.publish()
         repo.state(f'[ledger]\nsince = "{since}"\n')
         self.assertEqual(self.breaker(self.check(repo)[1]), [])
-        repo.state("[ledger]\n")
-        self.assertEqual(self.breaker(self.check(repo)[1]), [], "no [ledger] since: nothing is required")
+        repo.state("[ledger]\n")  # without [ledger] since the rule holds from risky.toml's arrival (ESC-313)
+        self.assertEqual(self.breaker(self.check(repo)[1]), [("error", "BREAKER_MISSING", "AUTH-001")])
 
 
 class BreakerPullRequestTest(BreakerCase):

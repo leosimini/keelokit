@@ -33,5 +33,8 @@ paths = [
   "docker-compose*.yml",
 ]
 
+# deciders = ["<name>"]   # who may write the Decision line when the cap is hit with findings left; empty: any
+#                         # name that is not an agent's or a model's
+#
 # since = "<sha>"   # optional: the rule holds only for stories closed after this commit (an adopted project's
 #                   # start). Without it, from the commit that brought this file to the trunk.

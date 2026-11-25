@@ -4,6 +4,8 @@
 
 rounds = 3
 
+deciders = ["Leo"]   # the Decision line when the cap is hit with findings left
+
 dimensions = ["security", "integrity"]
 
 paths = [

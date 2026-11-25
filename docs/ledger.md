@@ -184,10 +184,11 @@ closes only with its cold breaker rounds recorded in its file:
 ```
 
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
-for a pull request the base's `risky.toml` with the pull request's story file. The rule holds for `Story:` commits
-after `[ledger] since` that the commit which brought `risky.toml` to the trunk does not reach (or its `since` key,
-which can only move the start later): stories closed before are exempt by position, never by editing them. No
-`risky.toml` on the trunk: no rule. The line is a record, as a trailer is: `check` asks that it is there and well
+for a pull request the base's `risky.toml` and committed `[ledger]` with the pull request's story file. The rule holds
+for `Story:` commits that the first commit to bring `risky.toml` to the trunk does not reach (a later add moves
+nothing; its `since` key can only move the start later), and after `[ledger] since` when it is set: stories closed
+before are exempt by position, never by editing them. No `risky.toml` on the trunk: no rule. A `Decision` counts
+when it names one of `risky.toml`'s `deciders`, or, with none listed, a name that is no agent's or model's. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 
 ### Corrections file

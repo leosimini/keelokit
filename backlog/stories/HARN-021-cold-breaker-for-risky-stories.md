@@ -34,8 +34,8 @@ Decided (Leo, 2026-11-24, "hacela obligatoria"; the coordinator delegated the de
 - The ledger enforces it (it already knows what closed a story and since when, reads the trunk's committed
   rules, and its two copies are one file): `check` gives `BREAKER_MISSING` (error) and `BREAKER_UNRESOLVED`
   (warning). The doctor is left as it is.
-- History is exempt by position, never by editing old stories: the rule holds for `Story:` commits that the commit
-  which brought `risky.toml` to the trunk does not reach (or its `since`), and after `[ledger] since`.
+- History is exempt by position, never by editing old stories: the rule holds for `Story:` commits that the first
+  commit to bring `risky.toml` to the trunk does not reach (or its `since`), and after `[ledger] since` when set.
 
 Does NOT do: verify that a round really happened (the line is a record, like a trailer); check a push to the trunk
 in the pre-push hook (the pull request and the trunk's CI do); protect `risky.toml` with the guard (a pull request
@@ -103,3 +103,8 @@ removes none.
 `Story: HARN-021` on the completing commit, this story's own breaker rounds recorded below.
 
 ## Breaker rounds
+- Round 1 · head 28c0111de7d35a043ebcbbba195eb4a7ef0339b3 · 6 findings: ESC-311 (×2), ESC-312, ESC-313, ESC-314, ESC-315 · fixed in the commit after fec8dcb
+  A fresh agent ran 11 attacks with only the story, the diff and the invariants. Reproduced: a re-add or a side add
+  of risky.toml moved the start (MED), a pull request's own state.toml hid its risky story (MED), no `[ledger]
+  since` turned the rule off, agent-like names passed as a Decision, and a symlinked risky.toml read as absent.
+  Held: multi-id commits, merges, reverts, renames, squash, fuzzed configs, git calls flat in the story count.
