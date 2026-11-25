@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The ledger sees the swarm's deliveries (LEDGER-014).** A swarm helper's branch `swarm/<task>` with `Part-of:` and
+  `Swarm-Task:` commits shows in its story's record (`ledger.py --json`'s `swarm` list: the task, the branch and its
+  head, the commits, who made them, and the Harbor convoy that carries it), and once integrated `ledger.py show`
+  lists each task with its author among the story's commits and the convoy that sailed it. A swarm branch without
+  those trailers counts for no story, and `Swarm-Task:` never attributes a commit on its own. The ledger still never
+  reads the swarm repo.
+
 - **A risky story closes only after cold breaker rounds, and the ledger says when one didn't (HARN-021).**
   `.keelokit/risky.toml` (new, the project's; the template ships defaults for hooks, the harness, CI, scripts,
   migrations and auth) says what is risky, and `ledger.py risky <ID>` says whether a story is and why. For a risky

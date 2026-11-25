@@ -194,6 +194,14 @@ is on `<rev>`), and a row `<rev>` has that the candidate retracted or changed st
 are still the trunk's. `attribution` takes the same `--rules-ref`, and without it reads `[ledger]` from the trunk's
 committed `state.toml`, never the checkout's, which the vessel under judgment writes.
 
+Swarm (LEDGER-014, [ledger.md](ledger.md) "What the ledger reads of Swarm"). The ledger never reads the swarm repo
+(another repo, other credentials, network in every hook): a helper's delivery is an origin branch `swarm/<task>` whose
+commits carry `Part-of:` and `Swarm-Task:`, and, once integrated, trunk commits with `Swarm-Task:` that are the
+story's by their own trailers or by the merges that attribute them. Each story's `swarm` list says the task, the
+branch and head, the commits and their authors, and the Harbor convoy that carries or sailed it; `show` says it per
+piece. Like the logbook it is information only: it adds no difference, attributes nothing and sets no state, so
+nothing anyone pushes to a swarm branch changes `check`, `attribution` or `--rules-ref`.
+
 harbor.py is code the ledger runs, so only one explicit command runs it: `ledger.py take` (and `take --clear`), when
 `git config --local harbor.py` names an absolute path to a `harbor.py` and `harbor.py story take --help` exits 0
 (feature detection, never a version string). Never `show`, `check`, `attribution`, the summary, the doctor, or any
