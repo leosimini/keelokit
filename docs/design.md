@@ -256,6 +256,9 @@ rules from the trunk's committed tree (a pull request is judged by the base's `r
 own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
 no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision. History is exempt by
 position: only `Story:` commits that the commit which brought `risky.toml` does not reach, after `[ledger] since`.
+The files that decide what is judged (`risky.toml`, `state.toml`, the corrections) are always risky, so loosening
+them is work of a story with its own rounds; `RISKY_NO_STORY` refuses a risky change that names no story, in a commit
+or in a merge's own resolution. A revert counts only when its change is the reverted commit's inverted.
 
 ## Lifecycle
 

@@ -625,7 +625,8 @@ class BreakerRound2Test(BreakerCase):
         r = repo.ledger("check", "--json", path=f"{shim}:{os.environ['PATH']}")
         self.assertIn("BREAKER_MISSING", r.stdout)
         calls = log.read_text().splitlines()
-        self.assertFalse([c for c in calls if "--name-only" in c], calls)
+        # A file list only ever comes from git filtered by risky.toml's paths (merges' own resolutions, ESC-333).
+        self.assertFalse([c for c in calls if "--name-only" in c and " -- :(glob)" not in c], calls)
 
 
 class BreakerRound3Test(BreakerCase):
@@ -727,10 +728,11 @@ class BreakerRound4Test(BreakerCase):
     def test_HARN_021_S3_a_release_commit_touching_only_release_files_is_not_refused_ESC_332(self):
         repo = self.project({"AUTH-001": story("AUTH-001")}, risky=RISKY_TOML.replace(
             'paths = [', 'paths = ["CHANGELOG.md", '))
-        repo.commit("release: 1.2.3\n\nNo-story: release", {"CHANGELOG.md": "## 1.2.3\n"})
+        # harness(): exactly these files (repo.commit adds a file of its own to every commit)
+        harness(repo, "release: 1.2.3\n\nNo-story: release", {"CHANGELOG.md": "## 1.2.3\n"})
         repo.publish()
         self.assertNotIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1]])
-        repo.commit("release: 1.2.4\n\nNo-story: release", {"CHANGELOG.md": "## 1.2.4\n", "scripts/verify.sh": "x\n"})
+        harness(repo, "release: 1.2.4\n\nNo-story: release", {"CHANGELOG.md": "## 1.2.4\n", "scripts/verify.sh": "x\n"})
         repo.publish()
         self.assertIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1]])
 

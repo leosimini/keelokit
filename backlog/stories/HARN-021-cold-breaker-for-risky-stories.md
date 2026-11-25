@@ -114,6 +114,8 @@ What differs from the story as first written, all from the three cold breaker ro
   judged by its commits. Unknown keys, `..` or a symlinked file fail closed.
 - In a pull request `check --ci` reads the base branch's committed state.toml (the whole check, not only the
   breaker's): a pull request can no longer move its trunk or loosen its own `enforce`.
+- Round 4, by the coordinator's own breaker: the rule files are always risky; a risky change with no story is
+  RISKY_NO_STORY; risk is sticky across every version of the story file; a revert counts by its content, ledger-wide.
 - Not covered: a round line is a record, not a proof that the round ran; a person's name in a Decision is not
   verified beyond `deciders`; the pre-push hook does not check breaker rounds (the pull request and the trunk's CI do).
 
@@ -128,7 +130,7 @@ What differs from the story as first written, all from the three cold breaker ro
   request's own `[ledger] trunk` switched the pull-request checks off (older than this story, but it voided S6); a
   side add of risky.toml flagged history; `risky` ignored trunk commits; model names as deciders; a string or
   capitalised dimension; unknown keys read as no rule; check 25 times slower at 20k commits.
-- Round 3 · head 6309fb48b5016f326e9c5aec2a034582087b3010 · 7 findings: ESC-324 (HIGH), ESC-325 (HIGH), ESC-326 (HIGH), ESC-327, ESC-328, ESC-329, ESC-330 · fixed in the commit after 5619d93; the cap (3) is hit, so no round 4 without a person
+- Round 3 · head 6309fb48b5016f326e9c5aec2a034582087b3010 · 7 findings: ESC-324 (HIGH), ESC-325 (HIGH), ESC-326 (HIGH), ESC-327, ESC-328, ESC-329, ESC-330 · fixed in 1ebb9a1; the cap (3) is hit, so no round 4 without a person
   A new agent, cold, 17 attacks. Reproduced: a second file with the same id shadowed the risky one; a story's
   commits before the rule, or already on the trunk under a pull request, did not count; rewriting the front matter
   while closing opted out; round 0, 999, duplicates, long fences and HTML comments counted; `o3`, `C1aude`, a
@@ -136,3 +138,9 @@ What differs from the story as first written, all from the three cold breaker ro
   attribution is judged by the base's committed `enforce`. Every finding is fixed with a test that failed first,
   but the fixes have not been attacked by a fourth breaker: the last round is not clean, so `check` says
   BREAKER_UNRESOLVED until Leo records a Decision (another round, or land as it is).
+- Round 4 · head 1ebb9a11ca4184c3611b72a1276531b568aebdf1 · 5 findings: ESC-331 (HIGH), ESC-332, ESC-333, ESC-334, ESC-335 · fixed in the commit after c9dab58
+  Run by the coordinator's own breaker on the PR head (past the cap, at the coordinator's call). Reproduced: deleting
+  risky.toml switched the rule off; a risky change in a `No-story:` commit or a sync merge's own resolution was never
+  judged; a story planned risky after the rule dropped its risk while closing; a revert by message only reopened a
+  story. Held: a PR's own risky.toml edit, Part-of and merge attribution, planned risk, one path-limited git log,
+  casefolded deciders, CRLF, broken configs. The coordinator decided each fix (ESC-331..335).

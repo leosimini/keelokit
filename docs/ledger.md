@@ -165,6 +165,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `HISTORY_INCOMPLETE` | error in CI, warning in a session | every reader |
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
+| `RISKY_NO_STORY` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path and names no story; a `No-story: release` commit touching only the release files excepted) | error | `check` (a pull request too) |
 | `BREAKER_UNRESOLVED` (the last round left findings, or the rounds went past the cap, with no person's Decision after it), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
@@ -195,7 +196,13 @@ it has one, so a pull request cannot move the trunk it is judged on (nor loosen 
 what an existing pull request's attribution check says when it edits state.toml). Risk is the union over every copy
 of the story's file, its earlier version (as `risky.toml` found it on the trunk, or as the base has it), and every
 trunk or pull-request commit of the story that changes a risky path; the rounds come only from the file as it is.
-Rounds numbered other than 1, 2, … count as none, and nothing inside a code fence or an HTML comment is a record. The line is a record, as a trailer is: `check` asks that it is there and well
+Rounds numbered other than 1, 2, … count as none, and nothing inside a code fence or an HTML comment is a record.
+`risky.toml`, `state.toml` and `backlog/ledger-corrections.toml` are always risky paths; once `risky.toml` was on the
+trunk, its absence fails closed. Risk is sticky across every committed version of the story's file.
+
+Reverts, ledger-wide: a commit reverts X only when its message says so and its change is X's inverted (`git
+patch-id --stable`); a message-only or partial "revert" is an ordinary commit. A clone that lacks the blobs keeps the
+message's word; the CI's full clone decides. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 
 ### Corrections file
