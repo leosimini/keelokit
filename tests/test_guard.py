@@ -1751,6 +1751,9 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                 self.assertEqual(self.bash(cmd).returncode, 0)
 
     def test_HARN_004_S1_ESC_284_a_committed_harness_gone_from_disk_keeps_the_guard_on(self):
+        """Since ESC-295 the guard remembers a project by its marker, written when a hook first sees .keelokit/ (the
+        HEAD check this test first drove is gone: it ran git in the gate)."""
+        self.assertEqual(self.bash("ls").returncode, 0)
         shutil.rmtree(self.proj / ".keelokit")
         r = self.bash("git commit --no-verify -m x")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
