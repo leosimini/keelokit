@@ -1297,6 +1297,7 @@ def read_all(state: dict) -> dict:
 LOGBOOK = "refs/remotes/origin/harbor/log"
 LOGBOOK_FILE_BYTES = 1 << 20   # a larger file is no logbook file Harbor writes: left out, never read whole
 LOGBOOK_FILES = 20000          # at most this many files of each kind are read
+LOGBOOK_BYTES = 32 << 20       # and at most this many bytes of them in all: the session start reads the logbook
 OPEN_CONVOY = ("assembling", "waiting", "ready", "verifying")
 CONVOY_STATES = (*OPEN_CONVOY, "sailed", "aborted")
 CONVOY_PATH = re.compile(r"harbor/convoys/([1-9][0-9]{0,8})\.toml")
@@ -1380,8 +1381,13 @@ def logbook_entries(head: str) -> dict[str, tuple[str, int]]:
 
 def read_logbook_files(entries: dict, paths: list[str]) -> tuple[dict[str, bytes], int]:
     """Contents of these logbook files (one `cat-file`), and how many were left out: larger than LOGBOOK_FILE_BYTES,
-    past LOGBOOK_FILES, or not in this clone (a partial clone that never fetched them)."""
-    chosen = [p for p in paths if entries[p][1] <= LOGBOOK_FILE_BYTES][:LOGBOOK_FILES]
+    past LOGBOOK_FILES or LOGBOOK_BYTES, or not in this clone (a partial clone that never fetched them)."""
+    chosen, total = [], 0
+    for p in paths:
+        size = entries[p][1]
+        if size <= LOGBOOK_FILE_BYTES and total + size <= LOGBOOK_BYTES and len(chosen) < LOGBOOK_FILES:
+            chosen.append(p)
+            total += size
     blobs = cat_blobs([entries[p][0] for p in chosen])
     files = {p: blobs[entries[p][0]] for p in chosen if blobs.get(entries[p][0]) is not None}
     return files, len(paths) - len(files)
@@ -3991,7 +3997,8 @@ def harbor_tool() -> str | None:
 
 def run_harbor(tool: str, args: list[str], timeout: float) -> tuple[int | None, str, str]:
     """(exit, stdout, stderr) of harbor.py; exit None when it did not end in `timeout` (its process group is gone)."""
-    env = {**git_env(), "CLAUDE_PROJECT_DIR": str(ROOT)}
+    env = {**{k: v for k, v in git_env().items() if k not in GIT_SCRUB or k == "GIT_ASKPASS"},
+           "CLAUDE_PROJECT_DIR": str(ROOT)}
     session = [] if env.get("HARBOR_SESSION") or env.get("CLAUDE_SESSION_ID") else \
         ["--session", env["CLAUDE_CODE_SESSION_ID"]] if SESSION_ID.fullmatch(env.get("CLAUDE_CODE_SESSION_ID", "")) else []
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -4028,16 +4035,23 @@ def harbor_line(out: str, err: str) -> str:
     return one_line(coded[0] if coded else lines[-1] if lines else "")
 
 
+class HarborSilent(Exception):
+    """harbor.py could not be asked whether it has `story take`: no answer, or an exit that is no usage error."""
+
+
 def harbor_take_ready(t: dict) -> str | None:
-    """The harbor.py to take stories with, or None (no Harbor, or one without `story take`: nothing changes)."""
+    """The harbor.py to take stories with, or None: no Harbor, or one whose parser has no `story take` (exit 2 with
+    argparse's "invalid choice": nothing changes). HarborSilent when it could not be asked (a timeout, a crash)."""
     tool = harbor_tool()
     if tool is None:
         return None
     code, out, err = run_harbor(tool, ["story", "take", "--help"], HARBOR_PROBE_SECONDS)
-    if code != 0:
-        print(t["harbor_old"].format(why=f"`story take --help` exited {code}" if code is not None else "no answer"))
+    if code == 0:
+        return tool
+    if code == 2 and "invalid choice" in err:
+        print(t["harbor_old"].format(why="`story take --help` exited 2"))
         return None
-    return tool
+    raise HarborSilent(f"exit {code}" if code is not None else f"no answer in {HARBOR_PROBE_SECONDS:g} s")
 
 
 def cmd_take(state: dict, sid: str | None) -> int:
@@ -4050,7 +4064,13 @@ def cmd_take(state: dict, sid: str | None) -> int:
     t = TAKE_LABELS[read_config(state)["lang"]]
     if sid is None:
         held = taken_story()
-        tool = harbor_take_ready(t) if held else None
+        try:
+            tool = harbor_take_ready(t) if held else None
+        except HarborSilent as e:
+            clear_story()
+            print(t["cleared"])
+            print(f"Keelokit: {t['release_refused'].format(id=held, line=f'harbor.py could not be asked ({e})')}")
+            return 2
         clear_story()
         print(t["cleared"])
         if tool is None:
@@ -4083,7 +4103,11 @@ def cmd_take(state: dict, sid: str | None) -> int:
     others = [b for b in rec["branches"] if b not in mine]
     if others:
         print(t["elsewhere"].format(id=sid, branches=listed(others, "more")))
-    tool = harbor_take_ready(t)
+    try:
+        tool = harbor_take_ready(t)
+    except HarborSilent as e:
+        print(f"Keelokit: {t['harbor_failed'].format(id=sid, code='?', line=f' (harbor.py could not be asked: {e})')}")
+        return 2
     if tool is not None:
         timeout = harbor_seconds()
         code, out, err = run_harbor(tool, ["story", "take", sid], timeout)

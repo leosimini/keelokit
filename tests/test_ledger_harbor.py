@@ -38,6 +38,8 @@ if args[:1] != ["story"] or mode == "old":
     print("harbor.py: error: argument cmd: invalid choice: 'story'", file=sys.stderr)
     sys.exit(2)
 if args[2:] == ["--help"]:
+    if mode == "probe-crash":
+        raise SystemExit("Traceback (most recent call last): boom")
     print("usage: harbor.py story take [-h] [--worker W] ID")
     sys.exit(0)
 action, sid = args[1], args[2]
@@ -388,6 +390,14 @@ class LedgerHarborTakeTest(HarborStubCase):
         r = self.take(repo, "AUTH-004", mode="slow", KEELOKIT_HARBOR_SECONDS="1")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("did not answer", r.stdout)
+        self.assertIsNone(self.story_of(repo))
+
+    def test_LEDGER_013_S7_a_harbor_that_cannot_be_asked_takes_nothing(self):
+        repo = self.project()
+        self.harbor(repo)
+        r = self.take(repo, "AUTH-004", mode="probe-crash")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("could not be asked", r.stdout)
         self.assertIsNone(self.story_of(repo))
 
     def test_LEDGER_013_S7_a_harbor_without_story_take_changes_nothing(self):
