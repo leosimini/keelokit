@@ -102,14 +102,37 @@ removes none.
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, the two ledger.py copies identical,
 `Story: HARN-021` on the completing commit, this story's own breaker rounds recorded below.
 
+## Addendum — 2026-11-25
+What differs from the story as first written, all from the three cold breaker rounds (ESC-311..330):
+- The rule holds from the *first* commit that brought `risky.toml` to the trunk; trunk commits that arrived before it
+  are exempt; a later add moves nothing. Without `[ledger] since` the rule still holds (S5 said "and after
+  `[ledger] since`": it narrows, it is not required).
+- `risky.toml` gained `deciders`: the names whose Decision counts. Without it, names with agent or model words,
+  digits, or look-alike letters are refused. This repo lists Leo.
+- Risk is read from every copy of the story's file, its earlier version, and every commit of the story (on the trunk
+  or in the pull request, before the rule too) that git finds changing a risky path; an id whose file is gone is
+  judged by its commits. Unknown keys, `..` or a symlinked file fail closed.
+- In a pull request `check --ci` reads the base branch's committed state.toml (the whole check, not only the
+  breaker's): a pull request can no longer move its trunk or loosen its own `enforce`.
+- Not covered: a round line is a record, not a proof that the round ran; a person's name in a Decision is not
+  verified beyond `deciders`; the pre-push hook does not check breaker rounds (the pull request and the trunk's CI do).
+
 ## Breaker rounds
 - Round 1 · head 28c0111de7d35a043ebcbbba195eb4a7ef0339b3 · 6 findings: ESC-311 (×2), ESC-312, ESC-313, ESC-314, ESC-315 · fixed in 6f1fcc5
   A fresh agent ran 11 attacks with only the story, the diff and the invariants. Reproduced: a re-add or a side add
   of risky.toml moved the start (MED), a pull request's own state.toml hid its risky story (MED), no `[ledger]
   since` turned the rule off, agent-like names passed as a Decision, and a symlinked risky.toml read as absent.
   Held: multi-id commits, merges, reverts, renames, squash, fuzzed configs, git calls flat in the story count.
-- Round 2 · head 6f1fcc564564b27f2d3f5359a762ae36c6780c41 · 8 findings: ESC-316 (HIGH), ESC-317 (HIGH), ESC-318, ESC-319, ESC-320, ESC-321, ESC-322, ESC-323 · fixed in the commit after ea50e2e
+- Round 2 · head 6f1fcc564564b27f2d3f5359a762ae36c6780c41 · 8 findings: ESC-316 (HIGH), ESC-317 (HIGH), ESC-318, ESC-319, ESC-320, ESC-321, ESC-322, ESC-323 · fixed in the commit after 5619d93
   A new agent, cold, 12 attacks. Reproduced: a deleted, moved or broken story file hid a closed risky story; a pull
   request's own `[ledger] trunk` switched the pull-request checks off (older than this story, but it voided S6); a
   side add of risky.toml flagged history; `risky` ignored trunk commits; model names as deciders; a string or
   capitalised dimension; unknown keys read as no rule; check 25 times slower at 20k commits.
+- Round 3 · head 6309fb48b5016f326e9c5aec2a034582087b3010 · 7 findings: ESC-324 (HIGH), ESC-325 (HIGH), ESC-326 (HIGH), ESC-327, ESC-328, ESC-329, ESC-330 · fixed in the commit after 5619d93; the cap (3) is hit, so no round 4 without a person
+  A new agent, cold, 17 attacks. Reproduced: a second file with the same id shadowed the risky one; a story's
+  commits before the rule, or already on the trunk under a pull request, did not count; rewriting the front matter
+  while closing opted out; round 0, 999, duplicates, long fences and HTML comments counted; `o3`, `C1aude`, a
+  Cyrillic C as deciders; `..` in a path crashed check. Also noted, kept on purpose: since ESC-317 a pull request's
+  attribution is judged by the base's committed `enforce`. Every finding is fixed with a test that failed first,
+  but the fixes have not been attacked by a fourth breaker: the last round is not clean, so `check` says
+  BREAKER_UNRESOLVED until Leo records a Decision (another round, or land as it is).

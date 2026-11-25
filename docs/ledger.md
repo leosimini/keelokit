@@ -191,7 +191,11 @@ before are exempt by position, never by editing them. No `risky.toml` on the tru
 when it names one of `risky.toml`'s `deciders`, or, with none listed, a name that is no agent's or model's. A closed
 id whose story file is gone, moved or broken is still judged by what its commits change. An unknown key in
 `risky.toml` is `BREAKER_CONFIG`. In a pull request, `check --ci` reads the base branch's committed `state.toml` when
-it has one, so a pull request cannot move the trunk it is judged on. The line is a record, as a trailer is: `check` asks that it is there and well
+it has one, so a pull request cannot move the trunk it is judged on (nor loosen its own `enforce`, which changes
+what an existing pull request's attribution check says when it edits state.toml). Risk is the union over every copy
+of the story's file, its earlier version (as `risky.toml` found it on the trunk, or as the base has it), and every
+trunk or pull-request commit of the story that changes a risky path; the rounds come only from the file as it is.
+Rounds numbered other than 1, 2, … count as none, and nothing inside a code fence or an HTML comment is a record. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 
 ### Corrections file

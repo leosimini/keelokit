@@ -10,7 +10,8 @@
   `## Breaker rounds` in the story file, up to 3 rounds; past that, a person decides. `ledger.py check` reports a
   risky story closed with no round (`BREAKER_MISSING`, error) and a last round with findings and no decision
   (`BREAKER_UNRESOLVED`, warning), in a pull request too, by the base's rules. Stories closed before the file
-  arrived are not flagged.
+  arrived are not flagged. In a pull request, `ledger.py check --ci` now reads the base branch's committed
+  `state.toml`, so a pull request can no longer move its trunk or loosen its own `enforce`.
 
 - **The ledger reads Harbor's logbook, and taking a story is Harbor's lock (LEDGER-013).** With Harbor, a story is
   `delivered` when a vessel sealed on its exact head sits in an open convoy, `in-progress` when an active worker holds

@@ -118,6 +118,7 @@ import signal  # noqa: E402
 import subprocess  # noqa: E402
 import time  # noqa: E402
 import tomllib  # noqa: E402
+import unicodedata  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -803,7 +804,12 @@ def read_stories(trunk_sha: str, cfg: dict, tree: list[tuple[str, str]] | None =
         unreadable += [path] if blobs[sha] is None else []
         old = stories.get(story["id"]) if story else None
         if story and (old is None or old["unreadable"] and not story["unreadable"]):
+            if old is not None:
+                story["copies"] = [old, *old.get("copies", [])]
+                old.pop("copies", None)
             stories[story["id"]] = story
+        elif story and not story["unreadable"]:  # another file with the same id: the breaker reads every copy (ESC-324)
+            old.setdefault("copies", []).append(story)
     return sorted(stories.values(), key=lambda s: s["id"]), unreadable
 
 
@@ -2928,10 +2934,11 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
         return [{"level": "error", "code": "HISTORY_INCOMPLETE",
                  "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
     log = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
-    stories = {s["id"]: s for s in read_stories(ctx["trunk_sha"], cfg)[0]}
+    base = read_stories(ctx["trunk_sha"], cfg)[0]
+    stories = {s["id"]: s for s in base}
     stories.update({s["id"]: s for s in read_stories(head, cfg)[0]})
-    return breaker_diffs(rules, log, log, graph, list(stories.values()), config_diffs=False,
-                         hits=risky_commits(rules, head, [ctx["trunk_sha"]]))
+    return breaker_diffs(rules, log, log + read_trunk_log(ctx["trunk_sha"]), graph, list(stories.values()),
+                         config_diffs=False, hits=risky_commits(rules, head, []), earlier=base)
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -3000,7 +3007,7 @@ AGENT_WORDS = ("claude", "agent", "breaker", "builder", "reviewer", "verifier", 
                "delegated", "copilot", "assistant", "subagent", "sonnet", "haiku", "fable", "gemini", "chatgpt",
                "openai", "anthropic", "model", "harbor", "skipper", "dispatcher", "harbormaster", "swarm",
                "grok", "deepseek", "llama", "devin", "mistral", "mixtral", "qwen", "gemma", "cohere", "perplexity",
-               "kimi", "windsurf", "cline", "aider")
+               "kimi", "windsurf", "cline", "aider", "bard")
 AGENT_SHORT = ("ai", "bot", "llm", "gpt", "opus", "codex", "cursor", "glm", "phi", "o1", "o3")
 ROUNDS_HEADING = re.compile(r"##[ \t]+Breaker rounds[ \t]*")
 ROUND_FORMAT = ("`- Round <n> · head <full sha> · clean` (or `· <findings> · <fixes>`), or "
@@ -3012,15 +3019,23 @@ def breaker_record(body: str) -> dict:
     clean) or ("decision", name)), and the lines under it that are neither (`bad`, with why). Only top-level `- ` lines
     are entries; indented and other lines are the round's detail."""
     entries, bad = [], []
-    inside, fence = False, None
+    inside, fence, comment = False, None, False
     for raw in body.splitlines():
         line = raw.rstrip()
-        mark = line.lstrip()[:3]
-        if fence:
-            fence = None if mark == fence else fence
+        bare = line.lstrip()
+        if fence:  # a fence closes only with its own character, at least as long, and nothing after it (ESC-328)
+            if re.fullmatch(re.escape(fence[0]) + "{%d,}" % len(fence), bare):
+                fence = None
             continue
-        if mark in ("```", "~~~"):
-            fence = mark
+        if comment:  # nothing inside an HTML comment is a record
+            comment = "-->" not in line
+            continue
+        opening = re.match(r"(`{3,}|~{3,})", bare)
+        if opening:
+            fence = opening.group(1)
+            continue
+        if bare.startswith("<!--"):
+            comment = "-->" not in bare[4:]
             continue
         if ROUNDS_HEADING.fullmatch(line):
             inside = True
@@ -3042,14 +3057,21 @@ def breaker_record(body: str) -> dict:
             bad.append(f"{line[:80]!r} is not {ROUND_FORMAT}")
     numbers = [e[1] for e in entries if e[0] == "round"]
     if numbers != list(range(1, len(numbers) + 1)):
-        bad.append(f"its rounds are numbered {', '.join(map(str, numbers))}, not 1, 2, … in order")
+        # Rounds numbered other than 1, 2, … are no record of rounds at all (ESC-328): none of them counts.
+        bad.append(f"its rounds are numbered {', '.join(map(str, numbers))}, not 1, 2, … in order: none counts")
+        entries = [e for e in entries if e[0] != "round"]
     return {"entries": entries, "bad": bad}
 
 
 def agent_like(name: str) -> bool:
     """A name that reads as an agent's or a model's, never a person's (AGENT_WORDS, AGENT_SHORT)."""
+    if re.search(r"[0-9]", name):  # people's names carry no digits: `o3`, `C1aude`, `Breaker2` (ESC-329)
+        return True
+    if any(not ch.isascii() and unicodedata.name(ch, "").startswith(("CYRILLIC", "GREEK")) for ch in name) \
+            and re.search(r"[A-Za-z]", name):  # Latin mixed with look-alike letters: `Сlaude` with a Cyrillic С
+        return True
     letters = re.sub(r"[^a-z]", "", name.lower())
-    words = {v for w in re.findall(r"[a-z]+", name.lower()) for v in (w, w[:-1] if w.endswith("s") else w)}
+    words = {v for w in re.findall(r"[a-z0-9]+", name.lower()) for v in (w, w[:-1] if w.endswith("s") else w)}
     return any(w in letters for w in AGENT_WORDS) or bool(words & set(AGENT_SHORT))
 
 
@@ -3086,6 +3108,12 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
             problems.append(f"`{key}` is a list of non-empty strings")
         else:
             rules[key] = sorted({v.strip().lstrip("/") for v in value} - {""})
+            if key == "paths":  # git reads them as pathspecs: nothing outside the repo, no pathspec magic (ESC-330)
+                odd = [v for v in rules[key] if v.startswith((":", "!")) or "\\" in v
+                       or any(part in ("..", ".") for part in v.split("/"))]
+                if odd:
+                    problems.append(f"`paths` stay inside the repo, without `..`, `.` or a leading `:` ({odd[0]!r})")
+                    rules[key] = [v for v in rules[key] if v not in odd]
     rules["dimensions"] = sorted({d.lower() for d in rules["dimensions"]})
     since = data.get("since", "")
     if not isinstance(since, str) or since.strip() and not HEX_SHA.fullmatch(since.strip()):
@@ -3154,8 +3182,12 @@ def missing_story(sid: str) -> dict:
 
 
 def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], graph: dict, stories: list[dict],
-                  config_diffs: bool = True, hits: set = frozenset()) -> list[dict]:
-    """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them)."""
+                  config_diffs: bool = True, hits: set = frozenset(), earlier: list[dict] = ()) -> list[dict]:
+    """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them, every
+    copy of an id). What makes a story risky also comes from `earlier` versions of its file (the trunk's before the
+    change under judgment: rewriting the front matter while closing opts nothing out, ESC-327) and from every commit
+    of it in `log` that git found changing a risky path (`hits`), before the rule or already on the trunk (ESC-325,
+    ESC-326); the rounds only from the files as they are now."""
     if rules is None:
         return []
     diffs = []
@@ -3166,22 +3198,35 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
     closing: dict[str, str] = {}
     naming: dict[str, list[str]] = {}
     for c in reversed(in_range):  # oldest first
-        for sid in dict.fromkeys(c["story"] + c["part_of"]):
-            naming.setdefault(sid, []).append(c["sha"])
         if not reverted.get(c["sha"], False):
             for sid in c["story"]:
                 closing.setdefault(sid, c["sha"])
+    for c in reversed(log):
+        for sid in dict.fromkeys(c["story"] + c["part_of"]):
+            naming.setdefault(sid, []).append(c["sha"])
     by_id = {s["id"]: s for s in stories}
+    before: dict[str, list[dict]] = {}
+    for s in earlier:
+        before.setdefault(s["id"], []).extend([s, *s.get("copies", [])])
     for sid, sha in sorted(closing.items()):
         story = by_id.get(sid) or missing_story(sid)
         if story["unreadable"]:
             diffs.append({"level": "error", "code": "BREAKER_MISSING", "detail": f"{sid}: closed by {short(sha)}, and "
                           f"its file {story['path']} cannot be read here, so its breaker rounds cannot be checked"})
             continue
-        why = risky_reasons(story, rules, set(), [x for x in naming.get(sid, ()) if x in hits])
+        current = [story, *story.get("copies", [])]
+        own = [x for x in naming.get(sid, ()) if x in hits]
+        why = list(dict.fromkeys(w for v in current + before.get(sid, []) if not v.get("unreadable")
+                                 for w in risky_reasons(v, rules, set(), own)))
         if not why:
             continue
         reason = "; ".join(why[:3]) + (f"; +{len(why) - 3} more" if len(why) > 3 else "")
+        if len(current) > 1:
+            diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY", "detail": (
+                f"{sid}: {len(current)} story files have this id ({', '.join(v['path'] for v in current)}); each is "
+                "read for its risk, the rounds from the one that records them")})
+        with_rounds = [v for v in current if any(e[0] == "round" for e in v["breaker"]["entries"])]
+        story = with_rounds[0] if with_rounds else story
         record = story["breaker"]
         if record["bad"]:
             diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY",
@@ -3255,8 +3300,10 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
         arrival, order = ctx["placed"]
         first = order[arrival[starts[0]]]
         in_range = [c for c in in_range if c["sha"] not in held and order[arrival[c["sha"]]] >= first]
-    hits = risky_commits(rules, ctx["trunk_sha"], starts)
-    return diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"], hits=hits)
+    hits = risky_commits(rules, ctx["trunk_sha"], [])
+    earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
+    return diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"], hits=hits,
+                                 earlier=earlier)
 
 
 def work_tree_story(cfg: dict, sid: str) -> dict | None:
