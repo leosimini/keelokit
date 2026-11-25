@@ -528,5 +528,105 @@ class BreakerRound1Test(BreakerCase):
         self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)
 
 
+class BreakerRound2Test(BreakerCase):
+    """Breaker round 2 (ESC-316..322): each finding reproduced as a failing test first."""
+
+    def test_HARN_021_S3_a_story_file_deleted_or_broken_after_the_close_is_still_judged_ESC_316(self):
+        for how in ("delete", "move", "break"):
+            with self.subTest(how=how):
+                repo = self.project({"AUTH-001": story("AUTH-001")})
+                repo.state(f'[ledger]\nsince = "{self.since}"\nenforce = "warn"\n')
+                self.close(repo, "AUTH-001", {"scripts/verify.sh": "echo\n"}, publish=False)
+                if how == "delete":
+                    repo.git("rm", "-q", path_of("AUTH-001"))
+                    repo.git("commit", "-q", "-m", "docs: tidy\n\nNo-story: docs", when=repo.next_date())
+                elif how == "move":
+                    repo.git("mv", path_of("AUTH-001"), "AUTH-001.md")
+                    repo.git("commit", "-q", "-m", "docs: tidy\n\nNo-story: docs", when=repo.next_date())
+                else:
+                    repo.commit("docs: tidy\n\nNo-story: docs", {path_of("AUTH-001"): "+++\nid = \n+++\n"})
+                repo.publish()
+                code, diffs = self.check(repo)
+                self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
+                self.assertEqual(code, 1)
+
+    def test_HARN_021_S6_a_pull_request_cannot_move_the_trunk_it_is_judged_on_ESC_317(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))})
+        state = f'[ledger]\nsince = "{self.since}"\n'
+        harness(repo, "chore: commit the settings\n\nNo-story: harness", {".keelokit/state.toml": state})
+        repo.git("push", "-q", "origin", "main:release")
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "feature")
+        harness(repo, "chore: trunk\n\nPart-of: AUTH-001", {".keelokit/state.toml": state + 'trunk = "release"\n'})
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        clone = BreakerPullRequestTest.pull_request(self, repo, "feature")
+        clone.git("checkout", "-q", "--", ".keelokit/state.toml")  # the CI reads the PR's own file
+        code, diffs = self.check(clone, "--ci", env=PR_ENV)
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
+
+    def test_HARN_021_S5_a_story_closed_on_the_trunk_before_a_side_branch_brought_risky_toml_is_exempt_ESC_318(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))}, risky=None)
+        repo.git("checkout", "-q", "-b", "side")
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.git("checkout", "-q", "main")
+        self.close(repo, "AUTH-001", publish=False)
+        repo.merge("side", "Merge pull request #5 from x/side")
+        repo.publish()
+        self.assertEqual(self.breaker(self.check(repo)[1]), [])
+
+    def test_HARN_021_S1_ledger_risky_reads_the_storys_commits_on_the_trunk_ESC_319(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        repo.commit("wip\n\nPart-of: AUTH-001", {"scripts/verify.sh": "echo\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "finish")
+        r = repo.ledger("risky", "AUTH-001")
+        self.assertIn("AUTH-001: risky", r.stdout)
+
+    def test_HARN_021_S1_more_model_names_are_no_decision_ESC_320(self):
+        for name in ("Grok", "DeepSeek", "Llama 3", "Devin", "Mistral", "Qwen"):
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+                self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
+                           + f"- Decision · {name} · 2026-11-25 · land it\n")
+                self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S1_a_dimension_as_a_string_or_in_capitals_still_counts_ESC_321(self):
+        for dims in ('"security"', '["Security"]'):
+            with self.subTest(dims=dims):
+                text = story("AUTH-001").replace('dimensions = ["logic"]', f"dimensions = {dims}")
+                repo = self.project({"AUTH-001": text})
+                self.close(repo, "AUTH-001")
+                self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S7_an_unknown_key_in_risky_toml_is_a_config_error_ESC_322(self):
+        for text in ('[risky]\npaths = ["scripts/**"]\n', 'path = ["scripts/**"]\n'):
+            with self.subTest(text=text):
+                repo = self.project({"AUTH-001": story("AUTH-001")}, risky=text)
+                self.close(repo, "AUTH-001")
+                found = self.breaker(self.check(repo)[1])
+                self.assertIn("BREAKER_CONFIG", [c for lvl, c, _ in found if lvl == "error"])
+
+    def test_HARN_021_S3_check_asks_git_for_the_risky_paths_never_every_commits_files_ESC_323(self):
+        """At 20k commits listing every closing commit's files took 36 s (round 2): git filters by the paths."""
+        import os
+        import shutil
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        for n in range(5):
+            repo.commit(f"wip {n}\n\nPart-of: AUTH-001", {f"apps/web/{n}.ts": "x\n"})
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "echo\n"})
+        shim = self.tmp / "shim"
+        shim.mkdir()
+        log = self.tmp / "git.log"
+        real = shutil.which("git")
+        (shim / "git").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        (shim / "git").chmod(0o755)
+        r = repo.ledger("check", "--json", path=f"{shim}:{os.environ['PATH']}")
+        self.assertIn("BREAKER_MISSING", r.stdout)
+        calls = log.read_text().splitlines()
+        self.assertFalse([c for c in calls if "--name-only" in c], calls)
+
+
 if __name__ == "__main__":
     unittest.main()
