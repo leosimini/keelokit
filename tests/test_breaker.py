@@ -696,5 +696,148 @@ class BreakerRound3Test(BreakerCase):
                 self.assertEqual(repo.ledger("risky", "AUTH-001").returncode, 0)
 
 
+class BreakerRound4Test(BreakerCase):
+    """The coordinator's breaker, round 4 (ESC-331..335): each finding reproduced as a failing test first."""
+
+    def pr(self, repo: GitRepo, number: int = 40) -> tuple[int, list]:
+        return self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=number), "--ci",
+                          env=PR_ENV)
+
+    def land(self, repo: GitRepo) -> None:
+        repo.git("merge", "-q", "--ff-only", "feature")
+        repo.git("branch", "-q", "-D", "feature")
+        repo.git("push", "-q", "origin", "--delete", "feature", check=False)
+        repo.publish()
+
+    def test_HARN_021_S3_a_risky_change_in_a_no_story_commit_is_refused_ESC_332(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("chore: speed\n\nNo-story: harness", {"scripts/verify.sh": "exit 0  # skip all\n"})
+        harness(repo, "chore: guard\n\nNo-story: harness", {".keelokit/bin/guard.py": "# allow all\n"})
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {"apps/web/page.ts": "x\n"})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        code, diffs = self.pr(repo)
+        self.assertIn("RISKY_NO_STORY", [d["code"] for d in diffs if d["level"] == "error"])
+        self.land(repo)
+        code, diffs = self.check(repo)
+        self.assertEqual(code, 1)
+        self.assertIn("RISKY_NO_STORY", [d["code"] for d in diffs if d["level"] == "error"])
+
+    def test_HARN_021_S3_a_release_commit_touching_only_release_files_is_not_refused_ESC_332(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")}, risky=RISKY_TOML.replace(
+            'paths = [', 'paths = ["CHANGELOG.md", '))
+        repo.commit("release: 1.2.3\n\nNo-story: release", {"CHANGELOG.md": "## 1.2.3\n"})
+        repo.publish()
+        self.assertNotIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1]])
+        repo.commit("release: 1.2.4\n\nNo-story: release", {"CHANGELOG.md": "## 1.2.4\n", "scripts/verify.sh": "x\n"})
+        repo.publish()
+        self.assertIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1]])
+
+    def test_HARN_021_S5_deleting_risky_toml_after_the_rule_started_fails_closed_ESC_331(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",), dimensions=("security",))})
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.git("rm", "-q", RISKY)
+        repo.git("commit", "-q", "-m", "chore: tidy\n\nNo-story: harness", when=repo.next_date())
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        code, diffs = self.pr(repo)
+        self.assertEqual(code, 1, diffs)
+        self.assertIn("RISKY_NO_STORY", [d["code"] for d in diffs])
+        self.land(repo)
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 0\n"})
+        code, diffs = self.check(repo)
+        found = self.breaker(diffs)
+        self.assertIn("BREAKER_CONFIG", [c for lvl, c, _ in found if lvl == "error"])
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)
+
+    def test_HARN_021_S7_the_rule_files_are_always_risky_whatever_risky_toml_says_ESC_331(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")}, risky="paths = []\n")
+        for rel in (RISKY, ".keelokit/state.toml", "backlog/ledger-corrections.toml"):
+            with self.subTest(rel=rel):
+                harness(repo, "chore: tweak\n\nNo-story: harness", {rel: "# changed " + rel + "\n"})
+                repo.publish()
+                self.assertIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1]])
+                repo.git("revert", "--no-edit", "HEAD", when=repo.next_date())
+                repo.git("commit", "-q", "--amend", "-m", "Revert\n\nThis reverts commit "
+                         + repo.sha("HEAD~1") + ".\n\nNo-story: harness")
+
+    def test_HARN_021_S3_a_message_only_revert_reverts_nothing_ESC_335(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        close = self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 0\n"}, publish=False)
+        repo.git("commit", "-q", "--allow-empty", "-m",
+                 f'Revert "feat: AUTH-001"\n\nThis reverts commit {close}.\n\nNo-story: harness',
+                 when=repo.next_date())
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S3_reverts_count_by_their_content_real_fake_revert_of_revert_partial_ESC_335(self):
+        # A real revert reopens the story; its real revert closes it again; a fake revert of a real revert, or a
+        # partial revert, changes nothing.
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        close = self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 0\n", "apps/x.ts": "x\n"}, publish=False)
+        repo.git("revert", "--no-edit", close, when=repo.next_date())
+        real = repo.sha()
+        repo.git("commit", "-q", "--amend", "-m", f"Revert\n\nThis reverts commit {close}.\n\nPart-of: AUTH-001")
+        real = repo.sha()
+        repo.publish()
+        self.assertEqual(self.breaker(self.check(repo)[1]), [], "a real revert reopens the story")
+        repo.git("commit", "-q", "--allow-empty", "-m", f"Revert\n\nThis reverts commit {real}.\n\nNo-story: harness",
+                 when=repo.next_date())
+        repo.publish()
+        self.assertEqual(self.breaker(self.check(repo)[1]), [], "a fake revert of the revert reopens nothing")
+        repo.git("revert", "--no-edit", real, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Reapply\n\nThis reverts commit {real}.\n\nPart-of: AUTH-001")
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]),
+                      "a real revert of the revert closes it again")
+        repo2 = self.project({"AUTH-002": story("AUTH-002", touches=("scripts/verify.sh",))})
+        close2 = self.close(repo2, "AUTH-002", {"scripts/verify.sh": "exit 0\n", "apps/y.ts": "y\n"}, publish=False)
+        repo2.git("rm", "-q", "apps/y.ts")
+        repo2.git("commit", "-q", "-m", f"Revert part\n\nThis reverts commit {close2}.\n\nPart-of: AUTH-002",
+                  when=repo2.next_date())
+        repo2.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-002"), self.breaker(self.check(repo2)[1]),
+                      "a partial revert reverts nothing")
+
+    def test_HARN_021_S3_a_risky_change_in_a_sync_merges_own_resolution_is_refused_ESC_333(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {"apps/web/page.ts": "x\n"})
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: x\n\nNo-story: docs", {"docs/x.md": "x\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.git("merge", "-q", "--no-commit", "main", check=False)
+        repo.write("scripts/verify.sh", "exit 0\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "Merge branch 'main' into feature", when=repo.next_date())
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        code, diffs = self.pr(repo)
+        self.assertIn("RISKY_NO_STORY", [d["code"] for d in diffs if d["level"] == "error"])
+        repo.merge("feature", "Merge pull request #9 from x/feature")
+        repo.publish()
+        self.assertIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1] if d["level"] == "error"])
+
+    def test_HARN_021_S3_an_ordinary_merge_is_not_refused_ESC_333(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("wip\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: x\n\nNo-story: docs", {"docs/x.md": "x\n"})
+        repo.merge("feature", "Merge pull request #9 from x/feature")
+        repo.publish()
+        self.assertNotIn("RISKY_NO_STORY", [d["code"] for d in self.check(repo)[1]])
+
+    def test_HARN_021_S6_risk_is_sticky_across_every_version_of_the_story_file_ESC_334(self):
+        repo = self.project({"DOC-001": story("DOC-001")})
+        planned = story("AUTH-001", touches=(".keelokit/bin/guard.py",), dimensions=("security",), risky="true")
+        repo.commit("docs: plan AUTH-001\n\nNo-story: docs", {path_of("AUTH-001"): planned})
+        repo.publish()
+        self.close(repo, "AUTH-001", {path_of("AUTH-001"): story("AUTH-001", touches=("docs/a.md",))})
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+
 if __name__ == "__main__":
     unittest.main()
