@@ -41,7 +41,8 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
   Every git call the plugin's scripts make with `--root` (and trusted.py's own) runs hardened (ESC-280):
   safe.bareRepository=explicit, protocol.ext.allow=never, core.fsmonitor=false, GIT_NO_LAZY_FETCH=1, no
   GIT_DIR-like variables, and only where the git dir is the project's .git or outside the project. Any failure of
-  the guard hook's own path is a block (ESC-281); the guard runs wherever the project has `.keelokit/` (ESC-282).
+  the guard hook's own path is a block (ESC-281); the guard runs wherever the project has `.keelokit/`, or had it when a hook last looked (a marker in
+  `~/.cache/keelokit/projects`; ESC-282, ESC-295); the PreToolUse gate runs no git (ESC-296).
 - `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
   runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).

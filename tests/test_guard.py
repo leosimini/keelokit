@@ -1194,6 +1194,15 @@ class TrustedProject:
         self.git("commit", "-q", "-m", "x")
         self.marks = self.tmp / "marks"
         self.marks.mkdir()
+        self.marker(self.proj)  # hooks mark projects in the real cache (ESC-295): leave none behind
+
+    def marker(self, project: Path) -> Path:
+        import hashlib
+        import pwd
+        key = hashlib.sha256(os.path.realpath(project).encode()).hexdigest()
+        path = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/keelokit/projects" / key
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        return path
 
     def env(self, **extra) -> dict:
         env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "CLAUDE_", "PYTHON"))}
@@ -1889,6 +1898,89 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
         r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
             "file_path": ".claude/settings.json", "content": '{"permissions": {"allow": ["Bash(ls)"]}}'}})
         self.assertEqual(r.returncode, 0, "ordinary settings are the project's: " + r.stderr)
+
+    # Final round (ESC-295, ESC-296): the gate in front of the guard.
+
+    def adopted_after_a_commit(self) -> Path:
+        """A repo whose first commit predates .keelokit, the guard already seen once in it."""
+        proj = self.tmp / "adopted"
+        proj.mkdir()
+        (proj / "README").write_text("hi\n")
+        for argv in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "pre-adoption"]):
+            subprocess.run(["git", *argv], cwd=proj, env=self.env(), check=True, capture_output=True)
+        shutil.copytree(BUNDLED, proj / ".keelokit/bin", ignore=shutil.ignore_patterns("__pycache__"))
+        for argv in (["add", "-A"], ["commit", "-q", "-m", "adopt"]):
+            subprocess.run(["git", *argv], cwd=proj, env=self.env(), check=True, capture_output=True)
+        self.marker(proj)
+        self.proj = proj
+        self.assertEqual(self.bash("git commit --no-verify -m x").returncode, 2)
+        return proj
+
+    def test_HARN_004_S1_ESC_295_a_checkout_of_a_commit_before_the_harness_leaves_the_guard_on(self):
+        proj = self.adopted_after_a_commit()
+        for argv in (["checkout", "-q", "HEAD~1"],):
+            subprocess.run(["git", *argv], cwd=proj, env=self.env(), check=True, capture_output=True)
+        self.assertFalse((proj / ".keelokit").exists())
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/zz"], cwd=proj, env=self.env(), check=True)
+        self.assertEqual(self.bash("git commit --no-verify -m x").returncode, 2)
+
+    def test_HARN_004_S1_ESC_295_a_clone_reset_before_the_harness_leaves_the_guard_on(self):
+        up = self.adopted_after_a_commit()
+        clone = self.tmp / "clone"
+        subprocess.run(["git", "clone", "-q", f"file://{up}", str(clone)], env=self.env(), check=True, capture_output=True)
+        self.marker(clone)
+        self.proj = clone
+        self.assertEqual(self.bash("ls").returncode, 0)  # the session's first call: the guard sees .keelokit
+        for argv in (["remote", "set-head", "origin", "-d"], ["reset", "-q", "--hard", "HEAD~1"]):
+            subprocess.run(["git", *argv], cwd=clone, env=self.env(), check=True, capture_output=True)
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_HARN_004_S1_ESC_296_the_gate_runs_no_git_and_cannot_hang(self):
+        self.marker(self.proj)
+        self.assertEqual(self.bash("ls").returncode, 0)
+        shutil.rmtree(self.proj / ".keelokit")
+        self.git("pack-refs", "--all")
+        os.rename(self.proj / ".git/packed-refs", self.proj / ".git/pr")
+        os.mkfifo(self.proj / ".git/packed-refs")
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=self.proj,
+                           env=self.env(KEELOKIT_GUARD_SECONDS="3"), input=json.dumps(BLOCKED),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("git", hook_command("PreToolUse").replace("git config", ""), "no git in the gate")
+        src = (REPO / "hooks/trusted.py").read_text()
+        gate = src[src.index("def keelokit_project"):src.index("def choose")]
+        self.assertNotIn("git(", gate, "the project gate runs no git")
+
+    def test_HARN_004_S1_ESC_296_a_project_that_never_had_keelokit_gets_no_marker_and_is_left_alone(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        subprocess.run(["git", "init", "-q", str(plain)], env=self.env(), check=True, capture_output=True)
+        marker = self.marker(plain)
+        for event, payload in (("PreToolUse", BLOCKED), ("SessionStart", {})):
+            r = subprocess.run(["/bin/sh", "-c", hook_command(event)], cwd=plain,
+                               env=self.env(CLAUDE_PROJECT_DIR=str(plain)), input=json.dumps(payload),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), event)
+        self.assertFalse(marker.exists())
+
+    def test_HARN_004_S1_ESC_296_the_marker_is_keyed_by_the_real_path_and_guarded(self):
+        link = self.tmp / "link"
+        link.symlink_to(self.proj, target_is_directory=True)
+        marker = self.marker(self.proj)
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=link,
+                           env=self.env(CLAUDE_PROJECT_DIR=str(link)), input=json.dumps(HARMLESS),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(marker.exists(), "the marker of the project's real path")
+        for cmd in ("rm -rf ~/.cache/keelokit", f"rm {marker}", "python3 -c \"import shutil;shutil.rmtree('.keelokit')\"",
+                    "python3 -c 'import os; os.rename(\".keelokit\", \"x\")'", "node -e \"require('fs').rmSync('.keelokit',{recursive:true})\"",
+                    "git rm -r -q .keelokit"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 

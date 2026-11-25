@@ -203,13 +203,38 @@ def project_dir(arg: str | None = None) -> Path | None:
     return p if p.is_dir() else None
 
 
+def marker_path(project: Path) -> Path:
+    """The sticky mark that a project is a Keelokit project (ESC-295): ~/.cache/keelokit/projects/<sha256 of its real
+    path>, in the home the password database names, never $HOME."""
+    import hashlib
+    import pwd
+    key = hashlib.sha256(os.path.realpath(project).encode("utf-8", "surrogateescape")).hexdigest()
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/keelokit/projects" / key
+
+
+def remember(project: Path) -> None:
+    """Marks the project once a hook has seen its .keelokit/: a checkout, a reset or a branch rename that later takes
+    .keelokit/ out of the tree leaves the guard on."""
+    if not os.path.isdir(project / ".keelokit"):
+        return
+    try:
+        marker = marker_path(project)
+        if not marker.is_file():
+            marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            marker.write_text(os.path.realpath(project) + "\n", encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        pass
+
+
 def keelokit_project(project: Path, tool: str) -> bool:
-    """The guard runs wherever the project has .keelokit/ (ESC-282: deleting guard.py, which it never runs, must not
-    turn it off; removing .keelokit/ as a whole is the person's call); the ledger and the doctor where the project
-    has theirs, as the session start always did."""
-    if tool == "guard":  # ESC-284, ESC-286: a harness committed here or on the trunk the clone came from still counts
-        return os.path.isdir(project / ".keelokit") or any(
-            git(project, "cat-file", "-e", f"{ref}:.keelokit") is not None for ref in ("HEAD", "origin/HEAD"))
+    """The guard runs wherever the project has .keelokit/, or had it when a hook last looked (the marker); no git here,
+    so nothing in the gate can hang or read a repository (ESC-282, ESC-295, ESC-296). Removing .keelokit/ and the
+    marker both is the person's call. The ledger and the doctor run where the project has theirs."""
+    if tool == "guard":
+        if os.path.isdir(project / ".keelokit"):
+            remember(project)
+            return True
+        return os.path.isfile(marker_path(project))
     return os.path.lexists(project / BIN / RUNS[tool])
 
 
@@ -246,6 +271,7 @@ def check(arg: str | None = None) -> int:
     project = project_dir(arg)
     if project is None:
         return 0
+    remember(project)
     off = differing(project)
     if off:
         print(f"Keelokit: this project's {', '.join(off)} in .keelokit/bin differ from the plugin's, so the Claude "

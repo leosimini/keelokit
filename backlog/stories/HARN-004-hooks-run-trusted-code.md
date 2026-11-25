@@ -99,6 +99,10 @@ Beyond the spec, from the breaker rounds:
   person's hooks path, which it reports.
 - **Fail closed** (ESC-281). Any failure of the guard hook's own path (a failed fork, an exception, a guard that
   crashed, exited 1 or was killed) is exit 2 with one line.
+- **The gate runs no git** (ESC-295, ESC-296). The guard runs where the tree has `.keelokit/`, or where a hook has
+  seen it before: a marker in `~/.cache/keelokit/projects/<sha256 of the real path>` (the password database's
+  home). A checkout, reset or branch rename can't switch it off, and with no git in the gate nothing can hang it
+  before the watchdog. A same-user agent with arbitrary shell can still remove both: the accepted limit.
 - **Where the guard runs** (ESC-282). In any project with `.keelokit/`, not only where `.keelokit/bin/guard.py`
   exists, which it never runs; the guard refuses commands that delete or move `.keelokit/` or its `bin/` whole.
   Removing `.keelokit/` makes it not a Keelokit project: the person's decision.

@@ -884,6 +884,32 @@ def chmod_hooked(cmd: str) -> bool:
     return False
 
 
+INTERPRETER_REMOVAL = re.compile(r"rmtree|unlink|remove|rename|rmdir|rmSync|rm_rf|rm_r\b|replace|move", re.I)
+MARKER_WHY = ("QA-2: ~/.cache/keelokit marks which projects the guard runs in; removing it is the person's call")
+
+
+def interpreter_removal(cmd: str) -> bool:
+    """`python3 -c "shutil.rmtree('.keelokit')"`, `node -e "fs.rmSync('.keelokit')"`: an interpreter told to remove
+    or move .keelokit (ESC-296, best effort)."""
+    for segment in segments(cmd):
+        words = segment.split()
+        if words and INTERPRETERS.fullmatch(Path(words[0].strip("'\"")).name) and ".keelokit" in segment and \
+                INTERPRETER_REMOVAL.search(segment):
+            return True
+    return False
+
+
+def names_marker(cmd: str) -> bool:
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        if any(".cache/keelokit" in posixpath.normpath(expand_word(w)) for w in words):
+            return True
+    return False
+
+
 def harness_removal(cmd: str) -> bool:
     """ESC-282, best effort like every shell rule: a command that deletes or moves .keelokit/ or .keelokit/bin/ whole
     (rm, rmdir, git rm, mv as a source, find … -delete/-exec)."""
@@ -1091,8 +1117,10 @@ def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> s
             for script in inner:
                 if why := bash_problem(script, allow, depth + 1):
                     return why
-    if harness_removal(cmd):
+    if harness_removal(cmd) or interpreter_removal(cmd):
         return HARNESS_WHY
+    if names_marker(cmd):
+        return MARKER_WHY
     if plugin_command(cmd):
         return PLUGIN_WHY
     if chmod_hooked(cmd):
