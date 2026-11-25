@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "The ledger reads Harbor's logbook"
 wave = 18
 depends_on = ["LEDGER-012"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger_harbor.py", "tests/test_ledger.py", "scripts/unit_shard.py", "docs/design.md", "docs/ledger.md", "CHANGELOG.md", "backlog/stories/LEDGER-013-ledger-reads-harbor.md"]
 dimensions = ["logic", "integrity", "dx"]
 invariants = ["INV-005"]
 origin = "docs/ledger.md — Harbor and Swarm; Harbor's plan docs/ledger-phase6.md (HRB-2)"
@@ -49,12 +49,39 @@ Scenario: [S3] take with Harbor
 Scenario: [S4] Without a logbook
   Given no harbor/log
   Then every state is as before LEDGER-013
+
+Scenario: [S5] attribution of a range (Harbor's convoy add, HRB-1)
+  Given a vessel branch with an own trailer, a commit without one, a No-story:, a clean merge, a merge bringing
+    an unattributed commit and a merge with its own trailer
+  Then `ledger.py attribution <a>..<b> --json` exits 0 with schema 1, the commits in `git rev-list --reverse`
+    order, each attributed exactly as `check` attributes it (via own, merge, correction or null), `unattributed`,
+    `ok` and the sorted `stories`; a usage error or an end that does not resolve exits 2, a cut history 3
+
+Scenario: [S6] show --json (Harbor's STORY_ON_TRUNK, HRB-2)
+  Given AUTH-001 on the trunk through convoy 8
+  Then `ledger.py show AUTH-001 --json` is schema 1 with the record (id, state, version, convoy, delivered) and
+    the why as data; an id that is no story exits 1 with `error` and no state
+
+Scenario: [S7] take and take --clear with Harbor
+  Given `git config harbor.py` names a harbor.py that has `story take`
+  Then `take` runs `harbor.py story take <ID>` and sets the story only when it exits 0; STORY_ON_TRUNK is one
+    line and exit 1; an environment failure or no answer is exit 2 with nothing set; an unregistered session
+    takes; `take --clear` runs `story release`; a harbor.py without `story take`, or none, changes nothing
+
+Scenario: [S8] Hostile logbook content and harbor.py output
+  Given malformed, oversized, mistyped or unreadable logbook files, and a harbor.py that prints a take and exits 1
+  Then the ledger never crashes, no logbook content changes a difference or raises a story it should not, a
+    refusal is never a take, and no hook's path (summary, --json, history, check, show, attribution, the git
+    hooks, the plugin's --root run) runs harbor.py
+
+Scenario: [S9] check --json keeps its schema (Harbor's HRB-3)
+  Then `ledger.py check --json` is {"schema": 1, "diffs": [{level, code, detail}]}, exit 1 iff an error
 ```
 
 ## Testable units
 | Unit | Test type | File |
 |---|---|---|
-| reading convoys, vessels, workers and moves from a test logbook; take delegating to a stub harbor.py | unit | tests/test_ledger.py |
+| reading convoys, vessels, workers and moves from a test logbook; take delegating to a stub harbor.py; attribution; show --json; hostile input | unit | tests/test_ledger_harbor.py |
 
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, INV-005 cited, a CHANGELOG

@@ -167,6 +167,27 @@ attempts (`Dropped:` commits on any origin branch, also in `--json` as `attempts
 next` lists the ready stories nobody works on, by wave and id; `ledger.py --release vX.Y.Z` the stories whose
 commit is in that tag and not in the previous version tag.
 
+Harbor (LEDGER-013, [ledger.md](ledger.md) "Harbor and Swarm"). The ledger reads Harbor's logbook,
+`origin/harbor/log`, with the same hardened git calls as everything else (`ls-tree` and one `cat-file` per kind of
+file), as data: an active worker holding a story makes it `in-progress`, a vessel sealed on its exact head in an open
+convoy makes it `delivered`, and a sailed convoy (or the `Convoy: <n>` trailer of the merge that brought it) names an
+on-trunk story's convoy, with the exact time from `main.toml`'s convoy move. The logbook never adds a difference, so
+no content anyone pushes to it changes what `check` says or an exit code; a malformed file is left out, an unreadable
+logbook is none. Three contracts are Harbor's to read: `ledger.py attribution <a>..<b> --json` (`convoy add`'s
+`NO_STORY`; the same attribution function `check` uses), `ledger.py show <ID> --json` (`STORY_ON_TRUNK`) and
+`ledger.py check --json` (the harbormaster's round and the ok, HRB-3), whose schema is fixed in ledger.md.
+
+harbor.py is code the ledger runs, so only one explicit command runs it: `ledger.py take` (and `take --clear`), when
+`git config --local harbor.py` names an absolute path to a `harbor.py` and `harbor.py story take --help` exits 0
+(feature detection, never a version string). Never `show`, `check`, `attribution`, the summary, the doctor, or any
+hook's path (the session start, the guard, the git hooks), so opening a repo or committing never runs Harbor; a
+Harbor that calls the ledger back (its `story take` asks `ledger.py --json` and `show --json`) cannot loop. It runs
+with the interpreter running the ledger (`-E -s`), the hardened git environment, `CLAUDE_PROJECT_DIR` set to the
+checkout, no stdin, in its own session killed whole at the timeout (`KEELOKIT_HARBOR_SECONDS`, default 180), its
+output read from files and at most 64 KiB of it. Only its exit decides: 0 takes, 1 is Harbor's refusal (one line,
+nothing set), anything else or no answer is exit 2, nothing set; what it prints is relayed as one terminal-safe line
+and never read as a verdict.
+
 The CI keeps two facts git does not (LEDGER-011). The orphan branch `keelokit/ledger` (`[ledger] snapshot`; `""`
 turns it off) holds `LEDGER.md` and `ledger.json` of the trunk's latest commit and `moves.toml`, the time the CI saw
 each push reach the trunk: the template's `ledger-snapshot` job runs `ledger.py snapshot` on every push to main and

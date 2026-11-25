@@ -120,9 +120,9 @@ A story has one state: the most advanced one the facts prove. From lowest to hig
 | Command | Does |
 |---|---|
 | `ledger.py` | The summary in at most 10 lines |
-| `ledger.py show <ID> [--full]` | The story's card: state, date (exact or approximate), commits with subject and `Claude-Session:`, version, environments, branches, the file and its *Addendum* headings, and the why: bodies of its `Story:`/`Part-of:` commits, rows of `docs/escapes.md` and findings of `docs/bugbash/` that name it or arrive through `Finding:`, attempts (`Dropped:`), corrections, convoy events. At most 60 lines without `--full`; paths, not long contents |
+| `ledger.py show <ID> [--full\|--json]` | The story's card (`--json`: the record and the why as data, below): state, date (exact or approximate), commits with subject and `Claude-Session:`, version, environments, branches, the file and its *Addendum* headings, and the why: bodies of its `Story:`/`Part-of:` commits, rows of `docs/escapes.md` and findings of `docs/bugbash/` that name it or arrive through `Finding:`, attempts (`Dropped:`), corrections, convoy events. At most 60 lines without `--full`; paths, not long contents |
 | `ledger.py next` | `ready` stories not `in-progress`, by wave and id |
-| `ledger.py take <ID>` / `take --clear` | Sets or clears `git config --worktree keelokit.story` (see LEDGER-008) |
+| `ledger.py take <ID>` / `take --clear` | Sets or clears `git config --worktree keelokit.story` (see LEDGER-008); with Harbor, `harbor.py story take`/`release` first (LEDGER-013) |
 | `ledger.py drop <ID> --motivo "…"` | Records an abandoned attempt (see LEDGER-008) |
 | `ledger.py check [--ci] [--json]` | Every difference, with its code |
 | `ledger.py --json` | Everything, for the dashboard, the coordinator, Harbor and the CI |
@@ -131,7 +131,7 @@ A story has one state: the most advanced one the facts prove. From lowest to hig
 | `ledger.py backfill --propose [--from FILE…]` / `backfill --accept` | Proposes correction rows / accepts them (a person only) |
 | `ledger.py correct <commit> --story <ID> --evidence "…"` | Proposes a late attribution |
 | `ledger.py review --filter` / `backfill --accept --delegated <run>` / `review --reject-sample <run>` | The delegated review's mechanical filter / writing its approved rows / sending a run back (a person) |
-| `ledger.py attribution <a>..<b> [--json]` | Whether every commit of a range is attributed (Harbor's `convoy add` calls it) |
+| `ledger.py attribution <a>..<b> [--json]` | Whether every commit of a range is attributed, as `check` attributes it (Harbor's `convoy add` calls it; contract below) |
 | `ledger.py hook prepare\|msg`, `ledger.py prepush` | The git hooks' logic |
 | `ledger.py snapshot [--run ID] [--push BEFORE..AFTER]` / `snapshot --branch` | Writes the snapshot branch (the CI only; the time from `KEELOKIT_SNAPSHOT_AT`, the push event's) / prints its name, empty when off (the CI's gate) |
 | `ledger.py deploy <staging\|production> <commit>` | Moves `deploy/<env>` to the deployed commit (the deploy jobs only, after a deploy that ran; backwards on a rollback) |
@@ -150,6 +150,8 @@ A story has one state: the most advanced one the facts prove. From lowest to hig
 
 `history` is `complete`, `snapshot:<sha>` or `incomplete`. New keys may be added; existing keys never
 change meaning within schema 1.
+LEDGER-013 added `harbor` (`logbook`: the logbook commit read or null, `skipped`, `error`) and, on each story,
+`delivered` (null or `{convoy, convoy_state, branch, head}`) and `workers` (the active Harbor workers holding it).
 
 ### Exit codes and difference codes
 
@@ -241,12 +243,74 @@ today without it.
 - **Harbor** (plan: `docs/ledger-phase6.md` in `leosimini/keelokit-harbor`): `Convoy: <n>` on convoy
   merges; `convoy add` refuses an unattributed vessel (`NO_STORY`); `harbor.py story take` is a lock in the
   logbook (`STORY_TAKEN`); the harbormaster's round runs `ledger.py check --json` and the ok refuses a
-  convoy with a difference (`LEDGER_DIFF`). Keelokit's side: LEDGER-013.
+  convoy with a difference (`LEDGER_DIFF`). Keelokit's side: LEDGER-013, below.
 - **Swarm** (plan: `docs/ledger-refs.md` in `leosimini/enjambre`): an opaque `ref` on tasks; the helper
   prompt sets the hooks and the story; the runner writes `Part-of:` and `Swarm-Task:` itself; `deliver`
   refuses an unattributed delivery (`UNATTRIBUTED`); `swarm-ask` asks for `plugin:keelokit`. The ledger
   never reads the swarm repo: it sees deliveries as `swarm/*` branches in the code repo. Keelokit's side:
   LEDGER-014.
+
+### What the ledger reads of Harbor, and the contracts Harbor reads (LEDGER-013)
+
+The logbook (`origin/harbor/log`, as the last fetch left it; the ledger never fetches or writes it) is read with
+git, as data, never by running Harbor. It only raises a story that is not on the trunk and dates or names the
+convoy of one that is; it adds no difference, so nothing in it changes `check`, the diffs or an exit code. A file
+that is not what Harbor writes (not UTF-8 TOML, a wrong type, larger than 1 MiB) is left out and counted in
+`--json`'s `harbor.skipped`; a logbook git cannot read is none (`harbor.error`).
+
+| Fact in the logbook | Gives |
+|---|---|
+| `workers/<account>/<host>/<session>.toml` with `state = "active"` and `story` (HRB-2) | `in-progress` (from `defined` or `ready`); the record's `workers` |
+| `convoys/<n>.toml` assembling, waiting, ready or verifying, with a `[[vessels]]` whose `head` has a green run (`runs/<head>.toml` or `seals/<head>.toml`, `exit = 0`) and whose `origin/<branch>`, when it exists, is still that head | `delivered`, `convoy = n`, the record's `delivered` (`convoy`, `convoy_state`, `branch`, `head`); several convoys: the highest number |
+| the `Convoy: <n>` trailer of the first-parent merge that brought an on-trunk story's commit (git, no logbook needed); else a sailed convoy whose `[sail]` `main_before..main_after` holds it; else a `main.toml` move with `cause = "convoy <n>"` | the record's `convoy` |
+| `main.toml`'s move with `cause = "convoy <n>"` whose `from..to` holds the commit's arrival | `since` from its `seen`, `since_exact = true` (unless the CI's `moves.toml` already gave an exact time); a `loose` move gives none |
+
+`show` adds the delivery, the workers and the convoy's events (the last 8; all with `--full`). The snapshot path
+(a cut history) does not read the logbook.
+
+**`ledger.py show <ID> --json`** prints `{"schema": 1, …the story's record as --json gives it, "history": …,
+"why": {"addenda", "commits", "corrections", "escapes", "findings", "convoy_events"}}` (`why` is null with a cut
+history); each commit is `{sha, date, kind ("Story"|"Part-of"), branches, subject, session, body}`. The id is
+matched exactly, else without case. No such story: exit 1 and `{"schema": 1, "id": …, "error": …}`, with no
+`state`.
+
+**`ledger.py attribution <a>..<b> [--json]`** (Harbor's `convoy add`): exit 0 when it answered, even with
+unattributed commits; 2 for a usage error, a range that is not `<a>..<b>`, or an end that does not resolve to a
+commit; 3 when the history is incomplete.
+
+```json
+{"schema": 1, "range": "<a>..<b>", "ok": true,
+ "commits": [{"sha": "<40 hex>", "subject": "…", "story": ["AUTH-001"], "part_of": [], "no_story": null,
+              "merge": false, "attributed": true, "via": "own"}],
+ "unattributed": ["<sha>"], "stories": ["AUTH-001"],
+ "since": "<sha>|null", "diffs": [{"level": "error", "code": "BAD_CATEGORY", "detail": "…"}]}
+```
+
+`commits` are those `<b>` reaches and `<a>` does not, in `git rev-list --reverse` order, attributed exactly as
+`check` attributes (the same function): a commit's own `Story:`/`Part-of:`/`No-story:`, an active correction row,
+a merge with one that brings it, or, for a merge, everything it brings being attributed (`via`: `own`,
+`correction`, `merge`; null when not attributed; a merge with its own trailer is `own`), with the arrivals of
+`<b>`'s first-parent chain, as `check --ci` reads a pull request. `ok`: every non-merge commit is attributed.
+`stories`: the union of `story` and `part_of`, sorted. As in `check`, commits `[ledger] since` reaches are left out
+(`since` names it; null when it names no commit here, and then the whole range counts). `diffs` adds what `check`
+says of those commits besides `UNATTRIBUTED` (`BAD_CATEGORY`, `UNKNOWN_STORY`, `STORY_NO_BODY`,
+`SQUASH_LOST_TRAILERS`): a `No-story:` with an unknown category is attributed and still an error there. Without
+`--json`: a line per unattributed commit, those diffs, and a summary line.
+
+**`ledger.py check [--ci] --json`** (Harbor's harbormaster round and the ok, HRB-3) prints
+`{"schema": 1, "diffs": [{"level": "error"|"warning", "code": "<CODE>", "detail": "…"}]}`; keys may be added,
+none changes meaning within schema 1; exit 1 iff a diff is an error.
+
+**`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
+`harbor.py` (Harbor records it when it adopts a project) and `harbor.py story take --help` exits 0 (asked by
+feature, never by version), `take` first runs `harbor.py story take <ID>`: exit 0 is the take (its line is relayed,
+then `keelokit.story` is set); exit 1 is Harbor's refusal (`STORY_TAKEN`, `STORY_ON_TRUNK`, …), relayed as one line,
+exit 1, nothing set; any other exit, or no answer in `KEELOKIT_HARBOR_SECONDS` (default 180), is exit 2, nothing
+set. An unregistered session's take is Harbor's check only (its `worker register --story` is the real take).
+`take --clear` runs `harbor.py story release <ID>` of the worktree's story; the worktree is cleared whatever
+Harbor says, and a release Harbor did not make is exit 1 (2 without an answer). The session id goes to Harbor as
+Harbor reads it (`HARBOR_SESSION`, `CLAUDE_SESSION_ID`), else `--session $CLAUDE_CODE_SESSION_ID`. Without Harbor,
+or with one without `story take`, `take` is as before.
 
 ## Plan
 
