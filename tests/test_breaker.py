@@ -915,5 +915,65 @@ class BreakerRound5Test(BreakerCase):
         self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
 
 
+class BreakerRound6Test(BreakerCase):
+    """Breaker round 6 (ESC-342..345): each finding reproduced as a failing test first."""
+
+    def fake_revert(self, repo: GitRepo, close: str, files: dict) -> None:
+        harness(repo, f"Revert\n\nThis reverts commit {close}.\n\nPart-of: AUTH-001", files)
+        repo.publish()
+
+    def test_HARN_021_S3_a_binary_change_reverted_to_other_bytes_reverts_nothing_ESC_342(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/tool.bin",))})
+        bin_a, bin_b, bin_c = b"\x00\x01A\x00", b"\x00\x01B\x00", b"\x00\x01C\x00"
+        (repo.path / ".keelokit/bin").mkdir(parents=True, exist_ok=True)
+        (repo.path / ".keelokit/bin/tool.bin").write_bytes(bin_a)
+        repo.git("add", "-f", ".keelokit/bin/tool.bin")
+        repo.git("commit", "-q", "-m", "chore: tool\n\nPart-of: AUTH-001", when=repo.next_date())
+        (repo.path / ".keelokit/bin/tool.bin").write_bytes(bin_b)
+        repo.git("add", "-f", ".keelokit/bin/tool.bin")
+        repo.git("commit", "-q", "-m", "feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", when=repo.next_date())
+        close = repo.sha()
+        (repo.path / ".keelokit/bin/tool.bin").write_bytes(bin_c)
+        repo.git("add", "-f", ".keelokit/bin/tool.bin")
+        repo.git("commit", "-q", "-m", f"Revert\n\nThis reverts commit {close}.\n\nPart-of: AUTH-001",
+                 when=repo.next_date())
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S6_a_gitattributes_that_hides_diffs_does_not_fake_a_revert_ESC_343(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        harness(repo, "chore: verify\n\nPart-of: AUTH-001", {"scripts/verify.sh": "echo original\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "feature")
+        harness(repo, "chore: attributes\n\nPart-of: AUTH-001", {".gitattributes": "* -diff\n"})
+        close = harness(repo, "feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        harness(repo, f"Revert\n\nThis reverts commit {close}.\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0\n"})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        code, diffs = self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=61), "--ci",
+                                 env=PR_ENV)
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
+
+    def test_HARN_021_S4_look_alike_letters_of_any_script_are_no_decision_ESC_344(self):
+        for name in ("Ｃｌａｕｄｅ", "Ꮯ" + "laude", "ᴄʟᴀᴜᴅᴇ",
+                     "Ｂｏｔ"):
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+                self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
+                           + f"- Decision · {name} · 2026-11-25 · land it\n")
+                self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S6_a_story_moved_to_any_name_keeps_the_risk_of_every_version_ESC_345(self):
+        repo = self.project({"DOC-001": story("DOC-001")})
+        repo.commit("docs: plan\n\nNo-story: docs", {"backlog/stories/auth-hardening.md": story("AUTH-001", risky="true")})
+        repo.git("rm", "-q", "backlog/stories/auth-hardening.md")
+        repo.git("commit", "-q", "-m", "docs: drop\n\nNo-story: docs", when=repo.next_date())  # no rename to follow
+        repo.commit("docs: re-add\n\nNo-story: docs", {"backlog/stories/sec-one.md": story("AUTH-001")})
+        repo.publish()
+        self.close(repo, "AUTH-001", publish=False)
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+
 if __name__ == "__main__":
     unittest.main()
