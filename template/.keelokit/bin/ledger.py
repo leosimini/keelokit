@@ -1268,7 +1268,10 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
         return {"facts": facts, "reason": reason}
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
-    delegation = {"reviews": reviews, "stories": {s["id"]: s for s in stories if not s.get("unreadable")},
+    # A story's touches and dimensions decide its critical flag: with --rules-ref, as <rev> has them (a story <rev>
+    # lacks has no record there, so it counts as critical).
+    judged = read_stories(rules_sha, cfg)[0] if rules_sha else stories
+    delegation = {"reviews": reviews, "stories": {s["id"]: s for s in judged if not s.get("unreadable")},
                   "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"]),
                   "rules_reach": set(read_graph([rules_sha])) if rules_sha else None}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
@@ -2900,6 +2903,9 @@ def cmd_check(state: dict, args: tuple) -> int:
         if rules_sha is None:
             print(f"Keelokit: check: --rules-ref {rules_ref!r} does not resolve to a commit here", file=sys.stderr)
             return 2
+        # `[ledger]` (enforce, since, no_story, stories, trunk) is a rule as well: <rev>'s committed state.toml, never
+        # the checked-out one (absent or unreadable there: the defaults, as read_state).
+        state = load_toml(cat_specs([f"{rules_sha}:{STATE_FILE}"]).get(f"{rules_sha}:{STATE_FILE}")) or {}
     diffs = all_diffs(state, ci, rules_sha)
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))

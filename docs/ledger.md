@@ -299,9 +299,9 @@ says of those commits besides `UNATTRIBUTED` (`BAD_CATEGORY`, `UNKNOWN_STORY`, `
 
 **`ledger.py check [--ci] --json [--rules-ref <rev>]`** (Harbor's harbormaster round and the ok, HRB-3) prints
 `{"schema": 1, "diffs": [{"level": "error"|"warning", "code": "<CODE>", "detail": "…"}]}`; keys may be added,
-none changes meaning within schema 1; exit 1 iff a diff is an error. `--rules-ref <rev>`: the rule files of the
-committed tree (`[ledger.approval]`, `critical.toml`, the review files, `critical.toml` at a row's arrival) come from
-`<rev>` (Harbor passes main's tip when it judges a convoy as landed); exit 2 when `<rev>` is no commit here.
+none changes meaning within schema 1; exit 1 iff a diff is an error. `--rules-ref <rev>`: the rules come from
+`<rev>`'s committed tree, never the trunk's or the checkout's (the whole `.keelokit/state.toml`, `critical.toml`, the
+review files, `critical.toml` at a row's arrival, and the story files' touches and dimensions for the critical flag) (Harbor passes main's tip when it judges a convoy as landed); exit 2 when `<rev>` is no commit here.
 
 **`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
 `harbor.py` (Harbor records it when it adopts a project) and `harbor.py story take --help` exits 0 (asked by

@@ -92,3 +92,18 @@ Scenario: [S10] check --rules-ref (Harbor's ok judges a convoy as landed)
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, INV-005 cited, a CHANGELOG
 line, `Story: LEDGER-013` trailer, addendum if the result differs.
+
+## Cold breaker
+Each round is a fresh subagent given only the repo, the PR diff and the invariants (attribution equals `check`'s,
+hostile logbook or harbor.py output can't crash, run code from a hook's path or change a verdict, take never claims
+success when Harbor refused, and from round 1's second half `--rules-ref`); findings are reproduced, each fixed with
+a failing test first.
+
+- **Round 1** (9c678ae, then c478797 for `--rules-ref`). Invariants 1–5: none reproduced (90 random DAGs compared
+  `attribution` with `check --ci` on a pull request and `check` on the trunk; hostile logbook and harbor.py output).
+  Two findings on `--rules-ref`, both fixed with tests named `..._breaker1_...`: (1) a convoy could narrow its story
+  file's `touches`/`dimensions` and so un-critical its own delegated correction row, since the story was read from
+  the convoy's tree; now the stories that decide the critical flag are `<rev>`'s. (2) `[ledger]` (`enforce`,
+  `since`, `no_story`, `stories`) came from the checked-out `state.toml`, so a convoy setting `enforce = "warn"`
+  passed; now the whole committed `state.toml` is `<rev>`'s.
+

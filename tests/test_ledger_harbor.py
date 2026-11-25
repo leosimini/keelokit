@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 from test_ledger import (CORR, CRITICAL, REVIEWS, GitRepo, LedgerCase, approval, build_delegated, by_id, clean_env,
-                         commit_harness, corrections, delegated_row, read_json, review_row, review_text)
+                         commit_harness, corrections, delegated_row, read_json, review_row, review_text, story15)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -733,6 +733,42 @@ class LedgerRulesRefTest(LedgerCase):
         self.assertIn("UXC-303", invalid[0])
         ci = repo.ledger("check", "--ci", "--rules-ref", rules, "--json")
         self.assertEqual(json_of(self, ci)["diffs"], json_of(self, r)["diffs"], "any order of the flags")
+
+    def test_LEDGER_013_S10_breaker1_a_convoy_cannot_narrow_the_storys_touches_past_the_rules(self):
+        """Cold breaker round 1, finding 1: the story's touches and dimensions decide the critical flag; under
+        --rules-ref they are read as <rev> has them, not as the convoy rewrote them."""
+        repo, c = build_delegated(self.tmp, approval("delegated"))
+        commit_harness(repo, "chore: a review\n\nNo-story: ledger",
+                       {f"{REVIEWS}/rpay.json": review_text("rpay", [review_row("UXC-303", c["UXC-303"])])})
+        repo.publish()
+        rules = repo.sha()
+        commit_harness(repo, "chore: convoy narrows the story\n\nNo-story: ledger",
+                       {"backlog/stories/UXC-303-s.md": story15("UXC-303", ("apps/api/pay/x.ts",), ("logic",)),
+                        CORR: corrections(delegated_row("UXC-303", c["UXC-303"], "rpay"))})
+        repo.publish()
+        r = repo.ledger("check", "--json", "--rules-ref", rules)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue([d for d in json_of(self, r)["diffs"] if d["code"] == "CORRECTION_INVALID"
+                         and "UXC-303" in d["detail"]])
+
+    def test_LEDGER_013_S10_breaker1_the_ledger_table_comes_from_the_rules_ref(self):
+        """Cold breaker round 1, finding 2: `[ledger]` (enforce, since, no_story, stories) is a rule too: under
+        --rules-ref it is <rev>'s committed state.toml, not the checked-out convoy's."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        since = repo.sha()
+        block = '[ledger]\nsince = "%s"\nenforce = "block"\n' % since
+        commit_harness(repo, "chore: rules\n\nNo-story: harness", {".keelokit/state.toml": block})
+        repo.publish()
+        rules = repo.sha()
+        repo.commit("chore: unattributed convoy commit")
+        commit_harness(repo, "chore: relax\n\nNo-story: harness",
+                       {".keelokit/state.toml": block.replace('"block"', '"warn"')})
+        repo.publish()
+        self.assertEqual(repo.ledger("check", "--json").returncode, 0, "by its own rules, a warning")
+        r = repo.ledger("check", "--json", "--rules-ref", rules)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("UNATTRIBUTED", [d["code"] for d in json_of(self, r)["diffs"] if d["level"] == "error"])
 
     def test_LEDGER_013_S10_the_same_rules_give_the_same_verdict(self):
         repo, _ = build_delegated(self.tmp, approval("delegated"))
