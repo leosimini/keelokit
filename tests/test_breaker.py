@@ -314,6 +314,7 @@ class BreakerPullRequestTest(BreakerCase):
     def pull_request(self, repo: GitRepo, branch: str, number: int = 7) -> GitRepo:
         """What actions/checkout does for a pull request: every branch, then GitHub's merge, detached."""
         main, tip = repo.sha("origin/main"), repo.sha(f"origin/{branch}")
+        state = (repo.path / ".keelokit/state.toml").read_text()  # the work tree's, before the checkouts
         repo.git("checkout", "-q", "--detach", main)
         repo.git("merge", "-q", "--no-ff", "-m", f"Merge {tip} into {main}", tip, when=repo.next_date())
         repo.git("push", "-q", "origin", f"HEAD:refs/pull/{number}/merge")
@@ -327,7 +328,7 @@ class BreakerPullRequestTest(BreakerCase):
         run(repo, ["git", "fetch", "-q", "origin", f"+refs/pull/{number}/merge:refs/remotes/pull/{number}/merge"], ci)
         run(repo, ["git", "checkout", "-q", "--detach", f"refs/remotes/pull/{number}/merge"], ci)
         clone = GitRepo(self.tmp, existing=ci)
-        clone.state((repo.path / ".keelokit/state.toml").read_text())
+        clone.state(state)
         return clone
 
     def branch(self, repo: GitRepo, sid: str, files: dict, harness_files: dict | None = None) -> None:
@@ -439,6 +440,92 @@ class BreakerProcessTextTest(unittest.TestCase):
                 text = (ROOT / rel).read_text()
                 self.assertIn("risky.toml", text)
                 self.assertIn("Breaker rounds", text)
+
+
+class BreakerRound1Test(BreakerCase):
+    """Breaker round 1 (ESC-311..315): each finding reproduced as a failing test first."""
+
+    def test_HARN_021_S5_a_side_branch_that_adds_its_own_risky_toml_exempts_nothing_ESC_311(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))}, risky=None)
+        repo.git("checkout", "-q", "-b", "side")
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+        harness(repo, "chore: my own rules\n\nPart-of: AUTH-001", {RISKY: RISKY_TOML + "# the side's\n"})
+        repo.git("checkout", "-q", "main")
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "side", check=False)
+        harness(repo, "Merge pull request #4 from x/side", {RISKY: RISKY_TOML + "# both\n"})  # differs from both
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S5_deleting_and_re_adding_risky_toml_exempts_nothing_ESC_311(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))})
+        self.close(repo, "AUTH-001")
+        repo.git("rm", "-q", RISKY)
+        repo.git("commit", "-q", "-m", "chore: drop\n\nNo-story: harness", when=repo.next_date())
+        harness(repo, "chore: back\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S6_a_pull_request_that_changes_the_ledger_settings_is_still_judged_ESC_312(self):
+        for setting in ('stories = "elsewhere/*.md"\n', 'id_from = "filename"\n',
+                        f'since = "SELF"\n'):
+            with self.subTest(setting=setting):
+                repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))})
+                repo.git("checkout", "-q", "-b", "feature")
+                text = f'[ledger]\nenforce = "warn"\n' + (setting if "SELF" not in setting else "")
+                harness(repo, "chore: tune ledger\n\nPart-of: AUTH-001", {".keelokit/state.toml": text})
+                repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001")
+                if "SELF" in setting:
+                    harness(repo, "chore: since\n\nPart-of: AUTH-001",
+                            {".keelokit/state.toml": text + f'since = "{repo.sha()}"\n'})
+                repo.git("push", "-q", "origin", "feature")
+                repo.git("checkout", "-q", "main")
+                repo.state(f'[ledger]\nsince = "{self.since}"\n')
+                clone = BreakerPullRequestTest.pull_request(self, repo, "feature", number=len(setting))
+                clone.git("checkout", "-q", "--", ".keelokit/state.toml")  # the CI reads the PR's own file
+                code, diffs = self.check(clone, "--ci", env=PR_ENV)
+                self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
+                self.assertEqual(code, 1)
+
+    def test_HARN_021_S5_without_ledger_since_the_rule_holds_from_risky_toml_ESC_313(self):
+        for since in (None, "HEAD"):
+            with self.subTest(since=since):
+                repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))})
+                repo.state("[ledger]\n" + (f'since = "{since}"\n' if since else ""))
+                self.close(repo, "AUTH-001")
+                self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S4_only_a_listed_decider_decides_ESC_314(self):
+        rules = RISKY_TOML + 'deciders = ["Leo"]\n'
+        for name, ok in (("Leo", True), ("leo", True), ("subagent", False), ("Opus 5.5", False),
+                         ("ClaudeCode", False), ("Someone", False)):
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))}, risky=rules)
+                self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
+                           + f"- Decision · {name} · 2026-11-25 · land it\n")
+                found = self.breaker(self.check(repo)[1])
+                self.assertEqual(("warning", "BREAKER_UNRESOLVED", "AUTH-001") in found, not ok, found)
+
+    def test_HARN_021_S4_without_deciders_agent_like_names_are_no_decision_ESC_314(self):
+        for name in ("subagent", "ClaudeCode", "the agents", "Opus 5.5", "claude_code", "Breaker2", "Sonnet"):
+            with self.subTest(name=name):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+                self.close(repo, "AUTH-001", rounds=round_line(1, HEAD, "1 finding open")
+                           + f"- Decision · {name} · 2026-11-25 · land it\n")
+                self.assertIn(("warning", "BREAKER_UNRESOLVED", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+    def test_HARN_021_S7_a_risky_toml_that_is_a_symlink_fails_closed_ESC_315(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("docs/a.md",))}, risky=None)
+        repo.write("rules.toml", RISKY_TOML)
+        (repo.path / ".keelokit").mkdir(exist_ok=True)
+        (repo.path / RISKY).symlink_to("../rules.toml")
+        repo.git("add", "-A")
+        repo.git("add", "-f", RISKY)
+        repo.git("commit", "-q", "-m", "chore: risky via a link\n\nNo-story: harness", when=repo.next_date())
+        self.close(repo, "AUTH-001")
+        found = self.breaker(self.check(repo)[1])
+        self.assertIn("BREAKER_CONFIG", [c for lvl, c, _ in found if lvl == "error"])
+        self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)
 
 
 if __name__ == "__main__":
