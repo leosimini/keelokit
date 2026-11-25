@@ -15,6 +15,7 @@ is the procedure. Roles are separate agents with fresh context:
 | Builder — writes the code | a general agent you spawn | Sonnet |
 | Reviewer — reads the diff cold | `agents/reviewer.md` | Sonnet; **Opus in full tier** |
 | Breaker — tries to break the branch (full tier only) | `agents/breaker.md` | **Opus** |
+| Cold breaker — one per round on a risky story, never reused (step 5b) | `agents/breaker.md`, mode C | **Opus** |
 
 The agent files default to Sonnet; for the full tier pass `model: "opus"` when you delegate to the
 verifier, reviewer and breaker. Searches, logs, status and screenshots go to Haiku. The table by
@@ -34,7 +35,9 @@ user can force a tier with `--trivial`, `--light` or `--full`; without a flag it
 
 Rules for the choice:
 - **When in doubt, go up one tier.** Missing an escape costs more than a reviewer's tokens.
-- Always **full**: a money story: the `integrity` dimension, or a story that moves money in a
+- Always **full**: a risky story — `python3 .keelokit/bin/ledger.py risky <ID>` says whether and why, from
+  `.keelokit/risky.toml` (its `risky = true`, a dimension, a touch, or a path the branch changes); it also gets
+  the cold breaker rounds of step 5b. Always **full**, too: a money story: the `integrity` dimension, or a story that moves money in a
   project with the `payments` trait (the breaker walks its failure paths); and a critical area,
   money, reservations, quotas, credits, refunds, notices, permissions or an assistant (doctor
   enforces the declaration).
@@ -47,7 +50,8 @@ Rules for the choice:
 ## Spend less, same checks (every tier)
 
 - One agent per role per story. A later round **continues the same agent** (`SendMessage`)
-  instead of launching one that rereads everything; the verifier reproduces ALL the round's
+  instead of launching one that rereads everything (the one exception: step 5b's cold breaker, a new one
+  per round); the verifier reproduces ALL the round's
   findings in one pass, not one agent per finding.
 - Each Agent's description starts `<ID> · <role>` (`AUTH-003 · reviewer`), so a list of agents reads
   by story, and every prompt you delegate says **never `--no-verify`** (subagents tried it; the guard
@@ -185,6 +189,40 @@ repeat until nothing is open. A change nobody can see goes with a commit line
    Then back to step 4. Two rounds at most; a third means the story itself is wrong: stop and
    tell the user.
 
+### 5b. Cold breaker rounds — every risky story (HARN-021)
+
+The builder's own review, and a breaker that has read the builder's reasoning, miss what a fresh reader finds.
+For a story `ledger.py risky <ID>` calls risky, after step 5's round is clean and before step 6:
+
+1. **Head.** Push the branch; `git rev-parse HEAD` is the round's head (the full sha).
+2. **A new breaker, cold.** Spawn a NEW `breaker` agent (mode C, `model: "opus"`, description
+   `<ID> · cold breaker <n>`), never one from an earlier round or step 5. Its brief holds only: the story file's
+   path, the base and the head (`git diff <base>..<head>`), the invariants the story lists (ids, and where they are
+   defined), `.keelokit/risky.toml`, and `Never --no-verify.` — never the builder's conclusions, the reviewer's
+   report, an earlier round's findings or what you think is fine. Ask for reproduced findings only, each with its
+   repro script and the command that runs it.
+3. **Reproduced findings only.** Run each repro yourself; one that does not reproduce is not a finding. Each finding
+   that does is fixed starting with a test that fails before the fix (the verifier, mode A, or you: commit the test
+   first and watch it fail for the finding's reason), then the fix, and its row in `docs/escapes.md` (ESC-1).
+4. **Record the round** as the next line under `## Breaker rounds` in the story file, committed with the fixes:
+   ```
+   ## Breaker rounds
+   - Round <n> · head <sha> · clean
+   - Round <n> · head <sha> · <k> findings: ESC-312, ESC-313 · fixed in <commits>
+   - Decision · <person> · <YYYY-MM-DD> · <what was decided>
+   ```
+   One top-level line per round; detail goes on indented lines under it. `clean` means nothing reproduced, and it is
+   the round's whole result (a round that lists findings is not clean).
+5. **Loop** with a new breaker on the new head until a round is clean, at most `rounds` rounds
+   (`.keelokit/risky.toml`, default 3). The cap hit with findings left: the story does not close silently. Stop
+   (`mode = "auto"` too), tell the person what is left, and record their call as a `Decision` line naming them
+   (another round past the cap, or land as it is with the findings in a follow-up story). An agent never writes a
+   Decision of its own.
+
+`ledger.py check` (the CI) reports a risky story closed with no round (`BREAKER_MISSING`, error) and one whose last
+round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A pull request is judged by the
+trunk's `risky.toml`, never its own.
+
 ## 6. Verify — verifier, mode B
 
 Delegate to `verifier` (mode B). NOT DONE → the same loop as step 5.4: failing test, escape row,
@@ -229,6 +267,6 @@ builder.
 After each story lands, refresh the dashboard (`/keelokit:project-dashboard`).
 
 Per story: mode (full/light), contract, tests added (ids), invariants proven and how, review and
-attack rounds (findings, what reproduced), escapes logged with their new checks, mutation score
+attack rounds (findings, what reproduced), the breaker rounds of a risky story (head, findings, fixes, or clean), escapes logged with their new checks, mutation score
 if `integrity`, verification evidence (screenshot paths for screens), addendum if any, and the
 next ready story.

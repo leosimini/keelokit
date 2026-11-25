@@ -1,0 +1,30 @@
+# Risky stories in Keelokit itself (HARN-021; the template's copy explains the file). A risky story is built
+# with the cold breaker loop and closes only with its rounds recorded under `## Breaker rounds`.
+# Brought to the trunk by HARN-021: stories closed before that commit are exempt (no `since` needed).
+
+rounds = 3
+
+deciders = ["Leo"]   # the Decision line when the cap is hit with findings left
+
+dimensions = ["security", "integrity"]
+
+paths = [
+  ".githooks/**",
+  ".github/workflows/**",
+  ".keelokit/bin/**",
+  ".keelokit/harness/**",
+  ".claude/**",
+  "hooks/**",                       # the plugin's hooks: what runs in every session
+  "scripts/verify.sh",
+  "scripts/release.sh",
+  "scripts/package.sh",
+  "workflows/**",                   # agent workflows: what reaches a model, what they may write
+  "agents/**",
+  "skills/build-story/**",          # decides how work closes
+  "template/.githooks/**",
+  "template/.github/workflows/**",
+  "template/.keelokit/bin/**",
+  "template/.keelokit/harness/**",
+  "template/.claude/**",
+  "template/scripts/**",
+]

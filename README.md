@@ -41,7 +41,7 @@ gaps instead of guesses, and the agent that writes the code isn't the one that s
 | `/keelokit:plan-intake` | Reads what you already have, then asks only what's missing; what nobody knows yet is written down as an open question |
 | `/keelokit:plan-backlog` | Epics and stories with acceptance scenarios and the invariants they keep, grouped so parallel work doesn't touch the same files or the same critical area |
 | **Build** | |
-| `/keelokit:build-story` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved), the verifier walks it in the running app |
+| `/keelokit:build-story` | One story: a verifier writes the acceptance tests first, a builder makes them pass, a reviewer reads the diff, a breaker tries to break it (again after rebasing if main moved; for a risky story, a new cold breaker per round, each round recorded in the story and checked by the ledger), the verifier walks it in the running app |
 | **Run** | |
 | `/keelokit:run-local` | Your Expo app and its API on an Android phone, an Android emulator or an iOS simulator, with one command: it looks at what your Mac is missing, shows you, installs with one yes, doesn't rebuild what is already installed, and if something fails it keeps the error so Claude can fix it and try again |
 | **Check** | |

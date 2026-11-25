@@ -44,7 +44,7 @@ código no es el que dice que está terminado.
 | `/keelokit:plan-intake` | Lee lo que ya tenés y pregunta solo lo que falta; lo que nadie sabe todavía queda como pregunta abierta |
 | `/keelokit:plan-backlog` | Épicas e historias con escenarios de aceptación y los invariantes que cuidan, agrupadas para que el trabajo en paralelo no toque los mismos archivos ni la misma área crítica |
 | **Construir** | |
-| `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó) y el verificador la recorre en la app corriendo |
+| `/keelokit:build-story` | Una historia: un verificador escribe primero los tests de aceptación, un builder los hace pasar, un revisor lee el diff, un breaker intenta romperla (de nuevo después del rebase si main avanzó; en una historia riesgosa, un breaker en frío nuevo por ronda, cada ronda registrada en la historia y verificada por el ledger) y el verificador la recorre en la app corriendo |
 | **Ejecutar** | |
 | `/keelokit:run-local` | Tu app Expo y su API en un teléfono Android, un emulador de Android o un simulador de iOS, en un comando: mira qué le falta a tu Mac, te lo muestra, instala con un sí, no recompila lo que ya está instalado, y si algo falla guarda el error para que Claude lo arregle y vuelva a probar |
 | **Revisar** | |

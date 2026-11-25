@@ -239,6 +239,27 @@ dependencies are. The skills ask the same commands: `build-story` reads `ledger.
 contract and writes the why in its `Story:` commit's body, `coordinate` checks a landing with `show`,
 `ship-release` lists a version's stories with `--release`.
 
+### Breaker rounds: risky stories close after cold rounds (HARN-021)
+
+A builder's own adversarial review, and a breaker that read the builder's reasoning, missed real bugs on five
+stories in one night; a fresh agent given only the code, the diff and the invariants found them each time. That is
+now the rule for **risky** stories, in this repo and in every generated project. `.keelokit/risky.toml` (the
+product's, `_skip_if_exists`; the template ships defaults for hooks, the harness, CI, scripts, migrations and auth,
+and the security, auth, integrity and data dimensions; rounds = 3) says what is risky: a story's `risky = true`, a
+dimension, a touch, or a path a trunk commit of the story changes. `ledger.py risky <ID>` says whether and why.
+
+`build-story` (step 5b) runs the loop: a NEW breaker (mode C) per head, briefed with the story, the diff and the
+invariants only; reproduced findings only; each fix starts with a failing test; until a clean round or the cap; one
+line per round under `## Breaker rounds` in the story file, and a person's `Decision` line when the cap is hit with
+findings left. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
+rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
+own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
+no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision. History is exempt by
+position: only `Story:` commits that the commit which brought `risky.toml` does not reach, after `[ledger] since`.
+The files that decide what is judged (`risky.toml`, `state.toml`, the corrections) are always risky, so loosening
+them is work of a story with its own rounds; `RISKY_NO_STORY` refuses a risky change that names no story, in a commit
+or in a merge's own resolution. A revert counts only when its change is the reverted commit's inverted.
+
 ## Lifecycle
 
 | Stage | Skill | Human decides |

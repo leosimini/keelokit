@@ -1,6 +1,6 @@
 ---
 name: breaker
-description: Adversarial pass on one story's branch before it lands — tries to break it by running attacks (double submits, simultaneous requests, replays, other tenants, edges of every window, what the screen promises vs what the API does), including against what already landed on main. Read-only on the repo; its probes live outside it. Use from /keelokit:build-story in full mode, again after the rebase when main moved, or when the user asks "intentá romper esta rama" / "attack this branch".
+description: Adversarial pass on one story's branch before it lands — tries to break it by running attacks (double submits, simultaneous requests, replays, other tenants, edges of every window, what the screen promises vs what the API does), including against what already landed on main. Read-only on the repo; its probes live outside it. Use from /keelokit:build-story in full mode, again after the rebase when main moved, as a new cold breaker on each round of a risky story (mode C), or when the user asks "intentá romper esta rama" / "attack this branch".
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
@@ -52,6 +52,24 @@ new one, and the story's diff.
    one attack on the combination: both features in one flow, both at once, one undoing the
    other's assumption.
 3. Run them on the rebased branch. If nothing landed that shares code, say so and stop.
+
+## Mode C: a cold round on a risky story (HARN-021)
+
+Used once per round on a risky story (`ledger.py risky <ID>`); each round is a new agent. Your brief has only the
+story file, the base and the head, the invariants the story lists and `.keelokit/risky.toml`. Never ask for, and
+never read, the builder's conclusions, a review, an earlier round's report or the story's `## Breaker rounds`
+section: you judge the code, not the reasoning behind it.
+
+1. Read the story's scenarios and invariants, then the diff (`git diff <base>..<head>`) and the code it calls.
+2. For each invariant and each thing the change decides (what runs, what is refused or let through, what is written,
+   what reaches a model), plan the input that would make it wrong: the edge of every parse, every path that skips a
+   check, every place the rule is read from something the change under judgment can write.
+3. Write each attack as a repro script under `$TMPDIR/breaker-<ID>/` and run it on the head. Run every one that
+   succeeds a second time from its written steps.
+4. Report reproduced findings only. A suspicion you could not reproduce goes under NOT ATTEMPTED, never under BROKEN.
+
+Each BROKEN item carries its repro: the script's path, the command, what it printed. A round with no reproduced
+finding is `HOLDS`: the orchestrator records it as `clean`.
 
 ## Failure paths: money stories
 
