@@ -4109,6 +4109,7 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
                       "detail": f"origin/{cfg['snapshot']} is of {short(sha)}, which {trunk} ({short(trunk_sha)}) no "
                                 "longer holds: the trunk was rewritten since, so nothing it says holds now"})
         mark_unknown(list(records.values()), f"the snapshot is of {short(sha)}, which {trunk} no longer holds; {FIX}")
+        trunk_swarm_stale(records)
     elif sha != trunk_sha:
         if sha in graph:
             newer = reach_until(graph, [trunk_sha], set(first_reach(graph, [sha])))
@@ -4128,10 +4129,20 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
                          f"{trunk} since cannot be read; {FIX}")
         else:
             settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas, undone_shas)
+        if not complete or any(c["reverts_said"] for c in log):  # ESC-349: what landed since may undo a delivery
+            trunk_swarm_stale(records)
     settle_corrections(records, tree or [], trunk_sha, meta)
     settle_refs(records, refs, graph, cut, meta.get("refs") if isinstance(meta.get("refs"), dict) else {})
     settle_snapshot_states(stories, records)
     return {"sha": sha, "stories": list(records.values()), "diffs": diffs, "seen": seen}
+
+
+def trunk_swarm_stale(records: dict) -> None:
+    """Leave out the deliveries a snapshot read on the trunk (on-trunk, reverted) when this clone cannot vouch for
+    them now: a revert landed since (or may have), or the trunk was rewritten. Information only, so it is dropped,
+    never guessed (ESC-349); a full history reads them again."""
+    for rec in records.values():
+        rec["swarm"] = [e for e in rec["swarm"] if e["state"] == "in-progress"]
 
 
 def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sha: str, moves: dict,

@@ -372,7 +372,9 @@ ones, is no delivery, nor is one on a branch outside `swarm/<task>`. `--json` ad
 the lists are empty: whatever goes wrong reading Swarm's trailers is never a crash). `show` lists the deliveries
 under *swarm deliveries* (task · state · branch@head · convoy · authors), and each listed commit's task and author
 under it; `show --json`'s commits add `author` and `swarm_task`. A snapshot carries the lists; an entry of the wrong
-shape (a key missing or extra, a control character, tab or newline in a name) is left out, never the snapshot.
+shape (a key missing or extra, a control character, tab or newline in a name) is left out, never the snapshot; a shallow clone
+whose snapshot is behind the trunk leaves out the snapshot's trunk deliveries (on-trunk, reverted) when a revert
+landed since, or may have (a history it cannot read back, a rewritten trunk): it cannot vouch for them now.
 
 **`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
 `harbor.py` (Harbor records it when it adopts a project) and `harbor.py story take --help` exits 0 (asked by
