@@ -103,8 +103,13 @@ removes none.
 `Story: HARN-021` on the completing commit, this story's own breaker rounds recorded below.
 
 ## Breaker rounds
-- Round 1 · head 28c0111de7d35a043ebcbbba195eb4a7ef0339b3 · 6 findings: ESC-311 (×2), ESC-312, ESC-313, ESC-314, ESC-315 · fixed in the commit after fec8dcb
+- Round 1 · head 28c0111de7d35a043ebcbbba195eb4a7ef0339b3 · 6 findings: ESC-311 (×2), ESC-312, ESC-313, ESC-314, ESC-315 · fixed in 6f1fcc5
   A fresh agent ran 11 attacks with only the story, the diff and the invariants. Reproduced: a re-add or a side add
   of risky.toml moved the start (MED), a pull request's own state.toml hid its risky story (MED), no `[ledger]
   since` turned the rule off, agent-like names passed as a Decision, and a symlinked risky.toml read as absent.
   Held: multi-id commits, merges, reverts, renames, squash, fuzzed configs, git calls flat in the story count.
+- Round 2 · head 6f1fcc564564b27f2d3f5359a762ae36c6780c41 · 8 findings: ESC-316 (HIGH), ESC-317 (HIGH), ESC-318, ESC-319, ESC-320, ESC-321, ESC-322, ESC-323 · fixed in the commit after ea50e2e
+  A new agent, cold, 12 attacks. Reproduced: a deleted, moved or broken story file hid a closed risky story; a pull
+  request's own `[ledger] trunk` switched the pull-request checks off (older than this story, but it voided S6); a
+  side add of risky.toml flagged history; `risky` ignored trunk commits; model names as deciders; a string or
+  capitalised dimension; unknown keys read as no rule; check 25 times slower at 20k commits.

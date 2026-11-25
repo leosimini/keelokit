@@ -188,7 +188,10 @@ for a pull request the base's `risky.toml` and committed `[ledger]` with the pul
 for `Story:` commits that the first commit to bring `risky.toml` to the trunk does not reach (a later add moves
 nothing; its `since` key can only move the start later), and after `[ledger] since` when it is set: stories closed
 before are exempt by position, never by editing them. No `risky.toml` on the trunk: no rule. A `Decision` counts
-when it names one of `risky.toml`'s `deciders`, or, with none listed, a name that is no agent's or model's. The line is a record, as a trailer is: `check` asks that it is there and well
+when it names one of `risky.toml`'s `deciders`, or, with none listed, a name that is no agent's or model's. A closed
+id whose story file is gone, moved or broken is still judged by what its commits change. An unknown key in
+`risky.toml` is `BREAKER_CONFIG`. In a pull request, `check --ci` reads the base branch's committed `state.toml` when
+it has one, so a pull request cannot move the trunk it is judged on. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 
 ### Corrections file

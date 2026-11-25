@@ -745,6 +745,8 @@ def build_story(path: str, content: bytes | None, id_from: str) -> dict | None:
             "depends_on": [d for d in deps if isinstance(d, str)] if isinstance(deps, list) else [],
             "path": path, "unreadable": False, "touches": text_list(meta.get("touches")),
             "dimensions": text_list(meta.get("dimensions")), "risky": meta.get("risky") is True,
+            "risk_dims": [d.lower() for d in text_list(meta["dimensions"] if isinstance(meta.get("dimensions"), list)
+                                                       else [meta.get("dimensions")])],
             "breaker": breaker_record(body)}
 
 
@@ -2928,7 +2930,8 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     log = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
     stories = {s["id"]: s for s in read_stories(ctx["trunk_sha"], cfg)[0]}
     stories.update({s["id"]: s for s in read_stories(head, cfg)[0]})
-    return breaker_diffs(rules, log, log, graph, list(stories.values()), config_diffs=False)
+    return breaker_diffs(rules, log, log, graph, list(stories.values()), config_diffs=False,
+                         hits=risky_commits(rules, head, [ctx["trunk_sha"]]))
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -2961,6 +2964,13 @@ def cmd_check(state: dict, args: tuple) -> int:
         # `[ledger]` (enforce, since, no_story, stories, trunk) is a rule as well: <rev>'s committed state.toml, never
         # the checked-out one (absent or unreadable there: the defaults, as read_state).
         state = committed_state(rules_sha)
+    elif ci and os.environ.get("GITHUB_EVENT_NAME", "") in ("pull_request", "pull_request_target"):
+        # A pull request is judged by the base branch's committed [ledger] when it has one, never by the state.toml the
+        # pull request brings: its own `trunk` would move what it is judged on (ESC-317).
+        base = os.environ.get("GITHUB_BASE_REF", "")
+        sha = resolve_commit(f"refs/remotes/origin/{base}") if base and not base.startswith("-") else None
+        if sha and git_read(["ls-tree", sha, "--", STATE_FILE]).strip():
+            state = committed_state(sha)
     diffs = all_diffs(state, ci, rules_sha)
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
@@ -2988,8 +2998,10 @@ DECISION_LINE = re.compile(r"- Decision · ([^·]*\S[^·]*) · ([0-9]{4}-[0-9]{2
 # the name's letters (`subagent`, `ClaudeCode`, `Breaker2`), a short one as a word of its own (`AI`, `the bots`).
 AGENT_WORDS = ("claude", "agent", "breaker", "builder", "reviewer", "verifier", "orchestrator", "coordinator",
                "delegated", "copilot", "assistant", "subagent", "sonnet", "haiku", "fable", "gemini", "chatgpt",
-               "openai", "anthropic", "model", "harbor", "skipper", "dispatcher", "harbormaster", "swarm")
-AGENT_SHORT = ("ai", "bot", "llm", "gpt", "opus", "codex", "cursor")
+               "openai", "anthropic", "model", "harbor", "skipper", "dispatcher", "harbormaster", "swarm",
+               "grok", "deepseek", "llama", "devin", "mistral", "mixtral", "qwen", "gemma", "cohere", "perplexity",
+               "kimi", "windsurf", "cline", "aider")
+AGENT_SHORT = ("ai", "bot", "llm", "gpt", "opus", "codex", "cursor", "glm", "phi", "o1", "o3")
 ROUNDS_HEADING = re.compile(r"##[ \t]+Breaker rounds[ \t]*")
 ROUND_FORMAT = ("`- Round <n> · head <full sha> · clean` (or `· <findings> · <fixes>`), or "
                 "`- Decision · <person> · <YYYY-MM-DD> · <what was decided>`")
@@ -3060,6 +3072,9 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
     if not isinstance(data, dict):
         return {**rules, "problem": f"{RISKY_FILE} cannot be read as TOML here", "all": True}
     problems = []
+    unknown = sorted(set(data) - {"rounds", "paths", "dimensions", "deciders", "since"})
+    if unknown:  # a misspelt key or a table header would read as no rule (ESC-322)
+        problems.append(f"unknown key{'s' if len(unknown) > 1 else ''} {', '.join(map(repr, unknown[:3]))}")
     rounds = data.get("rounds", DEFAULT_ROUNDS)
     if is_int(rounds) and 1 <= rounds <= MAX_ROUNDS:
         rules["rounds"] = rounds
@@ -3071,6 +3086,7 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
             problems.append(f"`{key}` is a list of non-empty strings")
         else:
             rules[key] = sorted({v.strip().lstrip("/") for v in value} - {""})
+    rules["dimensions"] = sorted({d.lower() for d in rules["dimensions"]})
     since = data.get("since", "")
     if not isinstance(since, str) or since.strip() and not HEX_SHA.fullmatch(since.strip()):
         problems.append("`since` is a commit sha")
@@ -3104,13 +3120,15 @@ def touch_meets(touch: str, pattern: str) -> bool:
     return bool(regex.fullmatch(t) or regex.fullmatch(t + "/") or literal_prefix(pattern).startswith(t + "/"))
 
 
-def risky_reasons(story: dict, rules: dict | None, changed: set) -> list[str]:
-    """Why a story is risky (empty: it is not): its front matter, a dimension, a touch or a changed path."""
+def risky_reasons(story: dict, rules: dict | None, changed: set, hits: list | tuple = ()) -> list[str]:
+    """Why a story is risky (empty: it is not): its front matter, a dimension, a touch, a changed path, or a commit of
+    it that git found changing a path of risky.toml (`hits`)."""
     if rules is None:
         return ["risky = true"] if story.get("risky") else []
     why = [f"{RISKY_FILE} cannot be used, so every story counts"] if rules["all"] else []
     why += ["risky = true"] if story.get("risky") else []
-    why += [f"dimension {d}" for d in story["dimensions"] if d in rules["dimensions"]]
+    why += [f"dimension {d}" for d in story.get("risk_dims", story["dimensions"]) if d in rules["dimensions"]]
+    why += [f"its commit {short(sha)} changes a path of {RISKY_FILE}" for sha in hits]
     for pattern in rules["paths"]:
         regex = glob_regex(pattern)
         why += [f"touches {t} ({pattern})" for t in story["touches"] if touch_meets(t, pattern)]
@@ -3118,8 +3136,25 @@ def risky_reasons(story: dict, rules: dict | None, changed: set) -> list[str]:
     return list(dict.fromkeys(why))
 
 
+def risky_commits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
+    """The commits `tip` reaches and `exclude` does not that change a path of risky.toml: git filters them (one
+    path-limited `git log`), so no commit's file list is read (ESC-323)."""
+    if not rules["paths"]:
+        return set()
+    out = git_read(["log", "--full-history", "--format=%H", tip, *(["--not", *exclude] if exclude else []), "--",
+                    *(f":(glob){p}" for p in rules["paths"])]).decode()
+    return set(out.split())
+
+
+def missing_story(sid: str) -> dict:
+    """What stands for a closed story whose file is gone, moved or unreadable as a story: no front matter to make it
+    risky, no rounds; its commits still can (ESC-316)."""
+    return {"id": sid, "path": "(no story file)", "unreadable": False, "touches": [], "dimensions": [],
+            "risk_dims": [], "risky": False, "breaker": {"entries": [], "bad": []}}
+
+
 def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], graph: dict, stories: list[dict],
-                  config_diffs: bool = True) -> list[dict]:
+                  config_diffs: bool = True, hits: set = frozenset()) -> list[dict]:
     """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them)."""
     if rules is None:
         return []
@@ -3137,17 +3172,13 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
             for sid in c["story"]:
                 closing.setdefault(sid, c["sha"])
     by_id = {s["id"]: s for s in stories}
-    closing = {sid: sha for sid, sha in closing.items() if sid in by_id}
-    wanted = sorted({sha for sid in closing for sha in naming.get(sid, ())}) if rules["paths"] else []
-    paths = changed_paths(wanted)
     for sid, sha in sorted(closing.items()):
-        story = by_id[sid]
+        story = by_id.get(sid) or missing_story(sid)
         if story["unreadable"]:
             diffs.append({"level": "error", "code": "BREAKER_MISSING", "detail": f"{sid}: closed by {short(sha)}, and "
                           f"its file {story['path']} cannot be read here, so its breaker rounds cannot be checked"})
             continue
-        changed = set().union(*(paths.get(x, set()) for x in naming.get(sid, ())))
-        why = risky_reasons(story, rules, changed)
+        why = risky_reasons(story, rules, set(), [x for x in naming.get(sid, ()) if x in hits])
         if not why:
             continue
         reason = "; ".join(why[:3]) + (f"; +{len(why) - 3} more" if len(why) > 3 else "")
@@ -3220,8 +3251,12 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     starts, diffs = breaker_start(ctx, rules)
     if starts:
         held = set(first_reach(ctx["graph"], starts))
-        in_range = [c for c in in_range if c["sha"] not in held]
-    return diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"])
+        # A trunk commit that arrived before the add did is no later for coming off another branch (ESC-318).
+        arrival, order = ctx["placed"]
+        first = order[arrival[starts[0]]]
+        in_range = [c for c in in_range if c["sha"] not in held and order[arrival[c["sha"]]] >= first]
+    hits = risky_commits(rules, ctx["trunk_sha"], starts)
+    return diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"], hits=hits)
 
 
 def work_tree_story(cfg: dict, sid: str) -> dict | None:
@@ -3242,6 +3277,16 @@ def work_tree_story(cfg: dict, sid: str) -> dict | None:
             if story and story["id"] == sid:
                 return story
     return None
+
+
+def read_log_of(shas: list[str]) -> list[dict]:
+    """The log records (trailers parsed) of exactly these commits, from one `git log --no-walk --stdin`."""
+    fmt = ("%H%x00%P%x00%ct%x00%(trailers:key=Story,valueonly,separator=%x2C,unfold)%x00"
+           "%(trailers:key=Part-of,valueonly,separator=%x2C,unfold)%x00")
+    out = git_read(["log", "--no-walk=unsorted", "--stdin", "-z", f"--format={fmt}"],
+                   "".join(f"{s}\n" for s in shas).encode()).decode(errors="replace").split("\0")
+    return [{"sha": out[i], "story": story_ids(out[i + 3]), "part_of": story_ids(out[i + 4])}
+            for i in range(0, len(out) - 5, 6)]
 
 
 def merge_rules(a: dict | None, b: dict | None) -> dict | None:
@@ -3284,7 +3329,12 @@ def cmd_risky(state: dict, sid: str) -> int:
         out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{trunk_sha}...HEAD"],
                        ok=(0, 128)).decode(errors="replace")
         changed = {line for line in out.splitlines() if line.strip()}
-    why = risky_reasons(story, rules, changed)
+    hits: list[str] = []
+    if trunk_sha and rules:  # the story's commits already on the trunk count too (ESC-319)
+        found = risky_commits(rules, trunk_sha, [])
+        if found:
+            hits = [c["sha"] for c in read_log_of(sorted(found)) if sid in c["story"] + c["part_of"]]
+    why = risky_reasons(story, rules, changed, hits)
     cap = rules["rounds"] if rules else DEFAULT_ROUNDS
     if rules is None:
         print(f"Keelokit: no {RISKY_FILE} on the trunk or in the work tree: only `risky = true` makes a story risky")
