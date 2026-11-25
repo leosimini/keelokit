@@ -102,12 +102,16 @@ Beyond the spec, from the breaker rounds:
 - **Where the guard runs** (ESC-282). In any project with `.keelokit/`, not only where `.keelokit/bin/guard.py`
   exists, which it never runs; the guard refuses commands that delete or move `.keelokit/` or its `bin/` whole.
   Removing `.keelokit/` makes it not a Keelokit project: the person's decision.
-- **The guard's rules, read as the shell reads them** (ESC-283..289, two cold-breaker rounds). Quoted flags, a
+- **The guard's rules, read as the shell reads them** (ESC-283..294, three cold-breaker rounds). Quoted flags, a
   script given to `sh -c` or `eval`, every git config change (`-c`, `git config`, GIT_CONFIG_* in the environment,
   includes, aliases, `+` push refspecs), writes to .git/config and .git/hooks, and removing the harness (globs,
   `mv -t`, `$PWD`, an orphan branch: the hook also looks at origin/HEAD) or the plugin's own files. It is still a
   speed bump for an agent with a shell, as the guard's own docstring says: a variable or a script file gets past
-  any lexical rule; CI and the person's review are the backstop.
+  any lexical rule; CI and the person's review are the backstop. Also covered: `git mv` of the harness, `--orphan`,
+  hooks the person turned on (and the guard.py and ledger.py they run), `--remove-section core`, the worktree config,
+  `>|`, line continuations, Claude Code settings that disable hooks or the plugin. Known residue, left as it was:
+  tool-driven writes (`vercel env pull .env.local`); false positives on `echo .env >> .gitignore`, `git rm --cached
+  .env`, `.env.sample`-style names and `--force-if-includes` (LOG-4 blocks it on purpose).
 - guard, ledger and ux_gate take `--root` too, not only the doctor. The tests are in tests/test_guard.py
   (`HooksRunTrustedCode`, `HooksRunTrustedCodeRound2`), tests/test_doctor.py (`DoctorRootTest`) and
   tests/test_hooks.py.
