@@ -207,8 +207,8 @@ def keelokit_project(project: Path, tool: str) -> bool:
     """The guard runs wherever the project has .keelokit/ (ESC-282: deleting guard.py, which it never runs, must not
     turn it off; removing .keelokit/ as a whole is the person's call); the ledger and the doctor where the project
     has theirs, as the session start always did."""
-    if tool == "guard":
-        return os.path.isdir(project / ".keelokit")
+    if tool == "guard":  # ESC-284: a harness the repo commits, gone from the disk, still counts
+        return os.path.isdir(project / ".keelokit") or git(project, "cat-file", "-e", "HEAD:.keelokit") is not None
     return os.path.lexists(project / BIN / RUNS[tool])
 
 

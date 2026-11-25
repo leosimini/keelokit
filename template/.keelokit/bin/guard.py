@@ -777,6 +777,7 @@ def write_targets(segment: str) -> list[str]:
     return [t for w in words if not any(c.isspace() for c in w) for x in w.split(">") if (t := x.strip("(){}"))]
 
 
+SHELL_TOOLS = ("Bash", "Monitor", "PowerShell")
 HARNESS_DIRS = {".keelokit", ".keelokit/bin"}
 HARNESS_WHY = ("QA-2: removing or moving .keelokit/ (or its bin/) as a whole turns the guard and the harness off "
                "for this project; that is the person's call")
@@ -790,6 +791,32 @@ def harness_rel(word: str) -> str:
         except (ValueError, OSError):
             return p
     return p
+
+
+def harness_hit(word: str) -> bool:
+    """The word names .keelokit/ or .keelokit/bin/, as itself or as a glob the shell expands to it (ESC-284; a glob
+    whose first part starts with a dot, the only kind that matches a dot directory)."""
+    rel = harness_rel(word)
+    if rel in HARNESS_DIRS:
+        return True
+    return any(c in word for c in "*?[") and rel.split("/")[0][:1] in (".", "[") and \
+        any(fnmatch.fnmatchcase(d, rel) for d in HARNESS_DIRS)
+
+
+def mv_sources(args: list[str]) -> list[str]:
+    """The words mv moves: all but the last, or all of them with -t/--target-directory (ESC-284)."""
+    plain, target, i = [], False, 0
+    while i < len(args):
+        w = args[i]
+        if w in ("-t", "--target-directory") or (re.fullmatch(r"-[a-zA-Z]*t", w) is not None):
+            target, i = True, i + 2
+            continue
+        if w.startswith("--target-directory="):
+            target = True
+        elif not w.startswith("-"):
+            plain.append(w)
+        i += 1
+    return plain if target else plain[:-1]
 
 
 def harness_removal(cmd: str) -> bool:
@@ -810,13 +837,43 @@ def harness_removal(cmd: str) -> bool:
         elif name in ("rm", "rmdir", "unlink", "shred", "trash"):
             args = words[1:]
         elif name == "mv":
-            args = [w for w in words[1:] if not w.startswith("-")][:-1]
+            args = mv_sources(words[1:])
         elif name == "find" and any(w in ("-delete", "-exec", "-execdir", "-ok") for w in words):
             args = words[1:]
         else:
             continue
-        if any(harness_rel(w) in HARNESS_DIRS for w in args if not w.startswith("-")):
+        if any(harness_hit(w) for w in args if not w.startswith("-")):
             return True
+    return False
+
+
+def dequoted(cmd: str) -> str:
+    """The command as the shell reads its words: quotes joined and backslashes removed, so `'--no-verify'` and
+    `--no-ver""ify` read as the flag they are (ESC-283); a word that holds a blank (a message, a script) is kept only as
+    '', so a quoted message that mentions a flag is still not one."""
+    out = []
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        out.append(" ".join("''" if not w or any(c.isspace() for c in w) else w for w in words))
+    return " ; ".join(out)
+
+
+ALIAS_BYPASS = re.compile(r"(?:^|\s)(?:--no-veri(?:fy?)?|-[a-zA-Z]*n[a-zA-Z]*)(?=\s|$)|hookspath", re.I)
+
+
+def alias_bypass(cmd: str) -> bool:
+    """`git -c alias.c='commit --no-verify' c`: an alias defined on the command line whose value skips the hooks."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            continue
+        for w in words:
+            if w.lower().startswith("alias.") and "=" in w and ALIAS_BYPASS.search(w.split("=", 1)[1]):
+                return True
     return False
 
 
@@ -829,9 +886,12 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                     rf"(?i){GIT}config\b{GIT_ARGS}['\"]?keelokit\.allowtamper"):
         if re.search(pattern, cmd):  # quoted spellings, which `bare` has emptied
             return "QA-4: only a human may allow a skipped test or silenced check"
+    words_read = dequoted(cmd)
     for pattern, why in GIT_NO_HOOKS:
-        if re.search(pattern, bare):
+        if re.search(pattern, bare) or re.search(pattern, words_read):
             return why
+    if alias_bypass(cmd):
+        return "QA-2: never bypass git hooks (an alias that skips them is the same bypass)"
     if harness_removal(cmd):
         return HARNESS_WHY
     if why := accept_problem(cmd):
@@ -905,7 +965,7 @@ def real_rel(path: str) -> str | None:
 
 def tool_problem(tool: str, args: dict) -> str | None:
     allow = committed_registry()
-    if tool == "Bash":
+    if tool in SHELL_TOOLS:  # ESC-285: every tool that runs a shell command, not only Bash
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
     names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()

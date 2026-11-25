@@ -1713,6 +1713,55 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                 r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
                 self.assertEqual(r.returncode, 0, r.stderr)
 
+    # Cold breaker, round 1 (ESC-283..285).
+
+    def bash(self, cmd: str, tool: str = "Bash") -> subprocess.CompletedProcess:
+        return self.hook("PreToolUse", {"tool_name": tool, "tool_input": {"command": cmd}})
+
+    def test_HARN_004_S1_ESC_283_quoted_spellings_of_a_hook_bypass_are_blocked(self):
+        for cmd in ("git commit '--no-verify' -m x", 'git commit --no-ver""ify -m x', "git commit -\"n\" -m x",
+                    "git -c alias.c='commit --no-verify' c -m x", "git -c core.hooks''Path=/dev/null commit -m x",
+                    "git push '--no-verify'", "git commit --no-veri\\fy -m x"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for cmd in ('git commit -m "why we never use --no-verify"', "git commit -m 'a -n flag'", "git log -n 3"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_284_globs_and_target_directories_cannot_remove_the_harness(self):
+        for cmd in ("rm -rf .keel*", "rm -rf .keelokit/b?n", "rm -rf .[k]eelokit", "mv -t /tmp/x .keelokit",
+                    "mv --target-directory=/tmp/x .keelokit/bin", "mv --target-directory /tmp/x .keelokit"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for cmd in ("rm -rf *.log", "rm -rf build/*", "mv -t /tmp/x notes.txt"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_284_a_committed_harness_gone_from_disk_keeps_the_guard_on(self):
+        shutil.rmtree(self.proj / ".keelokit")
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        other = self.tmp / "plain repo"
+        subprocess.run(["git", "init", "-q", str(other)], env=self.env(), check=True, capture_output=True)
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=other,
+                           env=self.env(CLAUDE_PROJECT_DIR=str(other)), input=json.dumps(BLOCKED),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), "a repo that never had Keelokit is left alone")
+
+    def test_HARN_004_S1_ESC_285_every_tool_that_runs_a_shell_command_is_guarded(self):
+        data = json.loads((REPO / "hooks/hooks.json").read_text())
+        matcher = data["hooks"]["PreToolUse"][0]["matcher"]
+        for tool in ("Bash", "Monitor", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+            self.assertTrue(re.fullmatch(f"(?:{matcher})", tool), tool)
+        for tool in ("Monitor", "PowerShell"):
+            with self.subTest(tool=tool):
+                r = self.bash("git commit --no-verify -m x", tool=tool)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 
     def test_HARN_004_S1_ESC_276_the_guard_blocks_on_data_it_cannot_read_in_bounds(self):
