@@ -1643,6 +1643,7 @@ SWARM_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")   # a task id that 
 SWARM_AUTHOR = 200             # longest author name kept
 SWARM_MERGES = 2000            # at most this many attributing merges are walked to find a delivery's story
 SWARM_STATES = ("in-progress", "on-trunk", "reverted")
+SWARM_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f]")   # in a name: control characters, tab and newline too (ESC-348)
 SWARM_KEYS = {"task", "state", "branch", "head", "commits", "authors", "convoy"}
 
 
@@ -1665,7 +1666,7 @@ def authors_of(shas: list[str], anchor: str) -> dict[str, str]:
     for sha, name in zip(parts[0::2], parts[1::2]):
         sha = sha.strip()
         if sha in wanted:
-            names[sha] = CONTROL.sub("?", name)[:SWARM_AUTHOR]
+            names[sha] = SWARM_UNSAFE.sub("?", name)[:SWARM_AUTHOR]
     return names
 
 
@@ -3992,7 +3993,7 @@ def parse_snapshot(content: bytes | None) -> dict | None:
                 and isinstance(env, dict) and set(env) == set(ENVIRONMENTS)
                 and all(v is None or isinstance(v, str) and FULL_SHA.fullmatch(v) for v in env.values())
                 and (rec.get("version") is None or isinstance(rec["version"], str))
-                and all(k not in rec or carried_ok(k, rec[k]) for k in CARRIED)):
+                and all(k not in rec or k == "swarm" or carried_ok(k, rec[k]) for k in CARRIED)):
             return None
     return data
 
@@ -4025,7 +4026,7 @@ def carried_ok(key: str, value) -> bool:
 def swarm_entry_ok(x) -> bool:
     """A `swarm` entry of a snapshot has the shape apply_swarm gives it (a hand edit is no crash in `show`)."""
     sha = lambda v: isinstance(v, str) and bool(FULL_SHA.fullmatch(v))  # noqa: E731
-    text = lambda v: isinstance(v, str) and not CONTROL.search(v) and "\n" not in v and "\t" not in v  # noqa: E731
+    text = lambda v: isinstance(v, str) and not SWARM_UNSAFE.search(v)  # noqa: E731
     return (isinstance(x, dict) and set(x) == SWARM_KEYS and isinstance(x["task"], str)
             and bool(SWARM_TASK.fullmatch(x["task"])) and x["state"] in SWARM_STATES
             and (x["branch"] is None or text(x["branch"])) and (x["head"] is None or sha(x["head"]))
@@ -4090,6 +4091,8 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
         rec = new_story(story)
         if story["id"] in old and not story.get("unreadable"):
             rec.update({k: old[story["id"]].get(k, rec[k]) for k in CARRIED})
+            # Swarm's lists are data a push to a swarm branch wrote: a bad entry is left out, never the snapshot (ESC-348)
+            rec["swarm"] = [x for x in rec["swarm"] if swarm_entry_ok(x)] if isinstance(rec["swarm"], list) else []
             rec["environments"] = dict(old[story["id"]]["environments"])
         elif not story.get("unreadable"):  # ESC-251: a story file written after the snapshot
             if story_shas is None:

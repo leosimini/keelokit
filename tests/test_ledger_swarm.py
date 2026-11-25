@@ -381,7 +381,7 @@ class SwarmBreakerRound1Test(LedgerCase):
                 r = shallow.ledger("show", "AUTH-008")
                 self.assertNotIn("the ledger failed", r.stderr)
                 self.assertIn(r.returncode, (0, 1), r.stderr)
-                self.assertNotIn("t1 ·", r.stdout, "an entry of the wrong shape is no snapshot: not shown")
+                self.assertNotIn("t1 ·", r.stdout, "an entry of the wrong shape is left out: not shown")
 
     def test_LEDGER_014_S2_breaker1_a_reverted_delivery_is_not_on_the_trunk(self):
         """ESC-347: a delivery merged and then reverted still read `on-trunk` in the swarm list."""

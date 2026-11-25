@@ -366,13 +366,13 @@ list, and nothing else: no difference, no attribution (a `Swarm-Task:` alone att
 | a non-merge trunk commit with one `Swarm-Task: <task>`, the story's by its own `Story:`/`Part-of:`, else by the trunk merges that bring it with one | `{"task", "state": "on-trunk", "branch": null, "head": null, …}`, `"state": "reverted"` once a revert on the trunk undid it (as a `Story:` commit's revert is read); `convoy`: the convoy that brought it, read as an on-trunk story's convoy is |
 
 Each entry: `{task, state, branch, head, commits (oldest first), authors (sorted), convoy}`, one per story, task,
-state and convoy; `authors` are the commits' author names as recorded (no mailmap), control characters shown as `?`,
-cut to 200 characters. A task id is `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; a commit with none, or with two different
+state and convoy; `authors` are the commits' author names as recorded (no mailmap),
+cut to 200 characters (control characters, tabs and newlines shown as `?`). A task id is `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; a commit with none, or with two different
 ones, is no delivery, nor is one on a branch outside `swarm/<task>`. `--json` adds `swarm: {error}` (null, or why
 the lists are empty: whatever goes wrong reading Swarm's trailers is never a crash). `show` lists the deliveries
 under *swarm deliveries* (task · state · branch@head · convoy · authors), and each listed commit's task and author
-under it; `show --json`'s commits add `author` and `swarm_task`. A snapshot carries the lists; one of the wrong
-shape (a key missing or extra, a control character or newline in a name) is no snapshot.
+under it; `show --json`'s commits add `author` and `swarm_task`. A snapshot carries the lists; an entry of the wrong
+shape (a key missing or extra, a control character, tab or newline in a name) is left out, never the snapshot.
 
 **`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
 `harbor.py` (Harbor records it when it adopts a project) and `harbor.py story take --help` exits 0 (asked by
