@@ -1873,7 +1873,6 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                 r = self.bash(cmd)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(self.bash("ls | wc -l").returncode, 0)
-        self.assertEqual(self.bash("git push --force-with-lease --force-if-includes origin feat").returncode, 0)
 
     def test_HARN_004_S1_ESC_294_claude_code_s_own_hooks_and_the_plugin_cannot_be_switched_off(self):
         for cmd in ("echo '{\"disableAllHooks\":true}' > .claude/settings.local.json", "claude plugin disable keelokit",
