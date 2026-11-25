@@ -65,3 +65,6 @@ Scenario: [S6] The phase gate: a convoy carrying swarm deliveries lands
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line, `Story:
 LEDGER-014` trailer, addendum if the result differs. With HRB-1..3 and SWM-1..3 done, the gate of phase 3
 (docs/ledger.md, "Plan") opens Keelokit 0.17.0 and Harbor 0.6.0.
+
+## Breaker rounds
+- Round 1 · head afd3ebbd4c6d95c0beb9043cbaa8cf7bfc31477d · 2 findings: ESC-346, ESC-347 · fixed in a325316 (tests), c0954f1
