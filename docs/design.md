@@ -187,7 +187,12 @@ convoy routes through an old side-branch commit) is judged by `<rev>`'s critical
 own arrival, never another row's of the same story, commit and kind. A rule file `<rev>` has that this clone lacks
 (a partial clone) is exit 2 saying so, never read as absent: an absent rule is a looser one. Harbor's ok runs main's ledger in a clone whose trunk is the convoy as landed: without it
 the convoy's own tree would hold the rules it is judged by, so a convoy could relax them. A `<rev>` that is no commit
-here is exit 2. The data (stories, corrections, commits) is still the trunk's.
+here is exit 2. Corrections are rules too: they come from `<rev>` as well, so a correction row counts only when
+`<rev>`'s own `backlog/ledger-corrections.toml` holds it, identical (story, commit, kind, evidence, approver, date);
+a row only the candidate adds attributes nothing and is no error (a late row for an old commit is credited once it
+is on `<rev>`), and a row `<rev>` has that the candidate retracted or changed stays out. The stories and the commits
+are still the trunk's. `attribution` takes the same `--rules-ref`, and without it reads `[ledger]` from the trunk's
+committed `state.toml`, never the checkout's, which the vessel under judgment writes.
 
 harbor.py is code the ledger runs, so only one explicit command runs it: `ledger.py take` (and `take --clear`), when
 `git config --local harbor.py` names an absolute path to a `harbor.py` and `harbor.py story take --help` exits 0

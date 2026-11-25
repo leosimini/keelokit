@@ -37,7 +37,7 @@
                                                        every difference (exit 1 on an error-level one); --ci
                                                        in a pull request into the trunk checks its commits too;
                                                        --rules-ref: the committed rule files from REV
-    python3 .keelokit/bin/ledger.py attribution <a>..<b> [--json]
+    python3 .keelokit/bin/ledger.py attribution <a>..<b> [--json] [--rules-ref REV]
                                                        is every commit of the range attributed, as `check` says
                                                        (exit 0 answered, 2 usage or unresolved, 3 history cut)
     python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
@@ -762,7 +762,7 @@ def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]], strict: bool =
     """What the approval modes read from the trunk's tree, in one `cat-file`: state.toml, critical.toml and the
     review files ({run: bytes}). A file the clone lacks reads as absent; `strict` (the rules of `check --rules-ref`):
     LedgerError instead, since a rule read as absent is a looser rule (no critical area, the default enforce)."""
-    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE)
+    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE, CORRECTIONS)
               or (path.startswith(REVIEWS + "/") and path.endswith(".json")
                   and RUN_ID.fullmatch(path[len(REVIEWS) + 1:-5]) and "/" not in path[len(REVIEWS) + 1:])}
     blobs = read_blobs(list(wanted.values()), trunk_sha)
@@ -773,7 +773,8 @@ def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]], strict: bool =
                           f"{', …' if len(lacking) > 3 else ''}: a partial clone); fetch them, or use a full clone")
     reviews = {path[len(REVIEWS) + 1:-5]: data for path, data in content.items()
                if path.startswith(REVIEWS + "/") and data is not None}
-    return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews}
+    return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews,
+            "corrections": content.get(CORRECTIONS)}
 
 
 def read_stories(trunk_sha: str, cfg: dict, tree: list[tuple[str, str]] | None = None) -> tuple[list[dict], list[str]]:
@@ -1281,6 +1282,8 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
                   "rules_reach": set(read_graph([rules_sha])) if rules_sha else None, "rules_sha": rules_sha}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
+    if rules_sha:  # corrections are rules too: a row counts only when <rev>'s own file holds it, identical
+        corrections = {**corrections, "active": held_rows(corrections["active"], extra["corrections"])}
     branches = read_branches(trunk_sha, refs, graph, set(placed[0]), cfg["snapshot"])
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, branches,
                                       cfg["stale_days"], time.time(), corrections, trunk)
@@ -1517,6 +1520,16 @@ def apply_logbook(records: dict[str, dict], book: dict, refs: dict, log: list[di
 
 
 # ── corrections (docs/ledger.md, "Corrections file") ──
+
+def held_rows(active: list[dict], content: bytes | None) -> list[dict]:
+    """The active rows that the corrections file `content` (<rev>'s, for `--rules-ref`) holds with the same story,
+    commit, kind, evidence, approver and date. A row only the candidate has attributes nothing (and is no error); a
+    row <rev> has that the candidate retracted or changed stays out, as without --rules-ref (CORRECTION_EDITED)."""
+    rows, why = parse_rows(content) if content is not None else ([], None)
+    fields = ("story", "commit", "kind", "evidence", "approver", "date")
+    held = {tuple(plain_value(r.get(k)) for k in fields) for r in rows or [] if isinstance(r, dict) and not why}
+    return [r for r in active if tuple(r[k] for k in fields) in held]
+
 
 def toml_str(value: str) -> str:
     """A TOML basic string: JSON's escapes are TOML's, but DEL must be escaped too."""
@@ -2915,7 +2928,7 @@ def cmd_check(state: dict, args: tuple) -> int:
             return 2
         # `[ledger]` (enforce, since, no_story, stories, trunk) is a rule as well: <rev>'s committed state.toml, never
         # the checked-out one (absent or unreadable there: the defaults, as read_state).
-        state = load_toml(read_trunk_files(rules_sha, read_tree(rules_sha), True)["state"]) or {}
+        state = committed_state(rules_sha)
     diffs = all_diffs(state, ci, rules_sha)
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
@@ -2930,6 +2943,12 @@ def cmd_check(state: dict, args: tuple) -> int:
 # unattributed commits; 2 for a usage error or a range whose ends do not resolve; 3 when the history is incomplete.
 
 RANGE_END = re.compile(r"[^\s.\-~^:][^\s]*")
+
+
+def committed_state(sha: str) -> dict:
+    """The committed .keelokit/state.toml of a commit, read as read_state reads the work tree's (absent or not TOML:
+    the defaults); LedgerError when the commit has it and this (partial) clone lacks it."""
+    return load_toml(read_trunk_files(sha, read_tree(sha), True)["state"]) or {}
 
 
 def resolve_commit(rev: str) -> str | None:
@@ -2956,7 +2975,13 @@ def cmd_attribution(state: dict, args: tuple) -> int:
     chain (as `check --ci` reads a pull request). Commits `[ledger] since` reaches are left out, as `check` leaves
     them out; a `since` that names no commit here leaves the whole range. `diffs` adds what `check` would say of
     those commits (BAD_CATEGORY, UNKNOWN_STORY, STORY_NO_BODY, SQUASH_LOST_TRAILERS), stories read from `b`'s tree."""
-    rng, as_json = args
+    rng, as_json, rules_ref = args
+    rules_sha = None
+    if rules_ref is not None:
+        rules_sha = resolve_commit(rules_ref)
+        if rules_sha is None:
+            print(f"Keelokit: attribution: --rules-ref {rules_ref!r} does not resolve to a commit here", file=sys.stderr)
+            return 2
     ends = rng.split("..")
     if len(ends) != 2 or not all(RANGE_END.fullmatch(e) for e in ends):
         print(f"Keelokit: attribution needs one range <a>..<b> (two revisions, `..` between), not {rng!r}",
@@ -2970,7 +2995,12 @@ def cmd_attribution(state: dict, args: tuple) -> int:
             return 2
         shas.append(sha)
     a, b = shas
-    ctx = read_all(state)
+    # `[ledger]` (since, no_story, stories) is the trunk's committed state.toml, or <rev>'s: never the checkout's, which
+    # the vessel under judgment writes.
+    trunk = trunk_name(state)
+    check_trunk(trunk)
+    state = committed_state(rules_sha or resolve_trunk(trunk, read_refs(trunk)))
+    ctx = read_all(state, rules_sha)
     if ctx["reason"] is not None:
         print(f"Keelokit: attribution: the history is incomplete ({ctx['reason']})", file=sys.stderr)
         return 3
@@ -4581,9 +4611,17 @@ def parse_command(argv: list[str]) -> tuple | None:
         return "show", (argv[1], argv[2][2:] if len(argv) == 3 else "card")
     if argv == ["next"]:
         return "next", None
-    if argv[:1] == ["attribution"] and len(argv) in (2, 3) and not argv[1].startswith("-") \
-            and argv[2:] in ([], ["--json"]):
-        return "attribution", (argv[1], len(argv) == 3)
+    if argv[:1] == ["attribution"] and len(argv) >= 2 and not argv[1].startswith("-"):
+        rest, rules = list(argv[2:]), None
+        if "--rules-ref" in rest:
+            at = rest.index("--rules-ref")
+            if at + 1 >= len(rest) or rest[at + 1].startswith("-"):
+                return None
+            rules = rest[at + 1]
+            del rest[at:at + 2]
+        if rest in ([], ["--json"]):
+            return "attribution", (argv[1], rest == ["--json"], rules)
+        return None
     if argv == ["snapshot", "--branch"]:
         return "snapshot", (None, None, True)
     if argv[:1] == ["snapshot"]:

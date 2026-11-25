@@ -695,13 +695,34 @@ class LedgerAttributionTest(LedgerCase):
         self.assertIn(self.loose[:12], r.stdout)
         self.assertIn("3 unattributed", lines[-1])
 
+    def test_LEDGER_013_S5_ESC_310_since_and_no_story_come_from_the_trunk_not_the_work_tree(self):
+        """Coordinator's final breaker, F2: a vessel checkout whose state.toml names its own head as `since` (and
+        any No-story: category) changes nothing: `attribution` reads the trunk's committed state.toml, or --rules-ref's."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        since = repo.sha()
+        commit_harness(repo, "chore: rules\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nsince = "%s"\nenforce = "block"\n' % since})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "vessel")
+        head = repo.commit("no trailer")
+        repo.state('[ledger]\nsince = "%s"\nenforce = "block"\nno_story = ["anything"]\n' % head)
+        for args in (["attribution", "origin/main..vessel", "--json"],
+                     ["attribution", "origin/main..vessel", "--json", "--rules-ref", "origin/main"],
+                     ["attribution", "origin/main..vessel", "--rules-ref", "origin/main", "--json"]):
+            with self.subTest(args=args):
+                r = repo.ledger(*args)
+                d = json_of(self, r)
+                self.assertEqual((d["ok"], d["unattributed"], d["since"]), (False, [head], since))
+        self.assertEqual(repo.ledger("attribution", "origin/main..vessel", "--rules-ref", "nope").returncode, 2)
+
     def test_LEDGER_013_S5_commits_before_since_are_left_out_as_check_leaves_them(self):
         repo = GitRepo(self.tmp)
         repo.plan("AUTH-001")
         first = repo.sha()
         old = repo.commit("chore: before the rules")
-        repo.state('[ledger]\nsince = "%s"\n' % old)
-        new = repo.commit("feat: after\n\nPart-of: AUTH-001")
+        new = commit_harness(repo, "feat: after\n\nPart-of: AUTH-001",
+                             {".keelokit/state.toml": '[ledger]\nsince = "%s"\n' % old})
         repo.publish()
         _, d = self.attribution(repo, f"{first}..main")
         self.assertEqual([c["sha"] for c in d["commits"]], [new])
@@ -867,6 +888,32 @@ class LedgerRulesRefTest(LedgerCase):
         self.assertIn("not in this clone", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
         self.assertNotIn("cat-file failed", r.stderr)
+
+    def test_LEDGER_013_S10_ESC_309_a_convoy_cannot_attribute_its_own_commit_with_its_own_correction_row(self):
+        """Coordinator's final breaker, F1: under --rules-ref a correction row counts only when <rev>'s own corrections
+        file holds it, identical; a row the convoy adds attributes nothing (and is no error)."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        since = repo.sha()
+        commit_harness(repo, "chore: rules\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nsince = "%s"\nenforce = "block"\n' % since})
+        repo.publish()
+        rules = repo.sha()
+        bad = repo.commit("sneaky, no trailer")
+        repo.publish()
+        before = repo.ledger("check", "--ci", "--json", "--rules-ref", rules)
+        self.assertEqual(before.returncode, 1, before.stdout + before.stderr)
+        repo.commit("chore: corr\n\nNo-story: harness", files={CORR: corrections(toml_row(
+            story="AUTH-001", commit=bad, kind="late", evidence="trust me", approver="Leo", date="2026-11-25"))})
+        repo.publish()
+        self.assertEqual(repo.ledger("check", "--ci", "--json").returncode, 0, "without --rules-ref: as before")
+        r = repo.ledger("check", "--ci", "--json", "--rules-ref", rules)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("UNATTRIBUTED", [d["code"] for d in json_of(self, r)["diffs"] if d["level"] == "error"])
+        self.assertNotIn("CORRECTION_INVALID", [d["code"] for d in json_of(self, r)["diffs"]], "no error for the row")
+        # the same row once <rev> holds it counts
+        held = repo.ledger("check", "--ci", "--json", "--rules-ref", "main")
+        self.assertEqual(held.returncode, 0, held.stdout + held.stderr)
 
     def test_LEDGER_013_S10_the_same_rules_give_the_same_verdict(self):
         repo, _ = build_delegated(self.tmp, approval("delegated"))

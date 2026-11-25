@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "The ledger reads Harbor's logbook"
 wave = 18
 depends_on = ["LEDGER-012"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger_harbor.py", "tests/test_ledger.py", "scripts/unit_shard.py", "docs/design.md", "docs/ledger.md", "CHANGELOG.md", "backlog/stories/LEDGER-013-ledger-reads-harbor.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger_harbor.py", "tests/test_ledger.py", "scripts/unit_shard.py", "docs/design.md", "docs/ledger.md", "docs/escapes.md", "CHANGELOG.md", "backlog/stories/LEDGER-013-ledger-reads-harbor.md"]
 dimensions = ["logic", "integrity", "dx"]
 invariants = ["INV-005"]
 origin = "docs/ledger.md — Harbor and Swarm; Harbor's plan docs/ledger-phase6.md (HRB-2)"
@@ -121,6 +121,12 @@ a failing test first.
   the current rules. (2) In a `blob:none` partial clone, `<rev>`'s `critical.toml` was missing and read as absent
   (nothing critical); (3) its `state.toml` gave a raw `git cat-file` failure. Under `--rules-ref` a rule file `<rev>`
   has and the clone lacks is now exit 2 with a message, never a looser rule. No round 4 (the limit is three).
+- **Coordinator's final breaker** (8550fbf). Two findings, fixed with failing tests first: (1, high) under
+  `--rules-ref` a convoy attributed its own unattributed commit with a correction row it appended itself; corrections
+  are now rules too, so a row counts only when `<rev>`'s own corrections file holds it, identical (ESC-309). (2, low)
+  `attribution` read `since` and `no_story` from the work tree's state.toml; it now reads the trunk's committed one,
+  or `--rules-ref`'s, which it also accepts (ESC-310). Every escaped class of the four rounds and the Semgrep finding
+  has a row in docs/escapes.md, ESC-302..ESC-310.
 
 ## Addendum
 - The scenarios grew from four to ten: S5–S9 are what Harbor's HRB-1..3 call (`attribution`, `show --json`, take and

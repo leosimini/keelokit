@@ -274,7 +274,7 @@ history); each commit is `{sha, date, kind ("Story"|"Part-of"), branches, subjec
 matched exactly, else without case. No such story: exit 1 and `{"schema": 1, "id": …, "error": …}`, with no
 `state`.
 
-**`ledger.py attribution <a>..<b> [--json]`** (Harbor's `convoy add`): exit 0 when it answered, even with
+**`ledger.py attribution <a>..<b> [--json] [--rules-ref <rev>]`** (Harbor's `convoy add`): exit 0 when it answered, even with
 unattributed commits; 2 for a usage error, a range that is not `<a>..<b>`, or an end that does not resolve to a
 commit; 3 when the history is incomplete.
 
@@ -291,6 +291,8 @@ commit; 3 when the history is incomplete.
 a merge with one that brings it, or, for a merge, everything it brings being attributed (`via`: `own`,
 `correction`, `merge`; null when not attributed; a merge with its own trailer is `own`), with the arrivals of
 `<b>`'s first-parent chain, as `check --ci` reads a pull request. `ok`: every non-merge commit is attributed.
+`[ledger]` (`since`, `no_story`, `stories`) comes from the trunk's committed `state.toml` (origin/<trunk>), never
+the checkout's; with `--rules-ref <rev>`, from `<rev>`'s, and the rules and corrections as for `check --rules-ref`.
 `stories`: the union of `story` and `part_of`, sorted. As in `check`, commits `[ledger] since` reaches are left out
 (`since` names it; null when it names no commit here, and then the whole range counts). `diffs` adds what `check`
 says of those commits besides `UNATTRIBUTED` (`BAD_CATEGORY`, `UNKNOWN_STORY`, `STORY_NO_BODY`,
@@ -302,7 +304,9 @@ says of those commits besides `UNATTRIBUTED` (`BAD_CATEGORY`, `UNKNOWN_STORY`, `
 none changes meaning within schema 1; exit 1 iff a diff is an error. `--rules-ref <rev>`: the rules come from
 `<rev>`'s committed tree, never the trunk's or the checkout's (the whole `.keelokit/state.toml`, `critical.toml`, the
 review files, `critical.toml` at a row's own arrival on `<rev>`'s history, and the story files' touches and
-dimensions for the critical flag); Harbor passes main's tip when it judges a convoy as landed. Exit 2 when `<rev>` is
+dimensions for the critical flag), and the corrections: a row counts only when `<rev>`'s own corrections file holds
+it, identical (a row only the candidate adds attributes nothing and is no error). Harbor passes main's tip when it
+judges a convoy as landed. Exit 2 when `<rev>` is
 no commit here, or when a rule file it has is not in this clone (a partial clone).
 
 **`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
