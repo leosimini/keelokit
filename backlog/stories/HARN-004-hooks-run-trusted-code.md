@@ -102,6 +102,12 @@ Beyond the spec, from the breaker rounds:
 - **Where the guard runs** (ESC-282). In any project with `.keelokit/`, not only where `.keelokit/bin/guard.py`
   exists, which it never runs; the guard refuses commands that delete or move `.keelokit/` or its `bin/` whole.
   Removing `.keelokit/` makes it not a Keelokit project: the person's decision.
+- **The guard's rules, read as the shell reads them** (ESC-283..289, two cold-breaker rounds). Quoted flags, a
+  script given to `sh -c` or `eval`, every git config change (`-c`, `git config`, GIT_CONFIG_* in the environment,
+  includes, aliases, `+` push refspecs), writes to .git/config and .git/hooks, and removing the harness (globs,
+  `mv -t`, `$PWD`, an orphan branch: the hook also looks at origin/HEAD) or the plugin's own files. It is still a
+  speed bump for an agent with a shell, as the guard's own docstring says: a variable or a script file gets past
+  any lexical rule; CI and the person's review are the backstop.
 - guard, ledger and ux_gate take `--root` too, not only the doctor. The tests are in tests/test_guard.py
   (`HooksRunTrustedCode`, `HooksRunTrustedCodeRound2`), tests/test_doctor.py (`DoctorRootTest`) and
   tests/test_hooks.py.

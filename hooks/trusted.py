@@ -207,8 +207,9 @@ def keelokit_project(project: Path, tool: str) -> bool:
     """The guard runs wherever the project has .keelokit/ (ESC-282: deleting guard.py, which it never runs, must not
     turn it off; removing .keelokit/ as a whole is the person's call); the ledger and the doctor where the project
     has theirs, as the session start always did."""
-    if tool == "guard":  # ESC-284: a harness the repo commits, gone from the disk, still counts
-        return os.path.isdir(project / ".keelokit") or git(project, "cat-file", "-e", "HEAD:.keelokit") is not None
+    if tool == "guard":  # ESC-284, ESC-286: a harness committed here or on the trunk the clone came from still counts
+        return os.path.isdir(project / ".keelokit") or any(
+            git(project, "cat-file", "-e", f"{ref}:.keelokit") is not None for ref in ("HEAD", "origin/HEAD"))
     return os.path.lexists(project / BIN / RUNS[tool])
 
 
@@ -233,6 +234,7 @@ def run(tool: str, args: list[str]) -> int:
         return 0
     path, data, before = chosen
     clean_environment()
+    os.environ["KEELOKIT_PLUGIN_ROOT"] = str(PLUGIN)  # the guard keeps agents off the plugin's own code (ESC-289)
     os.chdir(project)
     if tool == "guard":
         return watched(path, data, [*before, *args])

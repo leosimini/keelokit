@@ -389,9 +389,14 @@ ACCEPT_WHY = ("QA-4: `ledger.py backfill --accept` approves ledger corrections a
 
 def protected_why(target: str) -> str | None:
     """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's: the
-    registry. The corrections file has its own, narrower reading of a command (corrections_write)."""
+    registry, git's own config and hooks, the plugin's code. The corrections file has its own, narrower reading of a
+    command (corrections_write)."""
     if target and (is_registry(target) or Path(target).name == Path(REGISTRY).name):
         return REGISTRY_WHY
+    if target and git_internal(target):
+        return GIT_INTERNALS_WHY
+    if target and in_plugin(target.lstrip(">")):
+        return PLUGIN_WHY
     return None
 
 
@@ -783,8 +788,44 @@ HARNESS_WHY = ("QA-2: removing or moving .keelokit/ (or its bin/) as a whole tur
                "for this project; that is the person's call")
 
 
+PWD_FORMS = re.compile(r"^(?:\$PWD|\$\{PWD\}|\$\(pwd\)|`pwd`)(?=/|$)")
+HOME_FORMS = re.compile(r"^(?:~|\$HOME|\$\{HOME\})(?=/|$)")
+
+
+def expand_word(word: str) -> str:
+    """The few spellings of a path the guard can expand itself (ESC-286): $PWD, ${PWD}, $(pwd) and `pwd` as the root
+    (the hook's shell starts there), ~, $HOME and ${HOME} as the home."""
+    word = PWD_FORMS.sub(lambda m: str(ROOT), word)
+    return HOME_FORMS.sub(lambda m: os.path.expanduser("~"), word)
+
+
+def plugin_trees() -> list[str]:
+    """Where the plugin's own code lives (ESC-289): the root its hooks run from, and Claude Code's plugin directory."""
+    trees = [os.path.join(os.path.expanduser("~"), ".claude", "plugins")]
+    if os.environ.get("KEELOKIT_PLUGIN_ROOT"):
+        trees.append(os.environ["KEELOKIT_PLUGIN_ROOT"])
+    root = os.path.realpath(ROOT)
+    # A plugin run from the project itself (`claude --plugin-dir .`, Keelokit's own repo) is the project: its files
+    # are the work, not the installed plugin.
+    return [tr for tr in map(os.path.realpath, trees)
+            if not (root == tr or root.startswith(tr.rstrip("/") + "/") or tr.startswith(root.rstrip("/") + "/"))]
+
+
+def in_plugin(word: str) -> bool:
+    p = expand_word(word)
+    if not posixpath.isabs(p):
+        p = str(ROOT / p)
+    for candidate in {os.path.realpath(p), posixpath.normpath(p)}:
+        if any(candidate == tree or candidate.startswith(tree.rstrip("/") + "/") for tree in plugin_trees()):
+            return True
+    return False
+
+
+PLUGIN_WHY = "QA-2: that is Keelokit's own code (the plugin), which runs the guard: removing or changing it is the person's call"
+
+
 def harness_rel(word: str) -> str:
-    p = posixpath.normpath(word)
+    p = posixpath.normpath(expand_word(word))
     if posixpath.isabs(p):
         try:
             return Path(p).resolve().relative_to(ROOT.resolve()).as_posix()
@@ -797,7 +838,7 @@ def harness_hit(word: str) -> bool:
     """The word names .keelokit/ or .keelokit/bin/, as itself or as a glob the shell expands to it (ESC-284; a glob
     whose first part starts with a dot, the only kind that matches a dot directory)."""
     rel = harness_rel(word)
-    if rel in HARNESS_DIRS:
+    if rel in HARNESS_DIRS or rel.endswith(("/.keelokit", "/.keelokit/bin")):  # any project's, once the shell moved
         return True
     return any(c in word for c in "*?[") and rel.split("/")[0][:1] in (".", "[") and \
         any(fnmatch.fnmatchcase(d, rel) for d in HARNESS_DIRS)
@@ -842,7 +883,7 @@ def harness_removal(cmd: str) -> bool:
             args = words[1:]
         else:
             continue
-        if any(harness_hit(w) for w in args if not w.startswith("-")):
+        if any(harness_hit(w) or in_plugin(w) for w in args if not w.startswith("-")):
             return True
     return False
 
@@ -877,7 +918,72 @@ def alias_bypass(cmd: str) -> bool:
     return False
 
 
-def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
+def shell_scripts(words: list[str]) -> list[str]:
+    """The scripts a command line hands to a shell (`bash -c "…"`, `script -c "…"`) or to eval."""
+    shell = next((i for i, w in enumerate(words) if Path(w).name in SHELLS | {"script", "su"}), None)
+    scripts = [words[i + 1] for i in range(len(words) - 1)
+               if shell is not None and i > shell and re.fullmatch(r"-[a-z]*c[a-z]*", words[i])]
+    if words[:1] == ["eval"]:
+        scripts.append(" ".join(words[1:]))
+    return scripts
+
+
+CONFIG_ENV = re.compile(r"(?i)^GIT_CONFIG_(?:KEY_\d+|PARAMETERS)=.*(?:core\.hookspath|include\.|includeif\.)")
+
+
+def config_problem(cmd: str) -> str | None:
+    """ESC-287: what a git config change says, wherever it is made (`-c k=v`, `git config k v`, GIT_CONFIG_* in the
+    environment): the hooks path, an include (a file that can set it), an alias that skips the hooks, a `+` push
+    refspec (a force-push)."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        pairs = []
+        for i, w in enumerate(words):
+            if CONFIG_ENV.match(w) or (w.lower().startswith("git_config_") and "hookspath" in w.lower()):
+                return "QA-2: don't override the hooks path (through git's config environment either)"
+            if w == "-c" and i + 1 < len(words):
+                pairs.append(words[i + 1].partition("=")[::2])
+        if "config" in words and any(Path(w).name == "git" for w in words[:words.index("config")]):
+            rest = [w for w in words[words.index("config") + 1:] if not w.startswith("-")]
+            if rest:
+                pairs.append((rest[0], rest[1] if len(rest) > 1 else ""))
+        for key, value in pairs:
+            k = key.lower()
+            if k == "core.hookspath":
+                return "QA-2: the hooks path is the person's to set"
+            if k.startswith(("include.", "includeif.")):
+                return "QA-2: a config include can change the hooks path; ask the person"
+            if k.startswith("alias.") and ALIAS_BYPASS.search(value):
+                return "QA-2: never bypass git hooks (an alias that skips them is the same bypass)"
+            if re.fullmatch(r"remote\..+\.push", k) and value.strip().startswith("+"):
+                return "QA-2: no force-push (a `+` refspec is one)"
+    return None
+
+
+GIT_INTERNALS_WHY = "QA-2: .git/config and .git/hooks decide which git hooks run; changing them is the person's call"
+
+
+def git_internal(target: str) -> bool:
+    rel = harness_rel(target.lstrip(">"))
+    return rel == ".git/config" or rel.startswith(".git/hooks/") or rel == ".git/hooks"
+
+
+def seeds_env(segment: str) -> bool:
+    """`cp <repo>/.env….example <dest>`: setting up a local .env from the repo's own example (ESC-288: only a
+    repo-relative `.env*.example`, never an example from elsewhere)."""
+    m = re.match(r"\s*cp\s+(?:-\w+\s+)*(\S+\.example)\s+\S+\s*$", segment)
+    if not m:
+        return False
+    src = m.group(1)
+    name = posixpath.basename(src)
+    return not posixpath.isabs(src) and ".." not in src.split("/") and name.startswith(".env") and \
+        not src.startswith(("~", "$"))
+
+
+def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> str | None:
     allow = committed_registry() if allow is None else allow
     bare = unquoted(cmd)
     if CHDIR.search(bare):
@@ -892,6 +998,17 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
             return why
     if alias_bypass(cmd):
         return "QA-2: never bypass git hooks (an alias that skips them is the same bypass)"
+    if why := config_problem(cmd):
+        return why
+    if depth < 3:  # ESC-287: the script a shell or eval runs is checked as a command of its own
+        for segment in segments(cmd):
+            try:
+                inner = shell_scripts(shlex.split(segment, posix=True))
+            except ValueError:
+                inner = []
+            for script in inner:
+                if why := bash_problem(script, allow, depth + 1):
+                    return why
     if harness_removal(cmd):
         return HARNESS_WHY
     if why := accept_problem(cmd):
@@ -909,8 +1026,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
             return "AGENT-1/REL-1: only staging deploys (--config …staging…); production goes out from a vX.Y.Z tag through CI, and is the human's call"
         if re.search(r"\b(eas|eas-cli)\s+submit\b", segment):
             return "AGENT-1: store submissions are the human's call — ask in chat"
-        # Copying the example to create a local .env is setup, not a secret.
-        if re.match(r"\s*cp\s+(-\w+\s+)*\S+\.example\s+\S+\s*$", segment):
+        # Copying the repo's own example to create a local .env is setup, not a secret.
+        if seeds_env(segment):
             continue
         if WRITE_CMD.search(segment):
             try:
@@ -927,7 +1044,7 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                 return "DB-1: that migration is already on origin/main; create a new one"
     # The same targets, read from the command as typed: a quoted one is a target too.
     for segment in segments(cmd):
-        if not WRITE_CMD.search(unquoted(segment)) or re.match(r"\s*cp\s+(-\w+\s+)*\S+\.example\s+\S+\s*$", segment):
+        if not WRITE_CMD.search(unquoted(segment)) or seeds_env(segment):
             continue
         targets = write_targets(segment)
         if why := next((w for t in targets if (w := protected_why(t))), None):
@@ -968,6 +1085,10 @@ def tool_problem(tool: str, args: dict) -> str | None:
     if tool in SHELL_TOOLS:  # ESC-285: every tool that runs a shell command, not only Bash
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
+    if path and (git_internal(path) or (real_rel(path) or "").startswith((".git/hooks/",)) or real_rel(path) == ".git/config"):
+        return GIT_INTERNALS_WHY
+    if path and in_plugin(path):
+        return PLUGIN_WHY
     names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
     if REGISTRY in names:
         return REGISTRY_WHY

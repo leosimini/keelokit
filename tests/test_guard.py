@@ -1762,6 +1762,64 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                 r = self.bash("git commit --no-verify -m x", tool=tool)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    # Cold breaker, round 2 (ESC-286..289).
+
+    def test_HARN_004_S1_ESC_286_an_orphan_branch_or_a_path_spelt_through_pwd_cannot_turn_the_guard_off(self):
+        self.git("remote", "add", "origin", str(self.proj))
+        self.git("fetch", "-q", "origin")
+        self.git("remote", "set-head", "origin", "main")
+        for cmd in ('rm -rf "$PWD/.keelokit"', "rm -rf $(pwd)/.keelokit", "rm -rf ${PWD}/.keelokit/bin",
+                    "cd .. && rm -rf proj/.keelokit", "rm -rf `pwd`/.keelokit"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.git("switch", "-q", "--orphan", "empty")
+        shutil.rmtree(self.proj / ".keelokit", ignore_errors=True)
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, "the trunk the clone came from still has .keelokit: " + r.stderr)
+
+    def test_HARN_004_S1_ESC_287_more_ways_to_skip_the_hooks_are_blocked(self):
+        for cmd in ("bash -c 'git commit --no-verify -m x'", 'eval "git commit -n -m x"', "sh -c \"git push -f\"",
+                    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x",
+                    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x",
+                    "export GIT_CONFIG_KEY_0=core.hookspath", "git -c include.path=/tmp/x.cfg commit -m x",
+                    "git config include.path /tmp/x.cfg", "git config alias.ci 'commit --no-verify'",
+                    "git config --local alias.ci 'commit -n'", "printf '[core]\\n\\thooksPath = /dev/null\\n' >> .git/config",
+                    "git -c remote.origin.push=+refs/heads/main:refs/heads/main push",
+                    "git config remote.origin.push '+refs/heads/*:refs/heads/*'"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for tool, args in (("Write", {"file_path": ".git/config", "content": "[core]\n\thooksPath = /dev/null\n"}),
+                           ("Edit", {"file_path": str(self.proj / ".git/config"), "old_string": "a", "new_string": "b"}),
+                           ("Write", {"file_path": ".git/hooks/pre-commit", "content": "exit 0\n"})):
+            with self.subTest(tool=tool, args=args):
+                r = self.hook("PreToolUse", {"tool_name": tool, "tool_input": args})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("bash -c 'git status'", "git config user.name T", "git config alias.st status", "eval \"ls\""):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_288_only_the_repo_s_own_env_example_seeds_a_real_env(self):
+        for cmd in ("cp /tmp/mine.example .env", "cp x.example .env.production", "cp ../x.example .envrc",
+                    "cp /tmp/.env.example .env"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 2)
+        for cmd in ("cp .env.example .env", "cp apps/api/.env.example apps/api/.env", "cp .env.local.example .env.local"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0, self.bash(cmd).stderr)
+
+    def test_HARN_004_S1_ESC_289_the_plugin_s_own_files_cannot_be_removed_or_rewritten(self):
+        home_plugins = Path(load_trusted().__file__).parent  # stands in for nothing: the env names the root
+        for cmd in (f"rm {TRUSTED}", f"rm -rf {REPO / 'hooks'}", f"mv {TRUSTED} /tmp/x", f"echo x > {TRUSTED}",
+                    "rm -rf ~/.claude/plugins/cache"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": str(TRUSTED), "content": "x"}})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertTrue(home_plugins.exists())
+
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 
     def test_HARN_004_S1_ESC_276_the_guard_blocks_on_data_it_cannot_read_in_bounds(self):
