@@ -415,6 +415,56 @@ class SwarmBreakerRound1Test(LedgerCase):
         self.assertEqual([(e["task"], e["state"], e["commits"]) for e in s["swarm"]], [(TASK, "reverted", [head])])
 
 
+class SwarmBreakerRound2Test(LedgerCase):
+    """Breaker round 2 (ESC-348)."""
+
+    def snapshot_clone(self, author: str, name: str) -> GitRepo:
+        repo = GitRepo(self.tmp / name)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.commit("feat: AUTH-001\n\nBody.\n\nStory: AUTH-001")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        repo.publish()
+        swarm_branch(repo, TASK, author, delivery("AUTH-002", TASK))
+        repo.git("fetch", "-q", "origin")
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        repo.git("fetch", "-q", "origin")
+        shallow = repo.clone("shallow", depth=1)
+        shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+        shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        return shallow
+
+    def test_LEDGER_014_S4_breaker2_an_author_with_a_tab_or_newline_never_poisons_the_snapshot(self):
+        """ESC-348: a TAB in a swarm commit's author name went into the snapshot, which then read as none: every
+        shallow clone's states turned unknown."""
+        for n, author in enumerate(("Ana\tHelper", "Ana\x0bHelper")):
+            with self.subTest(author=author):
+                shallow = self.snapshot_clone(author, f"r{n}")
+                data = json.loads(shallow.ledger("--json").stdout)
+                self.assertTrue(data["history"].startswith("snapshot:"), data["history"])
+                s = by_id(data)
+                self.assertEqual((s["AUTH-001"]["state"], s["AUTH-002"]["state"]), ("on-trunk", "in-progress"))
+                self.assertEqual(s["AUTH-002"]["swarm"][0]["authors"], ["Ana?Helper"])
+
+    def test_LEDGER_014_S4_breaker2_a_bad_swarm_entry_drops_that_entry_never_the_snapshot(self):
+        shallow = self.snapshot_clone("Ana Helper", "r")
+        before = json.loads(shallow.ledger("--json").stdout)
+        snap = json.loads(shallow.git("show", "origin/keelokit/ledger:ledger.json"))
+        for s in snap["stories"]:
+            if s["id"] == "AUTH-002":
+                s["swarm"] = [{"task": "x", "state": "on-trunk"}, *s["swarm"], 7]
+            if s["id"] == "AUTH-001":
+                s["swarm"] = "not a list"
+        write_snapshot(shallow, json.dumps(snap))
+        shallow.git("fetch", "-q", "--depth=1", "origin", "+keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        self.assertIn('"x"', shallow.git("show", "origin/keelokit/ledger:ledger.json"), "the hand edit is read")
+        data = json.loads(shallow.ledger("--json").stdout)
+        self.assertTrue(data["history"].startswith("snapshot:"))
+        self.assertEqual([(s["id"], s["state"], s["swarm"]) for s in data["stories"]],
+                         [(s["id"], s["state"], s["swarm"]) for s in before["stories"]])
+
+
 class SwarmPhaseGateTest(LedgerCase):
     """S6, the gate of phase 3 (docs/ledger.md, "Plan") for Harbor 0.6.0: convoy 12 carries two swarm deliveries of
     AUTH-008 (Ana's and Bo's) and the session's own closing commit, and sails; convoy 13, open, carries a swarm
