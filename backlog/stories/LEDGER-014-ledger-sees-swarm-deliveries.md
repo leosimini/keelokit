@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "The ledger sees the swarm's deliveries"
 wave = 19
 depends_on = ["LEDGER-013"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "tests/test_ledger_swarm.py", "docs/design.md", "docs/ledger.md", "docs/escapes.md", "scripts/unit_shard.py", "CHANGELOG.md"]
 dimensions = ["logic", "dx"]
 invariants = []
 origin = "docs/ledger.md — Harbor and Swarm; Swarm's plan docs/ledger-refs.md (SWM-2)"
@@ -41,12 +41,25 @@ Scenario: [S2] An integrated delivery
 
 Scenario: [S3] A swarm branch without trailers
   Then it is not counted for any story
+
+Scenario: [S4] Swarm data is data
+  Given swarm branches and commits with hostile content (huge or invalid-UTF-8 messages, control characters,
+    odd task ids, wrong trailers, a malformed snapshot list)
+  Then no command crashes, and check's differences and exit code are those without them
+
+Scenario: [S5] A delivery never attributes on its own
+  Given a trunk commit with `Swarm-Task:` and no story trailer, brought by no merge with one
+  Then it is UNATTRIBUTED, and check --rules-ref <rev> gives the same differences with or without swarm data
+
+Scenario: [S6] The phase gate: a convoy carrying swarm deliveries lands
+  Given a Harbor logbook, swarm branches and trunk commits where convoy 12 sailed two swarm deliveries of AUTH-008
+  Then show AUTH-008 (text and --json) says each piece's story, who made it and which convoy sailed it
 ```
 
 ## Testable units
 | Unit | Test type | File |
 |---|---|---|
-| swarm branches, the swarm list in --json, show | unit, local remote | tests/test_ledger.py |
+| swarm branches, the swarm list in --json, show, hostile data, the gate | unit, local remote | tests/test_ledger_swarm.py |
 
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, a CHANGELOG line, `Story:
