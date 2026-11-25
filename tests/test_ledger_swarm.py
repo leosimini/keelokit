@@ -465,6 +465,55 @@ class SwarmBreakerRound2Test(LedgerCase):
                          [(s["id"], s["state"], s["swarm"]) for s in before["stories"]])
 
 
+class SwarmBreakerRound3Test(LedgerCase):
+    """Breaker round 3 (ESC-349)."""
+
+    def test_LEDGER_014_S2_breaker3_a_revert_after_the_snapshot_never_leaves_a_delivery_on_the_trunk(self):
+        """ESC-349: a shallow clone reading the CI's snapshot settled the story to `ready · reverted` after a revert
+        that landed later, but kept the snapshot's delivery `on-trunk`."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        repo.publish()
+        swarm_branch(repo, TASK, "Ana Helper", f"feat: piece\n\nStory: AUTH-001\nSwarm-Task: {TASK}")
+        repo.git("fetch", "-q", "origin")
+        merge = repo.merge(f"origin/swarm/{TASK}", f"Merge swarm/{TASK}\n\nStory: AUTH-001")
+        repo.publish()
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        repo.git("revert", "--no-edit", "-m", "1", merge, when=repo.next_date())
+        repo.publish()
+        shallow = repo.clone("shallow", depth=3)
+        shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+        shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        data = json.loads(shallow.ledger("--json").stdout)
+        self.assertTrue(data["history"].startswith("snapshot:"), data["history"])
+        s = by_id(data)["AUTH-001"]
+        self.assertEqual((s["state"], s["reverted"]), ("ready", True))
+        self.assertNotIn("on-trunk", [e["state"] for e in s["swarm"]])
+        self.assertNotIn(f"{TASK} · on-trunk", show_text(self, shallow, "AUTH-001"))
+
+    def test_LEDGER_014_S2_breaker3_a_snapshot_of_the_trunks_tip_keeps_its_deliveries(self):
+        """The snapshot of the very commit the trunk is at still says each delivery (nothing landed since)."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        repo.publish()
+        piece = swarm_branch(repo, TASK, "Ana Helper", delivery("AUTH-001", TASK))[0]
+        repo.git("fetch", "-q", "origin")
+        repo.merge(f"origin/swarm/{TASK}", f"Merge swarm/{TASK}")
+        repo.publish()
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        shallow = repo.clone("shallow", depth=1)
+        shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+        shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        s = by_id(json.loads(shallow.ledger("--json").stdout))["AUTH-001"]
+        self.assertEqual([(e["task"], e["state"], e["commits"]) for e in s["swarm"]], [(TASK, "on-trunk", [piece])])
+
+
 class SwarmPhaseGateTest(LedgerCase):
     """S6, the gate of phase 3 (docs/ledger.md, "Plan") for Harbor 0.6.0: convoy 12 carries two swarm deliveries of
     AUTH-008 (Ana's and Bo's) and the session's own closing commit, and sails; convoy 13, open, carries a swarm
