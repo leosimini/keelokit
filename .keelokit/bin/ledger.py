@@ -70,6 +70,12 @@ never written: an active worker holding a story makes it in-progress, a vessel s
 convoy makes it delivered, and a sailed convoy names the convoy of an on-trunk story and its exact time. It never
 adds a difference. Only `take` runs Harbor's harbor.py (`git config harbor.py`), never a hook's path.
 
+Swarm (LEDGER-014, docs/ledger.md "Harbor and Swarm"): the ledger never reads the swarm repo. A helper's delivery is
+an origin branch `swarm/<task>` whose commits carry `Part-of: <ID>` and `Swarm-Task: <task>`; once on the trunk, a
+commit with `Swarm-Task:` is its story's (by its own Story:/Part-of:, else the merges that attribute it). Each
+story's `swarm` list says the task, the branch and head, the commits and their authors, and the Harbor convoy that
+carries or sailed it. Like the logbook it adds information only: no difference, no attribution, no state.
+
 Corrections (docs/ledger.md, "Corrections file"): `backlog/ledger-corrections.toml`, read from the trunk's
 tree, holds approved rows (story, commit, kind, evidence, approver, date). An active row makes its story
 `on-trunk`, marked reconstructed; a `retract` row cancels the earlier rows of the same story and commit. An
@@ -1338,7 +1344,7 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
     reason = cut_reason(graph, shallow)
     facts = {"schema": 1, "trunk": trunk, "trunk_sha": trunk_sha, "history": "incomplete" if reason else "complete",
              "stories": [], "unattributed": {"since": cfg["since"], "commits": 0, "ratio": 0.0}, "diffs": [],
-             "harbor": {"logbook": None, "skipped": 0, "error": None}}
+             "harbor": {"logbook": None, "skipped": 0, "error": None}, "swarm": {"error": None}}
     if reason:
         level = "error" if os.environ.get("CI", "").lower() not in ("", "0", "false") else "warning"
         view = snapshot_view(cfg, trunk, trunk_sha, refs, graph, stories, tree)
@@ -1371,6 +1377,8 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
     book = read_logbook(refs)
     apply_logbook({r["id"]: r for r in facts["stories"]}, book, refs, log, placed)
     facts["harbor"] = {"logbook": book["head"], "skipped": book["skipped"], "error": book["error"]}
+    facts["swarm"] = {"error": apply_swarm({r["id"]: r for r in facts["stories"]}, branches, log, graph, placed,
+                                           refs, book)}
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
@@ -1580,23 +1588,177 @@ def apply_logbook(records: dict[str, dict], book: dict, refs: dict, log: list[di
                 if rec["state"] in ("defined", "ready", "in-progress", "delivered"):
                     rec.update(state="delivered", convoy=n, delivered={"convoy": n, "convoy_state": c["state"],
                                                                        "branch": v["branch"], "head": v["head"]})
-    position = placed[1]
-    by_sha = {c["sha"]: c for c in log}
-    sails = [(n, c["sail"]) for n, c in sorted(book["convoys"].items()) if c["state"] == "sailed" and c["sail"]
-             and c["sail"]["main_before"] in position and c["sail"]["main_after"] in position]
-    moves = [(m, int(k.group(1))) for m in book["moves"] if (k := CONVOY_CAUSE.fullmatch(m["cause"]))
-             and m["from"] in position and m["to"] in position]
+    places = convoy_places(book, log, placed)
+    position = places["position"]
     for rec in records.values():
         at = position.get(rec.get("arrival") or "")
         if not rec["commit"] or rec["state"] == "unknown" or at is None:
             continue
-        move = next((m for m, _ in moves if position[m["from"]] < at <= position[m["to"]]), None)
+        move = convoy_move(places, at)
         if rec["convoy"] is None:
-            rec["convoy"] = convoy_of_merge(by_sha.get(rec["arrival"])) \
-                or next((n for n, s in sails if position[s["main_before"]] < at <= position[s["main_after"]]), None) \
-                or next((n for m, n in moves if m is move), None)
+            rec["convoy"] = convoy_sailed(places, rec["arrival"])
         if move is not None and not rec["since_exact"]:
-            rec["since"], rec["since_exact"] = move["seen"], True
+            rec["since"], rec["since_exact"] = move[0]["seen"], True
+
+
+def convoy_places(book: dict, log: list[dict], placed: tuple) -> dict:
+    """What says which convoy brought a trunk commit: the trunk's first-parent positions, the merges by sha, the
+    sailed convoys whose `[sail]` range the trunk holds, and main.toml's convoy moves it holds."""
+    position = placed[1]
+    sails = [(n, c["sail"]) for n, c in sorted(book["convoys"].items()) if c["state"] == "sailed" and c["sail"]
+             and c["sail"]["main_before"] in position and c["sail"]["main_after"] in position]
+    moves = [(m, int(k.group(1))) for m in book["moves"] if (k := CONVOY_CAUSE.fullmatch(m["cause"]))
+             and m["from"] in position and m["to"] in position]
+    return {"position": position, "by_sha": {c["sha"]: c for c in log}, "sails": sails, "moves": moves}
+
+
+def convoy_move(places: dict, at: int) -> tuple | None:
+    """The first convoy move of main.toml whose from..to holds the first-parent position `at`: (move, number)."""
+    position = places["position"]
+    return next(((m, n) for m, n in places["moves"] if position[m["from"]] < at <= position[m["to"]]), None)
+
+
+def convoy_sailed(places: dict, arrival: str) -> int | None:
+    """The convoy that brought the trunk commit whose first-parent arrival is `arrival`: the `Convoy: <n>` of that
+    merge, else the sailed convoy whose range holds it, else the convoy move that holds it."""
+    position = places["position"]
+    at = position.get(arrival)
+    if at is None:
+        return None
+    move = convoy_move(places, at)
+    return convoy_of_merge(places["by_sha"].get(arrival)) \
+        or next((n for n, s in places["sails"] if position[s["main_before"]] < at <= position[s["main_after"]]), None) \
+        or (move[1] if move else None)
+
+
+# ── Swarm's deliveries (LEDGER-014) ──
+# The ledger never reads the swarm repo (another repo, other credentials, network in every hook). A swarm helper
+# delivers a branch swarm/<task> in this repo, and its commits carry `Part-of: <ID>` and `Swarm-Task: <task>` (the
+# helper's prompt or the swarm runner writes them, SWM-2). What they say is data anyone who can push writes: it adds
+# information to a story's record (its `swarm` list) and never a difference, an attribution or a state. A story with a
+# delivery not yet integrated is in-progress by its Part-of:, as on any branch (LEDGER-003), not because of Swarm.
+
+SWARM_BRANCH = "refs/remotes/origin/swarm/"
+SWARM_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")   # a task id that is one: no slash, no control character
+SWARM_AUTHOR = 200             # longest author name kept
+SWARM_MERGES = 2000            # at most this many attributing merges are walked to find a delivery's story
+SWARM_STATES = ("in-progress", "on-trunk")
+
+
+def swarm_task(trailers: list[tuple[str, str]]) -> str | None:
+    """The task a commit's `Swarm-Task:` names: exactly one distinct value, a task id; else none."""
+    values = {v.strip() for v in trailer_values(trailers, "Swarm-Task")}
+    task = values.pop() if len(values) == 1 else None
+    return task if task and SWARM_TASK.fullmatch(task) else None
+
+
+def authors_of(shas: list[str]) -> dict[str, str]:
+    """commit -> its author's name as recorded (no mailmap: a .mailmap is a file the branch under judgment writes),
+    control characters shown as ?, cut to SWARM_AUTHOR (one `git log`)."""
+    if not shas:
+        return {}
+    out = git_read(["log", "--no-walk=unsorted", "--stdin", "-z", "--no-mailmap", "--format=%H%x00%an"],
+                   "".join(f"{sha}\n" for sha in shas).encode()).decode("utf-8", errors="replace")
+    parts = out.split("\0")
+    names = {}
+    for sha, name in zip(parts[0::2], parts[1::2]):
+        sha = sha.strip()
+        if FULL_SHA.fullmatch(sha):
+            names[sha] = CONTROL.sub("?", name)[:SWARM_AUTHOR]
+    return names
+
+
+def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: list[str]) -> dict[str, set[str]]:
+    """commit -> the story ids of the trunk merges that bring it (their trailers cover it: docs/ledger.md, "Trailers").
+    Only the commits of its own arrival can bring a commit, so each walk stays inside one arrival's group; at most
+    SWARM_MERGES merges are walked."""
+    by_sha = {c["sha"]: c for c in log}
+    groups: dict[str, set[str]] = {}
+    for sha in wanted:
+        groups.setdefault(arrival_of[sha], set())
+    for sha, a in arrival_of.items():
+        if a in groups:
+            groups[a].add(sha)
+    found: dict[str, set[str]] = {}
+    budget = SWARM_MERGES
+    for a, group in sorted(groups.items()):
+        merges = sorted(m for m in group if len(graph.get(m, ())) > 1 and m in by_sha
+                        and (by_sha[m]["story"] or by_sha[m]["part_of"]))
+        outside = {p for x in group for p in graph.get(x, ())} - group if merges else set()
+        for m in merges:
+            if budget <= 0:
+                return found
+            budget -= 1
+            parents = graph[m]
+            mainline = reach_until(graph, parents[:1], outside)
+            brought = reach_until(graph, parents[1:], outside | mainline)
+            for sha in wanted:
+                if sha in brought:
+                    found.setdefault(sha, set()).update(by_sha[m]["story"], by_sha[m]["part_of"])
+    return found
+
+
+def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph: dict, placed: tuple, refs: dict,
+                book: dict) -> str | None:
+    """Fill each story's `swarm` list (docs/ledger.md, "Harbor and Swarm"): a delivery not yet integrated is an origin
+    branch swarm/<task> holding commits off the trunk with `Part-of: <ID>` and `Swarm-Task: <task>` (that task, the
+    branch's), with its head, and the open convoy whose vessel is that branch sealed on that head; an integrated one is
+    the trunk's commits with `Swarm-Task:` that are the story's (their own Story:/Part-of:, else the merges that
+    attribute them), by the convoy that brought them. Merges are no deliveries. Never raises: whatever is wrong, the
+    lists stay empty and the answer is the error."""
+    try:
+        for rec in records.values():
+            rec["swarm"] = []
+        entries: dict[tuple, dict] = {}
+
+        def add(sid: str, task: str, state: str, convoy, branch, head, commit: dict) -> None:
+            e = entries.setdefault((sid, task, state, -1 if convoy is None else convoy), {
+                "task": task, "state": state, "branch": branch, "head": head, "commits": {}, "convoy": convoy})
+            e["commits"][commit["sha"]] = commit["ct"]
+
+        names = {}
+        for entry in branches.values():
+            for c in entry["commits"]:
+                names = names or {n: i for i, n in enumerate(c["names"])}
+                break
+        open_heads: dict[tuple[str, str], int] = {}
+        for n in sorted(book["convoys"]):
+            c = book["convoys"][n]
+            if c["state"] in OPEN_CONVOY:
+                for v in c["vessels"]:
+                    run = book["runs"].get(v["head"])
+                    if run is not None and run["exit"] == 0:
+                        open_heads[(v["branch"], v["head"])] = n
+        for sid, entry in sorted(branches.items()):
+            if sid not in records:
+                continue
+            for c in entry["commits"]:
+                task = swarm_task(c["trailers"])
+                ref = f"{SWARM_BRANCH}{task}"
+                if task is None or ref not in names or not c["mask"] >> names[ref] & 1 or len(graph.get(c["sha"], ())) > 1:
+                    continue
+                branch, head = f"swarm/{task}", refs[ref]
+                add(sid, task, "in-progress", open_heads.get((branch, head)), branch, head, c)
+        arrival_of = placed[0]
+        places = convoy_places(book, log, placed)
+        pieces = [(c, task) for c in log if len(c["parents"]) < 2 and (task := swarm_task(c["trailers"]))]
+        via = attributing_merges(graph, log, arrival_of, [c["sha"] for c, _ in pieces
+                                                           if not (c["story"] or c["part_of"])])
+        for c, task in pieces:
+            ids = set(c["story"]) | set(c["part_of"]) or via.get(c["sha"], set())
+            for sid in sorted(ids):
+                if sid in records:
+                    add(sid, task, "on-trunk", convoy_sailed(places, arrival_of[c["sha"]]), None, None, c)
+        authors = authors_of(sorted({sha for e in entries.values() for sha in e["commits"]}))
+        for (sid, *_), e in sorted(entries.items(), key=lambda x: (x[0][0], x[0][1], SWARM_STATES.index(x[0][2]), x[0][3])):
+            shas = sorted(e["commits"], key=lambda sha: (e["commits"][sha], sha))
+            records[sid]["swarm"].append({**e, "commits": shas,
+                                          "authors": sorted({authors[sha] for sha in shas if sha in authors})})
+        return None
+    except Exception as e:  # noqa: BLE001 - Swarm's trailers are data anyone who can push writes: never a crash
+        for rec in records.values():
+            rec["swarm"] = []
+        return " ".join(str(e).split())[:200] or type(e).__name__
 
 
 # ── corrections (docs/ledger.md, "Corrections file") ──
@@ -3848,8 +4010,19 @@ def carried_ok(key: str, value) -> bool:
                                                and isinstance(x.get("date"), str) and isinstance(x.get("reason"), str)
                                                and isinstance(x.get("branches"), list) for x in value)
     if key == "swarm":
-        return isinstance(value, list)
+        return isinstance(value, list) and all(swarm_entry_ok(x) for x in value)
     return value is None or isinstance(value, str)
+
+
+def swarm_entry_ok(x) -> bool:
+    """A `swarm` entry of a snapshot has the shape apply_swarm gives it (a hand edit is no crash in `show`)."""
+    sha = lambda v: isinstance(v, str) and bool(FULL_SHA.fullmatch(v))  # noqa: E731
+    return (isinstance(x, dict) and isinstance(x.get("task"), str) and bool(SWARM_TASK.fullmatch(x["task"]))
+            and x.get("state") in SWARM_STATES and (x.get("branch") is None or isinstance(x["branch"], str))
+            and (x.get("head") is None or sha(x["head"]))
+            and isinstance(x.get("commits"), list) and all(sha(c) for c in x["commits"])
+            and isinstance(x.get("authors"), list) and all(isinstance(a, str) for a in x["authors"])
+            and (x.get("convoy") is None or is_int(x["convoy"])))
 
 
 def reach_info(graph: dict, cut: set, head: str) -> tuple[set, bool]:
@@ -4366,7 +4539,8 @@ SHOW_LABELS = {
            "ready_none": "no story is ready", "wave": "wave", "release": "{tag} (after {prev}): {n} {stories}",
            "release_first": "{tag} (from the start): {n} {stories}", "story_one": "story", "story_many": "stories", "no_tag": "no version tag {tag}",
            "session": "session", "delivered": "delivered: convoy {n} ({state}), {branch}@{head}",
-           "convoy": "convoy", "workers": "workers (Harbor)", "events": "convoy {n} events"},
+           "convoy": "convoy", "workers": "workers (Harbor)", "events": "convoy {n} events",
+           "swarm": "swarm deliveries", "by": "by"},
     "es": {"state": "estado", "since": "desde", "approx": "aproximada", "exact": "exacta", "version": "versión",
            "candidate": "candidata", "branches": "ramas", "file": "archivo", "commits": "commits",
            "attempts": "intentos (Dropped:)", "corrections": "correcciones", "escapes": "escapes",
@@ -4376,7 +4550,8 @@ SHOW_LABELS = {
            "release_first": "{tag} (desde el principio): {n} {stories}", "story_one": "historia",
            "story_many": "historias", "no_tag": "no hay tag de versión {tag}",
            "session": "sesión", "delivered": "entregada: convoy {n} ({state}), {branch}@{head}",
-           "convoy": "convoy", "workers": "workers (Harbor)", "events": "eventos del convoy {n}"},
+           "convoy": "convoy", "workers": "workers (Harbor)", "events": "eventos del convoy {n}",
+           "swarm": "entregas del enjambre", "by": "de"},
 }
 EVENTS_SHOWN = 8
 BODY_LINES = 6
@@ -4435,6 +4610,17 @@ def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
         lines.append(f"{t['convoy']}: {rec['convoy']}")
     if rec.get("workers"):
         lines.append(f"{t['workers']}: {', '.join(rec['workers'])}")
+    if rec.get("swarm"):
+        lines.append(f"{t['swarm']}:")
+        for e in rec["swarm"]:
+            parts = [e["task"], names.get(e["state"], e["state"])]
+            if e["branch"] and e["head"]:
+                parts.append(f"{e['branch']}@{short(e['head'])}")
+            if e["convoy"] is not None:
+                parts.append(f"{t['convoy']} {e['convoy']}")
+            if e["authors"]:
+                parts.append(f"{t['by']} {', '.join(e['authors'])}")
+            lines.append(f"  {' · '.join(parts)}")
     lines.append(f"{t['file']}: {rec['path']}")
     if rec.get("as_of"):
         lines.append(LABELS[lang]["snapshot"].format(sha=short(rec["as_of"])))
@@ -4448,6 +4634,8 @@ def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
         lines.append(f"  {short(c['sha'])} {c['date'][:10]} {c['kind']}{where}: {c['subject']}")
         if c["session"]:
             lines.append(f"    {t['session']}: {c['session']}")
+        if c["swarm_task"]:
+            lines.append(f"    swarm: {c['swarm_task']} · {c['author']}")
         body = c["body"]
         shown = body if full or len(body) <= BODY_LINES else body[:BODY_LINES - 1]
         lines += [f"    {line}" if line else "" for line in shown]
@@ -4488,11 +4676,17 @@ def why_of(ctx: dict, sid: str, rec: dict) -> dict:
                                                            if c["sha"] not in {x["sha"] for x in trunk_commits}]
     found_commits.sort(key=lambda x: (sid not in x[0].get("story", []), -x[0]["ct"], x[0]["sha"]))
     commits, findings = [], set()
+    tasks = {sha: e["task"] for e in rec.get("swarm") or [] for sha in e["commits"]}
+    try:
+        authors = authors_of([c["sha"] for c, _ in found_commits])
+    except LedgerError:
+        authors = {}
     for c, held in found_commits:
         subject, body = split_message(c["message"], c["trailers"])
         commits.append({"sha": c["sha"], "date": iso(c["ct"]), "kind": "Story" if sid in c.get("story", []) else "Part-of",
                         "branches": list(held or []), "subject": subject,
-                        "session": next(iter(trailer_values(c["trailers"], "Claude-Session")), None), "body": body})
+                        "session": next(iter(trailer_values(c["trailers"], "Claude-Session")), None), "body": body,
+                        "author": authors.get(c["sha"]), "swarm_task": tasks.get(c["sha"])})
         findings.update(i for v in trailer_values(c["trailers"], "Finding") for i in ID_TOKEN.findall(v))
     names_it, by_finding = id_pattern([sid]), id_pattern(findings)
     escapes = [f"{ESCAPES}:{n} {line.strip()}" for n, line in enumerate(text_lines(by_path.get(ESCAPES)), 1)

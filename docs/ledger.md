@@ -152,6 +152,7 @@ A story has one state: the most advanced one the facts prove. From lowest to hig
 change meaning within schema 1.
 LEDGER-013 added `harbor` (`logbook`: the logbook commit read or null, `skipped`, `error`) and, on each story,
 `delivered` (null or `{convoy, convoy_state, branch, head}`) and `workers` (the active Harbor workers holding it).
+LEDGER-014 added `swarm` (`error`) and fills each story's `swarm` list ("What the ledger reads of Swarm").
 
 ### Exit codes and difference codes
 
@@ -350,6 +351,28 @@ dimensions for the critical flag), and the corrections: a row counts only when `
 it, identical (a row only the candidate adds attributes nothing and is no error). Harbor passes main's tip when it
 judges a convoy as landed. Exit 2 when `<rev>` is
 no commit here, or when a rule file it has is not in this clone (a partial clone).
+
+### What the ledger reads of Swarm (LEDGER-014)
+
+The ledger never reads the swarm repo. A swarm helper delivers a branch `swarm/<task>` in the code repo, and its
+commits carry `Part-of: <ID>` and `Swarm-Task: <task>` (SWM-2). They add information to a story's record, its `swarm`
+list, and nothing else: no difference, no attribution (a `Swarm-Task:` alone attributes nothing; `check`,
+`attribution` and `--rules-ref` read only the trailers they always read), no state (an unintegrated delivery is
+`in-progress` by its `Part-of:`, as any branch is).
+
+| Fact | Gives, in the story's `swarm` list |
+|---|---|
+| a non-merge commit off the trunk on `origin/swarm/<task>` with `Part-of: <ID>` and one `Swarm-Task: <task>`, that same task | `{"task", "state": "in-progress", "branch": "swarm/<task>", "head": <the branch's tip>, …}`; `convoy`: the open convoy whose vessel is that branch sealed on that head (as `delivered` reads it), else null |
+| a non-merge trunk commit with one `Swarm-Task: <task>`, the story's by its own `Story:`/`Part-of:`, else by the trunk merges that bring it with one | `{"task", "state": "on-trunk", "branch": null, "head": null, …}`; `convoy`: the convoy that brought it, read as an on-trunk story's convoy is |
+
+Each entry: `{task, state, branch, head, commits (oldest first), authors (sorted), convoy}`, one per story, task,
+state and convoy; `authors` are the commits' author names as recorded (no mailmap), control characters shown as `?`,
+cut to 200 characters. A task id is `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; a commit with none, or with two different
+ones, is no delivery, nor is one on a branch outside `swarm/<task>`. `--json` adds `swarm: {error}` (null, or why
+the lists are empty: whatever goes wrong reading Swarm's trailers is never a crash). `show` lists the deliveries
+under *swarm deliveries* (task · state · branch@head · convoy · authors), and each listed commit's task and author
+under it; `show --json`'s commits add `author` and `swarm_task`. A snapshot carries the lists; one of the wrong
+shape is no snapshot.
 
 **`ledger.py take <ID>` with Harbor**: when `git config --local harbor.py` names an absolute path to a file called
 `harbor.py` (Harbor records it when it adopts a project) and `harbor.py story take --help` exits 0 (asked by
