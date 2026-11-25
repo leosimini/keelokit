@@ -211,7 +211,8 @@ For a story `ledger.py risky <ID>` calls risky, after step 5's round is clean an
    - Round <n> · head <sha> · <k> findings: ESC-312, ESC-313 · fixed in <commits>
    - Decision · <person> · <YYYY-MM-DD> · <what was decided>
    ```
-   One top-level line per round; detail goes on indented lines under it. `clean` means nothing reproduced.
+   One top-level line per round; detail goes on indented lines under it. `clean` means nothing reproduced, and it is
+   the round's whole result (a round that lists findings is not clean).
 5. **Loop** with a new breaker on the new head until a round is clean, at most `rounds` rounds
    (`.keelokit/risky.toml`, default 3). The cap hit with findings left: the story does not close silently. Stop
    (`mode = "auto"` too), tell the person what is left, and record their call as a `Decision` line naming them

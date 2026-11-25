@@ -36,5 +36,5 @@ paths = [
 # deciders = ["<name>"]   # who may write the Decision line when the cap is hit with findings left. List them:
 #                         # empty, any name that is not a known agent's or model's counts
 #
-# since = "<sha>"   # optional: the rule holds only for stories closed after this commit (an adopted project's
-#                   # start). Without it, from the commit that brought this file to the trunk.
+# since = "<sha>"   # optional, read only as the file first reaches the trunk: work already done on a branch that
+#                   # lands later (an adopted project's start). Without it, from the commit that brought this file.

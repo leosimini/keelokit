@@ -198,10 +198,12 @@ of the story's file, its earlier version (as `risky.toml` found it on the trunk,
 trunk or pull-request commit of the story that changes a risky path; the rounds come only from the file as it is.
 Rounds numbered other than 1, 2, … count as none, and nothing inside a code fence or an HTML comment is a record.
 `risky.toml`, `state.toml` and `backlog/ledger-corrections.toml` are always risky paths; once `risky.toml` was on the
-trunk, its absence fails closed. Risk is sticky across every committed version of the story's file.
+trunk (added by a commit or by a merge's own resolution), its absence fails closed. Risk is sticky across every
+committed version of the story's file, under its earlier names too. Only the `since` of `risky.toml` as it first
+reached the trunk counts. A round is clean only when its whole result reads `clean`.
 
-Reverts, ledger-wide: a commit reverts X only when its message says so and its change is X's inverted (`git
-patch-id --stable`); a message-only or partial "revert" is an ordinary commit. A clone that lacks the blobs keeps the
+Reverts, ledger-wide: a commit reverts X only when its message says so and its change is X's inverted, byte for byte
+(a hash of the diff; not `git patch-id`, which ignores whitespace); a message-only or partial "revert" is an ordinary commit. A clone that lacks the blobs keeps the
 message's word; the CI's full clone decides. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 

@@ -116,6 +116,8 @@ What differs from the story as first written, all from the three cold breaker ro
   breaker's): a pull request can no longer move its trunk or loosen its own `enforce`.
 - Round 4, by the coordinator's own breaker: the rule files are always risky; a risky change with no story is
   RISKY_NO_STORY; risk is sticky across every version of the story file; a revert counts by its content, ledger-wide.
+- Round 5: story versions are followed through renames; a merge's own add of risky.toml starts the rule; reverts
+  match byte for byte; only the first version's `since` counts; `clean` is a round's whole result.
 - Not covered: a round line is a record, not a proof that the round ran; a person's name in a Decision is not
   verified beyond `deciders`; the pre-push hook does not check breaker rounds (the pull request and the trunk's CI do).
 
@@ -138,9 +140,15 @@ What differs from the story as first written, all from the three cold breaker ro
   attribution is judged by the base's committed `enforce`. Every finding is fixed with a test that failed first,
   but the fixes have not been attacked by a fourth breaker: the last round is not clean, so `check` says
   BREAKER_UNRESOLVED until Leo records a Decision (another round, or land as it is).
-- Round 4 · head 1ebb9a11ca4184c3611b72a1276531b568aebdf1 · 5 findings: ESC-331 (HIGH), ESC-332, ESC-333, ESC-334, ESC-335 · fixed in the commit after c9dab58
+- Round 4 · head 1ebb9a11ca4184c3611b72a1276531b568aebdf1 · 5 findings: ESC-331 (HIGH), ESC-332, ESC-333, ESC-334, ESC-335 · fixed in c810182
   Run by the coordinator's own breaker on the PR head (past the cap, at the coordinator's call). Reproduced: deleting
   risky.toml switched the rule off; a risky change in a `No-story:` commit or a sync merge's own resolution was never
   judged; a story planned risky after the rule dropped its risk while closing; a revert by message only reopened a
   story. Held: a PR's own risky.toml edit, Part-of and merge attribution, planned risk, one path-limited git log,
   casefolded deciders, CRLF, broken configs. The coordinator decided each fix (ESC-331..335).
+- Round 5 · head c81018280020adc96a08c61e030faf6c339a6e73 · 6 findings: ESC-336 (HIGH), ESC-337 (HIGH), ESC-338, ESC-339, ESC-340, ESC-341 · fixed in the commit after f46c2a6
+  A new agent, cold, 13 attacks. Reproduced: a story file renamed before the close lost its old risk; a risky.toml
+  added only by a merge's own resolution never started the rule; patch-id's whitespace blindness let a dedenting
+  "revert" count; a NUL in a path crashed check; a later `since` exempted a judged closure; more non-people as
+  deciders and a `clean` round listing findings. Held: hunk-by-hunk merge resolutions, partial clones, 22 odd configs
+  across every command, 9001-commit runtime (1.4 s vs 0.6 s).
