@@ -352,6 +352,69 @@ def write_snapshot(repo: GitRepo, ledger_json: str) -> None:
     repo.git("fetch", "-q", "origin")
 
 
+class SwarmBreakerRound1Test(LedgerCase):
+    """Breaker round 1 (ESC-346, ESC-347)."""
+
+    def test_LEDGER_014_S4_breaker1_a_snapshot_entry_missing_its_keys_is_no_crash(self):
+        """ESC-346: a hand-edited snapshot entry without branch, head or convoy crashed show (KeyError)."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-008")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        repo.publish()
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        repo.git("fetch", "-q", "origin")
+        snap = json.loads(repo.git("show", "origin/keelokit/ledger:ledger.json"))
+        for n, bad in enumerate(({"task": "t1", "state": "on-trunk", "commits": [], "authors": []},
+                                 {"task": "t1", "state": "on-trunk", "branch": None, "commits": [], "authors": []},
+                                 {"task": "t1", "state": "on-trunk", "branch": "b", "head": None, "commits": [],
+                                  "authors": ["a\nb"], "convoy": None})):
+            with self.subTest(bad=bad):
+                for s in snap["stories"]:
+                    if s["id"] == "AUTH-008":
+                        s["swarm"] = [bad]
+                write_snapshot(repo, json.dumps(snap))
+                shallow = repo.clone(f"shallow-r1-{n}", depth=1)
+                shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+                shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+                r = shallow.ledger("show", "AUTH-008")
+                self.assertNotIn("the ledger failed", r.stderr)
+                self.assertIn(r.returncode, (0, 1), r.stderr)
+                self.assertNotIn("t1 ·", r.stdout, "an entry of the wrong shape is no snapshot: not shown")
+
+    def test_LEDGER_014_S2_breaker1_a_reverted_delivery_is_not_on_the_trunk(self):
+        """ESC-347: a delivery merged and then reverted still read `on-trunk` in the swarm list."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-008")
+        repo.publish()
+        repo.state("[ledger]\nstale_days = 100000\n")
+        head = swarm_branch(repo, TASK, "Ana Helper", f"feat: AUTH-008 done\n\nBody.\n\nStory: AUTH-008\nSwarm-Task: {TASK}")[0]
+        repo.git("fetch", "-q", "origin")
+        repo.git("merge", "-q", "--ff-only", f"origin/swarm/{TASK}")
+        repo.revert(head)
+        repo.publish()
+        s = by_id(read_json(self, repo))["AUTH-008"]
+        self.assertEqual((s["state"], s["reverted"]), ("ready", True))
+        self.assertEqual([(e["task"], e["state"], e["commits"]) for e in s["swarm"]], [(TASK, "reverted", [head])])
+        out = show_text(self, repo, "AUTH-008")
+        self.assertIn(f"  {TASK} · reverted · by Ana Helper", out)
+        self.assertNotIn("on-trunk", out)
+
+    def test_LEDGER_014_S2_breaker1_a_merge_reverted_reverts_the_deliveries_it_brought(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-008")
+        repo.publish()
+        repo.state("[ledger]\nstale_days = 100000\n")
+        head = swarm_branch(repo, TASK, "Ana Helper", delivery("AUTH-008", TASK))[0]
+        repo.git("fetch", "-q", "origin")
+        merge = repo.merge(f"origin/swarm/{TASK}", f"Merge branch 'swarm/{TASK}'")
+        repo.git("revert", "--no-edit", "-m", "1", merge, when=repo.next_date())
+        repo.publish()
+        s = by_id(read_json(self, repo))["AUTH-008"]
+        self.assertEqual([(e["task"], e["state"], e["commits"]) for e in s["swarm"]], [(TASK, "reverted", [head])])
+
+
 class SwarmPhaseGateTest(LedgerCase):
     """S6, the gate of phase 3 (docs/ledger.md, "Plan") for Harbor 0.6.0: convoy 12 carries two swarm deliveries of
     AUTH-008 (Ana's and Bo's) and the session's own closing commit, and sails; convoy 13, open, carries a swarm
