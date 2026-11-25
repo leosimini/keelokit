@@ -27,6 +27,22 @@ The template owns infrastructure; the product owns its code. `copier.yml` lists 
 - `bin/guard.py` — one guard, two callers: Claude Code's PreToolUse hook and git's pre-commit.
   Without python3 every Claude hook turns off and says so, and pre-commit stops the commit
   with the reason (`tests/test_hooks.py` runs each hook without it).
+- Which copy the plugin's hooks run (HARN-004): always the plugin's. `hooks/hooks.json` runs `hooks/trusted.py`
+  (with `python3 -I`, after a `cd` into the plugin), which runs the plugin's guard, ledger and doctor with
+  `--root <project>` against the project's data (rules, `rules.local.toml`, state, backlog); the project's
+  `.keelokit/bin` is only read, to say at the session start that it differs. There is no per-project approval: an
+  agent with a shell can forge anything a person would do at a terminal (ESC-278). guard, doctor, ledger and
+  ux_gate take `--root DIR` first; the doctor runs the ledger and ux_gate next to itself, with the same `--root`;
+  the ledger and the guard with `--root` run git with core.hooksPath=/dev/null. The plugin never turns a repo's git
+  hooks on (they run `.keelokit/bin` without `-I`, and whatever `.githooks` holds on the branch checked out:
+  ESC-277); the session start says when they are off. The guard runs in a child process the hook waits for at most
+  45 s, and its patterns run in linear time; it reads its data files without blocking and at most 1 MB and bounds
+  its git calls, so it can't outlive the hook's timeout, which Claude Code would read as a pass (ESC-276, ESC-279).
+  Every git call the plugin's scripts make with `--root` (and trusted.py's own) runs hardened (ESC-280):
+  safe.bareRepository=explicit, protocol.ext.allow=never, core.fsmonitor=false, GIT_NO_LAZY_FETCH=1, no
+  GIT_DIR-like variables, and only where the git dir is the project's .git or outside the project. Any failure of
+  the guard hook's own path is a block (ESC-281); the guard runs wherever the project has `.keelokit/`, or had it when a hook last looked (a marker in
+  `~/.cache/keelokit/projects`; ESC-282, ESC-295); the PreToolUse gate runs no git (ESC-296).
 - `bin/run-local.sh` — launches the Expo app and its API on a phone or a simulator (macOS). It
   runs without Claude or the plugin, reads the `[local]` block of `profile.toml` and detects what
   the block leaves out; `/keelokit:run-local` runs it and repairs what fails (RUN-1).

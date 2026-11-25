@@ -32,12 +32,127 @@ import re  # noqa: E402
 import shlex  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
+import stat  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 import tomllib  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def root_of(argv: list[str]) -> Path:
+    """The project this runs on: `--root DIR`, first on the command line, or the one this file sits in. The plugin's
+    hooks run their own copy with `--root <project>` (hooks/trusted.py, HARN-004)."""
+    if argv[1:2] == ["--root"] and len(argv) > 2:
+        root = Path(argv[2]).resolve()
+        del argv[1:3]
+        return root
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = root_of(sys.argv)
+
+PLUGIN_MODE = ROOT != Path(__file__).resolve().parents[2]  # run with --root: by the plugin's hooks (HARN-004)
+# Variables that point git at another repository, or at programs to run: none comes from the session's environment.
+GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+             "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_CONFIG", "GIT_SSH",
+             "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR")
+
+
+def harden_git(hooks_off: bool) -> None:
+    """HARN-004 (ESC-271, ESC-280): run by the plugin's hooks, every git call of this copy reads no repository the
+    project ships (a directory with HEAD, config, objects/ and refs/ is not a bare repository to it), runs no
+    transport helper (ext::), no lazy fetch, no fsmonitor, prompts for nothing, and fires no git hook. git
+    reads GIT_CONFIG_* as `-c`, above every config file."""
+    for key in GIT_SCRUB:
+        os.environ.pop(key, None)
+    config = {"safe.bareRepository": "explicit", "protocol.ext.allow": "never", "protocol.file.allow": "always",
+              "core.fsmonitor": "false"}
+    if hooks_off:
+        config["core.hooksPath"] = os.devnull
+    try:
+        n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
+    except ValueError:
+        n = 0
+    for key, value in config.items():
+        os.environ[f"GIT_CONFIG_KEY_{n}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{n}"] = value
+        n += 1
+    os.environ["GIT_CONFIG_COUNT"] = str(n)
+    os.environ.update(GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_PROTOCOL_FROM_USER="0")
+
+
+def git_dir_problem() -> str | None:
+    """Why git must not run for ROOT, or None: the repository git finds has its git dir inside ROOT but is not
+    ROOT/.git (a directory the repo ships, read as a repository by a git too old for safe.bareRepository)."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    found, root = Path(out.stdout.strip()).resolve(), ROOT.resolve()
+    if found == root / ".git" or root not in (found, *found.parents):
+        return None
+    return (f"git reads {found} as this project's repository, a directory inside it that is not its .git, so "
+            f"Keelokit runs no git here")
+
+
+if PLUGIN_MODE:
+    harden_git(True)
 ENV_OK = {".env.example", ".env.ci"}
+# ESC-276: Claude Code lets a call through when the hook outlives its timeout, so the guard bounds what it reads and
+# how long its git calls take, and blocks when a bound is hit (hooks/hooks.json gives the hook more than GIT_SECONDS).
+MAX_DATA = 1 << 20
+GIT_SECONDS = 30
+_GIT_DEADLINE = time.monotonic() + GIT_SECONDS
+
+
+class GuardLimit(Exception):
+    """A bound the guard keeps was hit: the call is blocked."""
+
+
+def read_data(path: Path) -> bytes:
+    """A data file's bytes, read without blocking and at most MAX_DATA of them. OSError as reading would raise it (a
+    missing file); GuardLimit for a FIFO, a device or a file over the bound."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise GuardLimit(f"{rel_shown(path)} is not a regular file")
+        data = os.read(fd, MAX_DATA + 1)
+        if len(data) > MAX_DATA or st.st_size > MAX_DATA:
+            raise GuardLimit(f"{rel_shown(path)} is over {MAX_DATA >> 20} MB")
+        while chunk := os.read(fd, MAX_DATA):  # a short read: the rest, still within the bound
+            data += chunk
+            if len(data) > MAX_DATA:
+                raise GuardLimit(f"{rel_shown(path)} is over {MAX_DATA >> 20} MB")
+        return data
+    finally:
+        os.close(fd)
+
+
+def rel_shown(path: Path) -> str:
+    try:
+        return Path(path).relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def git_run(*args: str) -> subprocess.CompletedProcess:
+    """A git call of the Claude hook: within what is left of GIT_SECONDS, and its output within MAX_DATA."""
+    left = _GIT_DEADLINE - time.monotonic()
+    if left <= 0:
+        raise GuardLimit(f"its git calls took more than {GIT_SECONDS}s")
+    try:
+        out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, timeout=left)
+    except subprocess.TimeoutExpired:
+        raise GuardLimit(f"its git calls took more than {GIT_SECONDS}s") from None
+    if len(out.stdout) > MAX_DATA:
+        raise GuardLimit(f"`git {' '.join(args)}` gave more than {MAX_DATA >> 20} MB")
+    return out
+
+
 SECRETS = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
@@ -57,7 +172,12 @@ SECRETS = [
 # `${NAME}`, `$NAME` or `${{ ctx.name }}`. A literal, alone or mixed with a reference, still is.
 # The alternatives of a password's tokens are disjoint (a closed `${{ … }}`, an unclosed `${{` taken as text,
 # a `$` not followed by `{{`, a character that is no `$`), so a failing match can't backtrack through two ways of reading one text.
-URL_PASSWORD = r"(?P<pw>(?:\$\{\{[^}\n]*\}\}|\$\{\{(?![^}\n]*\}\})|\$(?!\{\{)|[^/\s@$])+)"
+# ESC-279: an expression is at most EXPR characters, the same bound in the token and in the look-ahead that tells a
+# closed one from an unclosed one, so each `${{` costs a bounded look and a password is read in linear time (an
+# unbounded look-ahead made every `${{` scan to the end of the line: quadratic, minutes on 100 KB).
+EXPR = 200
+URL_PASSWORD = (rf"(?P<pw>(?:\$\{{\{{[^}}\n]{{0,{EXPR}}}\}}\}}|\$\{{\{{(?![^}}\n]{{0,{EXPR}}}\}}\}})|\$(?!\{{\{{)"
+                rf"|[^/\s@$])+)")
 URL_SECRETS = [
     (rf"https?://[^/\s:@]+:{URL_PASSWORD}@github\.com", "credentials in a git URL"),
     # A DB URL with a password, unless it points at this machine (local/dev/CI values).
@@ -78,14 +198,21 @@ TAMPER = [
 # git's own options come before the subcommand, and -C, -c and these long ones take the next word
 # as their value (`git -C dir commit -n`). A value may be quoted ('' by now) or hold `\ `.
 GIT_VALUE = r"(?:\\.|[^\s\\])+"
-GIT = rf"\bgit(?:\s+(?:(?:-[Cc]|--(?:git-dir|work-tree|namespace|config-env|attr-source))\s+|-){GIT_VALUE})*?\s+"
+# ESC-279: an option that takes the next word is never also read as a bare `-word` (the look-ahead), so each option
+# has one reading and a command that doesn't match fails in linear time (`git -C -C -C …` took minutes).
+GIT_TAKES = r"(?:[Cc]|-(?:git-dir|work-tree|namespace|config-env|attr-source))"  # after the option's first dash
+GIT = rf"\bgit(?:\s+(?:-{GIT_TAKES}\s+|-(?!{GIT_TAKES}(?:\s|$))){GIT_VALUE})*?\s+"
 # The rest of that git command: up to a shell separator, or `--`, after which come paths.
-GIT_ARGS = r"(?:(?!\s--(?![^\s;&|]))[^|;&\n])*"
+# A redirection (`2>&1`, `>>`) is read through, as one token (possessive: one reading), so a flag after it is still
+# this command's (ESC-300).
+GIT_ARGS = r"(?:(?!\s--(?![^\s;&|]))(?:[<>]++&?+|[^|;&\n<>]))*"
 # A short-option bundle ends at the token's end (-nm"msg" is emptied to -nm'').
 BUNDLE_END = r"(?![^\s;&|<>()])"
 GIT_NO_HOOKS = [
     # git takes any unambiguous prefix of a long option: --no-veri(f) is --no-verify.
-    (r"\bgit\b.*\s--no-veri(fy?)?(?![\w-])", "QA-2: never bypass git hooks"),
+    # The first `git` of a line is enough (what follows a later one follows it too): atomic, so a line with many
+    # `git`s and no flag fails in linear time (ESC-279).
+    (r"(?m)^(?>.*?\bgit\b).*\s--no-veri(fy?)?(?![\w-])", "QA-2: never bypass git hooks"),
     # A short-option bundle skips hooks when -n is one of its letters: flags that take no value
     # (as in `git commit -h`), then n, then maybe one option whose value is the rest (-nm"msg").
     # In -uno or -mn the n is a value, not -n.
@@ -94,14 +221,16 @@ GIT_NO_HOOKS = [
     (r"(?i)keelokit\.allowtamper", "QA-4: only a human may allow a skipped test or silenced check"),
     # Config names are case-insensitive: core.hookspath is core.hooksPath.
     (rf"(?i){GIT}(?:-c\s+|--config-env[=\s]\s*)core\.hookspath\b", "QA-2: don't override the hooks path"),
-    (rf"(?i){GIT}config\b{GIT_ARGS}\bcore\.hookspath\b", "QA-2: the hooks path is set by the project's install step; ask a human to change it"),
+    # Reading it (--get, --get-all) is no change (ESC-301).
+    (rf"(?i){GIT}config\b(?![^\n|;&]*\s--get(?:-all|-regexp)?\b){GIT_ARGS}\bcore\.hookspath\b",
+     "QA-2: the hooks path is set by the project's install step; ask a human to change it"),
     # -f bundled with push's no-value flags (-uf, -vf; -o takes the rest as its value), --force and
     # every --force-… but -with-lease, and --mirror, which force-updates, in any prefix git accepts.
     (rf"{GIT}push\b{GIT_ARGS}\s(-[46dnquv]*f[46dfnquv]*(o\S*)?{BUNDLE_END}|--force(?!-w)(-[\w-]*)?(?![\w-])"
      r"|--m(i(r(r(or?)?)?)?)?(?![\w-]))", "QA-2: no force-push (use --force-with-lease on your own branch)"),
-    (rf"{GIT}push\b{GIT_ARGS}\s\+[\w./:-]+", "QA-2: `+ref` is a force-push"),
+    (rf"{GIT}push\b{GIT_ARGS}\s\+[\w./:@$-]+", "QA-2: `+ref` is a force-push"),
 ]
-WRITE_CMD = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\brm\b|\btouch\b|\bln\b|\bdd\b)")
+WRITE_CMD = re.compile(r"(>>?|\btee\b|\bcp\b|\binstall\b|\bmv\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\brm\b|\btouch\b|\bln\b|\bdd\b)")
 
 
 def unquoted(cmd: str) -> str:
@@ -131,9 +260,7 @@ def applied_migration(path: str) -> bool:
     rel = repo_rel(path)
     if rel is None or "prisma/migrations/" not in rel.as_posix() or rel.name == "migration_lock.toml":
         return False
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"origin/main:{rel.as_posix()}"], cwd=ROOT, capture_output=True
-    ).returncode == 0
+    return git_run("cat-file", "-e", f"origin/main:{rel.as_posix()}").returncode == 0
 
 
 def secret_in(text: str) -> str | None:
@@ -228,7 +355,7 @@ def active_allowed(text: str | bytes | None) -> list[dict]:
 def committed_registry() -> list[dict]:
     """The registry as of the last commit: what the Claude hook honours, so a write an agent slips past
     the shell check exempts nothing until a human commits it. No registry there means no entries."""
-    out = subprocess.run(["git", "show", f"HEAD:{REGISTRY}"], cwd=ROOT, capture_output=True)
+    out = git_run("show", f"HEAD:{REGISTRY}")
     return active_allowed(out.stdout) if out.returncode == 0 else []
 
 
@@ -266,9 +393,18 @@ ACCEPT_WHY = ("QA-4: `ledger.py backfill --accept` approves ledger corrections a
 
 def protected_why(target: str) -> str | None:
     """Why a write to this path (or to a file of that name, once the shell may be elsewhere) is the human's: the
-    registry. The corrections file has its own, narrower reading of a command (corrections_write)."""
+    registry, git's own config and hooks, the plugin's code. The corrections file has its own, narrower reading of a
+    command (corrections_write)."""
     if target and (is_registry(target) or Path(target).name == Path(REGISTRY).name):
         return REGISTRY_WHY
+    if target and git_internal(target):
+        return GIT_INTERNALS_WHY
+    if target and in_plugin(target.lstrip(">")):
+        return PLUGIN_WHY
+    if target and claude_settings(target):
+        return SETTINGS_WHY
+    if target and hooked(target):
+        return HOOKS_ON_WHY
     return None
 
 
@@ -351,7 +487,9 @@ def named_write(cmd: str, name: str) -> bool:
 
 # A text command may name the accept command (a message, a PR body) unless its output goes to something that runs it.
 TEXT_CMDS = {"git", "gh", "echo", "printf"}
-RUNS_INPUT = re.compile(r"\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh|script|xargs|tmux|unbuffer|eval|source)\b")
+# A path before the command never crosses another `|`, so each `|` is read up to the next one (`\S*` read every `|`
+# after each one: quadratic, ESC-279).
+RUNS_INPUT = re.compile(r"\|\s*(?:sudo\s+)?(?:[^\s|]*/)?(?:sh|bash|zsh|dash|ksh|script|xargs|tmux|unbuffer|eval|source)\b")
 
 
 def runs_accept(cmd: str, depth: int = 0) -> bool:
@@ -365,6 +503,7 @@ def accept_problem(cmd: str, depth: int = 0) -> str | None:
     (`bash -c "…"`, `eval "…"`). A quoted commit message is an argument, not a script, so naming the command there
     is no run. The one exception: `python3 <path>/ledger.py backfill --accept --delegated <run>`, word for word,
     when the trunk's committed [ledger.approval] delegates and the run's review file holds the verdicts."""
+    runs_input = RUNS_INPUT.search(cmd)  # once: per segment, it read the whole command again (ESC-279)
     for segment in segments(cmd):
         try:
             words = shlex.split(segment, posix=True)
@@ -390,7 +529,7 @@ def accept_problem(cmd: str, depth: int = 0) -> str | None:
             continue
         # A wrapper that runs it from a string (script -c, tmux, xargs, `| sh`): the words as one text, unless the
         # segment only prints text (a commit message, a PR body, an echo) that nothing runs.
-        text = words and Path(words[0]).name in TEXT_CMDS and not RUNS_INPUT.search(cmd)
+        text = words and Path(words[0]).name in TEXT_CMDS and not runs_input
         joined = " ".join(words)
         if words and not text and re.search(r"ledger\.py\b.*\breview\b.*--reject-sample", joined, re.S):
             return REJECT_WHY
@@ -441,7 +580,7 @@ def delegates(table) -> bool:
 
 def git_bytes(*args: str) -> bytes | None:
     """stdout of a git call, or None when it fails."""
-    out = subprocess.run(["git", *args], cwd=ROOT, capture_output=True)
+    out = git_run(*args)
     return out.stdout if out.returncode == 0 else None
 
 
@@ -450,7 +589,7 @@ def trunk_approval(trunk: str | None = None):
     one ledger.py honours; the trunk is [ledger] trunk, else [harbor] trunk, else main (or the one given)."""
     if trunk is None:
         try:
-            trunk = trunk_of((ROOT / STATE).read_bytes())
+            trunk = trunk_of(read_data(ROOT / STATE))
         except OSError:
             trunk = "main"
     if trunk.startswith("-") or git_bytes("check-ref-format", f"refs/heads/{trunk}") is None:
@@ -510,7 +649,7 @@ def delegated_gate(run: str) -> str | None:
     if not delegates(trunk_approval()):
         return DELEGATED_OFF_WHY
     try:
-        rows = review_rows((ROOT / REVIEWS / f"{run}.json").read_bytes(), run)
+        rows = review_rows(read_data(ROOT / REVIEWS / f"{run}.json"), run)
     except OSError:
         rows = None
     if not rows or any(verdicts_missing(r) for r in rows):
@@ -523,7 +662,7 @@ def state_after(tool: str, args: dict, rel: str) -> str | None:
     """The text state.toml would have after this tool call (None: the call cannot be read, so it counts as a
     change)."""
     try:
-        current = (ROOT / rel).read_text(encoding="utf-8")
+        current = read_data(ROOT / rel).decode("utf-8")
     except OSError:
         current = ""
     if tool == "Write":
@@ -566,7 +705,7 @@ def state_problem(tool: str, args: dict, rel: str) -> str | None:
     """Why this edit of state.toml is the person's: it changes [ledger.approval], or moves the trunk to a branch whose
     committed table differs (the approval is read from the trunk's committed file); None for any other edit."""
     try:
-        current = (ROOT / rel).read_text(encoding="utf-8")
+        current = read_data(ROOT / rel).decode("utf-8")
     except OSError:
         current = None
     after = state_after(tool, args, rel)
@@ -612,7 +751,9 @@ REGISTRY_WHY = (f"QA-4: {REGISTRY} lists what SEC-1 and SEC-2 let through and is
 
 
 # A command word that moves the shell: after it a relative path is not relative to the repo root.
-CHDIR = re.compile(r"(?:^|[;&|(){\n])\s*(?:cd|pushd|popd)\b")
+# The blanks after a separator are never newlines, which are separators themselves: `\s*` read every run of newlines
+# from each one, quadratic on a long command (ESC-279).
+CHDIR = re.compile(r"(?:^|[;&|(){\n])[^\S\n]*(?:cd|pushd|popd)\b")
 ENV_WHY = "SEC-2: don't write .env files from the shell; edit .env.example, real values go in the secret store"
 ENV_OWN_WHY = "SEC-2: .env files are the human's: don't delete, create or link them from the shell; ask in chat"
 
@@ -630,7 +771,7 @@ def segments(cmd: str) -> list[str]:
             quote = "" if c == quote else quote
         elif c in "'\"":
             quote = c
-        elif c in ";|\n" or cmd.startswith("&&", i):
+        elif (c in ";|\n" and not (c == "|" and cur.endswith(">"))) or cmd.startswith("&&", i):  # `>|` (ESC-293)
             out.append(cur)
             cur = ""
             i += 2 if cmd.startswith(("&&", "||"), i) else 1
@@ -649,7 +790,445 @@ def write_targets(segment: str) -> list[str]:
     return [t for w in words if not any(c.isspace() for c in w) for x in w.split(">") if (t := x.strip("(){}"))]
 
 
-def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
+SHELL_TOOLS = ("Bash", "Monitor", "PowerShell")
+HARNESS_DIRS = {".keelokit", ".keelokit/bin"}
+HARNESS_WHY = ("QA-2: removing or moving .keelokit/ (or its bin/) as a whole turns the guard and the harness off "
+               "for this project; that is the person's call")
+
+
+PWD_FORMS = re.compile(r"^(?:\$PWD|\$\{PWD\}|\$\(pwd\)|`pwd`)(?=/|$)")
+HOME_FORMS = re.compile(r"^(?:~|\$HOME|\$\{HOME\})(?=/|$)")
+
+
+def expand_word(word: str) -> str:
+    """The few spellings of a path the guard can expand itself (ESC-286): $PWD, ${PWD}, $(pwd) and `pwd` as the root
+    (the hook's shell starts there), ~, $HOME and ${HOME} as the home."""
+    word = PWD_FORMS.sub(lambda m: str(ROOT), word)
+    return HOME_FORMS.sub(lambda m: os.path.expanduser("~"), word)
+
+
+def plugin_trees() -> list[str]:
+    """Where the plugin's own code lives (ESC-289): the root its hooks run from, and Claude Code's plugin directory."""
+    trees = [os.path.join(os.path.expanduser("~"), ".claude", "plugins")]
+    if os.environ.get("KEELOKIT_PLUGIN_ROOT"):
+        trees.append(os.environ["KEELOKIT_PLUGIN_ROOT"])
+    root = os.path.realpath(ROOT)
+    # A plugin run from the project itself (`claude --plugin-dir .`, Keelokit's own repo) is the project: its files
+    # are the work, not the installed plugin.
+    return [tr for tr in map(os.path.realpath, trees)
+            if not (root == tr or root.startswith(tr.rstrip("/") + "/") or tr.startswith(root.rstrip("/") + "/"))]
+
+
+def in_plugin(word: str) -> bool:
+    p = expand_word(word)
+    if not posixpath.isabs(p):
+        p = str(ROOT / p)
+    for candidate in {os.path.realpath(p), posixpath.normpath(p)}:
+        if any(candidate == tree or candidate.startswith(tree.rstrip("/") + "/") for tree in plugin_trees()):
+            return True
+    return False
+
+
+def holds_plugin(word: str) -> bool:
+    """The path holds the plugin's code (`rm -rf ~/.claude`): removing or moving it removes the plugin (ESC-294)."""
+    p = expand_word(word)
+    p = os.path.realpath(p if posixpath.isabs(p) else str(ROOT / p))
+    return any(tree.startswith(p.rstrip("/") + "/") for tree in plugin_trees())
+
+
+PLUGIN_WHY = "QA-2: that is Keelokit's own code (the plugin), which runs the guard: removing or changing it is the person's call"
+
+
+def harness_rel(word: str) -> str:
+    p = posixpath.normpath(expand_word(word))
+    if posixpath.isabs(p):
+        try:
+            return Path(p).resolve().relative_to(ROOT.resolve()).as_posix()
+        except (ValueError, OSError):
+            return p
+    return p
+
+
+def harness_hit(word: str) -> bool:
+    """The word names .keelokit/ or .keelokit/bin/, as itself or as a glob the shell expands to it (ESC-284; a glob
+    whose first part starts with a dot, the only kind that matches a dot directory)."""
+    rel = harness_rel(word)
+    if rel in HARNESS_DIRS or rel.endswith(("/.keelokit", "/.keelokit/bin")):  # any project's, once the shell moved
+        return True
+    return any(c in word for c in "*?[") and rel.split("/")[0][:1] in (".", "[") and \
+        any(fnmatch.fnmatchcase(d, rel) for d in HARNESS_DIRS)
+
+
+def mv_sources(args: list[str]) -> list[str]:
+    """The words mv moves: all but the last, or all of them with -t/--target-directory (ESC-284)."""
+    plain, target, i = [], False, 0
+    while i < len(args):
+        w = args[i]
+        if w in ("-t", "--target-directory") or (re.fullmatch(r"-[a-zA-Z]*t", w) is not None):
+            target, i = True, i + 2
+            continue
+        if w.startswith("--target-directory="):
+            target = True
+        elif not w.startswith("-"):
+            plain.append(w)
+        i += 1
+    return plain if target else plain[:-1]
+
+
+def chmod_hooked(cmd: str) -> bool:
+    """`chmod -x .githooks/pre-commit` while the hooks are on (ESC-291): a hook git can't execute is one it skips."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        if words and Path(words[0]).name in ("chmod", "chown", "chgrp", "chattr") and \
+                any(hooked(w) for w in words[1:] if not w.startswith("-")):
+            return True
+    return False
+
+
+INTERPRETER_REMOVAL = re.compile(r"rmtree|unlink|remove|rename|rmdir|rmSync|rm_rf|rm_r\b|replace|move", re.I)
+MARKER_WHY = ("QA-2: ~/.cache/keelokit marks which projects the guard runs in; removing it is the person's call")
+
+
+def interpreter_removal(cmd: str) -> bool:
+    """`python3 -c "shutil.rmtree('.keelokit')"`, `node -e "fs.rmSync('.keelokit')"`: an interpreter told to remove
+    or move .keelokit (ESC-296, best effort)."""
+    for segment in segments(cmd):
+        words = segment.split()
+        if words and INTERPRETERS.fullmatch(Path(words[0].strip("'\"")).name) and ".keelokit" in segment and \
+                INTERPRETER_REMOVAL.search(segment):
+            return True
+    return False
+
+
+def names_marker(cmd: str) -> bool:
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        if any(".cache/keelokit" in posixpath.normpath(expand_word(w)) for w in words):
+            return True
+    return False
+
+
+def glob_match(pattern: str, path: str) -> bool:
+    """fnmatch, part by part, as the shell globs: a part that starts with a dot is matched only by one that does."""
+    pp, tp = pattern.split("/"), path.split("/")
+    if len(pp) != len(tp):
+        return False
+    return all(fnmatch.fnmatchcase(t_, p_) and not (t_.startswith(".") and not p_.startswith(".") and
+                                                   any(c in p_ for c in "*?["))
+               for p_, t_ in zip(pp, tp))
+
+
+def covers(word: str, target: str) -> bool:
+    """The path the shell will remove or move is the target or holds it: itself, a parent (`rm -rf ~/.cache`,
+    `rm -rf .`), or a glob over either (ESC-298)."""
+    w = expand_word(word)
+    p = posixpath.normpath(w if posixpath.isabs(w) else str(ROOT / w))
+    if any(c in w for c in "*?["):
+        chain = [target, *[str(x) for x in Path(target).parents]]
+        return any(glob_match(p, x) for x in chain)
+    for cand in {os.path.realpath(p), p}:
+        if target == cand or target.startswith(cand.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def marker_dirs() -> list[str]:
+    homes = [os.path.expanduser("~")]
+    try:
+        import pwd
+        homes.append(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError):
+        pass
+    return sorted({os.path.realpath(os.path.join(h, ".cache", "keelokit")) for h in homes})
+
+
+def protected_tree(word: str) -> str | None:
+    """Why removing or moving this path is the person's: it is or holds the project's .keelokit, the guard's marker,
+    or the plugin's code."""
+    if harness_hit(word) or covers(word, os.path.realpath(ROOT / ".keelokit")):
+        return HARNESS_WHY
+    if any(covers(word, d) for d in marker_dirs()):
+        return MARKER_WHY
+    if in_plugin(word) or holds_plugin(word):
+        return PLUGIN_WHY
+    return None
+
+
+def harness_removal(cmd: str) -> bool:
+    """ESC-282, best effort like every shell rule: a command that deletes or moves .keelokit/ or .keelokit/bin/ whole
+    (rm, rmdir, git rm, mv as a source, find … -delete/-exec)."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        while words and (words[0] in PREFIXES or ("=" in words[0] and not words[0].startswith("-"))):
+            words = words[1:]
+        if not words:
+            continue
+        name = Path(words[0]).name
+        if name == "git" and any(w in ("switch", "checkout") for w in words) and \
+                any(w == "--orphan" or w.startswith("--orphan=") for w in words):
+            return True  # an orphan branch empties the tree and HEAD of .keelokit at once (ESC-290)
+        if name == "git" and "mv" in words:
+            args = mv_sources(words[words.index("mv") + 1:])
+        elif name == "git" and "rm" in words:
+            args = words[words.index("rm") + 1:]
+        elif name in ("rm", "rmdir", "unlink", "shred", "trash"):
+            args = words[1:]
+        elif name == "mv":
+            args = mv_sources(words[1:])
+        elif name == "find" and any(w in ("-delete", "-exec", "-execdir", "-ok") for w in words):
+            args = words[1:]
+        else:
+            continue
+        if any(protected_tree(w) for w in args if not w.startswith("-")):
+            return True
+    return False
+
+
+def dequoted(cmd: str) -> str:
+    """The command as the shell reads its words: quotes joined and backslashes removed, so `'--no-verify'` and
+    `--no-ver""ify` read as the flag they are (ESC-283); a word that holds a blank (a message, a script) is kept only as
+    '', so a quoted message that mentions a flag is still not one."""
+    out = []
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        out.append(" ".join("''" if not w or any(c.isspace() for c in w) else w for w in words))
+    return " ; ".join(out)
+
+
+ALIAS_BYPASS = re.compile(r"(?:^|\s)(?:--no-veri(?:fy?)?|-[a-zA-Z]*n[a-zA-Z]*)(?=\s|$)|hookspath", re.I)
+
+
+def alias_bypass(cmd: str) -> bool:
+    """`git -c alias.c='commit --no-verify' c`: an alias defined on the command line whose value skips the hooks."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            continue
+        for w in words:
+            if w.lower().startswith("alias.") and "=" in w and ALIAS_BYPASS.search(w.split("=", 1)[1]):
+                return True
+    return False
+
+
+def shell_scripts(words: list[str]) -> list[str]:
+    """The scripts a command line hands to a shell (`bash -c "…"`, `script -c "…"`) or to eval."""
+    shell = next((i for i, w in enumerate(words) if Path(w).name in SHELLS | {"script", "su"}), None)
+    scripts = [words[i + 1] for i in range(len(words) - 1)
+               if shell is not None and i > shell and re.fullmatch(r"-[a-z]*c[a-z]*", words[i])]
+    if words[:1] == ["eval"]:
+        scripts.append(" ".join(words[1:]))
+    return scripts
+
+
+CONFIG_ENV = re.compile(r"(?i)^GIT_CONFIG_(?:KEY_\d+|PARAMETERS)=.*(?:core\.hookspath|include\.|includeif\.)")
+
+
+def config_problem(cmd: str) -> str | None:
+    """ESC-287: what a git config change says, wherever it is made (`-c k=v`, `git config k v`, GIT_CONFIG_* in the
+    environment): the hooks path, an include (a file that can set it), an alias that skips the hooks, a `+` push
+    refspec (a force-push)."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        pairs = []
+        for i, w in enumerate(words):
+            if CONFIG_ENV.match(w) or (w.lower().startswith("git_config_") and "hookspath" in w.lower()):
+                return "QA-2: don't override the hooks path (through git's config environment either)"
+            if w == "-c" and i + 1 < len(words):
+                pairs.append(words[i + 1].partition("=")[::2])
+        if "config" in words and any(Path(w).name == "git" for w in words[:words.index("config")]) and \
+                not any(w in ("--get", "--get-all", "--get-regexp", "--list", "-l") for w in words):
+            rest = [w for w in words[words.index("config") + 1:] if not w.startswith("-")]
+            if rest:
+                pairs.append((rest[0], rest[1] if len(rest) > 1 else ""))
+        if "config" in words and any(w in ("--remove-section", "--rename-section") for w in words):
+            section = next((w for w in words[words.index("config") + 1:] if not w.startswith("-")), "")
+            if section.lower() == "core":
+                return "QA-2: the hooks path is the person's to set (removing [core] removes it)"
+        for key, value in pairs:
+            k = key.lower()
+            if k == "core.hookspath":
+                return "QA-2: the hooks path is the person's to set"
+            if k.startswith(("include.", "includeif.")):
+                return "QA-2: a config include can change the hooks path; ask the person"
+            if k.startswith("alias.") and ALIAS_BYPASS.search(value):
+                return "QA-2: never bypass git hooks (an alias that skips them is the same bypass)"
+            if re.fullmatch(r"remote\..+\.push", k) and value.strip().startswith("+"):
+                return "QA-2: no force-push (a `+` refspec is one)"
+            if re.fullmatch(r"remote\..+\.mirror", k) and value.strip().lower() in ("true", "yes", "on", "1", ""):
+                return "QA-2: no force-push (a mirror remote force-updates every ref)"
+    return None
+
+
+HOOKED_FILES = {".keelokit/bin/guard.py", ".keelokit/bin/ledger.py"}  # what the template's .githooks run
+HOOKS_ON_WHY = ("QA-2: the person turned the git hooks on (core.hooksPath .githooks): changing or removing the hooks, "
+                "or the guard and ledger they run, is theirs to do")
+_hooks_on: list[bool] = []
+
+
+def hooks_on() -> bool:
+    """The person set core.hooksPath to the project's .githooks (read once per call)."""
+    if not _hooks_on:  # the person's files, not the /dev/null this copy runs git with (harden_git)
+        out = git_bytes("config", "--local", "--get", "core.hooksPath") or \
+            git_bytes("config", "--global", "--get", "core.hooksPath") or b""
+        value = out.decode("utf-8", "replace").strip()
+        _hooks_on.append(bool(value) and harness_rel(value if posixpath.isabs(value) else value) in (".githooks",))
+    return _hooks_on[0]
+
+
+def hooked(target: str) -> bool:
+    """ESC-291: a hook in .githooks, or a script the hooks run, while the person has the hooks on."""
+    rel = harness_rel(target.lstrip(">"))
+    return (rel == ".githooks" or rel.startswith(".githooks/") or rel in HOOKED_FILES) and hooks_on()
+
+
+SETTINGS_FILE = re.compile(r"(?:^|/)\.claude/settings(?:\.local)?\.json$")
+SETTINGS_WHY = ("QA-2: Claude Code's settings decide whether Keelokit's hooks and plugin run; turning them off is the "
+                "person's call")
+
+
+def claude_settings(target: str) -> bool:
+    return bool(SETTINGS_FILE.search(posixpath.normpath(expand_word(target.lstrip(">")))))
+
+
+def turns_hooks_off(text: str) -> bool:
+    """Settings that turn hooks or the plugin off, or change what the hooks' shell finds (an `env` PATH), read as
+    JSON when they parse (escaped keys included, ESC-300), else as text."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        env = data.get("env") if isinstance(data.get("env"), dict) else {}
+        plugins = data.get("enabledPlugins") if isinstance(data.get("enabledPlugins"), dict) else {}
+        return bool(data.get("disableAllHooks")) or any("keelokit" in str(k).lower() and v is not True
+                                                         for k, v in plugins.items()) or \
+            any(str(k) in ("PATH", "SHELL") or str(k).startswith(("PYTHON", "CLAUDE_")) for k in env)
+    return "disableAllHooks" in text or ("enabledPlugins" in text and "keelokit" in text.lower())
+
+
+def plugin_command(cmd: str) -> bool:
+    """`claude plugin disable|uninstall|remove keelokit` (ESC-294)."""
+    for segment in segments(cmd):
+        words = segment.split()
+        if Path(words[0]).name == "claude" if words else False:
+            if any(w in ("plugin", "plugins") for w in words) and \
+                    any(w in ("disable", "uninstall", "remove", "rm") for w in words) and \
+                    any("keelokit" in w.lower() for w in words):
+                return True
+    return False
+
+
+GIT_INTERNALS_WHY = "QA-2: .git/config and .git/hooks decide which git hooks run; changing them is the person's call"
+
+
+def git_internal(target: str) -> bool:
+    rel = harness_rel(target.lstrip(">"))
+    return rel in (".git/config", ".git/config.worktree", ".git/hooks") or rel.startswith(".git/hooks/") or \
+        re.fullmatch(r"\.git/worktrees/[^/]+/config(?:\.worktree)?", rel) is not None
+
+
+def seeds_env(segment: str) -> bool:
+    """`cp <repo>/.env….example <dest>`: setting up a local .env from the repo's own example (ESC-288: only a
+    repo-relative `.env*.example`, never an example from elsewhere)."""
+    m = re.match(r"\s*cp\s+(?:-\w+\s+)*(\S+\.example)\s+\S+\s*$", segment)
+    if not m:
+        return False
+    src = m.group(1)
+    name = posixpath.basename(src)
+    return not posixpath.isabs(src) and ".." not in src.split("/") and name.startswith(".env") and \
+        not src.startswith(("~", "$"))
+
+
+PS_REMOVE = {"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "clear-content", "clc"}
+PS_MOVE = {"move-item", "mi", "mv", "move", "rename-item", "ren", "rni"}
+PS_WRITE = {"set-content", "sc", "add-content", "ac", "out-file", "new-item", "ni", "tee-object", "tee"}
+PS_COPY = {"copy-item", "cp", "copy", "cpi"}
+
+
+def ps_path(word: str) -> str:
+    word = word.replace("\\", "/")
+    return re.sub(r"(?i)^\$(?:env:USERPROFILE|env:HOME|HOME)(?=/|$)", "~", word)
+
+
+PS_READ = {"get-content", "gc", "cat", "type", "get-childitem", "gci", "ls", "dir", "test-path", "select-string", "sls",
+           "get-item", "gi", "resolve-path", "rvpa"}
+
+
+def ps_protected(word: str) -> str | None:
+    w = ps_path(word)
+    rel = harness_rel(w)
+    if rel == ".keelokit" or rel.startswith(".keelokit/"):
+        return HARNESS_WHY
+    if why := protected_tree(w):
+        return why
+    if posixpath.basename(rel).startswith(".env"):
+        return ENV_WHY
+    if git_internal(w):
+        return GIT_INTERNALS_WHY
+    if claude_settings(w):
+        return SETTINGS_WHY
+    return None
+
+
+def powershell_problem(cmd: str) -> str | None:
+    """ESC-299, ESC-301: for the PowerShell tool, any command but a read-only cmdlet that names a protected path
+    (.keelokit, .env*, git's config and hooks, Claude Code's settings, the plugin, the marker) is refused: simple and
+    conservative, since the guard doesn't parse PowerShell."""
+    for stmt in re.split(r"[;|\n]", cmd):
+        lexer = shlex.shlex(stmt, posix=True)
+        lexer.whitespace_split, lexer.escape = True, ""  # a backslash is a path separator to PowerShell
+        try:
+            words = list(lexer)
+        except ValueError:
+            words = stmt.split()
+        if not words or words[0].lower() in PS_READ:
+            continue
+        for w in words[1:]:
+            if not w.startswith("-") and (why := ps_protected(w)):
+                return why
+    return None
+
+
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+
+
+def strip_message_heredocs(cmd: str) -> str:
+    """The body of a heredoc given to `git commit` or `git tag` is a message, not commands: dropped before the rules
+    read the command (ESC-301), the line that starts it kept."""
+    lines, out, i = cmd.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        m = HEREDOC.search(line)
+        if m and re.search(r"\bgit\b.*\b(?:commit|tag)\b", line[:m.start()]):
+            end = m.group(2)
+            while i < len(lines) and lines[i].strip("\t") != end:
+                i += 1
+            i += 1 if i < len(lines) else 0
+            out.append(end)
+    return "\n".join(out)
+
+
+def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> str | None:
+    cmd = re.sub(r"\\\r?\n", " ", cmd)  # a line continuation is a blank to the shell (ESC-293)
+    cmd = strip_message_heredocs(cmd)
     allow = committed_registry() if allow is None else allow
     bare = unquoted(cmd)
     if CHDIR.search(bare):
@@ -658,16 +1237,38 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                     rf"(?i){GIT}config\b{GIT_ARGS}['\"]?keelokit\.allowtamper"):
         if re.search(pattern, cmd):  # quoted spellings, which `bare` has emptied
             return "QA-4: only a human may allow a skipped test or silenced check"
+    words_read = dequoted(cmd)
     for pattern, why in GIT_NO_HOOKS:
-        if re.search(pattern, bare):
+        if re.search(pattern, bare) or re.search(pattern, words_read):
             return why
+    if alias_bypass(cmd):
+        return "QA-2: never bypass git hooks (an alias that skips them is the same bypass)"
+    if why := config_problem(cmd):
+        return why
+    if depth < 3:  # ESC-287: the script a shell or eval runs is checked as a command of its own
+        for segment in segments(cmd):
+            try:
+                inner = shell_scripts(shlex.split(segment, posix=True))
+            except ValueError:
+                inner = []
+            for script in inner:
+                if why := bash_problem(script, allow, depth + 1):
+                    return why
+    if harness_removal(cmd) or interpreter_removal(cmd):
+        return HARNESS_WHY
+    if names_marker(cmd):
+        return MARKER_WHY
+    if plugin_command(cmd):
+        return PLUGIN_WHY
+    if chmod_hooked(cmd):
+        return HOOKS_ON_WHY
     if why := accept_problem(cmd):
         return why
     if corrections_write(cmd):
         return CORRECTIONS_WHY
     if named_write(cmd, Path(STATE).name):
         return STATE_SHELL_WHY
-    for segment in re.split(r"&&|\|\||;|\|", bare):
+    for segment in re.split(r"&&|\|\||;|(?<!>)\|", bare):
         words = segment.split()
         if not words:
             continue
@@ -676,8 +1277,8 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
             return "AGENT-1/REL-1: only staging deploys (--config …staging…); production goes out from a vX.Y.Z tag through CI, and is the human's call"
         if re.search(r"\b(eas|eas-cli)\s+submit\b", segment):
             return "AGENT-1: store submissions are the human's call — ask in chat"
-        # Copying the example to create a local .env is setup, not a secret.
-        if re.match(r"\s*cp\s+(-\w+\s+)*\S+\.example\s+\S+\s*$", segment):
+        # Copying the repo's own example to create a local .env is setup, not a secret.
+        if seeds_env(segment):
             continue
         if WRITE_CMD.search(segment):
             try:
@@ -694,7 +1295,7 @@ def bash_problem(cmd: str, allow: list[dict] | None = None) -> str | None:
                 return "DB-1: that migration is already on origin/main; create a new one"
     # The same targets, read from the command as typed: a quoted one is a target too.
     for segment in segments(cmd):
-        if not WRITE_CMD.search(unquoted(segment)) or re.match(r"\s*cp\s+(-\w+\s+)*\S+\.example\s+\S+\s*$", segment):
+        if not WRITE_CMD.search(unquoted(segment)) or seeds_env(segment):
             continue
         targets = write_targets(segment)
         if why := next((w for t in targets if (w := protected_why(t))), None):
@@ -732,9 +1333,19 @@ def real_rel(path: str) -> str | None:
 
 def tool_problem(tool: str, args: dict) -> str | None:
     allow = committed_registry()
-    if tool == "Bash":
+    if tool in SHELL_TOOLS:  # ESC-285: every tool that runs a shell command, not only Bash
+        if tool == "PowerShell" and (why := powershell_problem(args.get("command", ""))):
+            return why
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
+    if path and (git_internal(path) or (real_rel(path) or "").startswith((".git/hooks/",)) or real_rel(path) == ".git/config"):
+        return GIT_INTERNALS_WHY
+    if path and in_plugin(path):
+        return PLUGIN_WHY
+    if path and claude_settings(path) and any(turns_hooks_off(x) for x in parts):
+        return SETTINGS_WHY
+    if path and hooked(path):
+        return HOOKS_ON_WHY
     names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
     if REGISTRY in names:
         return REGISTRY_WHY
@@ -921,6 +1532,9 @@ def git_pre_commit() -> int:
 
 def main(argv: list[str]) -> int:
     mode = argv[0] if argv else ""
+    if mode == "--claude" and PLUGIN_MODE and (why := git_dir_problem()):  # ESC-280
+        print(f"Keelokit guard: {why}; the call is blocked", file=sys.stderr)
+        return 2
     if mode == "--claude":
         return claude()
     if mode == "git-pre-commit":

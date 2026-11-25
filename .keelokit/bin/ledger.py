@@ -107,7 +107,68 @@ import tomllib  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def root_of(argv: list[str]) -> Path:
+    """The project this runs on: `--root DIR`, first on the command line, or the one this file sits in. The plugin's
+    hooks run their own copy with `--root <project>` (hooks/trusted.py, HARN-004)."""
+    if argv[1:2] == ["--root"] and len(argv) > 2:
+        root = Path(argv[2]).resolve()
+        del argv[1:3]
+        return root
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = root_of(sys.argv)
+
+PLUGIN_MODE = ROOT != Path(__file__).resolve().parents[2]  # run with --root: by the plugin's hooks (HARN-004)
+# Variables that point git at another repository, or at programs to run: none comes from the session's environment.
+GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+             "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_EXEC_PATH", "GIT_CONFIG", "GIT_SSH",
+             "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR")
+
+
+def harden_git(hooks_off: bool) -> None:
+    """HARN-004 (ESC-271, ESC-280): run by the plugin's hooks, every git call of this copy reads no repository the
+    project ships (a directory with HEAD, config, objects/ and refs/ is not a bare repository to it), runs no
+    transport helper (ext::), no lazy fetch, no fsmonitor, prompts for nothing, and fires no git hook. git
+    reads GIT_CONFIG_* as `-c`, above every config file."""
+    for key in GIT_SCRUB:
+        os.environ.pop(key, None)
+    config = {"safe.bareRepository": "explicit", "protocol.ext.allow": "never", "protocol.file.allow": "always",
+              "core.fsmonitor": "false"}
+    if hooks_off:
+        config["core.hooksPath"] = os.devnull
+    try:
+        n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
+    except ValueError:
+        n = 0
+    for key, value in config.items():
+        os.environ[f"GIT_CONFIG_KEY_{n}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{n}"] = value
+        n += 1
+    os.environ["GIT_CONFIG_COUNT"] = str(n)
+    os.environ.update(GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_PROTOCOL_FROM_USER="0")
+
+
+def git_dir_problem() -> str | None:
+    """Why git must not run for ROOT, or None: the repository git finds has its git dir inside ROOT but is not
+    ROOT/.git (a directory the repo ships, read as a repository by a git too old for safe.bareRepository)."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    found, root = Path(out.stdout.strip()).resolve(), ROOT.resolve()
+    if found == root / ".git" or root not in (found, *found.parents):
+        return None
+    return (f"git reads {found} as this project's repository, a directory inside it that is not its .git, so "
+            f"Keelokit runs no git here")
+
+
+if PLUGIN_MODE:
+    harden_git(True)
 DEFAULT_CAP = 20
 MAX_CAP = 20
 GRACE = 2.0
@@ -4085,6 +4146,10 @@ def show(state: dict, as_json: bool) -> int:
 
 
 def main(argv: list[str]) -> int:
+    if PLUGIN_MODE and (why := git_dir_problem()):  # ESC-280: run by the plugin's hooks, no git where git can't be trusted
+        if argv != ["history", "--ensure"]:
+            print(f"Keelokit: {why}.", file=sys.stdout if not argv else sys.stderr)
+        return 0 if argv in ([], ["history", "--ensure"]) else 2
     state = read_state()
     if argv in ([], ["--json"]):
         try:

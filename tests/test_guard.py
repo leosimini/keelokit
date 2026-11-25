@@ -5,8 +5,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 GUARD = Path(__file__).resolve().parents[1] / "template/.keelokit/bin/guard.py"
@@ -1151,6 +1153,977 @@ class GuardDoctorAgreementTest(unittest.TestCase):
                 self.assertEqual(guard_active, doctor_active, out.getvalue())
                 if expected is not None:
                     self.assertEqual(guard_active, expected)
+
+
+
+# HARN-004: which copy the plugin's hooks run. hooks/hooks.json runs hooks/trusted.py, which runs the plugin's copy
+# of the guard, the doctor and the ledger against the project (`--root`), or the project's own copy only when a
+# person approved it as it is now; a project's file never runs before that check.
+REPO = Path(__file__).resolve().parents[1]
+BUNDLED = REPO / "template/.keelokit/bin"
+TRUSTED = REPO / "hooks/trusted.py"
+BLOCKED = {"tool_name": "Bash", "tool_input": {"command": "git commit --no-verify -m x"}}
+HARMLESS = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
+
+
+def load_trusted():
+    spec = importlib.util.spec_from_file_location("keelokit_trusted", TRUSTED)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def hook_command(event: str) -> str:
+    data = json.loads((REPO / "hooks/hooks.json").read_text())
+    return next(h["command"] for g in data["hooks"][event] for h in g["hooks"] if h.get("type") == "command")
+
+
+class TrustedProject:
+    """A project whose .keelokit/bin is the template's, in a git repo, under a path with a space and a quote."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.proj = self.tmp / "a proj's dir"
+        shutil.copytree(BUNDLED, self.proj / ".keelokit/bin", ignore=shutil.ignore_patterns("__pycache__"))
+        story = self.proj / "backlog/stories/DEMO-001-x.md"
+        story.parent.mkdir(parents=True)
+        story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "x"\nwave = 1\ndepends_on = []\n+++\n')
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "x")
+        self.marks = self.tmp / "marks"
+        self.marks.mkdir()
+        self.marker(self.proj)  # hooks mark projects in the real cache (ESC-295): leave none behind
+
+    def marker(self, project: Path) -> Path:
+        import hashlib
+        import pwd
+        key = hashlib.sha256(os.path.realpath(project).encode()).hexdigest()
+        path = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/keelokit/projects" / key
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        return path
+
+    def env(self, **extra) -> dict:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "CLAUDE_", "PYTHON"))}
+        env.update({"HOME": str(self.tmp), "CLAUDE_PROJECT_DIR": str(self.proj), "CLAUDE_PLUGIN_ROOT": str(REPO),
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                    "GIT_COMMITTER_EMAIL": "t@t"})
+        env.update(extra)
+        return env
+
+    def git(self, *args):
+        subprocess.run(["git", *args], cwd=self.proj, env=self.env(), check=True, capture_output=True)
+
+    def mark_code(self, name: str) -> str:
+        return f"import pathlib; pathlib.Path({str(self.marks / name)!r}).write_text('ran')\n"
+
+    def tamper(self, *names: str) -> None:
+        """Each named script, first writing a mark when it runs, then doing what the plugin's copy does."""
+        for name in names:
+            f = self.proj / ".keelokit/bin" / name
+            f.write_text(self.mark_code(name) + f.read_text())
+
+    def ran(self) -> list[str]:
+        return sorted(p.name for p in self.marks.iterdir())
+
+    def hook(self, event: str, stdin: dict | None = None, **env) -> subprocess.CompletedProcess:
+        return subprocess.run(["/bin/sh", "-c", hook_command(event)], cwd=self.proj, env=self.env(**env),
+                              input=json.dumps(stdin or {}), capture_output=True, text=True, timeout=60)
+
+    def with_store(self, *argv: str, stdin: dict | None = None) -> subprocess.CompletedProcess:
+        """trusted.py's main, run as the hooks run it."""
+        return subprocess.run([sys_python(), "-I", str(TRUSTED), *argv], cwd=self.proj, env=self.env(),
+                              input=json.dumps(stdin or {}), capture_output=True, text=True, timeout=60)
+
+
+class HooksRunTrustedCode(TrustedProject, unittest.TestCase):
+    """HARN-004: which copy the hooks run, and the first breaker round."""
+
+    # S1 -------------------------------------------------------------------------------------------------------------
+
+    def test_HARN_004_S1_a_tampered_guard_is_not_executed_and_its_rules_still_hold(self):
+        self.tamper("guard.py")
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("QA-2", r.stderr)
+        r = self.hook("PreToolUse", HARMLESS)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_the_session_start_runs_none_of_the_project_s_copy_and_says_so_once(self):
+        self.tamper("guard.py", "doctor.py", "ledger.py", "ux_gate.py")
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        out = r.stdout.splitlines()
+        self.assertLessEqual(len(out), 12, out)
+        warned = [l for l in out if "differ from the plugin's" in l]
+        self.assertEqual(len(warned), 1, out)
+        for name in ("guard.py", "doctor.py", "ledger.py", "ux_gate.py", "harness-upgrade", "git hooks"):
+            self.assertIn(name, warned[0])
+        self.assertIn("Backlog: 0/1 done", r.stdout, "the doctor still reads this project's backlog")
+        self.assertTrue(any(l.startswith("main@") for l in out), "the ledger still reads this project's git")
+
+    def test_HARN_004_S1_only_the_doctor_s_children_tampered_still_run_nothing(self):
+        """The doctor runs ledger.py and ux_gate.py: the plugin's doctor runs the plugin's, never the project's."""
+        self.tamper("ledger.py", "ux_gate.py")
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertIn("Backlog: 0/1 done", r.stdout)
+
+    def test_HARN_004_S1_show_escapes_what_a_terminal_would_hide(self):
+        f = self.proj / ".keelokit/bin/guard.py"
+        f.write_text(f.read_text() + "x = 1  # ‮)(lave‬ ​ \x1b[2K\r tab\there\n")
+        out = self.with_store("show", str(self.proj)).stdout
+        self.assertIn("\\u202e", out)
+        self.assertIn("\\u200b", out)
+        self.assertIn("\\x1b", out)
+        self.assertIn("\\x0d", out)
+        self.assertIn("\\x09", out)
+        for raw in ("‮", "‬", "​", "\x1b", "\r", "\t"):
+            self.assertNotIn(raw, out)
+
+    # S2 -------------------------------------------------------------------------------------------------------------
+
+    def test_HARN_004_S2_a_matching_project_sees_what_it_saw_before(self):
+        """The plugin's copy with --root says what the project's own copy says, and nothing is warned about."""
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("differ from the plugin's", r.stdout)
+        today = subprocess.run([sys_python(), ".keelokit/bin/doctor.py", "--brief"], cwd=self.proj, env=self.env(),
+                               capture_output=True, text=True, timeout=60).stdout.splitlines()
+        self.assertTrue(today)
+        self.assertEqual(r.stdout.splitlines()[-len(today):], today)
+        summary = subprocess.run([sys_python(), ".keelokit/bin/ledger.py"], cwd=self.proj, env=self.env(),
+                                 capture_output=True, text=True, timeout=60).stdout.splitlines()
+        for line in summary:
+            self.assertIn(line, r.stdout.splitlines())
+        for payload in (BLOCKED, HARMLESS, {"tool_name": "Write", "tool_input": {"file_path": ".env", "content": "A=1"}},
+                        {"tool_name": "Bash", "tool_input": {"command": "rm .keelokit/guard-allow.toml"}}):
+            with self.subTest(payload=payload):
+                hooked = self.hook("PreToolUse", payload)
+                direct = subprocess.run([sys_python(), ".keelokit/bin/guard.py", "--claude"], cwd=self.proj,
+                                        env=self.env(), input=json.dumps(payload), capture_output=True, text=True,
+                                        timeout=60)
+                self.assertEqual((hooked.returncode, hooked.stdout, hooked.stderr),
+                                 (direct.returncode, direct.stdout, direct.stderr))
+        self.assertEqual(self.with_store("check").stdout, "")
+
+    def test_HARN_004_S2_the_choice_runs_the_plugin_s_bytes_with_root(self):
+        trusted = load_trusted()
+        trusted.store_path = lambda: self.store
+        for tool in ("guard", "doctor", "ledger"):
+            with self.subTest(tool=tool):
+                path, data, before = trusted.choose(tool, self.proj)
+                self.assertEqual(path, BUNDLED / f"{tool}.py")
+                self.assertEqual(data, (BUNDLED / f"{tool}.py").read_bytes())
+                self.assertEqual(before, ["--root", str(self.proj)])
+        (self.proj / ".keelokit/bin/ledger.py").unlink()
+        self.assertIsNone(trusted.choose("ledger", self.proj), "a project without the script: the hook does nothing")
+
+    # Breaker round: ways to get the project's code run before, or instead of, the check. --------------------------
+
+    def test_HARN_004_S1_breaker_planted_modules_and_python_variables_are_never_imported(self):
+        planted = ("json", "hashlib", "pathlib", "subprocess", "tomllib", "re", "sitecustomize", "usercustomize",
+                   "difflib", "types", "pwd", "shlex", "stat", "tempfile", "unicodedata", "builtins")
+        for where in (self.proj, self.proj / ".keelokit/bin", self.proj / ".keelokit"):
+            for name in planted:
+                (where / f"{name}.py").write_text(self.mark_code(f"{name}-{where.name}"))
+        startup = self.proj / "startup.py"
+        startup.write_text(self.mark_code("startup"))
+        env = {"PYTHONPATH": f"{self.proj}{os.pathsep}{self.proj / '.keelokit/bin'}", "PYTHONSTARTUP": str(startup),
+               "PYTHONINSPECT": "1", "PYTHONHOME": str(self.proj)}
+        r = self.hook("PreToolUse", BLOCKED, **env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("SessionStart", **env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_breaker_relative_path_entries_find_no_python3_or_git_of_the_project(self):
+        for name in ("python3", "git", "sh", "head", "wc"):
+            exe = self.proj / name
+            exe.write_text(f"#!/bin/sh\n: > {str(self.marks / name)!r}\nexit 1\n")
+            exe.chmod(0o755)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "planted")
+        real = os.environ["PATH"]
+        for path in (f".{os.pathsep}{real}", f"{os.pathsep}{real}", f"{real}{os.pathsep}", f"bin{os.pathsep}.{os.pathsep}{real}"):
+            with self.subTest(path=path):
+                r = self.hook("PreToolUse", BLOCKED, PATH=path)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                r = self.hook("SessionStart", PATH=path)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("Backlog: 0/1 done", r.stdout)
+                self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_breaker_symlinks_and_special_files_run_nothing_and_hang_nothing(self):
+        evil = self.tmp / "evil.py"
+        evil.write_text(self.mark_code("evil") + (BUNDLED / "guard.py").read_text())
+        guard = self.proj / ".keelokit/bin/guard.py"
+        guard.unlink()
+        guard.symlink_to(evil)
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        guard.unlink()
+        guard.symlink_to(BUNDLED / "guard.py")  # a link to the plugin's own copy is the plugin's copy
+        self.assertEqual(self.hook("PreToolUse", BLOCKED).returncode, 2)
+        ledger = self.proj / ".keelokit/bin/ledger.py"
+        ledger.unlink()
+        os.mkfifo(ledger)  # opened blocking, a FIFO would hang every session start
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("differ from the plugin's", r.stdout)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_breaker_hook_environment_edge_cases(self):
+        self.tamper("guard.py", "doctor.py", "ledger.py")
+        for env in ({"CLAUDE_PLUGIN_ROOT": ""}, {"CLAUDE_PLUGIN_ROOT": str(self.proj)},
+                    {"CLAUDE_PLUGIN_ROOT": str(self.tmp / "missing")}):
+            for event in ("PreToolUse", "SessionStart"):
+                with self.subTest(env=env, event=event):
+                    r = self.hook(event, BLOCKED, **env)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    if env["CLAUDE_PLUGIN_ROOT"] != str(self.proj):
+                        self.assertIn("Reinstall the plugin", r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        odd = self.tmp / "-x $(touch pwned) `id` 'q\""
+        self.proj.rename(odd)
+        self.proj = odd
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertFalse((self.tmp / "pwned").exists())
+        self.assertFalse(Path("pwned").exists())
+
+GITHOOK_MARK = "#!/bin/sh\necho \"$0 $*\" >> {mark}\n"
+
+
+class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
+    """HARN-004, breaker rounds 2 to 4 (ESC-271, ESC-276..282)."""
+
+    def githook(self, where: Path, name: str) -> None:
+        (where / ".githooks").mkdir(exist_ok=True)
+        f = where / ".githooks" / name
+        f.write_text(GITHOOK_MARK.format(mark=shlex_quote(str(self.marks / name))))
+        f.chmod(0o755)
+
+    def config(self, key: str, cwd: Path | None = None) -> str | None:
+        r = subprocess.run(["git", "config", "--get", key], cwd=cwd or self.proj, env=self.env(), capture_output=True,
+                           text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    # ESC-271: the session start turned the repo's own .githooks on, so its code ran with no approval.
+
+    def test_HARN_004_S1_ESC_271_a_repo_s_own_githooks_stay_off_and_a_commit_runs_none(self):
+        self.githook(self.proj, "pre-commit")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "githooks")
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.config("core.hooksPath"), "the repo's own .githooks were turned on")
+        said = [l for l in r.stdout.splitlines() if ".githooks" in l]
+        self.assertEqual(len(said), 1, r.stdout)
+        self.assertIn("are off", said[0])
+        self.assertIn("git config core.hooksPath .githooks", said[0])
+        (self.proj / "notes.txt").write_text("x\n")
+        self.git("add", "notes.txt")
+        self.git("commit", "-q", "-m", "notes")
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_ESC_271_the_plugin_s_own_fetch_fires_no_repo_hook(self):
+        """A shallow clone whose hooks path is already .githooks: the ledger's fetch at the session start runs with
+        no hooks of the repo's (reference-transaction fires on every ref a fetch writes)."""
+        up = self.proj
+        self.githook(up, "reference-transaction")
+        self.githook(up, "pre-commit")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "githooks")
+        (up / "f").write_text("x\n")
+        self.git("add", "f")
+        self.git("commit", "-q", "-m", "two")
+        self.git("branch", "deploy/staging")
+        victim = self.tmp / "victim"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{up}", str(victim)], env=self.env(),
+                       check=True, capture_output=True)
+        subprocess.run(["git", "config", "core.hooksPath", ".githooks"], cwd=victim, env=self.env(), check=True)
+        self.assertEqual(self.ran(), [])
+        self.proj = victim
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [], r.stdout)
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_ESC_271_plugin_githooks_over_a_tampered_bin_stay_off(self):
+        """The template's pre-commit runs .keelokit/bin/guard.py: turning it on over a tampered guard.py would run
+        the repo's guard at the next commit."""
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        self.tamper("guard.py")
+        r = self.hook("SessionStart")
+        self.assertIsNone(self.config("core.hooksPath"), r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    # ESC-277: no hooks of the repo's are ever turned on by the plugin.
+
+    def agent_commit(self) -> None:
+        (self.proj / "notes.txt").write_text("x\n")
+        subprocess.run("git add notes.txt && git commit -qm 'add notes' -m 'No-story: notes'", shell=True,
+                       cwd=self.proj, env=self.env(), capture_output=True)
+
+    def test_HARN_004_S1_ESC_277_even_the_plugin_s_own_githooks_are_never_turned_on(self):
+        """The template's hooks run `python3 .keelokit/bin/guard.py` without -I: any module in .keelokit/bin (here a
+        fnmatch.py) shadows the standard library there, so even byte-checked hooks would run repo code."""
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        (self.proj / ".keelokit/bin/fnmatch.py").write_text(self.mark_code("fnmatch.py"))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "hooks")
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.config("core.hooksPath"), r.stdout)
+        said = [l for l in r.stdout.splitlines() if ".githooks" in l]
+        self.assertEqual(len(said), 1, r.stdout)
+        self.assertIn("are off", said[0])
+        self.agent_commit()
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_ESC_277_a_branch_s_own_hooks_do_not_run_after_a_switch(self):
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "hooks")
+        self.git("switch", "-q", "-c", "feature")
+        self.githook(self.proj, "post-checkout")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "a branch with its own hook")
+        self.git("switch", "-q", "main")
+        self.hook("SessionStart")
+        self.assertEqual(self.ran(), [])
+        self.git("switch", "-q", "feature")
+        self.assertEqual(self.ran(), [], "a hook the session start never saw ran at the switch")
+
+    # ESC-278: there is no approval of a project's code, so nothing to forge or race.
+
+    def test_HARN_004_S1_ESC_278_there_is_no_approval_to_forge(self):
+        self.tamper("guard.py", "doctor.py", "ledger.py")
+        for argv in (["trust", str(self.proj)], ["untrust", str(self.proj)], ["trust"]):
+            with self.subTest(argv=argv):
+                r = self.with_store(*argv)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        trusted = load_trusted()
+        for gone in ("store_path", "read_store", "write_store", "approved", "trust", "ask", "fingerprint"):
+            self.assertFalse(hasattr(trusted, gone), f"trusted.py still has {gone}")
+
+        def never(path):
+            raise AssertionError(f"the project's {path} was read to decide what runs")
+
+        trusted.regular_bytes = never
+        for tool in ("guard", "doctor", "ledger"):
+            with self.subTest(tool=tool):
+                path, data, before = trusted.choose(tool, self.proj)
+                self.assertEqual((path, before), (BUNDLED / f"{tool}.py", ["--root", str(self.proj)]))
+        r = self.hook("SessionStart")
+        self.assertNotIn("trust", r.stdout.replace("trusted", ""), "the start no longer offers an approval")
+        self.assertEqual(self.ran(), [])
+
+    # ESC-279: the guard's own CPU.
+
+    def test_HARN_004_S1_ESC_279_the_guard_s_patterns_finish_on_pathological_input(self):
+        code = ("import sys; sys.argv = ['g']\n"
+                f"sys.path.insert(0, {str(BUNDLED)!r}); import guard\n"
+                "pre, piece, fn = sys.stdin.read().split('\\0')\n"
+                "s = pre + piece * (200_000 // len(piece))\n"
+                "getattr(guard, fn)(*([s, []] if fn == 'bash_problem' else [s]))\n")
+        cases = [("postgres://a:", "${{", "secret_in"), ("https://u:", "${{", "secret_in"),
+                 ("// postgres://a:", "${{", "secret_in"), ("git ", "-C ", "bash_problem"),
+                 ("git -C ", "-c ", "bash_problem"), ("git ", "--git-dir ", "bash_problem"), ("", "git ", "bash_problem"),
+                 ("git ", "-c a=b ", "bash_problem"), ("", "${{ true }}", "tamper_in"), ("", "it.skip ", "tamper_in"),
+                 ("", "\n", "bash_problem"), ("git ", "|", "bash_problem"), ("echo x > ", "|", "bash_problem"),
+                 ("", "echo x|", "bash_problem")]
+        for pre, piece, fn in cases:
+            with self.subTest(pre=pre, piece=piece, fn=fn):
+                r = subprocess.run([sys_python(), "-I", "-c", code], input=f"{pre}\0{piece}\0{fn}", text=True,
+                                   capture_output=True, timeout=20, env=self.env())
+                self.assertEqual(r.returncode, 0, r.stderr)
+        payload = {"tool_name": "Write", "tool_input": {"file_path": str(self.proj / "src/a.ts"),
+                                                         "content": "// postgres://a:" + "${{" * 45000 + "\n"}}
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=self.proj, env=self.env(),
+                           input=json.dumps(payload), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_HARN_004_S1_ESC_279_a_guard_that_does_not_answer_is_killed_and_the_call_blocked(self):
+        plugin = self.tmp / "plugin"
+        (plugin / "hooks").mkdir(parents=True)
+        shutil.copy(TRUSTED, plugin / "hooks/trusted.py")
+        (plugin / "template/.keelokit/bin").mkdir(parents=True)
+        (plugin / "template/.keelokit/bin/guard.py").write_text(
+            "import pathlib, subprocess, time\n"
+            f"subprocess.Popen(['sleep', '30'])\n"
+            f"pathlib.Path({str(self.marks / 'started')!r}).write_text('x')\n"
+            "time.sleep(30)\n")
+        r = self.hook("PreToolUse", HARMLESS, CLAUDE_PLUGIN_ROOT=str(plugin), KEELOKIT_GUARD_SECONDS="1")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn("did not answer", r.stderr)
+        self.assertEqual(self.ran(), ["started"], "the guard did run, and was stopped")
+
+    def test_HARN_004_ESC_279_the_guard_s_time_is_never_more_than_its_bound(self):
+        trusted = load_trusted()
+        cases = {"1000": trusted.GUARD_SECONDS, "abc": trusted.GUARD_SECONDS, "nan": trusted.GUARD_SECONDS,
+                 "-5": 0.1, "0.5": 0.5, "": trusted.GUARD_SECONDS}
+        for value, expected in cases.items():
+            with self.subTest(value=value), unittest.mock.patch.dict(os.environ, {"KEELOKIT_GUARD_SECONDS": value}):
+                self.assertEqual(trusted.guard_seconds(), expected)
+        data = json.loads((REPO / "hooks/hooks.json").read_text())
+        self.assertGreaterEqual(data["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], trusted.GUARD_SECONDS + 10)
+
+    # ESC-280: a bare-repository-looking directory the repo ships is not a repository to the plugin's git.
+
+    def shipped_bare(self, lazy: bool) -> Path:
+        """A repo whose pkg/ looks like a bare repository (HEAD, config, objects/, refs/ are ordinary files), with a
+        pkg/config whose remote runs a command; the clone's pkg/ is the project opened."""
+        up = self.tmp / "up"
+        pkg = up / "pkg"
+        shutil.copytree(BUNDLED, pkg / ".keelokit/bin", ignore=shutil.ignore_patterns("__pycache__"))
+        (pkg / "objects/info").mkdir(parents=True)
+        (pkg / "refs/heads").mkdir(parents=True)
+        (pkg / "objects/info/.keep").write_text("")
+        (pkg / "refs/heads/.keep").write_text("")
+        (pkg / "HEAD").write_text("ref: refs/heads/main\n")
+        if lazy:  # a commit whose tree is missing: reading it makes git fetch from the promisor remote
+            scratch = self.tmp / "scratch"
+            env0 = self.env(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+            subprocess.run(["git", "init", "-q", str(scratch)], env=env0, check=True, capture_output=True)
+            (scratch / "f").write_text("x\n")
+            subprocess.run(["git", "-C", str(scratch), "add", "f"], env=env0, check=True, capture_output=True)
+            tree = subprocess.run(["git", "-C", str(scratch), "write-tree"], env=env0, check=True, capture_output=True,
+                                  text=True).stdout.strip()
+            commit = subprocess.run(["git", "-C", str(scratch), "commit-tree", "-m", "x", tree], env=env0, check=True,
+                                    capture_output=True, text=True).stdout.strip()
+            (pkg / "objects" / commit[:2]).mkdir()
+            shutil.copy(scratch / ".git/objects" / commit[:2] / commit[2:], pkg / "objects" / commit[:2] / commit[2:])
+            (pkg / "refs/heads/main").write_text(commit + "\n")
+        mark = shlex_quote(str(self.marks / ("lazy" if lazy else "fetch")))
+        url = f"ext::sh -c touch% {mark.replace(' ', '% ')}"
+        lazy_cfg = "[extensions]\n\tpartialClone = origin\n" if lazy else ""
+        (pkg / "config").write_text(f"[core]\n\trepositoryformatversion = {1 if lazy else 0}\n{lazy_cfg}"
+                                    f"[protocol \"ext\"]\n\tallow = always\n[remote \"origin\"]\n"
+                                    f"\tpromisor = true\n\turl = \"{url}\"\n")
+        env = self.env(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for argv in (["init", "-q", "-b", "main", str(up)], ["-C", str(up), "add", "-A"],
+                     ["-C", str(up), "commit", "-q", "-m", "one"],
+                     ["clone", "-q", f"file://{up}", str(self.tmp / "victim")]):
+            subprocess.run(["git", *argv], env=env, check=True, capture_output=True)
+        return self.tmp / "victim/pkg"
+
+    def test_HARN_004_S1_ESC_280_a_shipped_bare_repo_runs_nothing_at_the_session_start(self):
+        self.proj = self.shipped_bare(lazy=False)
+        r = self.hook("SessionStart", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.ran(), [], r.stdout + r.stderr)
+
+    def test_HARN_004_S1_ESC_280_a_shipped_bare_repo_runs_nothing_from_the_guard(self):
+        self.proj = self.shipped_bare(lazy=True)
+        env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        r = self.hook("PreToolUse", HARMLESS, **env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": str(self.proj / "notes.md"),
+                                                                         "content": "hi"}}, **env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", BLOCKED, **env)
+        self.assertEqual(r.returncode, 2, "the guard still answers: " + r.stderr)
+        self.assertEqual(self.ran(), [])
+
+    def test_HARN_004_S1_ESC_280_a_git_dir_inside_the_project_blocks_the_guard(self):
+        inner = self.proj / "inner.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(inner)], env=self.env(), check=True, capture_output=True)
+        shutil.rmtree(self.proj / ".git")
+        (self.proj / ".git").write_text("gitdir: inner.git\n")
+        r = self.hook("PreToolUse", HARMLESS)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn("inner.git", r.stderr)
+        r = self.hook("SessionStart")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("inner.git", r.stdout)
+
+    def test_HARN_004_ESC_280_every_git_call_of_the_plugin_runs_hardened(self):
+        """Each script, run with --root, sets the same git environment before its first git call."""
+        for name in ("guard.py", "ledger.py", "doctor.py", "ux_gate.py"):
+            with self.subTest(script=name):
+                code = ("import os, runpy, sys, json\n"
+                        f"sys.argv = [{str(BUNDLED / name)!r}, '--root', {str(self.proj)!r}, '--help']\n"
+                        "try:\n"
+                        f"    runpy.run_path(sys.argv[0], run_name='not_main')\n"
+                        "except SystemExit:\n    pass\n"
+                        "n = int(os.environ.get('GIT_CONFIG_COUNT', '0'))\n"
+                        "cfg = {os.environ[f'GIT_CONFIG_KEY_{i}']: os.environ[f'GIT_CONFIG_VALUE_{i}'] for i in range(n)}\n"
+                        "print(json.dumps({'cfg': cfg, 'env': {k: os.environ.get(k) for k in "
+                        "('GIT_NO_LAZY_FETCH', 'GIT_TERMINAL_PROMPT', 'GIT_PROTOCOL_FROM_USER')}}))\n")
+                r = subprocess.run([sys_python(), "-I", "-c", code], env=self.env(GIT_DIR="/elsewhere"),
+                                   capture_output=True, text=True, timeout=60)
+                got = json.loads(r.stdout.strip().splitlines()[-1])
+                for key, value in (("safe.bareRepository", "explicit"), ("protocol.ext.allow", "never"),
+                                   ("core.fsmonitor", "false")):
+                    self.assertEqual(got["cfg"].get(key), value, (key, r.stderr))
+                self.assertEqual(got["env"], {"GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
+                                              "GIT_PROTOCOL_FROM_USER": "0"})
+
+    # ESC-281: any failure of the hook's own path is a block, never Python's exit 1.
+
+    def test_HARN_004_S1_ESC_281_a_fork_that_fails_blocks(self):
+        code = ("import errno, os, runpy, sys\n"
+                "def fork(): raise BlockingIOError(errno.EAGAIN, 'Resource temporarily unavailable')\n"
+                "os.fork = fork\n"
+                f"sys.argv = [{str(TRUSTED)!r}, 'run', 'guard', '--claude']\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        r = subprocess.run([sys_python(), "-I", "-c", code], cwd=self.proj, env=self.env(), input=json.dumps(HARMLESS),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+
+    def test_HARN_004_S1_ESC_281_a_guard_that_crashes_or_exits_1_blocks(self):
+        for body in ("raise RuntimeError('boom')\n", "import sys; sys.exit(1)\n", "import os, signal\nos.kill(os.getpid(), signal.SIGINT)\n",
+                     "import os, signal\nos.kill(os.getpid(), signal.SIGTERM)\n"):
+            with self.subTest(body=body):
+                plugin = self.tmp / "plugin"
+                shutil.rmtree(plugin, ignore_errors=True)
+                (plugin / "hooks").mkdir(parents=True)
+                shutil.copy(TRUSTED, plugin / "hooks/trusted.py")
+                (plugin / "template/.keelokit/bin").mkdir(parents=True)
+                (plugin / "template/.keelokit/bin/guard.py").write_text(body)
+                r = self.hook("PreToolUse", HARMLESS, CLAUDE_PLUGIN_ROOT=str(plugin))
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertTrue(r.stderr.strip().splitlines()[-1].startswith("Keelokit guard:"), r.stderr)
+
+    # ESC-282: the guard ran only while the project's guard.py was there, though it never runs that file.
+
+    def test_HARN_004_S1_ESC_282_removing_the_project_s_guard_py_leaves_the_guard_on(self):
+        (self.proj / ".keelokit/bin/guard.py").unlink()
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        shutil.rmtree(self.proj / ".keelokit/bin")
+        r = self.hook("PreToolUse", BLOCKED)
+        self.assertEqual(r.returncode, 2, "a .keelokit without bin/ is still a Keelokit project: " + r.stderr)
+
+    def test_HARN_004_S1_ESC_282_the_guard_refuses_removing_the_harness_as_a_whole(self):
+        for cmd in ("rm -rf .keelokit", "rm -r .keelokit/", "rm -rf ./.keelokit/bin", "mv .keelokit /tmp/x",
+                    "git rm -r -q .keelokit/bin", "find .keelokit -delete", "rmdir .keelokit/bin",
+                    f"rm -rf {shlex_quote(str(self.proj / '.keelokit'))}", "mv .keelokit/bin .keelokit/old"):
+            with self.subTest(cmd=cmd):
+                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for cmd in ("rm .keelokit/bin/notes.tmp", "ls .keelokit", "rm -rf node_modules", "cat .keelokit/bin/guard.py"):
+            with self.subTest(allowed=cmd):
+                r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    # Cold breaker, round 1 (ESC-283..285).
+
+    def bash(self, cmd: str, tool: str = "Bash") -> subprocess.CompletedProcess:
+        return self.hook("PreToolUse", {"tool_name": tool, "tool_input": {"command": cmd}})
+
+    def test_HARN_004_S1_ESC_283_quoted_spellings_of_a_hook_bypass_are_blocked(self):
+        for cmd in ("git commit '--no-verify' -m x", 'git commit --no-ver""ify -m x', "git commit -\"n\" -m x",
+                    "git -c alias.c='commit --no-verify' c -m x", "git -c core.hooks''Path=/dev/null commit -m x",
+                    "git push '--no-verify'", "git commit --no-veri\\fy -m x"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for cmd in ('git commit -m "why we never use --no-verify"', "git commit -m 'a -n flag'", "git log -n 3"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_284_globs_and_target_directories_cannot_remove_the_harness(self):
+        for cmd in ("rm -rf .keel*", "rm -rf .keelokit/b?n", "rm -rf .[k]eelokit", "mv -t /tmp/x .keelokit",
+                    "mv --target-directory=/tmp/x .keelokit/bin", "mv --target-directory /tmp/x .keelokit"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for cmd in ("rm -rf *.log", "rm -rf build/*", "mv -t /tmp/x notes.txt"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_284_a_committed_harness_gone_from_disk_keeps_the_guard_on(self):
+        """Since ESC-295 the guard remembers a project by its marker, written when a hook first sees .keelokit/ (the
+        HEAD check this test first drove is gone: it ran git in the gate)."""
+        self.assertEqual(self.bash("ls").returncode, 0)
+        shutil.rmtree(self.proj / ".keelokit")
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        other = self.tmp / "plain repo"
+        subprocess.run(["git", "init", "-q", str(other)], env=self.env(), check=True, capture_output=True)
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=other,
+                           env=self.env(CLAUDE_PROJECT_DIR=str(other)), input=json.dumps(BLOCKED),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), "a repo that never had Keelokit is left alone")
+
+    def test_HARN_004_S1_ESC_285_every_tool_that_runs_a_shell_command_is_guarded(self):
+        data = json.loads((REPO / "hooks/hooks.json").read_text())
+        matcher = data["hooks"]["PreToolUse"][0]["matcher"]
+        for tool in ("Bash", "Monitor", "PowerShell", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+            self.assertTrue(re.fullmatch(f"(?:{matcher})", tool), tool)
+        for tool in ("Monitor", "PowerShell"):
+            with self.subTest(tool=tool):
+                r = self.bash("git commit --no-verify -m x", tool=tool)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    # Cold breaker, round 2 (ESC-286..289).
+
+    def test_HARN_004_S1_ESC_286_an_orphan_branch_or_a_path_spelt_through_pwd_cannot_turn_the_guard_off(self):
+        self.git("remote", "add", "origin", str(self.proj))
+        self.git("fetch", "-q", "origin")
+        self.git("remote", "set-head", "origin", "main")
+        for cmd in ('rm -rf "$PWD/.keelokit"', "rm -rf $(pwd)/.keelokit", "rm -rf ${PWD}/.keelokit/bin",
+                    "cd .. && rm -rf proj/.keelokit", "rm -rf `pwd`/.keelokit"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.git("switch", "-q", "--orphan", "empty")
+        shutil.rmtree(self.proj / ".keelokit", ignore_errors=True)
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, "the trunk the clone came from still has .keelokit: " + r.stderr)
+
+    def test_HARN_004_S1_ESC_287_more_ways_to_skip_the_hooks_are_blocked(self):
+        for cmd in ("bash -c 'git commit --no-verify -m x'", 'eval "git commit -n -m x"', "sh -c \"git push -f\"",
+                    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x",
+                    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x",
+                    "export GIT_CONFIG_KEY_0=core.hookspath", "git -c include.path=/tmp/x.cfg commit -m x",
+                    "git config include.path /tmp/x.cfg", "git config alias.ci 'commit --no-verify'",
+                    "git config --local alias.ci 'commit -n'", "printf '[core]\\n\\thooksPath = /dev/null\\n' >> .git/config",
+                    "git -c remote.origin.push=+refs/heads/main:refs/heads/main push",
+                    "git config remote.origin.push '+refs/heads/*:refs/heads/*'"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for tool, args in (("Write", {"file_path": ".git/config", "content": "[core]\n\thooksPath = /dev/null\n"}),
+                           ("Edit", {"file_path": str(self.proj / ".git/config"), "old_string": "a", "new_string": "b"}),
+                           ("Write", {"file_path": ".git/hooks/pre-commit", "content": "exit 0\n"})):
+            with self.subTest(tool=tool, args=args):
+                r = self.hook("PreToolUse", {"tool_name": tool, "tool_input": args})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("bash -c 'git status'", "git config user.name T", "git config alias.st status", "eval \"ls\""):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_288_only_the_repo_s_own_env_example_seeds_a_real_env(self):
+        for cmd in ("cp /tmp/mine.example .env", "cp x.example .env.production", "cp ../x.example .envrc",
+                    "cp /tmp/.env.example .env"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 2)
+        for cmd in ("cp .env.example .env", "cp apps/api/.env.example apps/api/.env", "cp .env.local.example .env.local"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0, self.bash(cmd).stderr)
+
+    def test_HARN_004_S1_ESC_289_the_plugin_s_own_files_cannot_be_removed_or_rewritten(self):
+        home_plugins = Path(load_trusted().__file__).parent  # stands in for nothing: the env names the root
+        for cmd in (f"rm {TRUSTED}", f"rm -rf {REPO / 'hooks'}", f"mv {TRUSTED} /tmp/x", f"echo x > {TRUSTED}",
+                    "rm -rf ~/.claude/plugins/cache"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": str(TRUSTED), "content": "x"}})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertTrue(home_plugins.exists())
+
+    # Cold breaker, round 3 (ESC-290..294).
+
+    def test_HARN_004_S1_ESC_290_git_mv_and_an_orphan_branch_cannot_take_the_harness_away(self):
+        for cmd in ("git mv .keelokit .keelokit-old", "git mv -f .keelokit/bin old-bin", "git switch --orphan scratch",
+                    "git checkout --orphan scratch", "git switch -q --orphan=x"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("git mv src/a.py src/b.py", "git switch -c feature", "git checkout main"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_291_hooks_a_person_turned_on_cannot_be_rewritten_or_removed(self):
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        cmds = ("rm -rf .githooks", "chmod -x .githooks/pre-commit", "echo 'exit 0' > .githooks/pre-commit",
+                "printf 'x' > .keelokit/bin/guard.py", "mv .githooks/commit-msg /tmp/x")
+        writes = ({"file_path": ".githooks/pre-commit", "content": "exit 0\n"},
+                  {"file_path": str(self.proj / ".keelokit/bin/guard.py"), "content": "x"},
+                  {"file_path": ".keelokit/bin/ledger.py", "content": "x"})
+        for cmd in cmds:  # hooks off: these are the repo's files like any other
+            with self.subTest(off=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+        self.git("config", "core.hooksPath", ".githooks")
+        for cmd in cmds:
+            with self.subTest(on=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for args in writes:
+            with self.subTest(write=args["file_path"]):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": args})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("echo x > src/notes.txt").returncode, 0)
+
+    def test_HARN_004_S1_ESC_292_the_hooks_path_cannot_go_through_a_section_or_the_worktree_config(self):
+        for cmd in ("git config --remove-section core", "git config --rename-section core old",
+                    "printf '[core]\\n\\thooksPath = /dev/null\\n' >> .git/config.worktree"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": ".git/config.worktree",
+                                                                         "content": "[core]\n"}})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("git config --remove-section alias").returncode, 0)
+
+    def test_HARN_004_S1_ESC_293_clobber_redirects_continuations_and_install_are_read(self):
+        for cmd in ("echo KEY=1 >| .env", "echo x >| .git/hooks/pre-commit", "echo x >| .keelokit/guard-allow.toml",
+                    "printf '[core]' >| .git/config", "git \\\n  commit -n -m x", "git commit \\\n --no-verify -m x",
+                    "install -m 600 /dev/null .env"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("ls | wc -l").returncode, 0)
+
+    def test_HARN_004_S1_ESC_294_claude_code_s_own_hooks_and_the_plugin_cannot_be_switched_off(self):
+        for cmd in ("echo '{\"disableAllHooks\":true}' > .claude/settings.local.json", "claude plugin disable keelokit",
+                    "claude plugin uninstall keelokit@keelokit", "rm -rf ~/.claude", "mv ~/.claude ~/.claude.bak",
+                    "rm -rf $HOME/.claude/plugins"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for path in (".claude/settings.local.json", ".claude/settings.json", "~/.claude/settings.json"):
+            with self.subTest(path=path):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+                    "file_path": path, "content": '{"disableAllHooks": true}'}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+            "file_path": ".claude/settings.json", "content": '{"permissions": {"allow": ["Bash(ls)"]}}'}})
+        self.assertEqual(r.returncode, 0, "ordinary settings are the project's: " + r.stderr)
+
+    # Final round (ESC-295, ESC-296): the gate in front of the guard.
+
+    def adopted_after_a_commit(self) -> Path:
+        """A repo whose first commit predates .keelokit, the guard already seen once in it."""
+        proj = self.tmp / "adopted"
+        proj.mkdir()
+        (proj / "README").write_text("hi\n")
+        for argv in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "pre-adoption"]):
+            subprocess.run(["git", *argv], cwd=proj, env=self.env(), check=True, capture_output=True)
+        shutil.copytree(BUNDLED, proj / ".keelokit/bin", ignore=shutil.ignore_patterns("__pycache__"))
+        for argv in (["add", "-A"], ["commit", "-q", "-m", "adopt"]):
+            subprocess.run(["git", *argv], cwd=proj, env=self.env(), check=True, capture_output=True)
+        self.marker(proj)
+        self.proj = proj
+        self.assertEqual(self.bash("git commit --no-verify -m x").returncode, 2)
+        return proj
+
+    def test_HARN_004_S1_ESC_295_a_checkout_of_a_commit_before_the_harness_leaves_the_guard_on(self):
+        proj = self.adopted_after_a_commit()
+        for argv in (["checkout", "-q", "HEAD~1"],):
+            subprocess.run(["git", *argv], cwd=proj, env=self.env(), check=True, capture_output=True)
+        self.assertFalse((proj / ".keelokit").exists())
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/zz"], cwd=proj, env=self.env(), check=True)
+        self.assertEqual(self.bash("git commit --no-verify -m x").returncode, 2)
+
+    def test_HARN_004_S1_ESC_295_a_clone_reset_before_the_harness_leaves_the_guard_on(self):
+        up = self.adopted_after_a_commit()
+        clone = self.tmp / "clone"
+        subprocess.run(["git", "clone", "-q", f"file://{up}", str(clone)], env=self.env(), check=True, capture_output=True)
+        self.marker(clone)
+        self.proj = clone
+        self.assertEqual(self.bash("ls").returncode, 0)  # the session's first call: the guard sees .keelokit
+        for argv in (["remote", "set-head", "origin", "-d"], ["reset", "-q", "--hard", "HEAD~1"]):
+            subprocess.run(["git", *argv], cwd=clone, env=self.env(), check=True, capture_output=True)
+        r = self.bash("git commit --no-verify -m x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_HARN_004_S1_ESC_296_the_gate_runs_no_git_and_cannot_hang(self):
+        self.marker(self.proj)
+        self.assertEqual(self.bash("ls").returncode, 0)
+        shutil.rmtree(self.proj / ".keelokit")
+        self.git("pack-refs", "--all")
+        os.rename(self.proj / ".git/packed-refs", self.proj / ".git/pr")
+        os.mkfifo(self.proj / ".git/packed-refs")
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=self.proj,
+                           env=self.env(KEELOKIT_GUARD_SECONDS="3"), input=json.dumps(BLOCKED),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("git", hook_command("PreToolUse").replace("git config", ""), "no git in the gate")
+        src = (REPO / "hooks/trusted.py").read_text()
+        gate = src[src.index("def keelokit_project"):src.index("def choose")]
+        self.assertNotIn("git(", gate, "the project gate runs no git")
+
+    def test_HARN_004_S1_ESC_296_a_project_that_never_had_keelokit_gets_no_marker_and_is_left_alone(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        subprocess.run(["git", "init", "-q", str(plain)], env=self.env(), check=True, capture_output=True)
+        marker = self.marker(plain)
+        for event, payload in (("PreToolUse", BLOCKED), ("SessionStart", {})):
+            r = subprocess.run(["/bin/sh", "-c", hook_command(event)], cwd=plain,
+                               env=self.env(CLAUDE_PROJECT_DIR=str(plain)), input=json.dumps(payload),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), event)
+        self.assertFalse(marker.exists())
+
+    def test_HARN_004_S1_ESC_296_the_marker_is_keyed_by_the_real_path_and_guarded(self):
+        link = self.tmp / "link"
+        link.symlink_to(self.proj, target_is_directory=True)
+        marker = self.marker(self.proj)
+        r = subprocess.run(["/bin/sh", "-c", hook_command("PreToolUse")], cwd=link,
+                           env=self.env(CLAUDE_PROJECT_DIR=str(link)), input=json.dumps(HARMLESS),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(marker.exists(), "the marker of the project's real path")
+        for cmd in ("rm -rf ~/.cache/keelokit", f"rm {marker}", "python3 -c \"import shutil;shutil.rmtree('.keelokit')\"",
+                    "python3 -c 'import os; os.rename(\".keelokit\", \"x\")'", "node -e \"require('fs').rmSync('.keelokit',{recursive:true})\"",
+                    "git rm -r -q .keelokit"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    # Final cold breaker (ESC-297..300).
+
+    def test_HARN_004_S1_ESC_297_a_user_with_no_passwd_entry_is_not_blocked_everywhere(self):
+        trusted = load_trusted()
+        import pwd
+        plain = self.tmp / "plain"
+        plain.mkdir()
+
+        def missing(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        with unittest.mock.patch.object(pwd, "getpwuid", missing):
+            self.assertIsNone(trusted.choose("guard", plain), "no .keelokit, no marker to read: nothing to run")
+            self.assertIsNotNone(trusted.choose("guard", self.proj))
+            trusted.remember(self.proj)  # no home to mark in: nothing, and no error
+
+    def test_HARN_004_S1_ESC_298_the_marker_and_the_project_cannot_be_removed_through_a_parent_or_a_glob(self):
+        for cmd in ("rm -rf ~/.cache", "rm -rf $HOME/.cache/*", "find ~/.cache -delete", "mv ~/.cache ~/.cache.old",
+                    "rm -rf ~/.cach?/keelokit", 'rm -rf "$PWD"', "rm -rf .", "git rm -rq .", "mv \"$PWD\" /tmp/elsewhere",
+                    f"rm -rf {shlex_quote(str(self.proj))}"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("rm -rf ~/.cache/pip", "rm -rf build", "git rm -rq src/old"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_299_powershell_cmdlets_meet_the_same_rules(self):
+        for cmd in ("Remove-Item -Recurse -Force .keelokit", "Move-Item .keelokit .keelokit.bak",
+                    'Set-Content -Path .env -Value "API_KEY=abc"', "'x' | Out-File .env.local", "Add-Content .env 'A=1'",
+                    "Copy-Item .env.production .env", "del .env", "Remove-Item -Recurse -Force $env:USERPROFILE\\.claude\\plugins",
+                    "Set-Content .claude/settings.local.json '{}'", 'Set-Content .git/config "[core]"', "ri -r .keelokit/bin"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd, tool="PowerShell")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("Get-ChildItem", "Remove-Item -Recurse node_modules", "Set-Content notes.txt 'x'"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd, tool="PowerShell").returncode, 0, self.bash(cmd, tool="PowerShell").stderr)
+
+    def test_HARN_004_S1_ESC_300_force_pushes_and_skipped_hooks_behind_a_redirect_or_a_mirror(self):
+        for cmd in ("git config remote.origin.mirror true", "git -c remote.origin.mirror=true push", "git push origin +@:main",
+                    "git push origin main 2>&1 -f", "git commit -m wip 2>&1 -n"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for content in ('{"\\u0064isableAllHooks": true}', '{"env": {"PATH": "/nonexistent"}}',
+                        '{"enabledPlugins": {"keelokit@keelokit": false}}'):
+            with self.subTest(content=content):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+                    "file_path": ".claude/settings.local.json", "content": content}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("git push origin main 2>&1 | tail -1").returncode, 0)
+
+    # Closing round (ESC-301): the coordinator's last list.
+
+    def test_HARN_004_S1_ESC_301_no_passwd_entry_falls_back_to_an_absolute_home(self):
+        trusted = load_trusted()
+        import pwd
+
+        def missing(uid):
+            raise KeyError(uid)
+
+        with unittest.mock.patch.object(pwd, "getpwuid", missing):
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
+                self.assertEqual(trusted.marker_path(self.proj).parents[2], self.tmp / ".cache")
+            for home in ("relative/home", ""):
+                with unittest.mock.patch.dict(os.environ, {"HOME": home}):
+                    self.assertIsNone(trusted.marker_path(self.proj))
+                    self.assertIsNone(trusted.choose("guard", self.tmp), "never blocks a non-Keelokit project")
+
+    def test_HARN_004_S1_ESC_301_refspecs_and_flags_after_any_redirect(self):
+        for cmd in ("git push origin +$(git branch --show-current)", "git push -q 2>/dev/null -f",
+                    "git push origin main >out.txt --force", "git commit -m x 2>/dev/null --no-verify"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 2, self.bash(cmd).stderr)
+
+    def test_HARN_004_S1_ESC_301_powershell_is_read_only_on_protected_paths(self):
+        for cmd in ("Set-Content .keelokit/state.toml 'x'", "Copy-Item .env.example .env", "Invoke-Item .git/hooks/pre-commit",
+                    "Start-Process notepad .claude/settings.json", "Clear-Item $HOME/.cache/keelokit"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd, tool="PowerShell").returncode, 2)
+        for cmd in ("Get-Content .env", "Test-Path .keelokit", "Get-ChildItem .keelokit/bin",
+                    "Select-String -Path .git/config -Pattern hooks", "Remove-Item -Recurse node_modules"):
+            with self.subTest(allowed=cmd):
+                r = self.bash(cmd, tool="PowerShell")
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_HARN_004_S1_ESC_301_reading_the_hooks_path_and_commit_message_heredocs_are_allowed(self):
+        for cmd in ("git config --get core.hooksPath", "git config --get-all core.hooksPath",
+                    "git commit -F - <<'EOF'\ndocs: explain why git commit --no-verify is banned\n\nNo-story: docs\nEOF"):
+            with self.subTest(allowed=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 0, r.stderr)
+        for cmd in ("git config core.hooksPath /dev/null", "sh <<'EOF'\ngit commit --no-verify -m x\nEOF",
+                    "git commit -F - <<'EOF' && git push -f\nmsg\nEOF"):
+            with self.subTest(blocked=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 2)
+
+    # ESC-276: a guard that outlives the hook's timeout lets the call through.
+
+    def test_HARN_004_S1_ESC_276_the_guard_blocks_on_data_it_cannot_read_in_bounds(self):
+        state = self.proj / ".keelokit/state.toml"
+        edit = {"tool_name": "Edit", "tool_input": {"file_path": str(state), "old_string": "a", "new_string": "b"}}
+        os.mkfifo(state)
+        r = self.hook("PreToolUse", edit)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        state.unlink()
+        state.write_text("[ledger]\n" + "# pad\n" * (300 << 10))
+        r = self.hook("PreToolUse", edit)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        state.unlink()
+        allow = self.proj / ".keelokit/guard-allow.toml"
+        allow.write_text("# pad\n" * (300 << 10))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "a big registry")
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": ".env", "content": "A=1"}})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", HARMLESS)
+        self.assertEqual(r.returncode, 2, "a registry over the bound blocks every call: " + r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+
+    def test_HARN_004_ESC_276_the_pre_tool_use_hook_has_room_for_the_guard_s_own_limits(self):
+        data = json.loads((REPO / "hooks/hooks.json").read_text())
+        hook = data["hooks"]["PreToolUse"][0]["hooks"][0]
+        guard = (BUNDLED / "guard.py").read_text()
+        limit = int(re.search(r"^GIT_SECONDS = (\d+)", guard, re.M).group(1))
+        self.assertIn("timeout", hook, "the hook's timeout is stated, not Claude Code's default")
+        self.assertGreaterEqual(hook["timeout"], limit + 20, "the guard's git calls end well within the hook's timeout")
+
+
+def shlex_quote(s: str) -> str:
+    import shlex
+    return shlex.quote(s)
+
+
+def sys_python() -> str:
+    return shutil.which("python3") or "python3"
 
 
 if __name__ == "__main__":

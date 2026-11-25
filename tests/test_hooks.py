@@ -37,8 +37,8 @@ def project(tmp, name="my project's dir"):
     return proj
 
 
-def run(argv, proj, path, stdin=""):
-    env = {"PATH": path, "HOME": str(proj.parent), "CLAUDE_PROJECT_DIR": str(proj)}
+def run(argv, proj, path, stdin="", plugin=ROOT):
+    env = {"PATH": path, "HOME": str(proj.parent), "CLAUDE_PROJECT_DIR": str(proj), "CLAUDE_PLUGIN_ROOT": str(plugin)}
     return subprocess.run(argv, cwd=proj, env=env, input=stdin, capture_output=True, text=True, timeout=60)
 
 
@@ -120,9 +120,15 @@ class HooksWithoutPython(unittest.TestCase):
 
 
 SESSION_LOG = "calls.log"
+# A stub stands in for a script both in the project and in the plugin (HARN-004: the hooks run the plugin's copy
+# when the project's matches it, with `--root <project>` first), and logs into the project it ran on.
 STUB = """import sys
 from pathlib import Path
-with open(Path(__file__).resolve().parents[2] / "calls.log", "a") as f:
+root = Path(__file__).resolve().parents[2]
+if sys.argv[1:2] == ["--root"]:
+    root = Path(sys.argv[2])
+    del sys.argv[1:3]
+with open(root / "calls.log", "a") as f:
     f.write(" ".join([Path(__file__).name, *sys.argv[1:]]) + "\\n")
 """
 
@@ -134,7 +140,8 @@ def session_start():
 
 
 class SessionStartHook:
-    """A project with stub scripts in .keelokit/bin, and the SessionStart command run in it."""
+    """A project with stub scripts in .keelokit/bin, a plugin whose bundled scripts are the same stubs, and the
+    SessionStart command run in the project."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -142,9 +149,15 @@ class SessionStartHook:
         self.proj = Path(self.tmp) / "my project's dir"
         (self.proj / ".keelokit/bin").mkdir(parents=True)
         self.path = os.environ["PATH"]
+        self.plugin = Path(self.tmp) / "the plugin"
+        (self.plugin / "hooks").mkdir(parents=True)
+        (self.plugin / "template/.keelokit/bin").mkdir(parents=True)
+        shutil.copy(ROOT / "hooks/trusted.py", self.plugin / "hooks/trusted.py")
+        shutil.copytree(ROOT / "template/.githooks", self.plugin / "template/.githooks")
 
     def stub(self, name, extra=""):
-        (self.proj / ".keelokit/bin" / name).write_text(STUB + extra)
+        for d in (self.proj / ".keelokit/bin", self.plugin / "template/.keelokit/bin"):
+            (d / name).write_text(STUB + extra)
 
     def calls(self):
         log = self.proj / SESSION_LOG
@@ -153,7 +166,7 @@ class SessionStartHook:
     def hook(self, path=None, sh="/bin/sh"):
         hooks = session_start()
         self.assertEqual(len(hooks), 1, "one SessionStart command runs both, in order")
-        return run([sh, "-c", hooks[0]["command"]], self.proj, path or self.path)
+        return run([sh, "-c", hooks[0]["command"]], self.proj, path or self.path, plugin=self.plugin)
 
 
 class SessionStartCompletesHistory(SessionStartHook, unittest.TestCase):
@@ -226,7 +239,7 @@ class SessionStartCompletesHistory(SessionStartHook, unittest.TestCase):
         hooks = session_start()
         for path in (self.path, str(Path(self.tmp))):
             with self.subTest(path=path):
-                r = run(["/bin/sh", "-c", hooks[0]["command"]], other, path)
+                r = run(["/bin/sh", "-c", hooks[0]["command"]], other, path, plugin=self.plugin)
                 self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
 
 
@@ -335,6 +348,7 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
             self.skipTest("git not installed")
         shutil.rmtree(self.proj / ".keelokit/bin")
         shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        self.plugin = ROOT
         story = self.proj / "backlog/stories/DEMO-001-x.md"
         story.parent.mkdir(parents=True)
         story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "x"\nwave = 1\ndepends_on = []\n+++\n')
@@ -357,6 +371,7 @@ class SessionStartShowsWhereTheTruthIs(SessionStartHook, unittest.TestCase):
             self.skipTest("git not installed")
         shutil.rmtree(self.proj / ".keelokit/bin")
         shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        self.plugin = ROOT
         story = self.proj / "backlog/stories/DEMO-001-demo.md"
         story.parent.mkdir(parents=True)
         story.write_text('+++\nid = "DEMO-001"\nepic = "DEMO"\ntitle = "Demo"\nwave = 1\ndepends_on = []\n+++\n')
@@ -423,6 +438,7 @@ class CommitHooks(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.proj = self.tmp / "my repo"
         shutil.copytree(ROOT / "template/.keelokit/bin", self.proj / ".keelokit/bin")
+        self.plugin = ROOT
         shutil.copytree(ROOT / "template/.githooks", self.proj / ".githooks")
         story = self.proj / "backlog/stories/AUTH-001-x.md"
         story.parent.mkdir(parents=True)
@@ -975,7 +991,8 @@ class CommitHooks(unittest.TestCase):
                 self.git("config", "--worktree", "--unset-all", "keelokit.story", check=False)
 
 class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
-    """LEDGER-009.S7: a fresh clone with .githooks/ and no core.hooksPath gets it set at the session start."""
+    """LEDGER-009.S7, as HARN-004 left it (ESC-277): a fresh clone with .githooks/ and no core.hooksPath is told, in one
+    line, that its hooks are off and how a person turns them on; the plugin never sets core.hooksPath."""
 
     def setUp(self):
         super().setUp()
@@ -994,21 +1011,21 @@ class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
 
     def repo(self, githooks=True):
         self.git("init", "-q", "-b", "main")
-        if githooks:
-            (self.proj / ".githooks").mkdir()
-            (self.proj / ".githooks/pre-commit").write_text("#!/bin/sh\n")
+        if githooks:  # even the plugin's own hooks stay off (HARN-004, ESC-277)
+            shutil.copytree(ROOT / "template/.githooks", self.proj / ".githooks")
 
-    def test_LEDGER_009_S7_session_start_sets_core_hooks_path_and_says_so_in_one_line(self):
+    def test_LEDGER_009_S7_HARN_004_ESC_277_session_start_leaves_the_hooks_off_and_says_so_in_one_line(self):
         for sh in SHELLS:
             with self.subTest(shell=sh):
                 self.git("config", "--unset", "core.hooksPath", check=False) if (self.proj / ".git").exists() \
                     else self.repo()
                 r = self.hook(sh=sh)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertEqual(self.hooks_path(), ".githooks")
+                self.assertIsNone(self.hooks_path(), "the plugin turned the repo's hooks on")
                 said = [l for l in (r.stdout + r.stderr).splitlines() if "core.hooksPath" in l]
                 self.assertEqual(len(said), 1, r.stdout + r.stderr)
                 self.assertTrue(said[0].startswith("Keelokit:"), said)
+                self.assertIn("git config core.hooksPath .githooks", said[0])
                 self.assertIn("doctor 0", r.stdout, "the rest of the start still runs")
 
     def test_LEDGER_009_S7_the_line_counts_in_the_12_line_budget(self):
@@ -1018,7 +1035,7 @@ class SessionStartTurnsOnTheGitHooks(SessionStartHook, unittest.TestCase):
         r = self.hook()
         out = r.stdout.splitlines()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.hooks_path(), ".githooks")
+        self.assertIsNone(self.hooks_path())
         self.assertLessEqual(len(out), 12, out)
         self.assertEqual(sum("core.hooksPath" in l for l in out), 1, out)
         for i in range(2):

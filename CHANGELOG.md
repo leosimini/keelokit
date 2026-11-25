@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Opening a repo no longer runs its own guard, doctor or ledger (HARN-004).** The hooks always run the plugin's
+  copy against the project's data; a project whose `.keelokit/bin` differs gets one line at the session start
+  saying so. The plugin no longer turns a repo's git hooks on by itself: the session start says they are off, and
+  you turn them on with `git config core.hooksPath .githooks` once you have reviewed them. The guard can no longer
+  be stalled past its timeout.
+
 ## 0.16.0 — 2026-11-24
 
 - **The agent brief carries the fleet's lessons (FLEET-006).** Push before any wait longer than a few minutes
