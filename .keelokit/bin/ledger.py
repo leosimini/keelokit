@@ -1642,7 +1642,8 @@ SWARM_BRANCH = "refs/remotes/origin/swarm/"
 SWARM_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")   # a task id that is one: no slash, no control character
 SWARM_AUTHOR = 200             # longest author name kept
 SWARM_MERGES = 2000            # at most this many attributing merges are walked to find a delivery's story
-SWARM_STATES = ("in-progress", "on-trunk")
+SWARM_STATES = ("in-progress", "on-trunk", "reverted")
+SWARM_KEYS = {"task", "state", "branch", "head", "commits", "authors", "convoy"}
 
 
 def swarm_task(trailers: list[tuple[str, str]]) -> str | None:
@@ -1709,8 +1710,8 @@ def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph
     branch swarm/<task> holding commits off the trunk with `Part-of: <ID>` and `Swarm-Task: <task>` (that task, the
     branch's), with its head, and the open convoy whose vessel is that branch sealed on that head; an integrated one is
     the trunk's commits with `Swarm-Task:` that are the story's (their own Story:/Part-of:, else the merges that
-    attribute them), by the convoy that brought them. Merges are no deliveries. Never raises: whatever is wrong, the
-    lists stay empty and the answer is the error."""
+    attribute them), by the convoy that brought them (`reverted` once a revert on the trunk undid them). Merges are no
+    deliveries. Never raises: whatever is wrong, the lists stay empty and the answer is the error."""
     try:
         for rec in records.values():
             rec["swarm"] = []
@@ -1746,6 +1747,7 @@ def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph
                 add(sid, task, "in-progress", open_heads.get((branch, head)), branch, head, c)
         arrival_of = placed[0]
         places = convoy_places(book, log, placed)
+        reverted = revert_status(log, graph)
         pieces = [(c, task) for c in log if len(c["parents"]) < 2 and (task := swarm_task(c["trailers"]))]
         via = attributing_merges(graph, log, arrival_of, [c["sha"] for c, _ in pieces
                                                            if not (c["story"] or c["part_of"])])
@@ -1753,7 +1755,8 @@ def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph
             ids = set(c["story"]) | set(c["part_of"]) or via.get(c["sha"], set())
             for sid in sorted(ids):
                 if sid in records:
-                    add(sid, task, "on-trunk", convoy_sailed(places, arrival_of[c["sha"]]), None, None, c)
+                    add(sid, task, "reverted" if reverted.get(c["sha"]) else "on-trunk",
+                        convoy_sailed(places, arrival_of[c["sha"]]), None, None, c)
         authors = authors_of(sorted({sha for e in entries.values() for sha in e["commits"]}), placed_anchor(placed))
         for (sid, *_), e in sorted(entries.items(), key=lambda x: (x[0][0], x[0][1], SWARM_STATES.index(x[0][2]), x[0][3])):
             shas = sorted(e["commits"], key=lambda sha: (e["commits"][sha], sha))
@@ -4022,12 +4025,13 @@ def carried_ok(key: str, value) -> bool:
 def swarm_entry_ok(x) -> bool:
     """A `swarm` entry of a snapshot has the shape apply_swarm gives it (a hand edit is no crash in `show`)."""
     sha = lambda v: isinstance(v, str) and bool(FULL_SHA.fullmatch(v))  # noqa: E731
-    return (isinstance(x, dict) and isinstance(x.get("task"), str) and bool(SWARM_TASK.fullmatch(x["task"]))
-            and x.get("state") in SWARM_STATES and (x.get("branch") is None or isinstance(x["branch"], str))
-            and (x.get("head") is None or sha(x["head"]))
-            and isinstance(x.get("commits"), list) and all(sha(c) for c in x["commits"])
-            and isinstance(x.get("authors"), list) and all(isinstance(a, str) for a in x["authors"])
-            and (x.get("convoy") is None or is_int(x["convoy"])))
+    text = lambda v: isinstance(v, str) and not CONTROL.search(v) and "\n" not in v and "\t" not in v  # noqa: E731
+    return (isinstance(x, dict) and set(x) == SWARM_KEYS and isinstance(x["task"], str)
+            and bool(SWARM_TASK.fullmatch(x["task"])) and x["state"] in SWARM_STATES
+            and (x["branch"] is None or text(x["branch"])) and (x["head"] is None or sha(x["head"]))
+            and isinstance(x["commits"], list) and all(sha(c) for c in x["commits"])
+            and isinstance(x["authors"], list) and all(text(a) for a in x["authors"])
+            and (x["convoy"] is None or is_int(x["convoy"])))
 
 
 def reach_info(graph: dict, cut: set, head: str) -> tuple[set, bool]:
