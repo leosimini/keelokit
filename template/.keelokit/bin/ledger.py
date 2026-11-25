@@ -1652,20 +1652,25 @@ def swarm_task(trailers: list[tuple[str, str]]) -> str | None:
     return task if task and SWARM_TASK.fullmatch(task) else None
 
 
-def authors_of(shas: list[str]) -> dict[str, str]:
+def authors_of(shas: list[str], anchor: str) -> dict[str, str]:
     """commit -> its author's name as recorded (no mailmap: a .mailmap is a file the branch under judgment writes),
-    control characters shown as ?, cut to SWARM_AUTHOR (one `git log`)."""
-    if not shas:
-        return {}
+    control characters shown as ?, cut to SWARM_AUTHOR. Always one `git log` (with no commit, of `anchor` alone), so
+    the number of git calls does not depend on the data."""
+    wanted = set(shas)
     out = git_read(["log", "--no-walk=unsorted", "--stdin", "-z", "--no-mailmap", "--format=%H%x00%an"],
-                   "".join(f"{sha}\n" for sha in shas).encode()).decode("utf-8", errors="replace")
+                   "".join(f"{sha}\n" for sha in (shas or [anchor])).encode()).decode("utf-8", errors="replace")
     parts = out.split("\0")
     names = {}
     for sha, name in zip(parts[0::2], parts[1::2]):
         sha = sha.strip()
-        if FULL_SHA.fullmatch(sha):
+        if sha in wanted:
             names[sha] = CONTROL.sub("?", name)[:SWARM_AUTHOR]
     return names
+
+
+def placed_anchor(placed: tuple) -> str:
+    """A trunk commit (the oldest of its first-parent chain), for authors_of's one call when there is nothing to ask."""
+    return next(iter(placed[1]))
 
 
 def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: list[str]) -> dict[str, set[str]]:
@@ -1749,7 +1754,7 @@ def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph
             for sid in sorted(ids):
                 if sid in records:
                     add(sid, task, "on-trunk", convoy_sailed(places, arrival_of[c["sha"]]), None, None, c)
-        authors = authors_of(sorted({sha for e in entries.values() for sha in e["commits"]}))
+        authors = authors_of(sorted({sha for e in entries.values() for sha in e["commits"]}), placed_anchor(placed))
         for (sid, *_), e in sorted(entries.items(), key=lambda x: (x[0][0], x[0][1], SWARM_STATES.index(x[0][2]), x[0][3])):
             shas = sorted(e["commits"], key=lambda sha: (e["commits"][sha], sha))
             records[sid]["swarm"].append({**e, "commits": shas,
@@ -4678,7 +4683,7 @@ def why_of(ctx: dict, sid: str, rec: dict) -> dict:
     commits, findings = [], set()
     tasks = {sha: e["task"] for e in rec.get("swarm") or [] for sha in e["commits"]}
     try:
-        authors = authors_of([c["sha"] for c, _ in found_commits])
+        authors = authors_of([c["sha"] for c, _ in found_commits], ctx["trunk_sha"])
     except LedgerError:
         authors = {}
     for c, held in found_commits:
