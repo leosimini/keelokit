@@ -758,14 +758,19 @@ def read_tree(trunk_sha: str) -> list[tuple[str, str]]:
     return files
 
 
-def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]]) -> dict:
+def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]], strict: bool = False) -> dict:
     """What the approval modes read from the trunk's tree, in one `cat-file`: state.toml, critical.toml and the
-    review files ({run: bytes}). A file the clone lacks reads as absent."""
+    review files ({run: bytes}). A file the clone lacks reads as absent; `strict` (the rules of `check --rules-ref`):
+    LedgerError instead, since a rule read as absent is a looser rule (no critical area, the default enforce)."""
     wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE)
               or (path.startswith(REVIEWS + "/") and path.endswith(".json")
                   and RUN_ID.fullmatch(path[len(REVIEWS) + 1:-5]) and "/" not in path[len(REVIEWS) + 1:])}
     blobs = read_blobs(list(wanted.values()), trunk_sha)
     content = {path: blobs.get(sha) for path, sha in wanted.items()}
+    lacking = sorted(path for path, data in content.items() if data is None)
+    if strict and lacking:
+        raise LedgerError(f"the rules at {short(trunk_sha)} are not in this clone ({', '.join(lacking[:3])}"
+                          f"{', …' if len(lacking) > 3 else ''}: a partial clone); fetch them, or use a full clone")
     reviews = {path[len(REVIEWS) + 1:-5]: data for path, data in content.items()
                if path.startswith(REVIEWS + "/") and data is not None}
     return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews}
@@ -1244,7 +1249,7 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
     stories, unreadable = read_stories(trunk_sha, cfg, tree)
     # The rules the committed tree holds ([ledger.approval], critical.toml, the review files): the trunk's, or with
     # `check --rules-ref` (LEDGER-013) another commit's, so a tree under judgment never relaxes its own rules.
-    extra = read_trunk_files(rules_sha, read_tree(rules_sha)) if rules_sha else read_trunk_files(trunk_sha, tree)
+    extra = read_trunk_files(rules_sha, read_tree(rules_sha), True) if rules_sha else read_trunk_files(trunk_sha, tree)
     reviews = {run: parse_review(data, run) for run, data in extra["reviews"].items()}
     tags = [sha for _, _, sha in version_tags(refs)]
     remotes = [sha for name, sha in refs.items() if name.startswith("refs/remotes/origin/")]
@@ -1571,7 +1576,7 @@ def row_problem(row, story_ids: set | None, reachable: set, reviews: dict | None
     if not ISO_DATE.fullmatch(values["date"]) or not valid_date(values["date"]):
         return f"date {values['date']!r} is not a YYYY-MM-DD date"
     if is_delegated(values["approver"]):
-        return delegated_problem(values, reviews or {"reviews": {}})
+        return delegated_problem(values, reviews or {"reviews": {}}, row_key(row))
     return None
 
 
@@ -1751,7 +1756,7 @@ def cat_specs(specs: list[str]) -> dict[str, bytes | None]:
 
 
 def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) -> dict:
-    """(story, commit, kind) of each delegated row -> {"areas", "story"}: the critical areas and the story's touches
+    """row_key of each delegated row -> {"areas", "story"}: the critical areas and the story's touches
     and dimensions as the trunk had them at the first-parent commit where the row first appeared, so a later area or
     edit of the story never turns an approved row invalid. Rows not found there keep the tip's view."""
     wanted = {}
@@ -1783,7 +1788,7 @@ def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) 
         story = stories.get(sid)
         meta = front_matter(blobs[f"{commit}:{story['path']}"].decode("utf-8", errors="replace"))[0] \
             if story and blobs.get(f"{commit}:{story['path']}") is not None else None
-        facts[wanted[key]] = {"areas": critical_areas(blobs.get(f"{commit}:{CRITICAL_FILE}")),
+        facts[key] = {"areas": critical_areas(blobs.get(f"{commit}:{CRITICAL_FILE}")),
                               "story": {"touches": text_list(meta.get("touches")),
                                         "dimensions": text_list(meta.get("dimensions"))} if meta is not None else story}
     return facts
@@ -2222,7 +2227,7 @@ def review_approval(review: dict) -> dict:
             "human_for": [h for h in HUMAN_FOR if h in reasons] if isinstance(reasons, list) else list(HUMAN_FOR)}
 
 
-def delegated_problem(values: dict, delegation: dict) -> str | None:
+def delegated_problem(values: dict, delegation: dict, key: str | None = None) -> str | None:
     """Why a row approved by `delegated:<run>` cannot count. Its review file, on the trunk, recorded mode delegated
     or mixed and holds the same story, commit and kind approved by both judges with the skeptic's refutation failed;
     and ledger.py re-decides it as approved now (the recorded mode, human_for, confidence and models, the story's
@@ -2241,7 +2246,7 @@ def delegated_problem(values: dict, delegation: dict) -> str | None:
     approval = review_approval(review)
     if approval["mode"] not in ("delegated", "mixed"):
         return f"{REVIEWS}/{run}.json does not record a delegated or mixed approval mode"
-    at = delegation.get("arrival", {}).get((values["story"], values["commit"], values["kind"]))
+    at = delegation.get("arrival", {}).get(key) if key is not None else None  # its own arrival, never another row's
     story = at["story"] if at else delegation.get("stories", {}).get(values["story"])
     critical = True if story is None else is_critical(story, at["areas"] if at else delegation.get("areas"))
     same = [r for r in review["rows"] if isinstance(r, dict)
@@ -2910,7 +2915,7 @@ def cmd_check(state: dict, args: tuple) -> int:
             return 2
         # `[ledger]` (enforce, since, no_story, stories, trunk) is a rule as well: <rev>'s committed state.toml, never
         # the checked-out one (absent or unreadable there: the defaults, as read_state).
-        state = load_toml(cat_specs([f"{rules_sha}:{STATE_FILE}"]).get(f"{rules_sha}:{STATE_FILE}")) or {}
+        state = load_toml(read_trunk_files(rules_sha, read_tree(rules_sha), True)["state"]) or {}
     diffs = all_diffs(state, ci, rules_sha)
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))

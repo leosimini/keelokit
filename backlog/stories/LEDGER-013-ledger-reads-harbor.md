@@ -114,4 +114,28 @@ a failing test first.
   first-parent chain, so a convoy routed through an old side-branch commit of main (critical.toml emptied, row
   added, both undone before main merged it) had its row judged by that commit's critical.toml; arrivals are now read
   on `<rev>`'s own first-parent history only.
+- **Round 3** (b58c6be, the last of the three allowed). Invariants 1–5: none reproduced. Three findings on
+  `--rules-ref`, fixed with tests named `..._breaker3_...`: (1) arrival facts were stored per (story, commit, kind),
+  so a row a convoy appended after main retracted the same triple inherited the retracted row's arrival (a time
+  when the story was not critical); they are now per whole row, and a row with no arrival of its own is judged by
+  the current rules. (2) In a `blob:none` partial clone, `<rev>`'s `critical.toml` was missing and read as absent
+  (nothing critical); (3) its `state.toml` gave a raw `git cat-file` failure. Under `--rules-ref` a rule file `<rev>`
+  has and the clone lacks is now exit 2 with a message, never a looser rule. No round 4 (the limit is three).
+
+## Addendum
+- The scenarios grew from four to ten: S5–S9 are what Harbor's HRB-1..3 call (`attribution`, `show --json`, take and
+  release through `harbor.py`, hostile input, `check --json`'s schema) and S10 is `check --rules-ref`, asked for after
+  HRB-3 merged. The tests went to a new module, tests/test_ledger_harbor.py (test_ledger.py was already the second
+  slowest), so the touches name it and scripts/unit_shard.py; docs/ledger.md holds the contracts.
+- Harbor's repository could not be attached to this session (add_repo was refused), so its design and HRB-2's
+  harbor.py were read from the Harbor plugin's local clone, fetched to its main (bd8c00a, HRB-1 and HRB-2); the
+  end-to-end run against that harbor.py (lock, STORY_TAKEN, release, STORY_ON_TRUNK through `show --json`) was manual.
+- `attribution` leaves out commits `[ledger] since` reaches, as `check` does (`since` in the answer names it);
+  `diffs` and `since` are additive keys. A `No-story:` with an unknown category is attributed, as in `check`, and
+  shows as BAD_CATEGORY in `diffs`.
+- `take` passes `--session $CLAUDE_CODE_SESSION_ID` to Harbor when neither HARBOR_SESSION nor CLAUDE_SESSION_ID is
+  set (Harbor reads only those two, and Claude Code sets the third), so the vessel prompt's first line works.
+- A harbor.py whose feature probe crashes or does not answer blocks the take (exit 2); only argparse's
+  "invalid choice" reads as a Harbor without `story take`.
+- The snapshot path (a cut history) does not read the logbook.
 

@@ -16,7 +16,8 @@ import unittest
 from pathlib import Path
 
 from test_ledger import (CORR, CRITICAL, CRITICAL_TOML, REVIEWS, GitRepo, LedgerCase, approval, build_delegated, by_id, clean_env,
-                         commit_harness, corrections, delegated_row, read_json, review_row, review_text, story15)
+                         commit_harness, corrections, delegated_row, read_json, review_row, review_text, story15,
+                         toml_row)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -815,6 +816,56 @@ class LedgerRulesRefTest(LedgerCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertTrue([d for d in json_of(self, r)["diffs"] if d["code"] == "CORRECTION_INVALID"
                          and "UXC-303" in d["detail"]])
+
+    def test_LEDGER_013_S10_breaker3_a_readded_row_never_inherits_a_retracted_rows_arrival(self):
+        """Cold breaker round 3, finding 1: arrival facts are per row, so a row the convoy appends (same story,
+        commit, kind and run as a row main retracted after the story became critical) is judged by <rev>'s rules."""
+        repo, c = build_delegated(self.tmp, approval("mixed"))
+        sid, sha, run = "UXC-301", c["UXC-301"], "r000000000001"
+        commit_harness(repo, "chore: review\n\nNo-story: ledger",
+                       {f"{REVIEWS}/{run}.json": review_text(run, [review_row(sid, sha)], mode="mixed")})
+        first = delegated_row(sid, sha, run)
+        commit_harness(repo, "chore: row\n\nNo-story: ledger", {CORR: corrections(first)})
+        commit_harness(repo, "chore: login is critical\n\nNo-story: harness",
+                       {CRITICAL: CRITICAL_TOML + '\n[[area]]\nname = "login"\nwhy = "auth"\npaths = ["apps/api/login/"]\n'})
+        retract = toml_row(story=sid, commit=sha, kind="retract", evidence="wrong", approver="Leo", date="2026-11-26")
+        commit_harness(repo, "chore: retract\n\nNo-story: ledger", {CORR: corrections(first, retract)})
+        repo.publish()
+        rules = repo.sha()
+        again = toml_row(story=sid, commit=sha, kind="backfill", evidence="EV again", approver=f"delegated:{run}",
+                         date="2026-11-27")
+        commit_harness(repo, "chore: convoy re-adds\n\nNo-story: ledger", {CORR: corrections(first, retract, again)})
+        repo.publish()
+        for args in (["check", "--json"], ["check", "--json", "--rules-ref", rules]):
+            with self.subTest(args=args):
+                r = repo.ledger(*args)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("CORRECTION_INVALID", [d["code"] for d in json_of(self, r)["diffs"]])
+
+    def partial_clone(self, repo: GitRepo) -> GitRepo:
+        repo.run(["git", "config", "uploadpack.allowFilter", "true"], repo.bare)
+        dest = self.tmp / "partial"
+        repo.run(["git", "clone", "-q", "--filter=blob:none", f"file://{repo.bare}", str(dest)], self.tmp)
+        return GitRepo(self.tmp, existing=dest)
+
+    def test_LEDGER_013_S10_breaker3_rules_a_partial_clone_lacks_are_never_read_as_absent(self):
+        """Cold breaker round 3, findings 2 and 3: a rule file <rev> has and this partial clone lacks (critical.toml,
+        state.toml) is no pass: exit 2 saying so, never `critical.toml` read as empty nor a raw git failure."""
+        repo, c = build_delegated(self.tmp, approval("delegated"))
+        commit_harness(repo, "chore: a review\n\nNo-story: ledger",
+                       {f"{REVIEWS}/rpay.json": review_text("rpay", [review_row("UXC-303", c["UXC-303"])])})
+        repo.publish()
+        rules = repo.sha()
+        commit_harness(repo, "chore: convoy relaxes the rules\n\nNo-story: ledger",
+                       {CRITICAL: "", ".keelokit/state.toml": approval("delegated") + "\n# relaxed\n",
+                        CORR: corrections(delegated_row("UXC-303", c["UXC-303"], "rpay"))})
+        repo.publish()
+        self.assertEqual(repo.ledger("check", "--json", "--rules-ref", rules).returncode, 1, "a full clone judges it")
+        r = self.partial_clone(repo).ledger("check", "--json", "--rules-ref", rules)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("not in this clone", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertNotIn("cat-file failed", r.stderr)
 
     def test_LEDGER_013_S10_the_same_rules_give_the_same_verdict(self):
         repo, _ = build_delegated(self.tmp, approval("delegated"))
