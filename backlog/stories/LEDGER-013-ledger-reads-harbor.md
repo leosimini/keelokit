@@ -4,7 +4,7 @@ epic = "LEDGER"
 title = "The ledger reads Harbor's logbook"
 wave = 18
 depends_on = ["LEDGER-012"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger.py", "docs/design.md", "CHANGELOG.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_ledger_harbor.py", "tests/test_ledger.py", "scripts/unit_shard.py", "docs/design.md", "docs/ledger.md", "docs/escapes.md", "CHANGELOG.md", "backlog/stories/LEDGER-013-ledger-reads-harbor.md"]
 dimensions = ["logic", "integrity", "dx"]
 invariants = ["INV-005"]
 origin = "docs/ledger.md — Harbor and Swarm; Harbor's plan docs/ledger-phase6.md (HRB-2)"
@@ -49,13 +49,100 @@ Scenario: [S3] take with Harbor
 Scenario: [S4] Without a logbook
   Given no harbor/log
   Then every state is as before LEDGER-013
+
+Scenario: [S5] attribution of a range (Harbor's convoy add, HRB-1)
+  Given a vessel branch with an own trailer, a commit without one, a No-story:, a clean merge, a merge bringing
+    an unattributed commit and a merge with its own trailer
+  Then `ledger.py attribution <a>..<b> --json` exits 0 with schema 1, the commits in `git rev-list --reverse`
+    order, each attributed exactly as `check` attributes it (via own, merge, correction or null), `unattributed`,
+    `ok` and the sorted `stories`; a usage error or an end that does not resolve exits 2, a cut history 3
+
+Scenario: [S6] show --json (Harbor's STORY_ON_TRUNK, HRB-2)
+  Given AUTH-001 on the trunk through convoy 8
+  Then `ledger.py show AUTH-001 --json` is schema 1 with the record (id, state, version, convoy, delivered) and
+    the why as data; an id that is no story exits 1 with `error` and no state
+
+Scenario: [S7] take and take --clear with Harbor
+  Given `git config harbor.py` names a harbor.py that has `story take`
+  Then `take` runs `harbor.py story take <ID>` and sets the story only when it exits 0; STORY_ON_TRUNK is one
+    line and exit 1; an environment failure or no answer is exit 2 with nothing set; an unregistered session
+    takes; `take --clear` runs `story release`; a harbor.py without `story take`, or none, changes nothing
+
+Scenario: [S8] Hostile logbook content and harbor.py output
+  Given malformed, oversized, mistyped or unreadable logbook files, and a harbor.py that prints a take and exits 1
+  Then the ledger never crashes, no logbook content changes a difference or raises a story it should not, a
+    refusal is never a take, and no hook's path (summary, --json, history, check, show, attribution, the git
+    hooks, the plugin's --root run) runs harbor.py
+
+Scenario: [S9] check --json keeps its schema (Harbor's HRB-3)
+  Then `ledger.py check --json` is {"schema": 1, "diffs": [{level, code, detail}]}, exit 1 iff an error
+
+Scenario: [S10] check --rules-ref (Harbor's ok judges a convoy as landed)
+  Given main's tip M marks apps/api/pay critical and a convoy commit relaxes critical.toml and adds a delegated
+    correction row for a story under it
+  Then `ledger.py check --json --rules-ref M` judges that row by M's rules (CORRECTION_INVALID, exit 1), while the
+    convoy's own rules would pass it; the same rules give the same verdict; a rev that is no commit is exit 2
 ```
 
 ## Testable units
 | Unit | Test type | File |
 |---|---|---|
-| reading convoys, vessels, workers and moves from a test logbook; take delegating to a stub harbor.py | unit | tests/test_ledger.py |
+| reading convoys, vessels, workers and moves from a test logbook; take delegating to a stub harbor.py; attribution; show --json; hostile input | unit | tests/test_ledger_harbor.py |
 
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, INV-005 cited, a CHANGELOG
 line, `Story: LEDGER-013` trailer, addendum if the result differs.
+
+## Cold breaker
+Each round is a fresh subagent given only the repo, the PR diff and the invariants (attribution equals `check`'s,
+hostile logbook or harbor.py output can't crash, run code from a hook's path or change a verdict, take never claims
+success when Harbor refused, and from round 1's second half `--rules-ref`); findings are reproduced, each fixed with
+a failing test first.
+
+- **Round 1** (9c678ae, then c478797 for `--rules-ref`). Invariants 1–5: none reproduced (90 random DAGs compared
+  `attribution` with `check --ci` on a pull request and `check` on the trunk; hostile logbook and harbor.py output).
+  Two findings on `--rules-ref`, both fixed with tests named `..._breaker1_...`: (1) a convoy could narrow its story
+  file's `touches`/`dimensions` and so un-critical its own delegated correction row, since the story was read from
+  the convoy's tree; now the stories that decide the critical flag are `<rev>`'s. (2) `[ledger]` (`enforce`,
+  `since`, `no_story`, `stories`) came from the checked-out `state.toml`, so a convoy setting `enforce = "warn"`
+  passed; now the whole committed `state.toml` is `<rev>`'s.
+- **Round 2** (eb8a8b0). Invariants 1, 3, 4, 5: none reproduced (126 random repos compared `attribution` with
+  `check --ci` and trunk `check`). Two findings, both fixed with tests named `..._breaker2_...`: (1) a trunk merge
+  subject `Merge branch 'convoy/<5000 digits>'` made every reading command exit 2 (Python's int-string limit in the
+  new `convoy_of_merge`); convoy numbers from branch names are now bounded to 9 digits like the trailer's, and the
+  older `train_commits` too. (2) Under `--rules-ref`, a delegated row's arrival was found on the convoy's
+  first-parent chain, so a convoy routed through an old side-branch commit of main (critical.toml emptied, row
+  added, both undone before main merged it) had its row judged by that commit's critical.toml; arrivals are now read
+  on `<rev>`'s own first-parent history only.
+- **Round 3** (b58c6be, the last of the three allowed). Invariants 1–5: none reproduced. Three findings on
+  `--rules-ref`, fixed with tests named `..._breaker3_...`: (1) arrival facts were stored per (story, commit, kind),
+  so a row a convoy appended after main retracted the same triple inherited the retracted row's arrival (a time
+  when the story was not critical); they are now per whole row, and a row with no arrival of its own is judged by
+  the current rules. (2) In a `blob:none` partial clone, `<rev>`'s `critical.toml` was missing and read as absent
+  (nothing critical); (3) its `state.toml` gave a raw `git cat-file` failure. Under `--rules-ref` a rule file `<rev>`
+  has and the clone lacks is now exit 2 with a message, never a looser rule. No round 4 (the limit is three).
+- **Coordinator's final breaker** (8550fbf). Two findings, fixed with failing tests first: (1, high) under
+  `--rules-ref` a convoy attributed its own unattributed commit with a correction row it appended itself; corrections
+  are now rules too, so a row counts only when `<rev>`'s own corrections file holds it, identical (ESC-309). (2, low)
+  `attribution` read `since` and `no_story` from the work tree's state.toml; it now reads the trunk's committed one,
+  or `--rules-ref`'s, which it also accepts (ESC-310). Every escaped class of the four rounds and the Semgrep finding
+  has a row in docs/escapes.md, ESC-302..ESC-310.
+
+## Addendum
+- The scenarios grew from four to ten: S5–S9 are what Harbor's HRB-1..3 call (`attribution`, `show --json`, take and
+  release through `harbor.py`, hostile input, `check --json`'s schema) and S10 is `check --rules-ref`, asked for after
+  HRB-3 merged. The tests went to a new module, tests/test_ledger_harbor.py (test_ledger.py was already the second
+  slowest), so the touches name it and scripts/unit_shard.py; docs/ledger.md holds the contracts.
+- Harbor's repository could not be attached to this session (add_repo was refused), so its design and HRB-2's
+  harbor.py were read from the Harbor plugin's local clone, fetched to its main (bd8c00a, HRB-1 and HRB-2); the
+  end-to-end run against that harbor.py (lock, STORY_TAKEN, release, STORY_ON_TRUNK through `show --json`) was manual.
+- `attribution` leaves out commits `[ledger] since` reaches, as `check` does (`since` in the answer names it);
+  `diffs` and `since` are additive keys. A `No-story:` with an unknown category is attributed, as in `check`, and
+  shows as BAD_CATEGORY in `diffs`.
+- `take` hands `CLAUDE_CODE_SESSION_ID` to Harbor as `HARBOR_SESSION` (in its environment, never as an argument:
+  Semgrep's tainted-argv rule caught the first version) when neither HARBOR_SESSION nor CLAUDE_SESSION_ID is
+  set (Harbor reads only those two, and Claude Code sets the third), so the vessel prompt's first line works.
+- A harbor.py whose feature probe crashes or does not answer blocks the take (exit 2); only argparse's
+  "invalid choice" reads as a Harbor without `story take`.
+- The snapshot path (a cut history) does not read the logbook.
+

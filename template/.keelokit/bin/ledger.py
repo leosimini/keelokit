@@ -8,11 +8,14 @@
                                                        (exit 0 complete, 1 incomplete, 2 not a git repo)
     python3 .keelokit/bin/ledger.py history --ensure   complete it (SessionStart hook); always exit 0
     python3 .keelokit/bin/ledger.py show <ID> [--full] a story's card: its state and the why (at most 60 lines)
+    python3 .keelokit/bin/ledger.py show <ID> --json   the same record and why, schema 1 (exit 1 no such story)
     python3 .keelokit/bin/ledger.py next               the ready stories nobody works on, by wave and id
     python3 .keelokit/bin/ledger.py --release vX.Y.Z   the stories that entered that version
     python3 .keelokit/bin/ledger.py take <ID>          this worktree works on <ID> (git config --worktree
                                                        keelokit.story); exit 1 if it is no story or on the trunk
-    python3 .keelokit/bin/ledger.py take --clear       this worktree works on no story
+                                                       with Harbor: harbor.py story take <ID> first (a refusal
+                                                       is one line and exit 1, nothing is set)
+    python3 .keelokit/bin/ledger.py take --clear       this worktree works on no story (with Harbor: story release)
     python3 .keelokit/bin/ledger.py drop <ID> --motivo "..."
                                                        record an abandoned attempt: an empty commit with
                                                        `Dropped: <ID>`, pushed to archive/<id>-<YYYYMMDD>
@@ -30,9 +33,13 @@
     python3 .keelokit/bin/ledger.py deploy <staging|production> <commit>
                                                        a deploy job, once its deploy succeeded: deploy/<env> points
                                                        at that commit (backwards too, for a rollback)
-    python3 .keelokit/bin/ledger.py check [--ci] [--json]
+    python3 .keelokit/bin/ledger.py check [--ci] [--json] [--rules-ref REV]
                                                        every difference (exit 1 on an error-level one); --ci
-                                                       in a pull request into the trunk checks its commits too
+                                                       in a pull request into the trunk checks its commits too;
+                                                       --rules-ref: the committed rule files from REV
+    python3 .keelokit/bin/ledger.py attribution <a>..<b> [--json] [--rules-ref REV]
+                                                       is every commit of the range attributed, as `check` says
+                                                       (exit 0 answered, 2 usage or unresolved, 3 history cut)
     python3 .keelokit/bin/ledger.py backfill --propose [--from FILE ...]
                                                        candidate correction rows, for review, written to
                                                        .keelokit/ledger-corrections.proposed.toml
@@ -54,7 +61,12 @@ trunk's tree (`[ledger] stories`, `id_from`), the trunk is origin/<trunk> else t
 HEAD). A fixed number of git calls whatever the number of stories, commits or tags: the parent graph
 comes from one `rev-list --parents` and arrivals, tags and deploys are walked in Python. Fail closed:
 a cut history makes every state unknown with the reason, and a failing git call exits 2 (no partial
-answer). `delivered` (Harbor) is not read here.
+answer).
+
+Harbor (LEDGER-013, docs/ledger.md "Harbor and Swarm"): the logbook, origin/harbor/log, is read with git as data,
+never written: an active worker holding a story makes it in-progress, a vessel sealed on its exact head in an open
+convoy makes it delivered, and a sailed convoy names the convoy of an on-trunk story and its exact time. It never
+adds a difference. Only `take` runs Harbor's harbor.py (`git config harbor.py`), never a hook's path.
 
 Corrections (docs/ledger.md, "Corrections file"): `backlog/ledger-corrections.toml`, read from the trunk's
 tree, holds approved rows (story, commit, kind, evidence, approver, date). An active row makes its story
@@ -379,7 +391,7 @@ def history(do_ensure: bool, state: dict, trunk: str) -> int:
 
 # ───────────────────────── states of every story (LEDGER-003) ─────────────────────────
 
-STATES = ("defined", "ready", "in-progress", "on-trunk", "in-version", "in-staging", "in-production")
+STATES = ("defined", "ready", "in-progress", "delivered", "on-trunk", "in-version", "in-staging", "in-production")
 ENVIRONMENTS = ("staging", "production")
 READ_CONFIG = ["-c", "log.showSignature=false", "-c", "i18n.logOutputEncoding=UTF-8"]
 STORY_ID = re.compile(r"[A-Z][A-Z0-9]*-[0-9]+")
@@ -445,19 +457,22 @@ CORRECTIONS_HEADER = """\
 """
 STATE_NAMES = {
     "en": {s: s for s in (*STATES, "unknown")},
-    "es": {"defined": "definida", "ready": "lista", "in-progress": "en curso", "on-trunk": "en trunk",
+    "es": {"defined": "definida", "ready": "lista", "in-progress": "en curso", "delivered": "entregada",
+           "on-trunk": "en trunk",
            "in-version": "en versión", "in-staging": "en staging", "in-production": "en producción",
            "unknown": "desconocida"},
 }
 LABELS = {
     "en": {"complete": "history complete", "cut": "history INCOMPLETE: every state is unknown",
-           "stories": "stories", "progress": "in progress", "ready": "ready", "reverted": "reverted",
+           "stories": "stories", "progress": "in progress", "delivered": "delivered", "ready": "ready",
+           "reverted": "reverted",
            "unknown": "unknown", "stale": "stale", "more": "more", "none": "no stories found",
            "unattributed": "unattributed commits since", "reconstructed": "reconstructed",
            "by_person": "reconstructed (person)", "by_delegated": "reconstructed (delegated)",
            "snapshot": "history incomplete: states read from the CI's snapshot of {sha}"},
     "es": {"complete": "historia completa", "cut": "historia INCOMPLETA: todos los estados son desconocidos",
-           "stories": "historias", "progress": "en curso", "ready": "listas", "reverted": "revertidas",
+           "stories": "historias", "progress": "en curso", "delivered": "entregadas", "ready": "listas",
+           "reverted": "revertidas",
            "unknown": "desconocidas", "stale": "estancada", "more": "más", "none": "no hay historias",
            "unattributed": "commits sin atribuir desde", "reconstructed": "reconstruidas",
            "by_person": "reconstruidas (persona)", "by_delegated": "reconstruidas (delegada)",
@@ -743,17 +758,23 @@ def read_tree(trunk_sha: str) -> list[tuple[str, str]]:
     return files
 
 
-def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]]) -> dict:
+def read_trunk_files(trunk_sha: str, tree: list[tuple[str, str]], strict: bool = False) -> dict:
     """What the approval modes read from the trunk's tree, in one `cat-file`: state.toml, critical.toml and the
-    review files ({run: bytes}). A file the clone lacks reads as absent."""
-    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE)
+    review files ({run: bytes}). A file the clone lacks reads as absent; `strict` (the rules of `check --rules-ref`):
+    LedgerError instead, since a rule read as absent is a looser rule (no critical area, the default enforce)."""
+    wanted = {path: sha for path, sha in tree if path in (STATE_FILE, CRITICAL_FILE, CORRECTIONS)
               or (path.startswith(REVIEWS + "/") and path.endswith(".json")
                   and RUN_ID.fullmatch(path[len(REVIEWS) + 1:-5]) and "/" not in path[len(REVIEWS) + 1:])}
     blobs = read_blobs(list(wanted.values()), trunk_sha)
     content = {path: blobs.get(sha) for path, sha in wanted.items()}
+    lacking = sorted(path for path, data in content.items() if data is None)
+    if strict and lacking:
+        raise LedgerError(f"the rules at {short(trunk_sha)} are not in this clone ({', '.join(lacking[:3])}"
+                          f"{', …' if len(lacking) > 3 else ''}: a partial clone); fetch them, or use a full clone")
     reviews = {path[len(REVIEWS) + 1:-5]: data for path, data in content.items()
                if path.startswith(REVIEWS + "/") and data is not None}
-    return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews}
+    return {"state": content.get(STATE_FILE), "critical": content.get(CRITICAL_FILE), "reviews": reviews,
+            "corrections": content.get(CORRECTIONS)}
 
 
 def read_stories(trunk_sha: str, cfg: dict, tree: list[tuple[str, str]] | None = None) -> tuple[list[dict], list[str]]:
@@ -1032,7 +1053,8 @@ def new_story(story: dict) -> dict:
             "state": "defined", "since": None, "since_exact": False, "commit": None, "convoy": None,
             "version": None, "candidate": None, "environments": dict.fromkeys(ENVIRONMENTS),
             "reconstructed": False, "reconstructed_by": None, "correction": None, "reverted": False, "branches": [], "attempts": [],
-            "swarm": [], "signals": [], "reason": None, "path": story["path"], "arrival": None, "as_of": None}
+            "swarm": [], "signals": [], "reason": None, "path": story["path"], "arrival": None, "as_of": None,
+            "delivered": None, "workers": []}
 
 
 def mark_unknown(records: list[dict], reason: str) -> None:
@@ -1215,7 +1237,7 @@ def ledger_facts(state: dict) -> dict:
     return read_all(state)["facts"]
 
 
-def read_all(state: dict) -> dict:
+def read_all(state: dict, rules_sha: str | None = None) -> dict:
     """The facts and what they were computed from (for the commands that propose or accept corrections):
     facts, and with a complete history also stories, log, graph, placed (arrivals), corrections, records."""
     cfg = read_config(state)
@@ -1226,14 +1248,17 @@ def read_all(state: dict) -> dict:
     trunk_sha = resolve_trunk(trunk, refs)
     tree = read_tree(trunk_sha)
     stories, unreadable = read_stories(trunk_sha, cfg, tree)
-    extra = read_trunk_files(trunk_sha, tree)
+    # The rules the committed tree holds ([ledger.approval], critical.toml, the review files): the trunk's, or with
+    # `check --rules-ref` (LEDGER-013) another commit's, so a tree under judgment never relaxes its own rules.
+    extra = read_trunk_files(rules_sha, read_tree(rules_sha), True) if rules_sha else read_trunk_files(trunk_sha, tree)
     reviews = {run: parse_review(data, run) for run, data in extra["reviews"].items()}
     tags = [sha for _, _, sha in version_tags(refs)]
     remotes = [sha for name, sha in refs.items() if name.startswith("refs/remotes/origin/")]
     graph = read_graph(sorted({trunk_sha, *tags, *remotes}))
     reason = cut_reason(graph, shallow)
     facts = {"schema": 1, "trunk": trunk, "trunk_sha": trunk_sha, "history": "incomplete" if reason else "complete",
-             "stories": [], "unattributed": {"since": cfg["since"], "commits": 0, "ratio": 0.0}, "diffs": []}
+             "stories": [], "unattributed": {"since": cfg["since"], "commits": 0, "ratio": 0.0}, "diffs": [],
+             "harbor": {"logbook": None, "skipped": 0, "error": None}}
     if reason:
         level = "error" if os.environ.get("CI", "").lower() not in ("", "0", "false") else "warning"
         view = snapshot_view(cfg, trunk, trunk_sha, refs, graph, stories, tree)
@@ -1249,14 +1274,23 @@ def read_all(state: dict) -> dict:
         return {"facts": facts, "reason": reason}
     log = read_trunk_log(trunk_sha)
     placed = arrivals(graph, trunk_sha)
-    delegation = {"reviews": reviews, "stories": {s["id"]: s for s in stories if not s.get("unreadable")},
-                  "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"])}
+    # A story's touches and dimensions decide its critical flag: with --rules-ref, as <rev> has them (a story <rev>
+    # lacks has no record there, so it counts as critical).
+    judged = read_stories(rules_sha, cfg)[0] if rules_sha else stories
+    delegation = {"reviews": reviews, "stories": {s["id"]: s for s in judged if not s.get("unreadable")},
+                  "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"]),
+                  "rules_reach": set(read_graph([rules_sha])) if rules_sha else None, "rules_sha": rules_sha}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
+    if rules_sha:  # corrections are rules too: a row counts only when <rev>'s own file holds it, identical
+        corrections = {**corrections, "active": held_rows(corrections["active"], extra["corrections"])}
     branches = read_branches(trunk_sha, refs, graph, set(placed[0]), cfg["snapshot"])
     facts["stories"] = compute_states(stories, unreadable, log, graph, refs, placed, branches,
                                       cfg["stale_days"], time.time(), corrections, trunk)
     apply_moves(facts["stories"], snapshot_moves(refs), graph)
+    book = read_logbook(refs)
+    apply_logbook({r["id"]: r for r in facts["stories"]}, book, refs, log, placed)
+    facts["harbor"] = {"logbook": book["head"], "skipped": book["skipped"], "error": book["error"]}
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
@@ -1264,10 +1298,238 @@ def read_all(state: dict) -> dict:
     return {"facts": facts, "reason": None, "cfg": cfg, "trunk_sha": trunk_sha, "tip": trunk_sha, "trunk": trunk,
             "unverified": unverified_prefixes(state), "stories": stories, "log": log,
             "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
-            "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation}
+            "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation,
+            "harbor": book}
+
+
+# ── Harbor's logbook (LEDGER-013) ──
+# Harbor keeps what is under way in the orphan branch harbor/log, written only by harbor.py (its docs/design.md has the
+# schemas). The ledger reads it as data, with git, never by running Harbor, and never writes it. What it says only
+# raises a story that is not on the trunk (in-progress, delivered) and names the convoy, and the exact time, of one
+# that is; it never adds a difference, so no logbook content changes what `check` or the exit codes say. A file that
+# is not what Harbor writes is left out (`harbor.skipped`); a logbook git cannot read is none (`harbor.error`).
+
+LOGBOOK = "refs/remotes/origin/harbor/log"
+LOGBOOK_FILE_BYTES = 1 << 20   # a larger file is no logbook file Harbor writes: left out, never read whole
+LOGBOOK_FILES = 20000          # at most this many files of each kind are read
+LOGBOOK_BYTES = 32 << 20       # and at most this many bytes of them in all: the session start reads the logbook
+OPEN_CONVOY = ("assembling", "waiting", "ready", "verifying")
+CONVOY_STATES = (*OPEN_CONVOY, "sailed", "aborted")
+CONVOY_PATH = re.compile(r"harbor/convoys/([1-9][0-9]{0,8})\.toml")
+WORKER_PATH = re.compile(r"harbor/workers/[^/]+/[^/]+/[^/]+\.toml")
+RUN_PATH = re.compile(r"harbor/(?:runs|seals)/([0-9a-f]{40}|[0-9a-f]{64})\.toml")
+MAIN_PATH = "harbor/main.toml"
+CONVOY_CAUSE = re.compile(r"convoy ([1-9][0-9]{0,8})")
+CONVOY_VALUE = re.compile(r"#?([1-9][0-9]{0,8})")
+LOGBOOK_TEXT = 300             # longest text kept from a logbook value (an event's detail, a branch)
+
+
+def is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def logbook_text(value, limit: int = LOGBOOK_TEXT) -> str | None:
+    """A logbook string, cut to `limit` characters; None for anything else."""
+    return value[:limit] if isinstance(value, str) else None
+
+
+def logbook_toml(content: bytes) -> dict | None:
+    """A logbook file's table; None when it is not UTF-8 TOML (whatever is wrong with it: never a crash)."""
+    try:
+        data = tomllib.loads(content.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - not UTF-8, not TOML, nested too deep: not a file Harbor wrote
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def parse_convoy(number: int, data: dict) -> dict | None:
+    """harbor/convoys/<n>.toml: its number (the file's), state, vessels (branch, full head, story), sail and events."""
+    if "number" in data and not (is_int(data["number"]) and data["number"] == number):
+        return None
+    if data.get("state") not in CONVOY_STATES:
+        return None
+    vessels = []
+    for v in data.get("vessels") if isinstance(data.get("vessels"), list) else []:
+        if isinstance(v, dict) and isinstance(v.get("branch"), str) and isinstance(v.get("head"), str) \
+                and FULL_SHA.fullmatch(v["head"]):
+            vessels.append({"branch": v["branch"], "head": v["head"], "story": logbook_text(v.get("story")) or ""})
+    sail = data.get("sail") if isinstance(data.get("sail"), dict) else {}
+    ends = {k: sail.get(k) for k in ("main_before", "main_after")}
+    sail = ends if all(isinstance(x, str) and FULL_SHA.fullmatch(x) for x in ends.values()) else None
+    events = []
+    for e in data.get("events") if isinstance(data.get("events"), list) else []:
+        if isinstance(e, dict):
+            events.append({k: logbook_text(e.get(k)) or "" for k in ("at", "by", "what", "detail")})
+    return {"number": number, "state": data["state"], "vessels": vessels[:LOGBOOK_FILES], "sail": sail,
+            "events": events[-LOGBOOK_FILES:]}
+
+
+def parse_worker(data: dict) -> dict | None:
+    """harbor/workers/<account>/<host>/<session>.toml: id, state and the story it took (HRB-2, optional)."""
+    wid, state = logbook_text(data.get("id")), data.get("state")
+    if not wid or not isinstance(state, str):
+        return None
+    return {"id": wid, "state": state, "story": logbook_text(data.get("story")) or ""}
+
+
+def parse_moves_of_main(data: dict) -> list[dict]:
+    """harbor/main.toml's moves of the trunk: from, to (full shas), seen (ISO 8601, UTC) and cause."""
+    moves = []
+    for m in data.get("moves") if isinstance(data.get("moves"), list) else []:
+        if isinstance(m, dict) and all(isinstance(m.get(k), str) and FULL_SHA.fullmatch(m[k]) for k in ("from", "to")) \
+                and isinstance(m.get("seen"), str) and ISO_TIME.fullmatch(m["seen"]) and isinstance(m.get("cause"), str):
+            moves.append({"from": m["from"], "to": m["to"], "seen": m["seen"], "cause": m["cause"]})
+    return moves[-LOGBOOK_FILES:]
+
+
+def logbook_entries(head: str) -> dict[str, tuple[str, int]]:
+    """path -> (blob, size) of every file of the logbook's tree under harbor/ (one `ls-tree`)."""
+    out = git_read(["ls-tree", "-r", "-l", "-z", head, "--", "harbor/"])
+    entries = {}
+    for entry in out.decode("utf-8", errors="replace").split("\0"):
+        meta, tab, path = entry.partition("\t")
+        fields = meta.split()
+        if tab and len(fields) == 4 and fields[1] == "blob" and fields[3].isdigit():
+            entries[path] = (fields[2], int(fields[3]))
+    return entries
+
+
+def read_logbook_files(entries: dict, paths: list[str]) -> tuple[dict[str, bytes], int]:
+    """Contents of these logbook files (one `cat-file`), and how many were left out: larger than LOGBOOK_FILE_BYTES,
+    past LOGBOOK_FILES or LOGBOOK_BYTES, or not in this clone (a partial clone that never fetched them)."""
+    chosen, total = [], 0
+    for p in paths:
+        size = entries[p][1]
+        if size <= LOGBOOK_FILE_BYTES and total + size <= LOGBOOK_BYTES and len(chosen) < LOGBOOK_FILES:
+            chosen.append(p)
+            total += size
+    blobs = cat_blobs([entries[p][0] for p in chosen])
+    files = {p: blobs[entries[p][0]] for p in chosen if blobs.get(entries[p][0]) is not None}
+    return files, len(paths) - len(files)
+
+
+def read_logbook(refs: dict) -> dict:
+    """What the ledger reads of origin/harbor/log: convoys by number, workers, the trunk's moves, and the runs (seals)
+    of the vessels' heads. Never raises: an unreadable logbook is an empty one with `error`."""
+    book = {"head": refs.get(LOGBOOK), "convoys": {}, "workers": [], "moves": [], "runs": {}, "skipped": 0,
+            "error": None}
+    if not book["head"]:
+        return book
+    try:
+        entries = logbook_entries(book["head"])
+        first = sorted(p for p in entries if p == MAIN_PATH or CONVOY_PATH.fullmatch(p) or WORKER_PATH.fullmatch(p))
+        files, skipped = read_logbook_files(entries, first)
+        convoys, workers, moves = {}, [], []
+        for path, content in files.items():
+            data = logbook_toml(content)
+            m = CONVOY_PATH.fullmatch(path)
+            parsed = None if data is None else parse_convoy(int(m.group(1)), data) if m \
+                else parse_worker(data) if WORKER_PATH.fullmatch(path) else data
+            if parsed is None:
+                skipped += 1
+            elif m:
+                convoys[parsed["number"]] = parsed
+            elif path == MAIN_PATH:
+                moves = parse_moves_of_main(parsed)
+            else:
+                workers.append(parsed)
+        heads = {v["head"] for c in convoys.values() if c["state"] in OPEN_CONVOY for v in c["vessels"]}
+        runs_paths = sorted(p for p in entries if (r := RUN_PATH.fullmatch(p)) and r.group(1) in heads)
+        run_files, run_skipped = read_logbook_files(entries, runs_paths)
+        runs: dict[str, dict] = {}
+        for path in sorted(run_files):  # runs/ before seals/: Harbor reads runs/ first (run_of)
+            sha = RUN_PATH.fullmatch(path).group(1)
+            data = logbook_toml(run_files[path])
+            if data is None or not is_int(data.get("exit")) or data.get("head", sha) != sha:
+                run_skipped += 1
+            elif sha not in runs:
+                runs[sha] = {"exit": data["exit"]}
+        book.update(convoys=convoys, workers=sorted(workers, key=lambda w: w["id"]), moves=moves, runs=runs,
+                    skipped=skipped + run_skipped)
+    except Exception as e:  # noqa: BLE001 - the logbook is data anyone who can push writes: never a crash, never a verdict
+        book.update(convoys={}, workers=[], moves=[], runs={}, error=" ".join(str(e).split())[:200] or type(e).__name__)
+    return book
+
+
+def harbor_ids(value: str, ids: dict[str, str]) -> list[str]:
+    """The trunk's story ids a logbook `story` names ("A, B"; Harbor compares ids without case)."""
+    return sorted({ids[p.strip().casefold()] for p in value.split(",") if p.strip().casefold() in ids})
+
+
+def convoy_of_merge(c: dict | None) -> int | None:
+    """The convoy a first-parent merge of the trunk carries: its `Convoy: <n>` trailer (one number), else a merge of
+    convoy/<n>."""
+    if not c or len(c["parents"]) < 2:
+        return None
+    numbers = {int(m.group(1)) for v in trailer_values(c["trailers"], "Convoy") if (m := CONVOY_VALUE.fullmatch(v.strip()))}
+    if len(numbers) == 1:
+        return numbers.pop()
+    branch = merged_branch(c["message"].split("\n", 1)[0])
+    m = TRAIN_BRANCH.match(branch) if branch and not numbers else None
+    n = CONVOY_VALUE.fullmatch(m.group(1)) if m and branch.lower().startswith(("convoy", "origin/convoy")) else None
+    return int(n.group(1)) if n else None
+
+
+def apply_logbook(records: dict[str, dict], book: dict, refs: dict, log: list[dict], placed: tuple) -> None:
+    """What the logbook adds to the records (docs/ledger.md, "States"): an active worker holding a story makes it
+    in-progress (from defined or ready); a vessel sealed on its exact head (a green run of that head, and its origin
+    branch, when there is one, still at it) in an open convoy makes it delivered with that convoy (the highest
+    number when several); an on-trunk story's convoy is the `Convoy: <n>` of the merge that brought it, else the
+    sailed convoy or the convoy's move of the trunk that holds its arrival, whose `seen` is then its exact time.
+    INV-005: the logbook never puts a story on the trunk nor takes one off it, and never touches an unknown one."""
+    ids = {sid.casefold(): sid for sid in records}
+    for w in book["workers"]:
+        if w["state"] == "active":
+            for sid in harbor_ids(w["story"], ids):
+                records[sid]["workers"].append(w["id"])
+    for rec in records.values():
+        rec["workers"] = sorted(set(rec["workers"]))
+        if rec["workers"] and rec["state"] in ("defined", "ready"):
+            rec["state"] = "in-progress"
+    for n in sorted(book["convoys"]):
+        c = book["convoys"][n]
+        if c["state"] not in OPEN_CONVOY:
+            continue
+        for v in c["vessels"]:
+            tip = refs.get(f"refs/remotes/origin/{v['branch']}")
+            run = book["runs"].get(v["head"])
+            if run is None or run["exit"] != 0 or (tip is not None and tip != v["head"]):
+                continue
+            for sid in harbor_ids(v["story"], ids):
+                rec = records[sid]
+                if rec["state"] in ("defined", "ready", "in-progress", "delivered"):
+                    rec.update(state="delivered", convoy=n, delivered={"convoy": n, "convoy_state": c["state"],
+                                                                       "branch": v["branch"], "head": v["head"]})
+    position = placed[1]
+    by_sha = {c["sha"]: c for c in log}
+    sails = [(n, c["sail"]) for n, c in sorted(book["convoys"].items()) if c["state"] == "sailed" and c["sail"]
+             and c["sail"]["main_before"] in position and c["sail"]["main_after"] in position]
+    moves = [(m, int(k.group(1))) for m in book["moves"] if (k := CONVOY_CAUSE.fullmatch(m["cause"]))
+             and m["from"] in position and m["to"] in position]
+    for rec in records.values():
+        at = position.get(rec.get("arrival") or "")
+        if not rec["commit"] or rec["state"] == "unknown" or at is None:
+            continue
+        move = next((m for m, _ in moves if position[m["from"]] < at <= position[m["to"]]), None)
+        if rec["convoy"] is None:
+            rec["convoy"] = convoy_of_merge(by_sha.get(rec["arrival"])) \
+                or next((n for n, s in sails if position[s["main_before"]] < at <= position[s["main_after"]]), None) \
+                or next((n for m, n in moves if m is move), None)
+        if move is not None and not rec["since_exact"]:
+            rec["since"], rec["since_exact"] = move["seen"], True
 
 
 # ── corrections (docs/ledger.md, "Corrections file") ──
+
+def held_rows(active: list[dict], content: bytes | None) -> list[dict]:
+    """The active rows that the corrections file `content` (<rev>'s, for `--rules-ref`) holds with the same story,
+    commit, kind, evidence, approver and date. A row only the candidate has attributes nothing (and is no error); a
+    row <rev> has that the candidate retracted or changed stays out, as without --rules-ref (CORRECTION_EDITED)."""
+    rows, why = parse_rows(content) if content is not None else ([], None)
+    fields = ("story", "commit", "kind", "evidence", "approver", "date")
+    held = {tuple(plain_value(r.get(k)) for k in fields) for r in rows or [] if isinstance(r, dict) and not why}
+    return [r for r in active if tuple(r[k] for k in fields) in held]
+
 
 def toml_str(value: str) -> str:
     """A TOML basic string: JSON's escapes are TOML's, but DEL must be escaped too."""
@@ -1327,7 +1589,7 @@ def row_problem(row, story_ids: set | None, reachable: set, reviews: dict | None
     if not ISO_DATE.fullmatch(values["date"]) or not valid_date(values["date"]):
         return f"date {values['date']!r} is not a YYYY-MM-DD date"
     if is_delegated(values["approver"]):
-        return delegated_problem(values, reviews or {"reviews": {}})
+        return delegated_problem(values, reviews or {"reviews": {}}, row_key(row))
     return None
 
 
@@ -1447,7 +1709,11 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
         else:
             tip_rows = rows
             if reviews and any(isinstance(r, dict) and is_delegated(r.get("approver")) for r in rows):
-                reviews = {**reviews, "arrival": arrival_facts(rows, versions, contents, reviews)}
+                at, seen = versions, contents
+                if reviews.get("rules_sha"):  # --rules-ref: a row arrives on <rev>'s own history or not at all
+                    at = file_versions(reviews["rules_sha"])
+                    seen = {**contents, **cat_blobs([b for _, b in at if b and b not in contents])}
+                reviews = {**reviews, "arrival": arrival_facts(rows, at, seen, reviews)}
             result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS,
                                                            reviews=with_touched(reviews, rows, reachable))
     tip_keys = [row_key(row) for row in tip_rows]
@@ -1503,7 +1769,7 @@ def cat_specs(specs: list[str]) -> dict[str, bytes | None]:
 
 
 def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) -> dict:
-    """(story, commit, kind) of each delegated row -> {"areas", "story"}: the critical areas and the story's touches
+    """row_key of each delegated row -> {"areas", "story"}: the critical areas and the story's touches
     and dimensions as the trunk had them at the first-parent commit where the row first appeared, so a later area or
     edit of the story never turns an approved row invalid. Rows not found there keep the tip's view."""
     wanted = {}
@@ -1522,6 +1788,9 @@ def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) 
                 first[key] = commit
     stories = delegation.get("stories", {})
     specs = []
+    reach = delegation.get("rules_reach")
+    if reach is not None:  # `--rules-ref`: a row that arrived after that commit is judged by its rules, not its own
+        first = {key: commit for key, commit in first.items() if commit in reach}
     for key, commit in first.items():
         story = stories.get(wanted[key][0])
         specs += [f"{commit}:{CRITICAL_FILE}"] + ([f"{commit}:{story['path']}"] if story else [])
@@ -1532,7 +1801,7 @@ def arrival_facts(rows: list, versions: list, contents: dict, delegation: dict) 
         story = stories.get(sid)
         meta = front_matter(blobs[f"{commit}:{story['path']}"].decode("utf-8", errors="replace"))[0] \
             if story and blobs.get(f"{commit}:{story['path']}") is not None else None
-        facts[wanted[key]] = {"areas": critical_areas(blobs.get(f"{commit}:{CRITICAL_FILE}")),
+        facts[key] = {"areas": critical_areas(blobs.get(f"{commit}:{CRITICAL_FILE}")),
                               "story": {"touches": text_list(meta.get("touches")),
                                         "dimensions": text_list(meta.get("dimensions"))} if meta is not None else story}
     return facts
@@ -1573,9 +1842,9 @@ def train_commits(log: list[dict], reverted: dict) -> dict[int, list[str]]:
         if reverted.get(c["sha"]) or c["reverts"]:
             continue
         subject = c["message"].split("\n", 1)[0]
-        numbers = {int(n) for n in CONVOY_TRAILER.findall(c["message"])} | {int(n) for n in TRAIN_WORD.findall(subject)}
+        numbers = {int(n) for n in CONVOY_TRAILER.findall(c["message"]) + TRAIN_WORD.findall(subject) if len(n) <= 9}
         branch = merged_branch(subject) if len(c["parents"]) > 1 else None
-        if branch and (m := TRAIN_BRANCH.match(branch)):
+        if branch and (m := TRAIN_BRANCH.match(branch)) and len(m.group(1)) <= 9:
             numbers.add(int(m.group(1)))
         for n in numbers:
             trains.setdefault(n, []).append(c["sha"])
@@ -1971,7 +2240,7 @@ def review_approval(review: dict) -> dict:
             "human_for": [h for h in HUMAN_FOR if h in reasons] if isinstance(reasons, list) else list(HUMAN_FOR)}
 
 
-def delegated_problem(values: dict, delegation: dict) -> str | None:
+def delegated_problem(values: dict, delegation: dict, key: str | None = None) -> str | None:
     """Why a row approved by `delegated:<run>` cannot count. Its review file, on the trunk, recorded mode delegated
     or mixed and holds the same story, commit and kind approved by both judges with the skeptic's refutation failed;
     and ledger.py re-decides it as approved now (the recorded mode, human_for, confidence and models, the story's
@@ -1990,7 +2259,7 @@ def delegated_problem(values: dict, delegation: dict) -> str | None:
     approval = review_approval(review)
     if approval["mode"] not in ("delegated", "mixed"):
         return f"{REVIEWS}/{run}.json does not record a delegated or mixed approval mode"
-    at = delegation.get("arrival", {}).get((values["story"], values["commit"], values["kind"]))
+    at = delegation.get("arrival", {}).get(key) if key is not None else None  # its own arrival, never another row's
     story = at["story"] if at else delegation.get("stories", {}).get(values["story"])
     critical = True if story is None else is_critical(story, at["areas"] if at else delegation.get("areas"))
     same = [r for r in review["rows"] if isinstance(r, dict)
@@ -2631,10 +2900,10 @@ def pull_request_diffs(state: dict, ctx: dict) -> list[dict]:
     return attribution_diffs(rctx, rctx["log"], on_trunk=False)
 
 
-def all_diffs(state: dict, ci: bool) -> list[dict]:
+def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
     """The facts' differences and those only `check` gives (docs/ledger.md: the "Given by" column). `ci` in a pull
-    request into the trunk: its commits too (LEDGER-010)."""
-    ctx = read_all(state)
+    request into the trunk: its commits too (LEDGER-010). `rules_sha`: the rule files from that commit (--rules-ref)."""
+    ctx = read_all(state, rules_sha)
     diffs = list(ctx["facts"]["diffs"])
     if ctx["reason"] is None:
         diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
@@ -2647,15 +2916,139 @@ def all_diffs(state: dict, ci: bool) -> list[dict]:
 
 def cmd_check(state: dict, args: tuple) -> int:
     """Every difference: one line each, or `{"schema": 1, "diffs": [...]}`. Exit 1 on an error-level one. `--ci`
-    reads as the CI does (HISTORY_INCOMPLETE is an error)."""
-    as_json, ci = args
-    diffs = all_diffs(state, ci)
+    reads as the CI does (HISTORY_INCOMPLETE is an error). `--rules-ref REV` (LEDGER-013, Harbor's ok): every rule file
+    the ledger reads from the trunk's committed tree ([ledger.approval] in state.toml, critical.toml, the review
+    files, and critical.toml at a delegated row's arrival) is read from REV instead; a REV that is no commit: exit 2."""
+    as_json, ci, rules_ref = args
+    rules_sha = None
+    if rules_ref is not None:
+        rules_sha = resolve_commit(rules_ref)
+        if rules_sha is None:
+            print(f"Keelokit: check: --rules-ref {rules_ref!r} does not resolve to a commit here", file=sys.stderr)
+            return 2
+        # `[ledger]` (enforce, since, no_story, stories, trunk) is a rule as well: <rev>'s committed state.toml, never
+        # the checked-out one (absent or unreadable there: the defaults, as read_state).
+        state = committed_state(rules_sha)
+    diffs = all_diffs(state, ci, rules_sha)
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
     else:
         for d in diffs:
             print(f"{d['level']} {d['code']} {d['detail']}")
     return 1 if any(d["level"] == "error" for d in diffs) else 0
+
+
+# ── attribution of a range (LEDGER-013: Harbor's `convoy add` asks it before it records a vessel) ──
+# The contract, which Harbor builds against (docs/ledger.md, "attribution"): exit 0 when it answered, even with
+# unattributed commits; 2 for a usage error or a range whose ends do not resolve; 3 when the history is incomplete.
+
+RANGE_END = re.compile(r"[^\s.\-~^:][^\s]*")
+
+
+def committed_state(sha: str) -> dict:
+    """The committed .keelokit/state.toml of a commit, read as read_state reads the work tree's (absent or not TOML:
+    the defaults); LedgerError when the commit has it and this (partial) clone lacks it."""
+    return load_toml(read_trunk_files(sha, read_tree(sha), True)["state"]) or {}
+
+
+def resolve_commit(rev: str) -> str | None:
+    """The full sha of the commit `rev` names here, or None (an option-like or malformed rev included)."""
+    if not RANGE_END.fullmatch(rev) or ".." in rev:
+        return None
+    sha = git_read(["rev-parse", "--verify", "-q", "--end-of-options", f"{rev}^{{commit}}"], ok=(0, 1, 128))
+    sha = sha.decode().strip()
+    return sha if FULL_SHA.fullmatch(sha) else None
+
+
+def via_of(in_range: list[dict], fixed: set, covered: set) -> dict:
+    """sha -> how attributed_in_range attributed it, for the commits in `covered` (which it computed): "own" (its own
+    trailer, a merge's included), "correction" (an active correction row names it), else "merge" (a merge with one
+    brings it or, for a merge, everything it brings is attributed)."""
+    return {c["sha"]: "own" if c["attributed"] else "correction" if c["sha"] in fixed else "merge"
+            for c in in_range if c["sha"] in covered}
+
+
+def cmd_attribution(state: dict, args: tuple) -> int:
+    """attribution <a>..<b> [--json]: each commit `b` reaches and `a` does not, in `git rev-list --reverse` order,
+    attributed or not as `check` attributes it (attributed_in_range: its own trailer, an active correction row, a
+    merge that brings it, a merge whose every commit it brings is attributed), with the arrivals of `b`'s first-parent
+    chain (as `check --ci` reads a pull request). Commits `[ledger] since` reaches are left out, as `check` leaves
+    them out; a `since` that names no commit here leaves the whole range. `diffs` adds what `check` would say of
+    those commits (BAD_CATEGORY, UNKNOWN_STORY, STORY_NO_BODY, SQUASH_LOST_TRAILERS), stories read from `b`'s tree."""
+    rng, as_json, rules_ref = args
+    rules_sha = None
+    if rules_ref is not None:
+        rules_sha = resolve_commit(rules_ref)
+        if rules_sha is None:
+            print(f"Keelokit: attribution: --rules-ref {rules_ref!r} does not resolve to a commit here", file=sys.stderr)
+            return 2
+    ends = rng.split("..")
+    if len(ends) != 2 or not all(RANGE_END.fullmatch(e) for e in ends):
+        print(f"Keelokit: attribution needs one range <a>..<b> (two revisions, `..` between), not {rng!r}",
+              file=sys.stderr)
+        return 2
+    shas = []
+    for end in ends:
+        sha = resolve_commit(end)
+        if sha is None:
+            print(f"Keelokit: attribution: {end!r} does not resolve to a commit here", file=sys.stderr)
+            return 2
+        shas.append(sha)
+    a, b = shas
+    # `[ledger]` (since, no_story, stories) is the trunk's committed state.toml, or <rev>'s: never the checkout's, which
+    # the vessel under judgment writes.
+    trunk = trunk_name(state)
+    check_trunk(trunk)
+    state = committed_state(rules_sha or resolve_trunk(trunk, read_refs(trunk)))
+    ctx = read_all(state, rules_sha)
+    if ctx["reason"] is not None:
+        print(f"Keelokit: attribution: the history is incomplete ({ctx['reason']})", file=sys.stderr)
+        return 3
+    cfg = ctx["cfg"]
+    graph = read_graph(sorted({a, b}))
+    if cut_reason(graph, is_shallow() is not False):
+        print(f"Keelokit: attribution: the history of {rng} is cut (a shallow clone); {FIX}", file=sys.stderr)
+        return 3
+    since = cfg["since"]
+    matches = [x for x in graph if x.startswith(since.lower())] if since else []
+    stops = sorted({a, *matches[:1]}) if len(matches) == 1 else [a]
+    order = git_read(["rev-list", "--reverse", b, "--not", *stops]).decode().split()
+    log = read_trunk_log(b, ("--not", *stops))
+    in_shas = {c["sha"] for c in log}
+    held = {x for x in graph if x not in in_shas}
+    placed = arrivals(graph, b)
+    fixed = corrected(ctx.get("corrections"))
+    covered = attributed_in_range(log, log, graph, placed[0], held, fixed)
+    via = via_of(log, fixed, covered)
+    by_sha = {c["sha"]: c for c in log}
+    commits = []
+    for sha in order:
+        c = by_sha[sha]
+        no_story = ", ".join(v.strip() for v in trailer_values(c["trailers"], "No-story") if v.strip()) or None
+        commits.append({"sha": sha, "subject": c["message"].split("\n", 1)[0].strip(), "story": list(c["story"]),
+                        "part_of": list(c["part_of"]), "no_story": no_story, "merge": len(c["parents"]) > 1,
+                        "attributed": sha in covered, "via": via.get(sha)})
+    stories, unreadable = read_stories(b, cfg)
+    rctx = {"cfg": cfg, "log": log, "graph": graph, "stories": stories, "unreadable": unreadable, "tip": b,
+            "placed": placed, "refs": ctx["refs"], "trunk": ctx["trunk"],
+            "unverified": ctx["unverified"], "corrections": ctx["corrections"]}
+    diffs = [d for d in attribution_diffs(rctx, log, on_trunk=False) if d["code"] != "UNATTRIBUTED"]
+    answer = {"schema": 1, "range": rng, "ok": all(c["attributed"] for c in commits if not c["merge"]),
+              "commits": commits, "unattributed": [c["sha"] for c in commits if not c["attributed"]],
+              "stories": sorted({i for c in commits for i in c["story"] + c["part_of"]}),
+              "since": matches[0] if len(matches) == 1 else None, "diffs": diffs}
+    if as_json:
+        print(json.dumps(answer, indent=1))
+        return 0
+    for c in commits:
+        if not c["attributed"]:
+            kind = "a merge that brings commits without one" if c["merge"] else "no Story:, Part-of: or No-story:"
+            print(CONTROL.sub("?", f"UNATTRIBUTED {short(c['sha'])} {c['subject'][:80]!r}: {kind}"))
+    for d in diffs:
+        print(CONTROL.sub("?", f"{d['level']} {d['code']} {d['detail']}"))
+    print(f"{rng}: {len(commits)} commits, {len(answer['unattributed'])} unattributed"
+          + (f"; stories: {', '.join(answer['stories'])}" if answer["stories"] else ""))
+    return 0
 
 
 # ── the CI snapshot and the deploy branches (LEDGER-011) ──
@@ -3062,6 +3455,7 @@ def settle_snapshot_states(stories: list[dict], records: dict) -> None:
             continue
         ready = all(d is not None and d["commit"] for d in deps)
         rec["state"] = "in-progress" if rec["branches"] else "ready" if ready else "defined"
+        rec["convoy"] = None  # a delivery the snapshot saw is not this clone's to state (LEDGER-013)
 
 
 def snapshot_time() -> int:
@@ -3322,7 +3716,8 @@ SHOW_LABELS = {
            "body_more": "more lines: git show {sha}", "no_story": "no story {id} among the stories of the trunk",
            "ready_none": "no story is ready", "wave": "wave", "release": "{tag} (after {prev}): {n} {stories}",
            "release_first": "{tag} (from the start): {n} {stories}", "story_one": "story", "story_many": "stories", "no_tag": "no version tag {tag}",
-           "session": "session"},
+           "session": "session", "delivered": "delivered: convoy {n} ({state}), {branch}@{head}",
+           "convoy": "convoy", "workers": "workers (Harbor)", "events": "convoy {n} events"},
     "es": {"state": "estado", "since": "desde", "approx": "aproximada", "exact": "exacta", "version": "versión",
            "candidate": "candidata", "branches": "ramas", "file": "archivo", "commits": "commits",
            "attempts": "intentos (Dropped:)", "corrections": "correcciones", "escapes": "escapes",
@@ -3331,8 +3726,10 @@ SHOW_LABELS = {
            "ready_none": "ninguna historia está lista", "wave": "ola", "release": "{tag} (después de {prev}): {n} {stories}",
            "release_first": "{tag} (desde el principio): {n} {stories}", "story_one": "historia",
            "story_many": "historias", "no_tag": "no hay tag de versión {tag}",
-           "session": "sesión"},
+           "session": "sesión", "delivered": "entregada: convoy {n} ({state}), {branch}@{head}",
+           "convoy": "convoy", "workers": "workers (Harbor)", "events": "eventos del convoy {n}"},
 }
+EVENTS_SHOWN = 8
 BODY_LINES = 6
 
 
@@ -3382,61 +3779,87 @@ def card(ctx: dict, sid: str, lang: str, full: bool) -> list[str]:
         lines.append(" · ".join(facts))
     if rec["branches"]:
         lines.append(f"{t['branches']}: {', '.join(rec['branches'])}")
+    if rec.get("delivered"):
+        d = rec["delivered"]
+        lines.append(t["delivered"].format(n=d["convoy"], state=d["convoy_state"], branch=d["branch"], head=short(d["head"])))
+    elif rec.get("convoy") is not None:
+        lines.append(f"{t['convoy']}: {rec['convoy']}")
+    if rec.get("workers"):
+        lines.append(f"{t['workers']}: {', '.join(rec['workers'])}")
     lines.append(f"{t['file']}: {rec['path']}")
     if rec.get("as_of"):
         lines.append(LABELS[lang]["snapshot"].format(sha=short(rec["as_of"])))
     if ctx["reason"] is not None:
         return lines
-    blobs = read_blobs([sha for path, sha in ctx["tree"] if path == rec["path"] or path == ESCAPES
-                        or (path.startswith(BUGBASH) and path.endswith(".md"))], ctx["trunk_sha"])
-    by_path = {path: blobs.get(sha) for path, sha in ctx["tree"] if sha in blobs}
-    lines += [f"  {h}" for h in addendum_headings(rec["path"], by_path.get(rec["path"]))]
-    # The story's commits: Story: first (the decision), then Part-of: newest first; the trunk's, then the branches'.
-    entry = ctx["branches"].get(sid, {})
-    trunk_commits = [c for c in ctx["log"] if sid in c["story"] or sid in c["part_of"]]
-    commits = [(c, None) for c in trunk_commits] + [(c, held_by(c)) for c in entry.get("commits", [])
-                                                     if c["sha"] not in {x["sha"] for x in trunk_commits}]
-    commits.sort(key=lambda x: (sid not in x[0].get("story", []), -x[0]["ct"], x[0]["sha"]))
-    findings = set()
-    lines.append(f"{t['commits']}:" if commits else f"{t['commits']}: {t['none']}")
-    for c, held in commits:
-        kind = "Story" if sid in c.get("story", []) else "Part-of"
-        subject, body = split_message(c["message"], c["trailers"])
-        where = f" ({t['on']} {', '.join(held)})" if held else ""
-        lines.append(f"  {short(c['sha'])} {iso(c['ct'])[:10]} {kind}{where}: {subject}")
-        for session in trailer_values(c["trailers"], "Claude-Session")[:1]:
-            lines.append(f"    {t['session']}: {session}")
+    why = why_of(ctx, sid, rec)
+    lines += [f"  {h}" for h in why["addenda"]]
+    lines.append(f"{t['commits']}:" if why["commits"] else f"{t['commits']}: {t['none']}")
+    for c in why["commits"]:
+        where = f" ({t['on']} {', '.join(c['branches'])})" if c["branches"] else ""
+        lines.append(f"  {short(c['sha'])} {c['date'][:10]} {c['kind']}{where}: {c['subject']}")
+        if c["session"]:
+            lines.append(f"    {t['session']}: {c['session']}")
+        body = c["body"]
         shown = body if full or len(body) <= BODY_LINES else body[:BODY_LINES - 1]
         lines += [f"    {line}" if line else "" for line in shown]
         if len(shown) < len(body):
             lines.append(f"    … {len(body) - len(shown)} {t['body_more'].format(sha=short(c['sha']))}")
-        findings.update(i for v in trailer_values(c["trailers"], "Finding") for i in ID_TOKEN.findall(v))
     if rec["attempts"]:
         lines.append(f"{t['attempts']}:")
         for a in rec["attempts"]:
             reason = a["reason"].split("\n")
             lines.append(f"  {short(a['commit'])} {a['date'][:10]} {t['on']} {', '.join(a['branches'])}: {reason[0]}")
             lines += [f"    {line}" for line in (reason[1:] if full else reason[1:BODY_LINES])]
-    rows = [r for r in ctx["corrections"]["active"] if r["story"] == sid]
-    if rows:
+    if why["corrections"]:
         lines.append(f"{t['corrections']}:")
-        lines += [f"  {r['kind']} {short(r['commit'])} {r['approver']} {r['date']}: {r['evidence']}" for r in rows]
+        lines += [f"  {r['kind']} {short(r['commit'])} {r['approver']} {r['date']}: {r['evidence']}"
+                  for r in why["corrections"]]
+    if why["escapes"]:
+        lines += [f"{t['escapes']}:", *(f"  {e}" for e in why["escapes"])]
+    if why["findings"]:
+        lines += [f"{t['findings']}:", *(f"  {f}" for f in why["findings"])]
+    if why["convoy_events"]:
+        events = why["convoy_events"] if full else why["convoy_events"][-EVENTS_SHOWN:]
+        lines.append(f"{t['events'].format(n=rec['convoy'])}:")
+        lines += [f"  {e['at']} {e['what']} {e['detail']} ({e['by']})" for e in events]
+    return lines
+
+
+def why_of(ctx: dict, sid: str, rec: dict) -> dict:
+    """The why of a story, as data (`show` prints it, `show --json` gives it): the Addendum headings of its file; its
+    commits, Story: first (the decision), then Part-of: newest first, the trunk's then the branches'; its correction
+    rows; the rows of docs/escapes.md and the findings of docs/bugbash/ that name it or arrive through `Finding:`; and
+    the events of its convoy in Harbor's logbook."""
+    blobs = read_blobs([sha for path, sha in ctx["tree"] if path == rec["path"] or path == ESCAPES
+                        or (path.startswith(BUGBASH) and path.endswith(".md"))], ctx["trunk_sha"])
+    by_path = {path: blobs.get(sha) for path, sha in ctx["tree"] if sha in blobs}
+    entry = ctx["branches"].get(sid, {})
+    trunk_commits = [c for c in ctx["log"] if sid in c["story"] or sid in c["part_of"]]
+    found_commits = [(c, None) for c in trunk_commits] + [(c, held_by(c)) for c in entry.get("commits", [])
+                                                           if c["sha"] not in {x["sha"] for x in trunk_commits}]
+    found_commits.sort(key=lambda x: (sid not in x[0].get("story", []), -x[0]["ct"], x[0]["sha"]))
+    commits, findings = [], set()
+    for c, held in found_commits:
+        subject, body = split_message(c["message"], c["trailers"])
+        commits.append({"sha": c["sha"], "date": iso(c["ct"]), "kind": "Story" if sid in c.get("story", []) else "Part-of",
+                        "branches": list(held or []), "subject": subject,
+                        "session": next(iter(trailer_values(c["trailers"], "Claude-Session")), None), "body": body})
+        findings.update(i for v in trailer_values(c["trailers"], "Finding") for i in ID_TOKEN.findall(v))
     names_it, by_finding = id_pattern([sid]), id_pattern(findings)
-    escapes = [f"  {ESCAPES}:{n} {line.strip()}" for n, line in enumerate(text_lines(by_path.get(ESCAPES)), 1)
+    escapes = [f"{ESCAPES}:{n} {line.strip()}" for n, line in enumerate(text_lines(by_path.get(ESCAPES)), 1)
                if line.lstrip().startswith("|") and (names_it.search(line) or by_finding and by_finding.search(line))]
-    if escapes:
-        lines += [f"{t['escapes']}:", *escapes]
     found = []
     for path in sorted(p for p in by_path if p.startswith(BUGBASH)):
         for n, line in enumerate(text_lines(by_path[path]), 1):
             hit = by_finding.search(line) if by_finding and line.lstrip().startswith("#") else None
             if hit:
-                found.append(f"  {hit.group(0)} {path}:{n} {line.strip()}")
+                found.append(f"{hit.group(0)} {path}:{n} {line.strip()}")
             elif names_it.search(line):
-                found.append(f"  {path}:{n} {line.strip()}")
-    if found:
-        lines += [f"{t['findings']}:", *found]
-    return lines
+                found.append(f"{path}:{n} {line.strip()}")
+    convoy = (ctx.get("harbor") or {}).get("convoys", {}).get(rec.get("convoy"))
+    return {"addenda": addendum_headings(rec["path"], by_path.get(rec["path"])), "commits": commits,
+            "corrections": [r for r in ctx["corrections"]["active"] if r["story"] == sid],
+            "escapes": escapes, "findings": found, "convoy_events": convoy["events"] if convoy else []}
 
 
 def bounded(lines: list[str], sid: str, lang: str, full: bool) -> list[str]:
@@ -3452,14 +3875,34 @@ def bounded(lines: list[str], sid: str, lang: str, full: bool) -> list[str]:
     return lines[:SHOW_LINES - 1] + [f"… {rest} {SHOW_LABELS[lang]['more'].format(id=sid)}"]
 
 
+def story_named(ctx: dict, sid: str) -> str | None:
+    """The trunk's story id `sid` names: itself, else the one id equal to it without case (Harbor's ids)."""
+    ids = [r["id"] for r in ctx["facts"]["stories"]]
+    if sid in ids:
+        return sid
+    same = [i for i in ids if i.casefold() == sid.casefold()]
+    return same[0] if len(same) == 1 else None
+
+
 def cmd_show(state: dict, args: tuple) -> int:
-    sid, full = args
+    """show <ID> [--full]: the card. show <ID> --json: `{"schema": 1, ...the record, "history", "why": {...}}`, the
+    record as `--json` gives it and the why as data (docs/ledger.md, "show --json"); exit 1, with `error`, when the
+    trunk has no such story."""
+    sid, mode = args
     lang = read_config(state)["lang"]
     ctx = read_all(state)
-    if sid not in {r["id"] for r in ctx["facts"]["stories"]}:
-        print(f"Keelokit: {SHOW_LABELS[lang]['no_story'].format(id=sid)}")
+    found = story_named(ctx, sid)
+    if found is None:
+        message = SHOW_LABELS[lang]['no_story'].format(id=sid)
+        print(json.dumps({"schema": 1, "id": sid, "error": message}, indent=1) if mode == "json" else f"Keelokit: {message}")
         return 1
-    print("\n".join(bounded(card(ctx, sid, lang, full), sid, lang, full)))
+    if mode == "json":
+        rec = next(r for r in ctx["facts"]["stories"] if r["id"] == found)
+        why = why_of(ctx, found, rec) if ctx["reason"] is None else None
+        print(json.dumps({"schema": 1, **rec, "history": ctx["facts"]["history"], "why": why}, indent=1))
+        return 0
+    full = mode == "full"
+    print("\n".join(bounded(card(ctx, found, lang, full), found, lang, full)))
     return 0
 
 
@@ -3537,7 +3980,14 @@ TAKE_LABELS = {
            "stays": "{id} not dropped: the push to {ref} was refused ({err}) and {why}; the story stays taken",
            "unpushed": "{id}: the drop commit {sha} is on {branch} but its push failed ({err}; the pre-push's "
                        "lines above say why); push it, then `ledger.py take --clear`",
-           "no_branch": "there is no branch to fall back to (a detached HEAD, or the trunk)"},
+           "no_branch": "there is no branch to fall back to (a detached HEAD, or the trunk)",
+           "delivered": "warning: {id} is already delivered in convoy {n}: someone built it",
+           "harbor_old": "Harbor's harbor.py has no `story take` ({why}): taken without the logbook's lock",
+           "harbor_silent": "harbor.py story {action} {id} did not answer in {s:g} s: {id} is not taken here; the "
+                            "logbook may hold it all the same (harbor.py story release {id} lifts it)",
+           "harbor_refused": "{id} is not taken: {line}",
+           "harbor_failed": "{id} is not taken: harbor.py story take exited {code}{line}",
+           "release_refused": "this worktree works on no story, but Harbor did not release {id}: {line}"},
     "es": {"no_story": "no hay historia {id} en el trunk", "taken": "este worktree trabaja en {id}",
            "was": " (era {old})", "on_trunk": "{id} ya está {state}: no hay nada que tomar",
            "unknown": "aviso: no se puede decir el estado de {id} ({reason}); tomada igual",
@@ -3551,7 +4001,14 @@ TAKE_LABELS = {
            "stays": "{id} no abandonada: el push a {ref} fue rechazado ({err}) y {why}; la historia sigue tomada",
            "unpushed": "{id}: el commit de drop {sha} está en {branch} pero su push falló ({err}; las líneas del "
                        "pre-push de arriba dicen por qué); subilo y luego `ledger.py take --clear`",
-           "no_branch": "no hay rama a la que volver (HEAD suelto, o el trunk)"},
+           "no_branch": "no hay rama a la que volver (HEAD suelto, o el trunk)",
+           "delivered": "aviso: {id} ya está entregada en el convoy {n}: alguien la construyó",
+           "harbor_old": "el harbor.py de Harbor no tiene `story take` ({why}): tomada sin el lock de la bitácora",
+           "harbor_silent": "harbor.py story {action} {id} no respondió en {s:g} s: {id} no se toma acá; la bitácora "
+                            "puede tenerla igual (harbor.py story release {id} la libera)",
+           "harbor_refused": "{id} no se toma: {line}",
+           "harbor_failed": "{id} no se toma: harbor.py story take salió con {code}{line}",
+           "release_refused": "este worktree no trabaja en ninguna historia, pero Harbor no liberó {id}: {line}"},
 }
 ON_TRUNK_STATES = ("on-trunk", "in-version", "in-staging", "in-production")
 ARCHIVE = "archive/"
@@ -3578,14 +4035,128 @@ def clear_story() -> None:
         git_out("config", "--worktree", "--unset-all", "keelokit.storyGitDir")
 
 
+# Harbor (LEDGER-013): with `git config harbor.py` (Harbor records its own path there when it adopts a project) and a
+# harbor.py that has `story take` (asked by feature: `story take --help` exits 0, never by version), taking a story is
+# Harbor's lock in its logbook: `take` runs `harbor.py story take <ID>` and sets nothing unless it exits 0. harbor.py
+# is code the ledger runs, so only `take` runs it (never `show`, `check`, the summary or a hook's path), with the
+# interpreter that runs the ledger, the hardened git environment, CLAUDE_PROJECT_DIR set to this checkout, no stdin,
+# its own session (killed whole at the timeout) and its output read from files, at most HARBOR_OUTPUT bytes of it.
+HARBOR_SECONDS = 180.0  # Harbor's take asks the ledger twice (60 s each) and pushes the logbook, retrying
+HARBOR_PROBE_SECONDS = 30.0
+HARBOR_OUTPUT = 65536
+HARBOR_LINE = re.compile(r"harbor: [A-Z][A-Z0-9_]*: .*")
+SESSION_ID = re.compile(r"[A-Za-z0-9._-]{1,200}")
+
+
+def harbor_seconds() -> float:
+    try:
+        value = float(os.environ.get("KEELOKIT_HARBOR_SECONDS") or HARBOR_SECONDS)
+    except ValueError:
+        return HARBOR_SECONDS
+    return min(max(value, 0.1), 3600.0) if math.isfinite(value) else HARBOR_SECONDS
+
+
+def harbor_tool() -> str | None:
+    """The harbor.py `git config --local harbor.py` names: an absolute path to a file called harbor.py; else None."""
+    path = config_get("harbor.py")
+    if not path or not os.path.isabs(path) or os.path.basename(path) != "harbor.py" or not os.path.isfile(path):
+        return None
+    return path
+
+
+def run_harbor(tool: str, args: list[str], timeout: float) -> tuple[int | None, str, str]:
+    """(exit, stdout, stderr) of harbor.py; exit None when it did not end in `timeout` (its process group is gone)."""
+    env = {**{k: v for k, v in git_env().items() if k not in GIT_SCRUB or k == "GIT_ASKPASS"},
+           "CLAUDE_PROJECT_DIR": str(ROOT)}
+    # The session id stays in the environment, where Harbor reads it (HARBOR_SESSION, then CLAUDE_SESSION_ID); Claude
+    # Code sets only CLAUDE_CODE_SESSION_ID, handed over as HARBOR_SESSION. Nothing from the environment is an argument.
+    if not (env.get("HARBOR_SESSION") or env.get("CLAUDE_SESSION_ID")) \
+            and SESSION_ID.fullmatch(env.get("CLAUDE_CODE_SESSION_ID", "")):
+        env["HARBOR_SESSION"] = env["CLAUDE_CODE_SESSION_ID"]
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.Popen([sys.executable, "-E", "-s", tool, *args], cwd=ROOT, env=env,
+                                    stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
+        except OSError as e:
+            return 127, "", f"harbor.py could not run ({e.strerror or e})"
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            code = None
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # its whole session: a git it started goes with it
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            proc.wait()
+        texts = []
+        for f in (out, err):
+            f.seek(0)
+            texts.append(f.read(HARBOR_OUTPUT).decode("utf-8", errors="replace"))
+    return code, texts[0], texts[1]
+
+
+def one_line(text: str) -> str:
+    """A line of harbor.py's output as one terminal-safe line of at most 300 characters."""
+    return CONTROL.sub("?", " ".join(text.split()))[:300]
+
+
+def harbor_line(out: str, err: str) -> str:
+    """What harbor.py said: its `harbor: CODE: why` line, else its last non-empty line, else ""."""
+    lines = [line.strip() for line in (err + "\n" + out).splitlines() if line.strip()]
+    coded = [line for line in lines if HARBOR_LINE.fullmatch(line)]
+    return one_line(coded[0] if coded else lines[-1] if lines else "")
+
+
+class HarborSilent(Exception):
+    """harbor.py could not be asked whether it has `story take`: no answer, or an exit that is no usage error."""
+
+
+def harbor_take_ready(t: dict) -> str | None:
+    """The harbor.py to take stories with, or None: no Harbor, or one whose parser has no `story take` (exit 2 with
+    argparse's "invalid choice": nothing changes). HarborSilent when it could not be asked (a timeout, a crash)."""
+    tool = harbor_tool()
+    if tool is None:
+        return None
+    code, out, err = run_harbor(tool, ["story", "take", "--help"], HARBOR_PROBE_SECONDS)
+    if code == 0:
+        return tool
+    if code == 2 and "invalid choice" in err:
+        print(t["harbor_old"].format(why="`story take --help` exited 2"))
+        return None
+    raise HarborSilent(f"exit {code}" if code is not None else f"no answer in {HARBOR_PROBE_SECONDS:g} s")
+
+
 def cmd_take(state: dict, sid: str | None) -> int:
     """take <ID>: keelokit.story in this worktree's config (extensions.worktreeConfig: each worktree of the clone has
     its own). Refuses an id that is no story or a story already on the trunk; a Part-of: commit of the story on
-    another origin branch is a warning, never a refusal (without Harbor in-progress is a signal). take --clear."""
+    another origin branch, or its delivery, is a warning, never a refusal (without Harbor in-progress is a signal).
+    With Harbor, `harbor.py story take <ID>` decides first: any exit but 0 is one line, and nothing is set (exit 1
+    when Harbor refused, 2 when it could not answer). take --clear: with Harbor, `story release` of this worktree's
+    story too; the worktree is cleared whatever Harbor says, and a release Harbor refused is exit 1."""
     t = TAKE_LABELS[read_config(state)["lang"]]
     if sid is None:
+        held = taken_story()
+        try:
+            tool = harbor_take_ready(t) if held else None
+        except HarborSilent as e:
+            clear_story()
+            print(t["cleared"])
+            print(f"Keelokit: {t['release_refused'].format(id=held, line=f'harbor.py could not be asked ({e})')}")
+            return 2
         clear_story()
         print(t["cleared"])
+        if tool is None:
+            return 0
+        timeout = harbor_seconds()
+        code, out, err = run_harbor(tool, ["story", "release", held], timeout)
+        if code is None:
+            print(f"Keelokit: {t['harbor_silent'].format(action='release', id=held, s=timeout)}")
+            return 2
+        if code != 0:
+            print(f"Keelokit: {t['release_refused'].format(id=held, line=harbor_line(out, err) or f'exit {code}')}")
+            return 1
+        if line := harbor_line(out, ""):
+            print(line)
         return 0
     rec = find_story(state, sid, t)
     if rec is None:
@@ -3595,6 +4166,8 @@ def cmd_take(state: dict, sid: str | None) -> int:
         return 1
     if rec["state"] == "unknown":
         print(t["unknown"].format(id=sid, reason=rec["reason"]))
+    if rec["state"] == "delivered":
+        print(t["delivered"].format(id=sid, n=rec["convoy"]))
     mine = {b for b in (current_branch(),) if b}
     code, upstream = git_out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
     if code == 0 and upstream.startswith("origin/"):
@@ -3602,6 +4175,26 @@ def cmd_take(state: dict, sid: str | None) -> int:
     others = [b for b in rec["branches"] if b not in mine]
     if others:
         print(t["elsewhere"].format(id=sid, branches=listed(others, "more")))
+    try:
+        tool = harbor_take_ready(t)
+    except HarborSilent as e:
+        print(f"Keelokit: {t['harbor_failed'].format(id=sid, code='?', line=f' (harbor.py could not be asked: {e})')}")
+        return 2
+    if tool is not None:
+        timeout = harbor_seconds()
+        code, out, err = run_harbor(tool, ["story", "take", sid], timeout)
+        if code is None:
+            print(f"Keelokit: {t['harbor_silent'].format(action='take', id=sid, s=timeout)}")
+            return 2
+        if code != 0:
+            line = harbor_line(out, err)
+            if code == 1 and line:
+                print(f"Keelokit: {t['harbor_refused'].format(id=sid, line=line)}")
+            else:
+                print(f"Keelokit: {t['harbor_failed'].format(id=sid, code=code, line=f' ({line})' if line else '')}")
+            return 1 if code == 1 else 2
+        if line := harbor_line(out, ""):
+            print(line)
     code, old = git_out("config", "--get", "keelokit.story")
     old = old if code == 0 else None
     # keelokit.storyGitDir: which worktree took it. `git worktree add` copies config.worktree into the new worktree
@@ -4002,12 +4595,33 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
 
 def parse_command(argv: list[str]) -> tuple | None:
     """(command, arguments) for the corrections commands and check, or None for any other spelling."""
-    if argv[:1] == ["check"] and len(set(argv[1:])) == len(argv[1:]) and set(argv[1:]) <= {"--json", "--ci"}:
-        return "check", ("--json" in argv, "--ci" in argv)
-    if argv[:1] == ["show"] and len(argv) in (2, 3) and not argv[1].startswith("-") and argv[2:] in ([], ["--full"]):
-        return "show", (argv[1], len(argv) == 3)
+    if argv[:1] == ["check"]:
+        rest, rules = list(argv[1:]), None
+        if "--rules-ref" in rest:
+            at = rest.index("--rules-ref")
+            if at + 1 >= len(rest) or rest[at + 1].startswith("-"):
+                return None
+            rules = rest[at + 1]
+            del rest[at:at + 2]
+        if len(set(rest)) == len(rest) and set(rest) <= {"--json", "--ci"}:
+            return "check", ("--json" in rest, "--ci" in rest, rules)
+        return None
+    if argv[:1] == ["show"] and len(argv) in (2, 3) and not argv[1].startswith("-") \
+            and argv[2:] in ([], ["--full"], ["--json"]):
+        return "show", (argv[1], argv[2][2:] if len(argv) == 3 else "card")
     if argv == ["next"]:
         return "next", None
+    if argv[:1] == ["attribution"] and len(argv) >= 2 and not argv[1].startswith("-"):
+        rest, rules = list(argv[2:]), None
+        if "--rules-ref" in rest:
+            at = rest.index("--rules-ref")
+            if at + 1 >= len(rest) or rest[at + 1].startswith("-"):
+                return None
+            rules = rest[at + 1]
+            del rest[at:at + 2]
+        if rest in ([], ["--json"]):
+            return "attribution", (argv[1], rest == ["--json"], rules)
+        return None
     if argv == ["snapshot", "--branch"]:
         return "snapshot", (None, None, True)
     if argv[:1] == ["snapshot"]:
@@ -4063,6 +4677,8 @@ def run_command(state: dict, command: str, args) -> int:
             return cmd_show(state, args)
         if command == "next":
             return cmd_next(state)
+        if command == "attribution":
+            return cmd_attribution(state, args)
         if command == "hook":
             return cmd_hook(state, args)
         if command == "prepush":
@@ -4116,12 +4732,15 @@ def summary(facts: dict, lang: str) -> list[str]:
     lines.append(f"{len(stories)} {t['stories']}: {shown}" if stories else t["none"])
     progress = [f"{r['id']} ({', '.join(r['branches'][:2])}{'; ' + t['stale'] if r['signals'] else ''})"
                 for r in stories if r["state"] == "in-progress"]
+    delivered = [f"{r['id']} (convoy {r['convoy']})" if r.get("convoy") is not None else r["id"]
+                 for r in stories if r["state"] == "delivered"]
     ready = [r["id"] for r in stories if r["state"] == "ready"]
     reverted = [r["id"] for r in stories if r["reverted"]]
     unknown = [r["id"] for r in stories if r["state"] == "unknown"]
     person = [r["id"] for r in stories if r.get("reconstructed") and r.get("reconstructed_by") != "delegated"]
     delegated = [r["id"] for r in stories if r.get("reconstructed") and r.get("reconstructed_by") == "delegated"]
-    for label, items in (("progress", progress), ("ready", ready), ("reverted", reverted), ("unknown", unknown),
+    for label, items in (("progress", progress), ("delivered", delivered), ("ready", ready), ("reverted", reverted),
+                         ("unknown", unknown),
                          ("by_person", person), ("by_delegated", delegated)):
         if items:
             lines.append(f"{t[label]}: {listed(items, t['more'])}")

@@ -167,6 +167,44 @@ attempts (`Dropped:` commits on any origin branch, also in `--json` as `attempts
 next` lists the ready stories nobody works on, by wave and id; `ledger.py --release vX.Y.Z` the stories whose
 commit is in that tag and not in the previous version tag.
 
+Harbor (LEDGER-013, [ledger.md](ledger.md) "Harbor and Swarm"). The ledger reads Harbor's logbook,
+`origin/harbor/log`, with the same hardened git calls as everything else (`ls-tree` and one `cat-file` per kind of
+file), as data: an active worker holding a story makes it `in-progress`, a vessel sealed on its exact head in an open
+convoy makes it `delivered`, and a sailed convoy (or the `Convoy: <n>` trailer of the merge that brought it) names an
+on-trunk story's convoy, with the exact time from `main.toml`'s convoy move. The logbook never adds a difference, so
+no content anyone pushes to it changes what `check` says or an exit code; a malformed file is left out, an unreadable
+logbook is none. Three contracts are Harbor's to read: `ledger.py attribution <a>..<b> --json` (`convoy add`'s
+`NO_STORY`; the same attribution function `check` uses), `ledger.py show <ID> --json` (`STORY_ON_TRUNK`) and
+`ledger.py check [--ci] --json` (the harbormaster's round and the ok, HRB-3): `{"schema": 1, "diffs": [{"level":
+"error"|"warning", "code", "detail"}]}`, exit 1 iff a diff is an error; keys may be added, none changes meaning
+within schema 1. `check --rules-ref <rev>` reads every rule from `<rev>` instead of the trunk's tree or the checkout,
+with the same parsing and the same hardened git calls: the whole committed `.keelokit/state.toml` (`[ledger]`:
+`enforce`, `since`, `no_story`, `stories`, `trunk`; `[ledger.approval]`), `.keelokit/critical.toml`, the review files
+in `.keelokit/ledger-reviews/`, `critical.toml` as of a delegated row's arrival, and the touches and dimensions of the
+story files that decide a row's critical flag (a story `<rev>` lacks counts as critical); a delegated row's arrival
+is looked up on `<rev>`'s own first-parent history of the corrections file, so a row `<rev>` never held (or one a
+convoy routes through an old side-branch commit) is judged by `<rev>`'s critical areas and story, and each row by its
+own arrival, never another row's of the same story, commit and kind. A rule file `<rev>` has that this clone lacks
+(a partial clone) is exit 2 saying so, never read as absent: an absent rule is a looser one. Harbor's ok runs main's ledger in a clone whose trunk is the convoy as landed: without it
+the convoy's own tree would hold the rules it is judged by, so a convoy could relax them. A `<rev>` that is no commit
+here is exit 2. Corrections are rules too: they come from `<rev>` as well, so a correction row counts only when
+`<rev>`'s own `backlog/ledger-corrections.toml` holds it, identical (story, commit, kind, evidence, approver, date);
+a row only the candidate adds attributes nothing and is no error (a late row for an old commit is credited once it
+is on `<rev>`), and a row `<rev>` has that the candidate retracted or changed stays out. The stories and the commits
+are still the trunk's. `attribution` takes the same `--rules-ref`, and without it reads `[ledger]` from the trunk's
+committed `state.toml`, never the checkout's, which the vessel under judgment writes.
+
+harbor.py is code the ledger runs, so only one explicit command runs it: `ledger.py take` (and `take --clear`), when
+`git config --local harbor.py` names an absolute path to a `harbor.py` and `harbor.py story take --help` exits 0
+(feature detection, never a version string). Never `show`, `check`, `attribution`, the summary, the doctor, or any
+hook's path (the session start, the guard, the git hooks), so opening a repo or committing never runs Harbor; a
+Harbor that calls the ledger back (its `story take` asks `ledger.py --json` and `show --json`) cannot loop. It runs
+with the interpreter running the ledger (`-E -s`), the hardened git environment, `CLAUDE_PROJECT_DIR` set to the
+checkout, no stdin, in its own session killed whole at the timeout (`KEELOKIT_HARBOR_SECONDS`, default 180), its
+output read from files and at most 64 KiB of it. Only its exit decides: 0 takes, 1 is Harbor's refusal (one line,
+nothing set), anything else or no answer is exit 2, nothing set; what it prints is relayed as one terminal-safe line
+and never read as a verdict.
+
 The CI keeps two facts git does not (LEDGER-011). The orphan branch `keelokit/ledger` (`[ledger] snapshot`; `""`
 turns it off) holds `LEDGER.md` and `ledger.json` of the trunk's latest commit and `moves.toml`, the time the CI saw
 each push reach the trunk: the template's `ledger-snapshot` job runs `ledger.py snapshot` on every push to main and

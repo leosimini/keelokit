@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The ledger reads Harbor's logbook, and taking a story is Harbor's lock (LEDGER-013).** With Harbor, a story is
+  `delivered` when a vessel sealed on its exact head sits in an open convoy, `in-progress` when an active worker holds
+  it, and an on-trunk story names the convoy that sailed it, with the exact time Harbor saw it reach main;
+  `ledger.py show` adds the convoy's events. `ledger.py take <ID>` asks Harbor first (`harbor.py story take`), and
+  Harbor's `STORY_TAKEN` or `STORY_ON_TRUNK` reaches the session as one line with nothing set; `take --clear`
+  releases it. New for Harbor: `ledger.py attribution <a>..<b> [--json]` (is every commit of a range attributed, as
+  `check` says), `ledger.py show <ID> --json`, and `ledger.py check --rules-ref <rev>` (the committed rule files,
+  such as `critical.toml` and `[ledger.approval]`, read from `<rev>`, so a convoy judged as landed cannot relax its
+  own rules). Without Harbor nothing changes.
+
 - **Opening a repo no longer runs its own guard, doctor or ledger (HARN-004).** The hooks always run the plugin's
   copy against the project's data; a project whose `.keelokit/bin` differs gets one line at the session start
   saying so. The plugin no longer turns a repo's git hooks on by itself: the session start says they are off, and
