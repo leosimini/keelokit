@@ -12,12 +12,18 @@ Harbor's logbook for the convoy that carries or sailed them.
 - S6: the phase gate (Harbor 0.6.0): a convoy carrying swarm deliveries lands, and show (text and --json) says each
   piece's story, who made it and which convoy sailed it.
 Run: python3 -m unittest discover -s tests (real git, local remotes, never the network)."""
+import importlib.util
 import json
+import os
+import random
+import shutil
 import subprocess
+import unicodedata
 import unittest
+import uuid
 from pathlib import Path
 
-from test_ledger import GitRepo, LedgerCase, by_id, commit_harness, read_json
+from test_ledger import LEDGER, GitRepo, LedgerCase, by_id, clean_env, commit_harness, read_json
 from test_ledger_harbor import convoy_toml, json_of, run_toml, write_logbook
 
 REPO = Path(__file__).resolve().parents[1]
@@ -598,6 +604,251 @@ class SwarmPhaseGateTest(LedgerCase):
         self.assertEqual(check_json(self, repo), (0, []))
         self.assertEqual((REPO / "template/.keelokit/bin/ledger.py").read_bytes(),
                          (REPO / ".keelokit/bin/ledger.py").read_bytes())
+
+
+def ledger_module():
+    """ledger.py imported as a module, for the units that need no repository."""
+    spec = importlib.util.spec_from_file_location("ledger_under_test", LEDGER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CountingGraph(dict):
+    """A parent graph that counts how often it is read."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.reads = 0
+
+    def get(self, key, default=None):
+        self.reads += 1
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.reads += 1
+        return super().__getitem__(key)
+
+
+def reference_attributing_merges(ledger, graph: dict, log: list[dict], arrival_of: dict, wanted: list[str]) -> dict:
+    """LEDGER-014's attributing_merges as it shipped (one walk per merge): the answer the faster one must give."""
+    by_sha = {c["sha"]: c for c in log}
+    groups: dict = {}
+    for sha in wanted:
+        groups.setdefault(arrival_of[sha], set())
+    for sha, a in arrival_of.items():
+        if a in groups:
+            groups[a].add(sha)
+    found: dict = {}
+    for a, group in sorted(groups.items()):
+        merges = sorted(m for m in group if len(graph.get(m, ())) > 1 and m in by_sha
+                        and (by_sha[m]["story"] or by_sha[m]["part_of"]))
+        outside = {p for x in group for p in graph.get(x, ())} - group if merges else set()
+        for m in merges:
+            parents = graph[m]
+            mainline = ledger.reach_until(graph, parents[:1], outside)
+            brought = ledger.reach_until(graph, parents[1:], outside | mainline)
+            for sha in wanted:
+                if sha in brought:
+                    found.setdefault(sha, set()).update(by_sha[m]["story"], by_sha[m]["part_of"])
+    return found
+
+
+def side_history(merges: int, chain: int) -> tuple[dict, list[dict], dict, str]:
+    """One arrival group: trunk base B, then a merge M (no trailers) of a side history of `chain` commits whose every
+    (chain // merges)-th commit is a merge with `Part-of: S-<k>`, ending in a merge `Part-of: AUTH-1` that brings w
+    (`Swarm-Task:` only, off B). (graph, log, arrival_of, w)."""
+    graph = {"B": []}
+    log = [{"sha": "B", "story": [], "part_of": []}]
+    graph["w"] = ["B"]
+    log.append({"sha": "w", "story": [], "part_of": []})
+    prev, step = "B", max(chain // merges, 1)
+    for k in range(1, chain + 1):
+        sha = f"x{k}"
+        if k % step == 0:
+            graph[f"y{k}"] = [prev]
+            log.append({"sha": f"y{k}", "story": [], "part_of": []})
+            graph[sha] = [prev, f"y{k}"]
+            log.append({"sha": sha, "story": [], "part_of": [f"S-{k}"]})
+        else:
+            graph[sha] = [prev]
+            log.append({"sha": sha, "story": [], "part_of": []})
+        prev = sha
+    graph["top"] = [prev, "w"]
+    log.append({"sha": "top", "story": [], "part_of": ["AUTH-1"]})
+    graph["M"] = ["B", "top"]
+    log.append({"sha": "M", "story": [], "part_of": []})
+    arrival_of = {sha: ("B" if sha == "B" else "M") for sha in graph}
+    return graph, log, arrival_of, "w"
+
+
+class SwarmMergeWalkTest(unittest.TestCase):
+    """HARN-022 S5 (C1): finding a delivery's story through the merges of its arrival is near-linear in the group."""
+
+    def test_HARN_022_S5_attributing_merges_reads_the_graph_in_proportion_to_the_group(self):
+        ledger = ledger_module()
+        reads = {}
+        for merges, chain in ((100, 1000), (200, 2000), (400, 4000)):
+            graph, log, arrival_of, w = side_history(merges, chain)
+            counted = CountingGraph(graph)
+            found = ledger.attributing_merges(counted, log, arrival_of, [w])
+            self.assertEqual(found, {w: {"AUTH-1"}})
+            reads[merges] = counted.reads
+            # a few reads per commit of the group, never one walk of the group per merge
+            self.assertLessEqual(counted.reads, 8 * len(graph), (merges, chain, counted.reads, len(graph)))
+        self.assertLess(reads[400], 3 * reads[200], reads)  # doubling the group about doubles the reads
+
+    def test_HARN_022_S5_it_answers_what_the_walk_per_merge_answered(self):
+        ledger = ledger_module()
+        rng = random.Random(22)
+        for case in range(60):
+            graph = {"r": []}
+            order = ["r"]
+            log = [{"sha": "r", "story": [], "part_of": []}]
+            for i in range(rng.randint(5, 40)):
+                sha = f"c{i}"
+                k = rng.choice((1, 1, 2, 2, 3))
+                parents = list(dict.fromkeys(rng.choice(order) for _ in range(k)))
+                graph[sha] = parents
+                order.append(sha)
+                ids = [f"S-{i}"] if len(parents) > 1 and rng.random() < 0.7 else []
+                log.append({"sha": sha, "story": ids[:1] if rng.random() < 0.3 else [],
+                            "part_of": ids})
+            chain = ledger.first_parent_chain(graph, order[-1])
+            placed = ledger.arrivals(graph, order[-1])
+            arrival_of = placed[0]
+            wanted = [s for s in arrival_of if rng.random() < 0.4]
+            with self.subTest(case=case):
+                self.assertTrue(chain)
+                self.assertEqual(ledger.attributing_merges(graph, log, arrival_of, wanted),
+                                 reference_attributing_merges(ledger, graph, log, arrival_of, wanted))
+
+
+class SwarmSnapshotInProgressTest(LedgerCase):
+    """HARN-022 S6 (C2): a shallow clone re-checks the snapshot's in-progress deliveries too."""
+
+    def test_HARN_022_S6_a_delivery_in_progress_at_the_snapshot_then_merged_and_reverted_is_not_in_progress(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        repo.publish()
+        swarm_branch(repo, TASK, "Ana Helper", delivery("AUTH-001", TASK))
+        repo.git("fetch", "-q", "origin")
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        snap = json.loads(repo.git("show", "origin/keelokit/ledger:ledger.json"))
+        self.assertEqual([e["state"] for e in by_id(snap)["AUTH-001"]["swarm"]], ["in-progress"], "fixture")
+        merge = repo.merge(f"origin/swarm/{TASK}", f"Merge swarm/{TASK}")
+        repo.git("revert", "--no-edit", "-m", "1", merge, when=repo.next_date())
+        repo.publish()
+        shallow = repo.clone("shallow", depth=3)
+        shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+        shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        data = json.loads(shallow.ledger("--json").stdout)
+        self.assertTrue(data["history"].startswith("snapshot:"), data["history"])
+        s = by_id(data)["AUTH-001"]
+        self.assertNotIn("in-progress", [e["state"] for e in s["swarm"]])
+        self.assertNotIn(f"{TASK} · in-progress", show_text(self, shallow, "AUTH-001"))
+
+    def test_HARN_022_S6_a_snapshot_of_the_trunks_tip_keeps_its_in_progress_delivery(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        repo.publish()
+        swarm_branch(repo, TASK, "Ana Helper", delivery("AUTH-001", TASK))
+        repo.git("fetch", "-q", "origin")
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        shallow = repo.clone("shallow", depth=1)
+        shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+        shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        s = by_id(json.loads(shallow.ledger("--json").stdout))["AUTH-001"]
+        self.assertEqual([(e["task"], e["state"]) for e in s["swarm"]], [(TASK, "in-progress")])
+
+
+FORMAT = "\u202e\u2066\u2067\u2068\u2069\u200b\u200d\ufeff\u2028\u2029\u061c\u00ad"
+
+
+class TerminalSafeTextTest(LedgerCase):
+    """HARN-022 S7 (C3): no format character, line or paragraph separator reaches the terminal."""
+
+    def test_HARN_022_S7_every_format_character_and_separator_is_screened(self):
+        ledger = ledger_module()
+        for cp in range(0x110000):
+            ch = chr(cp)
+            if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp"):
+                with self.subTest(cp=hex(cp)):
+                    self.assertTrue(ledger.SWARM_UNSAFE.search(ch))
+                    if ch not in "\t\n":
+                        self.assertTrue(ledger.CONTROL.search(ch))
+        for ch in "aé漢😀 -·—…":
+            self.assertIsNone(ledger.CONTROL.search(ch), ch)
+
+    def test_HARN_022_S7_authors_and_subjects_reach_show_and_check_screened(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.state("[ledger]\nstale_days = 100000\n")
+        repo.publish()
+        head = swarm_branch(repo, TASK, f"Ana{FORMAT}Helper", f"feat: piece{FORMAT}x\n\nPart-of: AUTH-001\n"
+                            f"Swarm-Task: {TASK}")[0]
+        repo.git("fetch", "-q", "origin")
+        repo.merge(f"origin/swarm/{TASK}", f"Merge swarm/{TASK}")
+        repo.commit(f"fix: trunk{FORMAT}subject\n\nPart-of: AUTH-001")
+        repo.publish()
+        for args in (("show", "AUTH-001"), ("show", "AUTH-001", "--full"), ("check",), ("--release", "v9.9.9")):
+            r = repo.ledger(*args)
+            self.assertNotIn("Traceback", r.stderr)
+            for ch in FORMAT:
+                with self.subTest(args=args, ch=hex(ord(ch))):
+                    self.assertNotIn(ch, r.stdout)
+                    self.assertNotIn(ch, r.stderr)
+        self.assertIn("Ana", show_text(self, repo, "AUTH-001"))
+        commits = show_json(self, repo, "AUTH-001")["why"]["commits"]
+        (c,) = [c for c in commits if c["sha"] == head]
+        self.assertFalse(any(ch in c["author"] for ch in FORMAT), c["author"])
+        s = by_id(read_json(self, repo))["AUTH-001"]
+        self.assertFalse(any(ch in a for e in s["swarm"] for a in e["authors"] for ch in FORMAT))
+
+
+class ShowAuthorsOnceTest(LedgerCase):
+    """HARN-022 S8 (C4): show and show --json ask git for authors once."""
+
+    def counted(self, repo: GitRepo, *args: str) -> list[str]:
+        bindir = self.tmp / "shim"
+        bindir.mkdir(exist_ok=True)
+        log = self.tmp / f"argv-{uuid.uuid4().hex}.log"
+        log.touch()
+        real = shutil.which("git", path=clean_env(self.tmp)["PATH"])
+        shim = bindir / "git"
+        shim.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "{log}"\nexec "{real}" "$@"\n')
+        shim.chmod(0o755)
+        r = repo.ledger(*args, path=f"{bindir}{os.pathsep}{clean_env(self.tmp)['PATH']}")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return log.read_text().splitlines()
+
+    def test_HARN_022_S8_show_and_show_json_make_one_authors_call(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.state("[ledger]\nstale_days = 100000\n")
+        repo.publish()
+        swarm_branch(repo, TASK, "Ana Helper", delivery("AUTH-001", TASK))
+        swarm_branch(repo, TASK2, "Bo Helper", delivery("AUTH-002", TASK2))
+        repo.git("fetch", "-q", "origin")
+        repo.merge(f"origin/swarm/{TASK}", f"Merge swarm/{TASK}")
+        repo.commit("fix: more\n\nPart-of: AUTH-001")
+        repo.on_branch("claude/auth-001", "wip\n\nPart-of: AUTH-001", keep=True)
+        repo.git("fetch", "-q", "origin")
+        repo.publish()
+        for args in (("show", "AUTH-001"), ("show", "AUTH-001", "--json"), ("show", "AUTH-002", "--json")):
+            with self.subTest(args=args):
+                calls = self.counted(repo, *args)
+                self.assertEqual(sum("--no-mailmap" in c for c in calls), 1, calls)
+        out = show_text(self, repo, "AUTH-001")
+        self.assertIn("Ana Helper", out)
+        why = show_json(self, repo, "AUTH-001")["why"]
+        self.assertTrue(all(c["author"] for c in why["commits"]), why["commits"])
 
 
 if __name__ == "__main__":

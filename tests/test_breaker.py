@@ -234,12 +234,6 @@ class BreakerRoundsTest(BreakerCase):
                   + round_line(2, HEAD, "1 finding: ESC-11 open"))
         self.assertEqual(self.run_rounds(rounds), [("warning", "BREAKER_UNRESOLVED", "AUTH-001")])
 
-    def test_HARN_021_S4_more_rounds_than_the_cap_need_a_decision(self):
-        rounds = "".join(round_line(n, f"{n}" * 40, "1 finding · fixed") for n in (1, 2, 3)) + round_line(4, HEAD)
-        self.assertEqual(self.run_rounds(rounds), [("warning", "BREAKER_UNRESOLVED", "AUTH-001")])
-        rounds += "- Decision · Leo · 2026-11-25 · a fourth round, then land\n"
-        self.assertEqual(self.run_rounds(rounds), [])
-
     def test_HARN_021_S4_a_decision_by_an_agent_is_no_decision(self):
         rounds = round_line(1, HEAD, "1 finding open") + "- Decision · Claude · 2026-11-25 · fine as it is\n"
         found = self.run_rounds(rounds)
@@ -973,6 +967,173 @@ class BreakerRound6Test(BreakerCase):
         self.close(repo, "AUTH-001", publish=False)
         repo.publish()
         self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(self.check(repo)[1]))
+
+
+class BreakerCapTest(BreakerCase):
+    """HARN-022 S1 (A): the last recorded round decides, whatever its number; the cap is where the build stops and
+    asks a person, never a debt the record keeps."""
+
+    def run_rounds(self, rounds: str) -> list[dict]:
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/x.py",))})
+        self.close(repo, "AUTH-001", rounds=rounds)
+        return [d for d in self.check(repo)[1] if d["code"].startswith("BREAKER_")]
+
+    def test_HARN_022_S1_a_clean_last_round_past_the_cap_needs_no_decision(self):
+        rounds = "".join(round_line(n, f"{n}" * 40, "1 finding · fixed") for n in (1, 2, 3, 4)) + round_line(5, HEAD)
+        self.assertEqual(self.run_rounds(rounds), [])
+
+    def test_HARN_022_S1_findings_left_at_the_cap_need_a_person(self):
+        rounds = "".join(round_line(n, f"{n}" * 40, "1 finding · fixed") for n in (1, 2, 3))
+        found = self.run_rounds(rounds)
+        self.assertEqual([(d["level"], d["code"]) for d in found], [("warning", "BREAKER_UNRESOLVED")])
+        self.assertIn("cap", found[0]["detail"])
+        self.assertIn("a person decides", found[0]["detail"])
+        self.assertEqual(self.run_rounds(rounds + "- Decision · Leo · 2026-11-25 · land it; the rest to HARN-099\n"),
+                         [])
+
+    def test_HARN_022_S1_findings_left_past_the_cap_need_a_person_too(self):
+        rounds = "".join(round_line(n, f"{n}" * 40, "1 finding · fixed") for n in (1, 2, 3, 4))
+        found = self.run_rounds(rounds)
+        self.assertEqual([(d["level"], d["code"]) for d in found], [("warning", "BREAKER_UNRESOLVED")])
+        self.assertIn("a person decides", found[0]["detail"])
+
+    def test_HARN_022_S1_findings_left_below_the_cap_ask_for_the_next_round(self):
+        found = self.run_rounds(round_line(1, HEAD, "1 finding: ESC-1 · fixed in 1234567"))
+        self.assertEqual([(d["level"], d["code"]) for d in found], [("warning", "BREAKER_UNRESOLVED")])
+        self.assertIn("round 2", found[0]["detail"])
+        self.assertNotIn("a person decides", found[0]["detail"])
+        self.assertEqual(self.run_rounds(round_line(1, HEAD, "1 finding open")
+                                         + "- Decision · Leo · 2026-11-25 · land it\n"), [])
+
+    def test_HARN_022_S1_a_decision_before_a_later_unclean_round_does_not_count(self):
+        rounds = ("".join(round_line(n, f"{n}" * 40, "1 finding · fixed") for n in (1, 2, 3))
+                  + "- Decision · Leo · 2026-11-25 · one more round\n" + round_line(4, HEAD, "1 finding open"))
+        self.assertEqual([d["code"] for d in self.run_rounds(rounds)], ["BREAKER_UNRESOLVED"])
+
+
+class BreakerCapTextTest(unittest.TestCase):
+    """HARN-022 S2 (A): the build is told the last round decides and the cap is where it stops and asks."""
+
+    def test_HARN_022_S2_the_skill_agent_docs_protocol_and_story_template_say_the_last_round_decides(self):
+        for rel in ("skills/build-story/SKILL.md", "agents/breaker.md", "docs/design.md", "docs/ledger.md",
+                    "template/.keelokit/harness/execution-protocol.md", "skills/plan-backlog/SKILL.md"):
+            text = " ".join((ROOT / rel).read_text().split()).lower()
+            with self.subTest(rel=rel):
+                self.assertIn("the last round decides", text)
+                self.assertIn("stop and ask", text)
+                self.assertNotIn("past the cap need", text)
+
+
+class RiskyAfterCloseTest(BreakerCase):
+    """HARN-022 S3 (B1): a risky change under the trailer of a story already closed is RISKY_AFTER_CLOSE."""
+
+    @staticmethod
+    def after_close(diffs: list[dict]) -> list[str]:
+        return [d["level"] for d in diffs if d["code"] == "RISKY_AFTER_CLOSE"]
+
+    def test_HARN_022_S3_a_story_closed_before_the_rule_then_changed_on_a_risky_path(self):
+        repo = self.project({"AUTH-001": story("AUTH-001"), "DOC-002": story("DOC-002")}, risky=None)
+        self.close(repo, "AUTH-001", {"apps/web/page.ts": "x\n"})
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        self.assertEqual(self.after_close(self.check(repo)[1]), [])
+        repo.commit("fix: later\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0\n"})
+        repo.publish()
+        code, diffs = self.check(repo)
+        self.assertEqual(self.after_close(diffs), ["error"])
+        self.assertEqual(code, 1)
+        detail = next(d["detail"] for d in diffs if d["code"] == "RISKY_AFTER_CLOSE")
+        self.assertIn("AUTH-001", detail)
+
+    def test_HARN_022_S3_a_story_closed_with_its_rounds_then_changed_on_a_risky_path(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 1\n"}, rounds=round_line(1, HEAD))
+        self.assertEqual(self.check(repo), (0, []))
+        repo.commit("fix: later\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 2\n"})
+        repo.publish()
+        self.assertEqual(self.after_close(self.check(repo)[1]), ["error"])
+
+    def test_HARN_022_S3_a_second_story_commit_after_the_close_is_reported_too(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 1\n"}, rounds=round_line(1, HEAD))
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 3\n"})
+        self.assertEqual(self.after_close(self.check(repo)[1]), ["error"])
+
+    def test_HARN_022_S3_a_merges_own_resolution_under_a_closed_story_is_reported(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        self.close(repo, "AUTH-001", {"apps/web/page.ts": "x\n"})
+        repo.git("checkout", "-q", "-b", "side")
+        repo.commit("docs: y\n\nNo-story: docs", {"docs/y.md": "y\n"})
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: z\n\nNo-story: docs", {"docs/z.md": "z\n"})
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "side")
+        repo.write("scripts/verify.sh", "exit 0\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "Merge branch 'side'\n\nPart-of: AUTH-001", when=repo.next_date())
+        repo.publish()
+        self.assertEqual(self.after_close(self.check(repo)[1]), ["error"])
+
+    def test_HARN_022_S3_what_is_not_reported(self):
+        repo = self.project({"AUTH-001": story("AUTH-001"), "AUTH-002": story("AUTH-002"),
+                             "AUTH-003": story("AUTH-003"), "AUTH-004": story("AUTH-004")})
+        self.close(repo, "AUTH-001", {"apps/web/page.ts": "x\n"})
+        # a commit that also names an open story: that story records the rounds when it closes
+        repo.commit("fix: both\n\nPart-of: AUTH-001, AUTH-002", {"scripts/verify.sh": "exit 4\n"})
+        # a change to no risky path
+        repo.commit("fix: copy\n\nPart-of: AUTH-001", {"apps/web/page.ts": "y\n"})
+        # a reverted close reopens the story
+        close3 = self.close(repo, "AUTH-003", {"apps/web/three.ts": "3\n"}, publish=False)
+        repo.git("revert", "--no-edit", close3, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert\n\nThis reverts commit {close3}.\n\nPart-of: AUTH-003")
+        repo.commit("fix: three\n\nPart-of: AUTH-003", {".keelokit/bin/three.py": "3\n"})
+        # the closing branch's own later commits land with the close
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004", {"apps/web/four.ts": "4\n"})
+        repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
+        repo.git("checkout", "-q", "main")
+        repo.merge("feature", "Merge pull request #4 from x/feature")
+        repo.publish()
+        self.assertEqual(self.after_close(self.check(repo)[1]), [])
+
+    def test_HARN_022_S3_a_pull_request_changing_a_closed_storys_risky_path_fails(self):
+        repo = self.project({"AUTH-001": story("AUTH-001")})
+        self.close(repo, "AUTH-001", {"apps/web/page.ts": "x\n"})
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("fix: later\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0\n"})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        code, diffs = self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=71), "--ci",
+                                 env=PR_ENV)
+        self.assertEqual(code, 1)
+        self.assertIn("error", self.after_close(diffs))
+
+
+class DirectoryTouchTest(BreakerCase):
+    """HARN-022 S4 (B2): a touch that names a directory meets every glob beneath it."""
+
+    def test_HARN_022_S4_a_directory_touch_meets_a_glob_beneath_it(self):
+        stories = {"AUTH-001": story("AUTH-001", touches=("apps/api",)),
+                   "AUTH-002": story("AUTH-002", touches=("apps/api/",)),
+                   "AUTH-003": story("AUTH-003", touches=("apps/api/page.ts",)),
+                   "AUTH-004": story("AUTH-004", touches=("./apps/api",))}
+        repo = self.project(stories)
+        for sid in stories:
+            self.close(repo, sid, publish=False)
+        repo.publish()
+        missing = {s for level, c, s in self.breaker(self.check(repo)[1]) if c == "BREAKER_MISSING"}
+        self.assertEqual(missing, {"AUTH-001", "AUTH-002", "AUTH-004"})
+        r = repo.ledger("risky", "AUTH-001")
+        self.assertIn("AUTH-001: risky", r.stdout)
+        self.assertIn("**/migrations/**", r.stdout)
+        self.assertIn("AUTH-003: not risky", repo.ledger("risky", "AUTH-003").stdout)
+
+    def test_HARN_022_S4_a_directory_meets_only_globs_that_can_live_beneath_it(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("apps/web",))},
+                            risky='paths = ["services/*/migrations/**", "apps/api/**"]\n')
+        self.assertIn("AUTH-001: not risky", repo.ledger("risky", "AUTH-001").stdout)
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("services",))},
+                            risky='paths = ["services/*/migrations/**"]\n')
+        self.assertIn("AUTH-001: risky", repo.ledger("risky", "AUTH-001").stdout)
 
 
 if __name__ == "__main__":
