@@ -133,7 +133,8 @@ a failing test first.
 - `attribution` leaves out commits `[ledger] since` reaches, as `check` does (`since` in the answer names it);
   `diffs` and `since` are additive keys. A `No-story:` with an unknown category is attributed, as in `check`, and
   shows as BAD_CATEGORY in `diffs`.
-- `take` passes `--session $CLAUDE_CODE_SESSION_ID` to Harbor when neither HARBOR_SESSION nor CLAUDE_SESSION_ID is
+- `take` hands `CLAUDE_CODE_SESSION_ID` to Harbor as `HARBOR_SESSION` (in its environment, never as an argument:
+  Semgrep's tainted-argv rule caught the first version) when neither HARBOR_SESSION nor CLAUDE_SESSION_ID is
   set (Harbor reads only those two, and Claude Code sets the third), so the vessel prompt's first line works.
 - A harbor.py whose feature probe crashes or does not answer blocks the take (exit 2); only argparse's
   "invalid choice" reads as a Harbor without `story take`.

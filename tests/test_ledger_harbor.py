@@ -29,8 +29,8 @@ import json, os, subprocess, sys, time, tomllib
 log = os.environ.get("STUB_LOG")
 if log:
     with open(log, "a") as f:
-        f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(),
-                            "project": os.environ.get("CLAUDE_PROJECT_DIR")}) + "\n")
+        f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "project": os.environ.get("CLAUDE_PROJECT_DIR"),
+                            "session": os.environ.get("HARBOR_SESSION")}) + "\n")
 mode = os.environ.get("STUB_MODE", "")
 args = sys.argv[1:]
 session = os.environ.get("HARBOR_SESSION") or os.environ.get("CLAUDE_SESSION_ID")
@@ -430,7 +430,8 @@ class LedgerHarborTakeTest(HarborStubCase):
         self.harbor(repo)
         r = self.take(repo, "AUTH-004", HARBOR_SESSION="", CLAUDE_CODE_SESSION_ID="abc-123")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(["--session", "abc-123", "story", "take", "AUTH-004"], [c["argv"] for c in self.calls()])
+        self.assertIn((["story", "take", "AUTH-004"], "abc-123"), [(c["argv"], c["session"]) for c in self.calls()])
+        self.assertFalse([c for c in self.calls() if "--session" in c["argv"]], "nothing from the environment in argv")
         self.assertEqual(self.story_of(repo), "AUTH-004")
 
     def test_LEDGER_013_S7_take_clear_releases_the_story_in_harbor(self):

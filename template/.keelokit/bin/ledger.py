@@ -4038,11 +4038,14 @@ def run_harbor(tool: str, args: list[str], timeout: float) -> tuple[int | None, 
     """(exit, stdout, stderr) of harbor.py; exit None when it did not end in `timeout` (its process group is gone)."""
     env = {**{k: v for k, v in git_env().items() if k not in GIT_SCRUB or k == "GIT_ASKPASS"},
            "CLAUDE_PROJECT_DIR": str(ROOT)}
-    session = [] if env.get("HARBOR_SESSION") or env.get("CLAUDE_SESSION_ID") else \
-        ["--session", env["CLAUDE_CODE_SESSION_ID"]] if SESSION_ID.fullmatch(env.get("CLAUDE_CODE_SESSION_ID", "")) else []
+    # The session id stays in the environment, where Harbor reads it (HARBOR_SESSION, then CLAUDE_SESSION_ID); Claude
+    # Code sets only CLAUDE_CODE_SESSION_ID, handed over as HARBOR_SESSION. Nothing from the environment is an argument.
+    if not (env.get("HARBOR_SESSION") or env.get("CLAUDE_SESSION_ID")) \
+            and SESSION_ID.fullmatch(env.get("CLAUDE_CODE_SESSION_ID", "")):
+        env["HARBOR_SESSION"] = env["CLAUDE_CODE_SESSION_ID"]
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
-            proc = subprocess.Popen([sys.executable, "-E", "-s", tool, *session, *args], cwd=ROOT, env=env,
+            proc = subprocess.Popen([sys.executable, "-E", "-s", tool, *args], cwd=ROOT, env=env,
                                     stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
         except OSError as e:
             return 127, "", f"harbor.py could not run ({e.strerror or e})"

@@ -313,7 +313,8 @@ exit 1, nothing set; any other exit, or no answer in `KEELOKIT_HARBOR_SECONDS` (
 set. An unregistered session's take is Harbor's check only (its `worker register --story` is the real take).
 `take --clear` runs `harbor.py story release <ID>` of the worktree's story; the worktree is cleared whatever
 Harbor says, and a release Harbor did not make is exit 1 (2 without an answer). The session id goes to Harbor as
-Harbor reads it (`HARBOR_SESSION`, `CLAUDE_SESSION_ID`), else `--session $CLAUDE_CODE_SESSION_ID`. Without Harbor,
+Harbor reads it (`HARBOR_SESSION`, `CLAUDE_SESSION_ID`), else `CLAUDE_CODE_SESSION_ID` handed over as
+`HARBOR_SESSION` (never as an argument). Without Harbor,
 or with one without `story take`, `take` is as before.
 
 ## Plan
