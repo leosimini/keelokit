@@ -222,11 +222,11 @@ GIT_NO_HOOKS = [
     (rf"(?i){GIT}config\b{GIT_ARGS}\bcore\.hookspath\b", "QA-2: the hooks path is set by the project's install step; ask a human to change it"),
     # -f bundled with push's no-value flags (-uf, -vf; -o takes the rest as its value), --force and
     # every --force-… but -with-lease, and --mirror, which force-updates, in any prefix git accepts.
-    (rf"{GIT}push\b{GIT_ARGS}\s(-[46dnquv]*f[46dfnquv]*(o\S*)?{BUNDLE_END}|--force(?!-w)(-[\w-]*)?(?![\w-])"
+    (rf"{GIT}push\b{GIT_ARGS}\s(-[46dnquv]*f[46dfnquv]*(o\S*)?{BUNDLE_END}|--force(?!-w|-if-includes)(-[\w-]*)?(?![\w-])"
      r"|--m(i(r(r(or?)?)?)?)?(?![\w-]))", "QA-2: no force-push (use --force-with-lease on your own branch)"),
     (rf"{GIT}push\b{GIT_ARGS}\s\+[\w./:-]+", "QA-2: `+ref` is a force-push"),
 ]
-WRITE_CMD = re.compile(r"(>>?|\btee\b|\bcp\b|\bmv\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\brm\b|\btouch\b|\bln\b|\bdd\b)")
+WRITE_CMD = re.compile(r"(>>?|\btee\b|\bcp\b|\binstall\b|\bmv\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\brm\b|\btouch\b|\bln\b|\bdd\b)")
 
 
 def unquoted(cmd: str) -> str:
@@ -397,6 +397,10 @@ def protected_why(target: str) -> str | None:
         return GIT_INTERNALS_WHY
     if target and in_plugin(target.lstrip(">")):
         return PLUGIN_WHY
+    if target and claude_settings(target):
+        return SETTINGS_WHY
+    if target and hooked(target):
+        return HOOKS_ON_WHY
     return None
 
 
@@ -763,7 +767,7 @@ def segments(cmd: str) -> list[str]:
             quote = "" if c == quote else quote
         elif c in "'\"":
             quote = c
-        elif c in ";|\n" or cmd.startswith("&&", i):
+        elif (c in ";|\n" and not (c == "|" and cur.endswith(">"))) or cmd.startswith("&&", i):  # `>|` (ESC-293)
             out.append(cur)
             cur = ""
             i += 2 if cmd.startswith(("&&", "||"), i) else 1
@@ -821,6 +825,13 @@ def in_plugin(word: str) -> bool:
     return False
 
 
+def holds_plugin(word: str) -> bool:
+    """The path holds the plugin's code (`rm -rf ~/.claude`): removing or moving it removes the plugin (ESC-294)."""
+    p = expand_word(word)
+    p = os.path.realpath(p if posixpath.isabs(p) else str(ROOT / p))
+    return any(tree.startswith(p.rstrip("/") + "/") for tree in plugin_trees())
+
+
 PLUGIN_WHY = "QA-2: that is Keelokit's own code (the plugin), which runs the guard: removing or changing it is the person's call"
 
 
@@ -860,6 +871,19 @@ def mv_sources(args: list[str]) -> list[str]:
     return plain if target else plain[:-1]
 
 
+def chmod_hooked(cmd: str) -> bool:
+    """`chmod -x .githooks/pre-commit` while the hooks are on (ESC-291): a hook git can't execute is one it skips."""
+    for segment in segments(cmd):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        if words and Path(words[0]).name in ("chmod", "chown", "chgrp", "chattr") and \
+                any(hooked(w) for w in words[1:] if not w.startswith("-")):
+            return True
+    return False
+
+
 def harness_removal(cmd: str) -> bool:
     """ESC-282, best effort like every shell rule: a command that deletes or moves .keelokit/ or .keelokit/bin/ whole
     (rm, rmdir, git rm, mv as a source, find … -delete/-exec)."""
@@ -873,7 +897,12 @@ def harness_removal(cmd: str) -> bool:
         if not words:
             continue
         name = Path(words[0]).name
-        if name == "git" and "rm" in words:
+        if name == "git" and any(w in ("switch", "checkout") for w in words) and \
+                any(w == "--orphan" or w.startswith("--orphan=") for w in words):
+            return True  # an orphan branch empties the tree and HEAD of .keelokit at once (ESC-290)
+        if name == "git" and "mv" in words:
+            args = mv_sources(words[words.index("mv") + 1:])
+        elif name == "git" and "rm" in words:
             args = words[words.index("rm") + 1:]
         elif name in ("rm", "rmdir", "unlink", "shred", "trash"):
             args = words[1:]
@@ -883,7 +912,7 @@ def harness_removal(cmd: str) -> bool:
             args = words[1:]
         else:
             continue
-        if any(harness_hit(w) or in_plugin(w) for w in args if not w.startswith("-")):
+        if any(harness_hit(w) or in_plugin(w) or holds_plugin(w) for w in args if not w.startswith("-")):
             return True
     return False
 
@@ -950,6 +979,10 @@ def config_problem(cmd: str) -> str | None:
             rest = [w for w in words[words.index("config") + 1:] if not w.startswith("-")]
             if rest:
                 pairs.append((rest[0], rest[1] if len(rest) > 1 else ""))
+        if "config" in words and any(w in ("--remove-section", "--rename-section") for w in words):
+            section = next((w for w in words[words.index("config") + 1:] if not w.startswith("-")), "")
+            if section.lower() == "core":
+                return "QA-2: the hooks path is the person's to set (removing [core] removes it)"
         for key, value in pairs:
             k = key.lower()
             if k == "core.hookspath":
@@ -963,12 +996,60 @@ def config_problem(cmd: str) -> str | None:
     return None
 
 
+HOOKED_FILES = {".keelokit/bin/guard.py", ".keelokit/bin/ledger.py"}  # what the template's .githooks run
+HOOKS_ON_WHY = ("QA-2: the person turned the git hooks on (core.hooksPath .githooks): changing or removing the hooks, "
+                "or the guard and ledger they run, is theirs to do")
+_hooks_on: list[bool] = []
+
+
+def hooks_on() -> bool:
+    """The person set core.hooksPath to the project's .githooks (read once per call)."""
+    if not _hooks_on:  # the person's files, not the /dev/null this copy runs git with (harden_git)
+        out = git_bytes("config", "--local", "--get", "core.hooksPath") or \
+            git_bytes("config", "--global", "--get", "core.hooksPath") or b""
+        value = out.decode("utf-8", "replace").strip()
+        _hooks_on.append(bool(value) and harness_rel(value if posixpath.isabs(value) else value) in (".githooks",))
+    return _hooks_on[0]
+
+
+def hooked(target: str) -> bool:
+    """ESC-291: a hook in .githooks, or a script the hooks run, while the person has the hooks on."""
+    rel = harness_rel(target.lstrip(">"))
+    return (rel == ".githooks" or rel.startswith(".githooks/") or rel in HOOKED_FILES) and hooks_on()
+
+
+SETTINGS_FILE = re.compile(r"(?:^|/)\.claude/settings(?:\.local)?\.json$")
+SETTINGS_WHY = ("QA-2: Claude Code's settings decide whether Keelokit's hooks and plugin run; turning them off is the "
+                "person's call")
+
+
+def claude_settings(target: str) -> bool:
+    return bool(SETTINGS_FILE.search(posixpath.normpath(expand_word(target.lstrip(">")))))
+
+
+def turns_hooks_off(text: str) -> bool:
+    return "disableAllHooks" in text or ("enabledPlugins" in text and "keelokit" in text.lower())
+
+
+def plugin_command(cmd: str) -> bool:
+    """`claude plugin disable|uninstall|remove keelokit` (ESC-294)."""
+    for segment in segments(cmd):
+        words = segment.split()
+        if Path(words[0]).name == "claude" if words else False:
+            if any(w in ("plugin", "plugins") for w in words) and \
+                    any(w in ("disable", "uninstall", "remove", "rm") for w in words) and \
+                    any("keelokit" in w.lower() for w in words):
+                return True
+    return False
+
+
 GIT_INTERNALS_WHY = "QA-2: .git/config and .git/hooks decide which git hooks run; changing them is the person's call"
 
 
 def git_internal(target: str) -> bool:
     rel = harness_rel(target.lstrip(">"))
-    return rel == ".git/config" or rel.startswith(".git/hooks/") or rel == ".git/hooks"
+    return rel in (".git/config", ".git/config.worktree", ".git/hooks") or rel.startswith(".git/hooks/") or \
+        re.fullmatch(r"\.git/worktrees/[^/]+/config(?:\.worktree)?", rel) is not None
 
 
 def seeds_env(segment: str) -> bool:
@@ -984,6 +1065,7 @@ def seeds_env(segment: str) -> bool:
 
 
 def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> str | None:
+    cmd = re.sub(r"\\\r?\n", " ", cmd)  # a line continuation is a blank to the shell (ESC-293)
     allow = committed_registry() if allow is None else allow
     bare = unquoted(cmd)
     if CHDIR.search(bare):
@@ -1011,13 +1093,17 @@ def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> s
                     return why
     if harness_removal(cmd):
         return HARNESS_WHY
+    if plugin_command(cmd):
+        return PLUGIN_WHY
+    if chmod_hooked(cmd):
+        return HOOKS_ON_WHY
     if why := accept_problem(cmd):
         return why
     if corrections_write(cmd):
         return CORRECTIONS_WHY
     if named_write(cmd, Path(STATE).name):
         return STATE_SHELL_WHY
-    for segment in re.split(r"&&|\|\||;|\|", bare):
+    for segment in re.split(r"&&|\|\||;|(?<!>)\|", bare):
         words = segment.split()
         if not words:
             continue
@@ -1089,6 +1175,10 @@ def tool_problem(tool: str, args: dict) -> str | None:
         return GIT_INTERNALS_WHY
     if path and in_plugin(path):
         return PLUGIN_WHY
+    if path and claude_settings(path) and any(turns_hooks_off(x) for x in parts):
+        return SETTINGS_WHY
+    if path and hooked(path):
+        return HOOKS_ON_WHY
     names = {n for n in (rel_posix(path), real_rel(path)) if n} if path else set()
     if REGISTRY in names:
         return REGISTRY_WHY

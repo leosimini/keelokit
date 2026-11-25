@@ -1820,6 +1820,77 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertTrue(home_plugins.exists())
 
+    # Cold breaker, round 3 (ESC-290..294).
+
+    def test_HARN_004_S1_ESC_290_git_mv_and_an_orphan_branch_cannot_take_the_harness_away(self):
+        for cmd in ("git mv .keelokit .keelokit-old", "git mv -f .keelokit/bin old-bin", "git switch --orphan scratch",
+                    "git checkout --orphan scratch", "git switch -q --orphan=x"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("git mv src/a.py src/b.py", "git switch -c feature", "git checkout main"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_291_hooks_a_person_turned_on_cannot_be_rewritten_or_removed(self):
+        shutil.copytree(REPO / "template/.githooks", self.proj / ".githooks")
+        cmds = ("rm -rf .githooks", "chmod -x .githooks/pre-commit", "echo 'exit 0' > .githooks/pre-commit",
+                "printf 'x' > .keelokit/bin/guard.py", "mv .githooks/commit-msg /tmp/x")
+        writes = ({"file_path": ".githooks/pre-commit", "content": "exit 0\n"},
+                  {"file_path": str(self.proj / ".keelokit/bin/guard.py"), "content": "x"},
+                  {"file_path": ".keelokit/bin/ledger.py", "content": "x"})
+        for cmd in cmds:  # hooks off: these are the repo's files like any other
+            with self.subTest(off=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+        self.git("config", "core.hooksPath", ".githooks")
+        for cmd in cmds:
+            with self.subTest(on=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("QA-2", r.stderr)
+        for args in writes:
+            with self.subTest(write=args["file_path"]):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": args})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("echo x > src/notes.txt").returncode, 0)
+
+    def test_HARN_004_S1_ESC_292_the_hooks_path_cannot_go_through_a_section_or_the_worktree_config(self):
+        for cmd in ("git config --remove-section core", "git config --rename-section core old",
+                    "printf '[core]\\n\\thooksPath = /dev/null\\n' >> .git/config.worktree"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": ".git/config.worktree",
+                                                                         "content": "[core]\n"}})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("git config --remove-section alias").returncode, 0)
+
+    def test_HARN_004_S1_ESC_293_clobber_redirects_continuations_and_install_are_read(self):
+        for cmd in ("echo KEY=1 >| .env", "echo x >| .git/hooks/pre-commit", "echo x >| .keelokit/guard-allow.toml",
+                    "printf '[core]' >| .git/config", "git \\\n  commit -n -m x", "git commit \\\n --no-verify -m x",
+                    "install -m 600 /dev/null .env"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("ls | wc -l").returncode, 0)
+        self.assertEqual(self.bash("git push --force-with-lease --force-if-includes origin feat").returncode, 0)
+
+    def test_HARN_004_S1_ESC_294_claude_code_s_own_hooks_and_the_plugin_cannot_be_switched_off(self):
+        for cmd in ("echo '{\"disableAllHooks\":true}' > .claude/settings.local.json", "claude plugin disable keelokit",
+                    "claude plugin uninstall keelokit@keelokit", "rm -rf ~/.claude", "mv ~/.claude ~/.claude.bak",
+                    "rm -rf $HOME/.claude/plugins"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for path in (".claude/settings.local.json", ".claude/settings.json", "~/.claude/settings.json"):
+            with self.subTest(path=path):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+                    "file_path": path, "content": '{"disableAllHooks": true}'}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+            "file_path": ".claude/settings.json", "content": '{"permissions": {"allow": ["Bash(ls)"]}}'}})
+        self.assertEqual(r.returncode, 0, "ordinary settings are the project's: " + r.stderr)
+
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 
     def test_HARN_004_S1_ESC_276_the_guard_blocks_on_data_it_cannot_read_in_bounds(self):
