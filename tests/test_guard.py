@@ -2017,8 +2017,7 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
             with self.subTest(cmd=cmd):
                 r = self.bash(cmd, tool="PowerShell")
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        for cmd in ("Get-ChildItem", "Remove-Item -Recurse node_modules", "Set-Content notes.txt 'x'",
-                    "Copy-Item .env.example .env"):
+        for cmd in ("Get-ChildItem", "Remove-Item -Recurse node_modules", "Set-Content notes.txt 'x'"):
             with self.subTest(allowed=cmd):
                 self.assertEqual(self.bash(cmd, tool="PowerShell").returncode, 0, self.bash(cmd, tool="PowerShell").stderr)
 
@@ -2035,6 +2034,51 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                     "file_path": ".claude/settings.local.json", "content": content}})
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(self.bash("git push origin main 2>&1 | tail -1").returncode, 0)
+
+    # Closing round (ESC-301): the coordinator's last list.
+
+    def test_HARN_004_S1_ESC_301_no_passwd_entry_falls_back_to_an_absolute_home(self):
+        trusted = load_trusted()
+        import pwd
+
+        def missing(uid):
+            raise KeyError(uid)
+
+        with unittest.mock.patch.object(pwd, "getpwuid", missing):
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
+                self.assertEqual(trusted.marker_path(self.proj).parents[2], self.tmp / ".cache")
+            for home in ("relative/home", ""):
+                with unittest.mock.patch.dict(os.environ, {"HOME": home}):
+                    self.assertIsNone(trusted.marker_path(self.proj))
+                    self.assertIsNone(trusted.choose("guard", self.tmp), "never blocks a non-Keelokit project")
+
+    def test_HARN_004_S1_ESC_301_refspecs_and_flags_after_any_redirect(self):
+        for cmd in ("git push origin +$(git branch --show-current)", "git push -q 2>/dev/null -f",
+                    "git push origin main >out.txt --force", "git commit -m x 2>/dev/null --no-verify"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 2, self.bash(cmd).stderr)
+
+    def test_HARN_004_S1_ESC_301_powershell_is_read_only_on_protected_paths(self):
+        for cmd in ("Set-Content .keelokit/state.toml 'x'", "Copy-Item .env.example .env", "Invoke-Item .git/hooks/pre-commit",
+                    "Start-Process notepad .claude/settings.json", "Clear-Item $HOME/.cache/keelokit"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash(cmd, tool="PowerShell").returncode, 2)
+        for cmd in ("Get-Content .env", "Test-Path .keelokit", "Get-ChildItem .keelokit/bin",
+                    "Select-String -Path .git/config -Pattern hooks", "Remove-Item -Recurse node_modules"):
+            with self.subTest(allowed=cmd):
+                r = self.bash(cmd, tool="PowerShell")
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_HARN_004_S1_ESC_301_reading_the_hooks_path_and_commit_message_heredocs_are_allowed(self):
+        for cmd in ("git config --get core.hooksPath", "git config --get-all core.hooksPath",
+                    "git commit -F - <<'EOF'\ndocs: explain why git commit --no-verify is banned\n\nNo-story: docs\nEOF"):
+            with self.subTest(allowed=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 0, r.stderr)
+        for cmd in ("git config core.hooksPath /dev/null", "sh <<'EOF'\ngit commit --no-verify -m x\nEOF",
+                    "git commit -F - <<'EOF' && git push -f\nmsg\nEOF"):
+            with self.subTest(blocked=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 2)
 
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 

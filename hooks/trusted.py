@@ -205,14 +205,16 @@ def project_dir(arg: str | None = None) -> Path | None:
 
 def marker_path(project: Path) -> Path | None:
     """The sticky mark that a project is a Keelokit project (ESC-295): ~/.cache/keelokit/projects/<sha256 of its real
-    path>, in the home the password database names, never $HOME; None for a user the database doesn't know (a
-    container run as a bare uid, ESC-297), who then has only .keelokit/ in the tree to go by."""
+    path>, in the home the password database names; for a user it doesn't know (a container run as a bare uid,
+    ESC-297) an absolute $HOME, else None, and the gate then has only .keelokit/ in the tree to go by."""
     import hashlib
     import pwd
     try:
         home = pwd.getpwuid(os.getuid()).pw_dir
-    except KeyError:
-        return None
+    except KeyError:  # ESC-301: $HOME when it is absolute, else no marker at all
+        home = os.environ.get("HOME", "")
+        if not os.path.isabs(home):
+            return None
     key = hashlib.sha256(os.path.realpath(project).encode("utf-8", "surrogateescape")).hexdigest()
     return Path(home) / ".cache/keelokit/projects" / key
 

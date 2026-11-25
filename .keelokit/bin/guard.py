@@ -221,7 +221,9 @@ GIT_NO_HOOKS = [
     (r"(?i)keelokit\.allowtamper", "QA-4: only a human may allow a skipped test or silenced check"),
     # Config names are case-insensitive: core.hookspath is core.hooksPath.
     (rf"(?i){GIT}(?:-c\s+|--config-env[=\s]\s*)core\.hookspath\b", "QA-2: don't override the hooks path"),
-    (rf"(?i){GIT}config\b{GIT_ARGS}\bcore\.hookspath\b", "QA-2: the hooks path is set by the project's install step; ask a human to change it"),
+    # Reading it (--get, --get-all) is no change (ESC-301).
+    (rf"(?i){GIT}config\b(?![^\n|;&]*\s--get(?:-all|-regexp)?\b){GIT_ARGS}\bcore\.hookspath\b",
+     "QA-2: the hooks path is set by the project's install step; ask a human to change it"),
     # -f bundled with push's no-value flags (-uf, -vf; -o takes the rest as its value), --force and
     # every --force-… but -with-lease, and --mirror, which force-updates, in any prefix git accepts.
     (rf"{GIT}push\b{GIT_ARGS}\s(-[46dnquv]*f[46dfnquv]*(o\S*)?{BUNDLE_END}|--force(?!-w)(-[\w-]*)?(?![\w-])"
@@ -1049,7 +1051,8 @@ def config_problem(cmd: str) -> str | None:
                 return "QA-2: don't override the hooks path (through git's config environment either)"
             if w == "-c" and i + 1 < len(words):
                 pairs.append(words[i + 1].partition("=")[::2])
-        if "config" in words and any(Path(w).name == "git" for w in words[:words.index("config")]):
+        if "config" in words and any(Path(w).name == "git" for w in words[:words.index("config")]) and \
+                not any(w in ("--get", "--get-all", "--get-regexp", "--list", "-l") for w in words):
             rest = [w for w in words[words.index("config") + 1:] if not w.startswith("-")]
             if rest:
                 pairs.append((rest[0], rest[1] if len(rest) > 1 else ""))
@@ -1163,9 +1166,30 @@ def ps_path(word: str) -> str:
     return re.sub(r"(?i)^\$(?:env:USERPROFILE|env:HOME|HOME)(?=/|$)", "~", word)
 
 
+PS_READ = {"get-content", "gc", "cat", "type", "get-childitem", "gci", "ls", "dir", "test-path", "select-string", "sls",
+           "get-item", "gi", "resolve-path", "rvpa"}
+
+
+def ps_protected(word: str) -> str | None:
+    w = ps_path(word)
+    rel = harness_rel(w)
+    if rel == ".keelokit" or rel.startswith(".keelokit/"):
+        return HARNESS_WHY
+    if why := protected_tree(w):
+        return why
+    if posixpath.basename(rel).startswith(".env"):
+        return ENV_WHY
+    if git_internal(w):
+        return GIT_INTERNALS_WHY
+    if claude_settings(w):
+        return SETTINGS_WHY
+    return None
+
+
 def powershell_problem(cmd: str) -> str | None:
-    """ESC-299: PowerShell's own cmdlets (and their aliases) meet the rules the shell's commands do: no removing or
-    moving the harness, the marker or the plugin; no writing .env files, git's config or Claude Code's settings."""
+    """ESC-299, ESC-301: for the PowerShell tool, any command but a read-only cmdlet that names a protected path
+    (.keelokit, .env*, git's config and hooks, Claude Code's settings, the plugin, the marker) is refused: simple and
+    conservative, since the guard doesn't parse PowerShell."""
     for stmt in re.split(r"[;|\n]", cmd):
         lexer = shlex.shlex(stmt, posix=True)
         lexer.whitespace_split, lexer.escape = True, ""  # a backslash is a path separator to PowerShell
@@ -1173,34 +1197,38 @@ def powershell_problem(cmd: str) -> str | None:
             words = list(lexer)
         except ValueError:
             words = stmt.split()
-        if not words:
+        if not words or words[0].lower() in PS_READ:
             continue
-        verb = words[0].lower()
-        targets = [ps_path(w) for w in words[1:] if not w.startswith("-")]
-        if verb in PS_REMOVE | PS_MOVE:
-            for w in (targets if verb in PS_REMOVE else targets[:1]):
-                if why := protected_tree(w):
-                    return why
-                if is_env_file(w):
-                    return ENV_OWN_WHY
-        if verb in PS_WRITE | PS_COPY | PS_MOVE:
-            dest = targets[-1:] if verb in PS_COPY | PS_MOVE else targets[:1]
-            src = targets[0] if verb in PS_COPY and len(targets) > 1 else ""
-            for w in dest:
-                if is_env_file(w) and not (src and posixpath.basename(src).startswith(".env") and src.endswith(".example")
-                                           and not posixpath.isabs(src) and ".." not in src.split("/")):
-                    return ENV_WHY
-                if git_internal(w):
-                    return GIT_INTERNALS_WHY
-                if claude_settings(w):
-                    return SETTINGS_WHY
-                if protected_why(w):
-                    return protected_why(w)
+        for w in words[1:]:
+            if not w.startswith("-") and (why := ps_protected(w)):
+                return why
     return None
+
+
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+
+
+def strip_message_heredocs(cmd: str) -> str:
+    """The body of a heredoc given to `git commit` or `git tag` is a message, not commands: dropped before the rules
+    read the command (ESC-301), the line that starts it kept."""
+    lines, out, i = cmd.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        m = HEREDOC.search(line)
+        if m and re.search(r"\bgit\b.*\b(?:commit|tag)\b", line[:m.start()]):
+            end = m.group(2)
+            while i < len(lines) and lines[i].strip("\t") != end:
+                i += 1
+            i += 1 if i < len(lines) else 0
+            out.append(end)
+    return "\n".join(out)
 
 
 def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> str | None:
     cmd = re.sub(r"\\\r?\n", " ", cmd)  # a line continuation is a blank to the shell (ESC-293)
+    cmd = strip_message_heredocs(cmd)
     allow = committed_registry() if allow is None else allow
     bare = unquoted(cmd)
     if CHDIR.search(bare):
