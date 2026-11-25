@@ -181,8 +181,9 @@ within schema 1. `check --rules-ref <rev>` reads every rule from `<rev>` instead
 with the same parsing and the same hardened git calls: the whole committed `.keelokit/state.toml` (`[ledger]`:
 `enforce`, `since`, `no_story`, `stories`, `trunk`; `[ledger.approval]`), `.keelokit/critical.toml`, the review files
 in `.keelokit/ledger-reviews/`, `critical.toml` as of a delegated row's arrival, and the touches and dimensions of the
-story files that decide a row's critical flag (a story `<rev>` lacks counts as critical); a correction row that
-arrived in commits `<rev>` does not reach is judged by `<rev>`'s critical areas and story. Harbor's ok runs main's ledger in a clone whose trunk is the convoy as landed: without it
+story files that decide a row's critical flag (a story `<rev>` lacks counts as critical); a delegated row's arrival
+is looked up on `<rev>`'s own first-parent history of the corrections file, so a row `<rev>` never held (or one a
+convoy routes through an old side-branch commit) is judged by `<rev>`'s critical areas and story. Harbor's ok runs main's ledger in a clone whose trunk is the convoy as landed: without it
 the convoy's own tree would hold the rules it is judged by, so a convoy could relax them. A `<rev>` that is no commit
 here is exit 2. The data (stories, corrections, commits) is still the trunk's.
 

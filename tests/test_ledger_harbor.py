@@ -15,7 +15,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from test_ledger import (CORR, CRITICAL, REVIEWS, GitRepo, LedgerCase, approval, build_delegated, by_id, clean_env,
+from test_ledger import (CORR, CRITICAL, CRITICAL_TOML, REVIEWS, GitRepo, LedgerCase, approval, build_delegated, by_id, clean_env,
                          commit_harness, corrections, delegated_row, read_json, review_row, review_text, story15)
 
 REPO = Path(__file__).resolve().parents[1]
@@ -554,6 +554,23 @@ class LedgerHarborHostileTest(HarborStubCase):
         self.assertEqual((s["state"], s["convoy"], s["delivered"]), ("on-trunk", 8, None))
 
 
+class LedgerConvoyNumberTest(LedgerCase):
+    def test_LEDGER_013_S8_breaker2_a_huge_convoy_number_in_a_merge_subject_crashes_nothing(self):
+        """Cold breaker round 2, finding 1: `Merge branch 'convoy/<5000 digits>'` on the trunk."""
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.publish()
+        repo.on_branch("feat", "feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", keep=True)
+        repo.merge("feat", f"Merge branch 'convoy/{'9' * 5000}'\n\nNo-story: docs")
+        repo.publish()
+        s = self.stories(repo)["AUTH-001"]
+        self.assertEqual((s["state"], s["convoy"]), ("on-trunk", None))
+        for args in ([], ["check"], ["show", "AUTH-001"], ["show", "AUTH-001", "--json"], ["next"]):
+            with self.subTest(args=args):
+                r = repo.ledger(*args)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 class LedgerAttributionTest(LedgerCase):
     """`attribution <a>..<b> [--json]`: Harbor's contract, and the same attribution `check` makes."""
 
@@ -769,6 +786,35 @@ class LedgerRulesRefTest(LedgerCase):
         r = repo.ledger("check", "--json", "--rules-ref", rules)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("UNATTRIBUTED", [d["code"] for d in json_of(self, r)["diffs"] if d["level"] == "error"])
+
+    def test_LEDGER_013_S10_breaker2_a_row_main_never_held_is_judged_by_the_rules_ref(self):
+        """Cold breaker round 2, finding 2: a convoy whose first-parent chain runs through an old side-branch commit
+        (critical.toml emptied, the row added, both undone before main merged it) cannot have its row judged by that
+        commit's critical.toml: under --rules-ref a row's arrival is read on <rev>'s own history only."""
+        repo, c = build_delegated(self.tmp, approval("delegated"))
+        commit_harness(repo, "chore: a review\n\nNo-story: ledger",
+                       {f"{REVIEWS}/rpay.json": review_text("rpay", [review_row("UXC-303", c["UXC-303"])])})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "side")
+        p1 = commit_harness(repo, "chore: wip\n\nNo-story: harness",
+                            {CRITICAL: "", CORR: corrections(delegated_row("UXC-303", c["UXC-303"], "rpay"))})
+        repo.git("rm", "-q", CORR)
+        commit_harness(repo, "chore: undo wip\n\nNo-story: harness", {CRITICAL: CRITICAL_TOML})
+        repo.git("checkout", "-q", "main")
+        repo.merge("side", "Merge side\n\nNo-story: harness")
+        repo.publish()
+        rules = repo.sha()
+        repo.git("checkout", "-q", "-b", "convoy/1", p1)
+        commit_harness(repo, "chore: convoy\n\nNo-story: harness", {CRITICAL: CRITICAL_TOML})
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge main\n\nNo-story: harness", "main", when=repo.next_date())
+        commit_harness(repo, "chore: keep the corrections file\n\nNo-story: harness",
+                       {CORR: corrections(delegated_row("UXC-303", c["UXC-303"], "rpay"))})
+        repo.git("push", "-q", "origin", "convoy/1:main")
+        repo.git("fetch", "-q", "origin")
+        r = repo.ledger("check", "--json", "--rules-ref", rules)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue([d for d in json_of(self, r)["diffs"] if d["code"] == "CORRECTION_INVALID"
+                         and "UXC-303" in d["detail"]])
 
     def test_LEDGER_013_S10_the_same_rules_give_the_same_verdict(self):
         repo, _ = build_delegated(self.tmp, approval("delegated"))

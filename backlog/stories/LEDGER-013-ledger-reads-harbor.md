@@ -106,4 +106,12 @@ a failing test first.
   the convoy's tree; now the stories that decide the critical flag are `<rev>`'s. (2) `[ledger]` (`enforce`,
   `since`, `no_story`, `stories`) came from the checked-out `state.toml`, so a convoy setting `enforce = "warn"`
   passed; now the whole committed `state.toml` is `<rev>`'s.
+- **Round 2** (eb8a8b0). Invariants 1, 3, 4, 5: none reproduced (126 random repos compared `attribution` with
+  `check --ci` and trunk `check`). Two findings, both fixed with tests named `..._breaker2_...`: (1) a trunk merge
+  subject `Merge branch 'convoy/<5000 digits>'` made every reading command exit 2 (Python's int-string limit in the
+  new `convoy_of_merge`); convoy numbers from branch names are now bounded to 9 digits like the trailer's, and the
+  older `train_commits` too. (2) Under `--rules-ref`, a delegated row's arrival was found on the convoy's
+  first-parent chain, so a convoy routed through an old side-branch commit of main (critical.toml emptied, row
+  added, both undone before main merged it) had its row judged by that commit's critical.toml; arrivals are now read
+  on `<rev>`'s own first-parent history only.
 

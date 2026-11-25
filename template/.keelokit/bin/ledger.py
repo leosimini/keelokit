@@ -1273,7 +1273,7 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
     judged = read_stories(rules_sha, cfg)[0] if rules_sha else stories
     delegation = {"reviews": reviews, "stories": {s["id"]: s for s in judged if not s.get("unreadable")},
                   "areas": critical_areas(extra["critical"]), "approval": approval_config(extra["state"]),
-                  "rules_reach": set(read_graph([rules_sha])) if rules_sha else None}
+                  "rules_reach": set(read_graph([rules_sha])) if rules_sha else None, "rules_sha": rules_sha}
     corrections = corrections_facts(trunk_sha, {s["id"] for s in stories if not s.get("unreadable")} if not unreadable
                                     else None, set(placed[0]), graph, delegation)
     branches = read_branches(trunk_sha, refs, graph, set(placed[0]), cfg["snapshot"])
@@ -1458,7 +1458,8 @@ def convoy_of_merge(c: dict | None) -> int | None:
         return numbers.pop()
     branch = merged_branch(c["message"].split("\n", 1)[0])
     m = TRAIN_BRANCH.match(branch) if branch and not numbers else None
-    return int(m.group(1)) if m and branch.lower().startswith(("convoy", "origin/convoy")) else None
+    n = CONVOY_VALUE.fullmatch(m.group(1)) if m and branch.lower().startswith(("convoy", "origin/convoy")) else None
+    return int(n.group(1)) if n else None
 
 
 def apply_logbook(records: dict[str, dict], book: dict, refs: dict, log: list[dict], placed: tuple) -> None:
@@ -1690,7 +1691,11 @@ def corrections_facts(trunk_sha: str, story_ids: set | None, reachable: set, gra
         else:
             tip_rows = rows
             if reviews and any(isinstance(r, dict) and is_delegated(r.get("approver")) for r in rows):
-                reviews = {**reviews, "arrival": arrival_facts(rows, versions, contents, reviews)}
+                at, seen = versions, contents
+                if reviews.get("rules_sha"):  # --rules-ref: a row arrives on <rev>'s own history or not at all
+                    at = file_versions(reviews["rules_sha"])
+                    seen = {**contents, **cat_blobs([b for _, b in at if b and b not in contents])}
+                reviews = {**reviews, "arrival": arrival_facts(rows, at, seen, reviews)}
             result["active"], result["diffs"] = apply_rows(rows, story_ids, reachable, CORRECTIONS,
                                                            reviews=with_touched(reviews, rows, reachable))
     tip_keys = [row_key(row) for row in tip_rows]
@@ -1819,9 +1824,9 @@ def train_commits(log: list[dict], reverted: dict) -> dict[int, list[str]]:
         if reverted.get(c["sha"]) or c["reverts"]:
             continue
         subject = c["message"].split("\n", 1)[0]
-        numbers = {int(n) for n in CONVOY_TRAILER.findall(c["message"])} | {int(n) for n in TRAIN_WORD.findall(subject)}
+        numbers = {int(n) for n in CONVOY_TRAILER.findall(c["message"]) + TRAIN_WORD.findall(subject) if len(n) <= 9}
         branch = merged_branch(subject) if len(c["parents"]) > 1 else None
-        if branch and (m := TRAIN_BRANCH.match(branch)):
+        if branch and (m := TRAIN_BRANCH.match(branch)) and len(m.group(1)) <= 9:
             numbers.add(int(m.group(1)))
         for n in numbers:
             trains.setdefault(n, []).append(c["sha"])
