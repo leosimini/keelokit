@@ -68,3 +68,4 @@ LEDGER-014` trailer, addendum if the result differs. With HRB-1..3 and SWM-1..3 
 
 ## Breaker rounds
 - Round 1 · head afd3ebbd4c6d95c0beb9043cbaa8cf7bfc31477d · 2 findings: ESC-346, ESC-347 · fixed in a325316 (tests), c0954f1
+- Round 2 · head 3af523dd551070b0057eaf68f2c682a3cef39e6d · 1 finding: ESC-348 · fixed in 71a665c (tests), 6da5df2
