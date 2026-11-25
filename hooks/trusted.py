@@ -203,13 +203,18 @@ def project_dir(arg: str | None = None) -> Path | None:
     return p if p.is_dir() else None
 
 
-def marker_path(project: Path) -> Path:
+def marker_path(project: Path) -> Path | None:
     """The sticky mark that a project is a Keelokit project (ESC-295): ~/.cache/keelokit/projects/<sha256 of its real
-    path>, in the home the password database names, never $HOME."""
+    path>, in the home the password database names, never $HOME; None for a user the database doesn't know (a
+    container run as a bare uid, ESC-297), who then has only .keelokit/ in the tree to go by."""
     import hashlib
     import pwd
+    try:
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except KeyError:
+        return None
     key = hashlib.sha256(os.path.realpath(project).encode("utf-8", "surrogateescape")).hexdigest()
-    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/keelokit/projects" / key
+    return Path(home) / ".cache/keelokit/projects" / key
 
 
 def remember(project: Path) -> None:
@@ -219,7 +224,7 @@ def remember(project: Path) -> None:
         return
     try:
         marker = marker_path(project)
-        if not marker.is_file():
+        if marker is not None and not marker.is_file():
             marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             marker.write_text(os.path.realpath(project) + "\n", encoding="utf-8", errors="surrogateescape")
     except OSError:
@@ -234,7 +239,8 @@ def keelokit_project(project: Path, tool: str) -> bool:
         if os.path.isdir(project / ".keelokit"):
             remember(project)
             return True
-        return os.path.isfile(marker_path(project))
+        marker = marker_path(project)
+        return marker is not None and os.path.isfile(marker)
     return os.path.lexists(project / BIN / RUNS[tool])
 
 

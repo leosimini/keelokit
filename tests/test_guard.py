@@ -1982,6 +1982,60 @@ class HooksRunTrustedCodeRound2(TrustedProject, unittest.TestCase):
                 r = self.bash(cmd)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    # Final cold breaker (ESC-297..300).
+
+    def test_HARN_004_S1_ESC_297_a_user_with_no_passwd_entry_is_not_blocked_everywhere(self):
+        trusted = load_trusted()
+        import pwd
+        plain = self.tmp / "plain"
+        plain.mkdir()
+
+        def missing(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        with unittest.mock.patch.object(pwd, "getpwuid", missing):
+            self.assertIsNone(trusted.choose("guard", plain), "no .keelokit, no marker to read: nothing to run")
+            self.assertIsNotNone(trusted.choose("guard", self.proj))
+            trusted.remember(self.proj)  # no home to mark in: nothing, and no error
+
+    def test_HARN_004_S1_ESC_298_the_marker_and_the_project_cannot_be_removed_through_a_parent_or_a_glob(self):
+        for cmd in ("rm -rf ~/.cache", "rm -rf $HOME/.cache/*", "find ~/.cache -delete", "mv ~/.cache ~/.cache.old",
+                    "rm -rf ~/.cach?/keelokit", 'rm -rf "$PWD"', "rm -rf .", "git rm -rq .", "mv \"$PWD\" /tmp/elsewhere",
+                    f"rm -rf {shlex_quote(str(self.proj))}"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("rm -rf ~/.cache/pip", "rm -rf build", "git rm -rq src/old"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd).returncode, 0)
+
+    def test_HARN_004_S1_ESC_299_powershell_cmdlets_meet_the_same_rules(self):
+        for cmd in ("Remove-Item -Recurse -Force .keelokit", "Move-Item .keelokit .keelokit.bak",
+                    'Set-Content -Path .env -Value "API_KEY=abc"', "'x' | Out-File .env.local", "Add-Content .env 'A=1'",
+                    "Copy-Item .env.production .env", "del .env", "Remove-Item -Recurse -Force $env:USERPROFILE\\.claude\\plugins",
+                    "Set-Content .claude/settings.local.json '{}'", 'Set-Content .git/config "[core]"', "ri -r .keelokit/bin"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd, tool="PowerShell")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for cmd in ("Get-ChildItem", "Remove-Item -Recurse node_modules", "Set-Content notes.txt 'x'",
+                    "Copy-Item .env.example .env"):
+            with self.subTest(allowed=cmd):
+                self.assertEqual(self.bash(cmd, tool="PowerShell").returncode, 0, self.bash(cmd, tool="PowerShell").stderr)
+
+    def test_HARN_004_S1_ESC_300_force_pushes_and_skipped_hooks_behind_a_redirect_or_a_mirror(self):
+        for cmd in ("git config remote.origin.mirror true", "git -c remote.origin.mirror=true push", "git push origin +@:main",
+                    "git push origin main 2>&1 -f", "git commit -m wip 2>&1 -n"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        for content in ('{"\\u0064isableAllHooks": true}', '{"env": {"PATH": "/nonexistent"}}',
+                        '{"enabledPlugins": {"keelokit@keelokit": false}}'):
+            with self.subTest(content=content):
+                r = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {
+                    "file_path": ".claude/settings.local.json", "content": content}})
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(self.bash("git push origin main 2>&1 | tail -1").returncode, 0)
+
     # ESC-276: a guard that outlives the hook's timeout lets the call through.
 
     def test_HARN_004_S1_ESC_276_the_guard_blocks_on_data_it_cannot_read_in_bounds(self):

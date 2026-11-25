@@ -116,6 +116,10 @@ Beyond the spec, from the breaker rounds:
   `>|`, line continuations, Claude Code settings that disable hooks or the plugin. Known residue, left as it was:
   tool-driven writes (`vercel env pull .env.local`); false positives on `echo .env >> .gitignore`, `git rm --cached
   .env`, `.env.sample`-style names and `--force-if-includes` (LOG-4 blocks it on purpose).
+  After the final cold breaker (ESC-297..300) also left: a project directory moved by other means than the guard
+  sees (the hook then finds no project), `echo --no-verify | xargs git commit`, git's own cherry-pick of a stash
+  commit (no pre-commit), `git config --get core.hooksPath` blocked (LOG-4's rule), a heredoc message that names the
+  flag, and a guard that takes the full 45 s on a 20 000-option command before it blocks.
 - guard, ledger and ux_gate take `--root` too, not only the doctor. The tests are in tests/test_guard.py
   (`HooksRunTrustedCode`, `HooksRunTrustedCodeRound2`), tests/test_doctor.py (`DoctorRootTest`) and
   tests/test_hooks.py.

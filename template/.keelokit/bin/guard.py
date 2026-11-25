@@ -203,7 +203,9 @@ GIT_VALUE = r"(?:\\.|[^\s\\])+"
 GIT_TAKES = r"(?:[Cc]|-(?:git-dir|work-tree|namespace|config-env|attr-source))"  # after the option's first dash
 GIT = rf"\bgit(?:\s+(?:-{GIT_TAKES}\s+|-(?!{GIT_TAKES}(?:\s|$))){GIT_VALUE})*?\s+"
 # The rest of that git command: up to a shell separator, or `--`, after which come paths.
-GIT_ARGS = r"(?:(?!\s--(?![^\s;&|]))[^|;&\n])*"
+# A redirection (`2>&1`, `>>`) is read through, as one token (possessive: one reading), so a flag after it is still
+# this command's (ESC-300).
+GIT_ARGS = r"(?:(?!\s--(?![^\s;&|]))(?:[<>]++&?+|[^|;&\n<>]))*"
 # A short-option bundle ends at the token's end (-nm"msg" is emptied to -nm'').
 BUNDLE_END = r"(?![^\s;&|<>()])"
 GIT_NO_HOOKS = [
@@ -224,7 +226,7 @@ GIT_NO_HOOKS = [
     # every --force-… but -with-lease, and --mirror, which force-updates, in any prefix git accepts.
     (rf"{GIT}push\b{GIT_ARGS}\s(-[46dnquv]*f[46dfnquv]*(o\S*)?{BUNDLE_END}|--force(?!-w)(-[\w-]*)?(?![\w-])"
      r"|--m(i(r(r(or?)?)?)?)?(?![\w-]))", "QA-2: no force-push (use --force-with-lease on your own branch)"),
-    (rf"{GIT}push\b{GIT_ARGS}\s\+[\w./:-]+", "QA-2: `+ref` is a force-push"),
+    (rf"{GIT}push\b{GIT_ARGS}\s\+[\w./:@$-]+", "QA-2: `+ref` is a force-push"),
 ]
 WRITE_CMD = re.compile(r"(>>?|\btee\b|\bcp\b|\binstall\b|\bmv\b|\bsed\s+-i|\bperl\s+-[a-z]*i|\btruncate\b|\brm\b|\btouch\b|\bln\b|\bdd\b)")
 
@@ -910,6 +912,52 @@ def names_marker(cmd: str) -> bool:
     return False
 
 
+def glob_match(pattern: str, path: str) -> bool:
+    """fnmatch, part by part, as the shell globs: a part that starts with a dot is matched only by one that does."""
+    pp, tp = pattern.split("/"), path.split("/")
+    if len(pp) != len(tp):
+        return False
+    return all(fnmatch.fnmatchcase(t_, p_) and not (t_.startswith(".") and not p_.startswith(".") and
+                                                   any(c in p_ for c in "*?["))
+               for p_, t_ in zip(pp, tp))
+
+
+def covers(word: str, target: str) -> bool:
+    """The path the shell will remove or move is the target or holds it: itself, a parent (`rm -rf ~/.cache`,
+    `rm -rf .`), or a glob over either (ESC-298)."""
+    w = expand_word(word)
+    p = posixpath.normpath(w if posixpath.isabs(w) else str(ROOT / w))
+    if any(c in w for c in "*?["):
+        chain = [target, *[str(x) for x in Path(target).parents]]
+        return any(glob_match(p, x) for x in chain)
+    for cand in {os.path.realpath(p), p}:
+        if target == cand or target.startswith(cand.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def marker_dirs() -> list[str]:
+    homes = [os.path.expanduser("~")]
+    try:
+        import pwd
+        homes.append(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError):
+        pass
+    return sorted({os.path.realpath(os.path.join(h, ".cache", "keelokit")) for h in homes})
+
+
+def protected_tree(word: str) -> str | None:
+    """Why removing or moving this path is the person's: it is or holds the project's .keelokit, the guard's marker,
+    or the plugin's code."""
+    if harness_hit(word) or covers(word, os.path.realpath(ROOT / ".keelokit")):
+        return HARNESS_WHY
+    if any(covers(word, d) for d in marker_dirs()):
+        return MARKER_WHY
+    if in_plugin(word) or holds_plugin(word):
+        return PLUGIN_WHY
+    return None
+
+
 def harness_removal(cmd: str) -> bool:
     """ESC-282, best effort like every shell rule: a command that deletes or moves .keelokit/ or .keelokit/bin/ whole
     (rm, rmdir, git rm, mv as a source, find … -delete/-exec)."""
@@ -938,7 +986,7 @@ def harness_removal(cmd: str) -> bool:
             args = words[1:]
         else:
             continue
-        if any(harness_hit(w) or in_plugin(w) or holds_plugin(w) for w in args if not w.startswith("-")):
+        if any(protected_tree(w) for w in args if not w.startswith("-")):
             return True
     return False
 
@@ -1019,6 +1067,8 @@ def config_problem(cmd: str) -> str | None:
                 return "QA-2: never bypass git hooks (an alias that skips them is the same bypass)"
             if re.fullmatch(r"remote\..+\.push", k) and value.strip().startswith("+"):
                 return "QA-2: no force-push (a `+` refspec is one)"
+            if re.fullmatch(r"remote\..+\.mirror", k) and value.strip().lower() in ("true", "yes", "on", "1", ""):
+                return "QA-2: no force-push (a mirror remote force-updates every ref)"
     return None
 
 
@@ -1054,6 +1104,18 @@ def claude_settings(target: str) -> bool:
 
 
 def turns_hooks_off(text: str) -> bool:
+    """Settings that turn hooks or the plugin off, or change what the hooks' shell finds (an `env` PATH), read as
+    JSON when they parse (escaped keys included, ESC-300), else as text."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        env = data.get("env") if isinstance(data.get("env"), dict) else {}
+        plugins = data.get("enabledPlugins") if isinstance(data.get("enabledPlugins"), dict) else {}
+        return bool(data.get("disableAllHooks")) or any("keelokit" in str(k).lower() and v is not True
+                                                         for k, v in plugins.items()) or \
+            any(str(k) in ("PATH", "SHELL") or str(k).startswith(("PYTHON", "CLAUDE_")) for k in env)
     return "disableAllHooks" in text or ("enabledPlugins" in text and "keelokit" in text.lower())
 
 
@@ -1088,6 +1150,53 @@ def seeds_env(segment: str) -> bool:
     name = posixpath.basename(src)
     return not posixpath.isabs(src) and ".." not in src.split("/") and name.startswith(".env") and \
         not src.startswith(("~", "$"))
+
+
+PS_REMOVE = {"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "clear-content", "clc"}
+PS_MOVE = {"move-item", "mi", "mv", "move", "rename-item", "ren", "rni"}
+PS_WRITE = {"set-content", "sc", "add-content", "ac", "out-file", "new-item", "ni", "tee-object", "tee"}
+PS_COPY = {"copy-item", "cp", "copy", "cpi"}
+
+
+def ps_path(word: str) -> str:
+    word = word.replace("\\", "/")
+    return re.sub(r"(?i)^\$(?:env:USERPROFILE|env:HOME|HOME)(?=/|$)", "~", word)
+
+
+def powershell_problem(cmd: str) -> str | None:
+    """ESC-299: PowerShell's own cmdlets (and their aliases) meet the rules the shell's commands do: no removing or
+    moving the harness, the marker or the plugin; no writing .env files, git's config or Claude Code's settings."""
+    for stmt in re.split(r"[;|\n]", cmd):
+        lexer = shlex.shlex(stmt, posix=True)
+        lexer.whitespace_split, lexer.escape = True, ""  # a backslash is a path separator to PowerShell
+        try:
+            words = list(lexer)
+        except ValueError:
+            words = stmt.split()
+        if not words:
+            continue
+        verb = words[0].lower()
+        targets = [ps_path(w) for w in words[1:] if not w.startswith("-")]
+        if verb in PS_REMOVE | PS_MOVE:
+            for w in (targets if verb in PS_REMOVE else targets[:1]):
+                if why := protected_tree(w):
+                    return why
+                if is_env_file(w):
+                    return ENV_OWN_WHY
+        if verb in PS_WRITE | PS_COPY | PS_MOVE:
+            dest = targets[-1:] if verb in PS_COPY | PS_MOVE else targets[:1]
+            src = targets[0] if verb in PS_COPY and len(targets) > 1 else ""
+            for w in dest:
+                if is_env_file(w) and not (src and posixpath.basename(src).startswith(".env") and src.endswith(".example")
+                                           and not posixpath.isabs(src) and ".." not in src.split("/")):
+                    return ENV_WHY
+                if git_internal(w):
+                    return GIT_INTERNALS_WHY
+                if claude_settings(w):
+                    return SETTINGS_WHY
+                if protected_why(w):
+                    return protected_why(w)
+    return None
 
 
 def bash_problem(cmd: str, allow: list[dict] | None = None, depth: int = 0) -> str | None:
@@ -1197,6 +1306,8 @@ def real_rel(path: str) -> str | None:
 def tool_problem(tool: str, args: dict) -> str | None:
     allow = committed_registry()
     if tool in SHELL_TOOLS:  # ESC-285: every tool that runs a shell command, not only Bash
+        if tool == "PowerShell" and (why := powershell_problem(args.get("command", ""))):
+            return why
         return bash_problem(args.get("command", ""), allow)
     path, parts = edit_payload(tool, args)
     if path and (git_internal(path) or (real_rel(path) or "").startswith((".git/hooks/",)) or real_rel(path) == ".git/config"):
