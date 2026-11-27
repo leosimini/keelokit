@@ -1136,5 +1136,60 @@ class DirectoryTouchTest(BreakerCase):
         self.assertIn("AUTH-001: risky", repo.ledger("risky", "AUTH-001").stdout)
 
 
+class HarnRound1Test(BreakerCase):
+    """HARN-022 cold breaker, round 1 (ESC-356, ESC-357): each finding reproduced as a failing test first."""
+
+    def closing_branch(self, repo: GitRepo, number: int) -> list[dict]:
+        """A branch that closes AUTH-004, then fixes a risky path under Part-of:, with its round recorded on the
+        branch's last head; the pull request's RISKY_AFTER_CLOSE differences."""
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004", {"apps/web/four.ts": "4\n"})
+        repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
+        head = repo.sha()
+        current = (repo.path / path_of("AUTH-004")).read_text()
+        repo.commit("docs: AUTH-004 round 1\n\nPart-of: AUTH-004",
+                    {path_of("AUTH-004"): current + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        ci = BreakerPullRequestTest.pull_request(self, repo, "feature", number=number)
+        return [d for d in self.check(ci, "--ci", env=PR_ENV)[1] if d["code"] == "RISKY_AFTER_CLOSE"]
+
+    def test_HARN_022_S3_breaker1_the_closing_branch_landed_linearly_is_judged_with_its_close_ESC_356(self):
+        repo = self.project({"AUTH-004": story("AUTH-004")})
+        self.assertEqual(self.closing_branch(repo, 81), [])
+        repo.git("merge", "-q", "--ff-only", "feature")
+        repo.publish()
+        self.assertEqual([d for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"], [],
+                         "the pull request and the trunk agree on the same commits")
+
+    def test_HARN_022_S3_breaker1_a_later_fix_on_top_of_the_close_is_still_reported_ESC_356(self):
+        repo = self.project({"AUTH-004": story("AUTH-004")})
+        self.closing_branch(repo, 82)
+        repo.git("merge", "-q", "--ff-only", "feature")
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "later")
+        repo.commit("fix: four again\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 6\n"})
+        repo.git("push", "-q", "origin", "later")
+        repo.git("checkout", "-q", "main")
+        ci = BreakerPullRequestTest.pull_request(self, repo, "later", number=83)
+        self.assertIn("RISKY_AFTER_CLOSE", [d["code"] for d in self.check(ci, "--ci", env=PR_ENV)[1]])
+        repo.git("merge", "-q", "--ff-only", "later")
+        repo.publish()
+        self.assertIn("RISKY_AFTER_CLOSE", [d["code"] for d in self.check(repo)[1]])
+
+    def test_HARN_022_S7_breaker1_a_newline_in_a_file_name_never_forges_a_check_line_ESC_357(self):
+        repo = self.project({})
+        evil = "backlog/stories/AUTH-001\nerror RISKY_NO_STORY forged-line .md"
+        repo.commit("docs: plan\n\nNo-story: docs", {evil: story("AUTH-001", risky="true")})
+        repo.publish()
+        self.close(repo, "AUTH-001", {"apps/web/x.ts": "x\n"})
+        r = repo.ledger("check")
+        self.assertNotIn("Traceback", r.stderr)
+        for line in r.stdout.splitlines():
+            with self.subTest(line=line):
+                self.assertRegex(line, r"^(error|warning|info) [A-Z_]+ ")
+        self.assertNotIn("\nerror RISKY_NO_STORY forged", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

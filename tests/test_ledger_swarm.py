@@ -851,5 +851,54 @@ class ShowAuthorsOnceTest(LedgerCase):
         self.assertTrue(all(c["author"] for c in why["commits"]), why["commits"])
 
 
+class HarnSwarmRound1Test(LedgerCase):
+    """HARN-022 cold breaker, round 1 (ESC-358, ESC-359): each finding reproduced as a failing test first."""
+
+    def test_HARN_022_S5_breaker1_memory_stays_linear_when_every_commit_is_wanted_ESC_358(self):
+        import tracemalloc
+        ledger = ledger_module()
+
+        def peak(n: int) -> int:
+            side = [f"s{i}" for i in range(n)]
+            graph = {"B": [], **{side[i]: [side[i - 1]] if i else ["B"] for i in range(n)}, "M": ["B", side[-1]]}
+            log = [{"sha": x, "story": [], "part_of": []} for x in side + ["B"]]
+            log.append({"sha": "M", "story": ["AUTH-1"], "part_of": []})
+            arrival_of = ledger.arrivals(graph, "M")[0]
+            tracemalloc.start()
+            found = ledger.attributing_merges(graph, log, arrival_of, side)
+            _, top = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            self.assertEqual(len(found), n)
+            return top
+
+        small, large = peak(4000), peak(16000)
+        # four times the commits: about four times the memory (a mask per commit of the group made it sixteen)
+        self.assertLess(large, 6 * small, (small, large))
+
+    def test_HARN_022_S6_breaker1_a_delivery_squashed_onto_the_trunk_after_the_snapshot_is_not_in_progress_ESC_359(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        commit_harness(repo, "chore: snapshot on\n\nNo-story: harness",
+                       {".keelokit/state.toml": '[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n'})
+        for i in range(6):
+            repo.commit(f"docs: d{i}\n\nNo-story: docs", {f"docs/{i}.md": "x\n"})
+        repo.publish()
+        swarm_branch(repo, TASK, "Ana Helper", delivery("AUTH-001", TASK))
+        repo.git("fetch", "-q", "origin")
+        r = repo.ledger("snapshot", extra_env={"KEELOKIT_SNAPSHOT_AT": "2026-11-20T10:00:00Z"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        repo.git("merge", "-q", "--squash", f"origin/swarm/{TASK}")
+        repo.git("commit", "-q", "-m", f"feat: piece (squash)\n\nPart-of: AUTH-001\nSwarm-Task: {TASK}",
+                 when=repo.next_date())
+        repo.git("push", "-q", "origin", "--delete", f"swarm/{TASK}")
+        repo.publish()
+        shallow = repo.clone("shallow", depth=3)
+        shallow.state('[ledger]\nstale_days = 100000\nsnapshot = "keelokit/ledger"\n')
+        shallow.git("fetch", "-q", "--depth=1", "origin", "keelokit/ledger:refs/remotes/origin/keelokit/ledger")
+        data = json.loads(shallow.ledger("--json").stdout)
+        self.assertTrue(data["history"].startswith("snapshot:"), data["history"])
+        self.assertNotIn("in-progress", [e["state"] for e in by_id(data)["AUTH-001"]["swarm"]])
+
+
 if __name__ == "__main__":
     unittest.main()
