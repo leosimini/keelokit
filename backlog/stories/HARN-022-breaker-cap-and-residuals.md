@@ -104,3 +104,13 @@ Every commit after `[ledger] since` is still attributed (INV-007): this adds a c
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, the two ledger.py copies identical,
 `Part-of: HARN-022` on every commit and `Story: HARN-022` on the completing one, this story's breaker rounds recorded
 below.
+
+## Breaker rounds
+- Round 1 · head c73efb63428d4e8d20e8aa985ed51e206e060a7b · 4 findings: ESC-356, ESC-357, ESC-358, ESC-359 · fixed in the commit after b677096
+  A fresh agent, cold, 10 attacks. Reproduced: the closing branch's later commit landed by fast-forward read as
+  RISKY_AFTER_CLOSE on the trunk though its pull request was clean; a newline in a story file name forged a `check`
+  line; the one-pass merge walk's memory grew with the square of the commits when every one was wanted; a snapshot's
+  in-progress delivery survived a squash landing in a shallow clone. Held: the merge walk against the old one on 6000
+  random graphs, shallow clones at depth 1/2/3/6 across commands, the screen's callers, the authors reuse, the
+  directory globs, the last-round verdict. Seen, not counted: `next` and `--release` printed titles raw (screened
+  with ESC-357); `glob_regex` reads `[...]` literally where git reads a class (older than this story).

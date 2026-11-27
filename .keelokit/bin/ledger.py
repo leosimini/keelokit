@@ -449,6 +449,12 @@ class Screen:
 
 
 CONTROL = Screen(keep="\t\n")
+
+
+def terminal_line(text: str) -> str:
+    """One terminal line: tabs, newlines and every other character CONTROL screens become one safe character each, so
+    nothing a file name, subject or name holds can start a line of its own (ESC-357)."""
+    return CONTROL.sub("?", text.replace("\t", " ").replace("\n", " "))
 FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
 CORRECTIONS = "backlog/ledger-corrections.toml"
 PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
@@ -1717,7 +1723,8 @@ def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: l
     Only the commits of its own arrival can bring a commit, so everything stays inside one arrival's group; at most
     SWARM_MERGES merges are asked. One pass per group (HARN-022): each commit of the group gets the set of wanted
     commits it reaches (a bit mask, parents before children), and a merge brings what its other parents reach and its
-    first parent does not, so the cost is the group's size, never merges × group."""
+    first parent does not, so the graph is read in proportion to the group, never merges × group; each mask is
+    dropped once the group's last child of its commit has read it (ESC-358)."""
     by_sha = {c["sha"]: c for c in log}
     groups: dict[str, set[str]] = {}
     for sha in wanted:
@@ -1733,28 +1740,39 @@ def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: l
         if not merges:
             continue
         want = sorted({sha for sha in wanted if arrival_of[sha] == a})
-        bit = {sha: 1 << i for i, sha in enumerate(want)}
+        index = {sha: i for i, sha in enumerate(want)}  # an index, never a table of masks: 1 << i holds i bits
         parents_of = {x: [p for p in graph.get(x, ()) if p in group] for x in group}
+        children: dict[str, int] = {}
+        for x in group:
+            for p in parents_of[x]:
+                children[p] = children.get(p, 0) + 1
+        asked = set(merges[:budget])  # the first SWARM_MERGES merges, in sha order, as before
+        budget -= len(asked)
+        # A mask lives until the last child in the group read it (ESC-358): memory follows the walk's frontier, never
+        # a mask per commit of the group.
         reach: dict[str, int] = {}
         for x in group_order(parents_of):
-            mask = bit.get(x, 0)
+            mask = 1 << index[x] if x in index else 0
             for p in parents_of[x]:
                 mask |= reach[p]
-            reach[x] = mask
-        for m in merges:
-            if budget <= 0:
-                return found
-            budget -= 1
-            parents = graph[m]
-            mainline = reach.get(parents[0], 0) if parents[0] in group else 0
-            other = 0
-            for p in parents[1:]:
-                if p in group:
-                    other |= reach[p]
-            brought = other & ~mainline
-            ids = by_sha[m]["story"] + by_sha[m]["part_of"]
-            for i in set_bits(brought):
-                found.setdefault(want[i], set()).update(ids)
+            if x in asked:
+                parents = graph[x]
+                mainline = reach.get(parents[0], 0) if parents[0] in group else 0
+                other = 0
+                for p in parents[1:]:
+                    if p in group:
+                        other |= reach[p]
+                ids = by_sha[x]["story"] + by_sha[x]["part_of"]
+                for i in set_bits(other & ~mainline):
+                    found.setdefault(want[i], set()).update(ids)
+            for p in parents_of[x]:
+                children[p] -= 1
+                if not children[p]:
+                    del reach[p]
+            if children.get(x):
+                reach[x] = mask
+        if budget <= 0:
+            return found
     return found
 
 
@@ -3254,7 +3272,8 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
-                               lambda sha: order[arrival[sha]] if sha in arrival else len(order))
+                               lambda sha: order[arrival[sha]] if sha in arrival else len(order),
+                               list(stories.values()), rules)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
                                  config_diffs=False, hits=hits, earlier=earlier)
@@ -3302,7 +3321,7 @@ def cmd_check(state: dict, args: tuple) -> int:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
     else:
         for d in diffs:  # details quote paths, subjects and names: nothing in them reaches the terminal (HARN-022)
-            print(CONTROL.sub("?", f"{d['level']} {d['code']} {d['detail']}"))
+            print(terminal_line(f"{d['level']} {d['code']} {d['detail']}"))
     return 1 if any(d["level"] == "error" for d in diffs) else 0
 
 
@@ -3680,14 +3699,26 @@ def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
     return diffs
 
 
+def breaker_resolved(record: dict, rules: dict) -> bool:
+    """A story's rounds as breaker_diffs judges them: some round, the last clean or a decider's Decision after it."""
+    rounds = [i for i, e in enumerate(record["entries"]) if e[0] == "round"]
+    if not rounds:
+        return False
+    last = rounds[-1]
+    return record["entries"][last][3] or any(i > last and e[0] == "decision" and is_decider(e[1], rules)
+                                             for i, e in enumerate(record["entries"]))
+
+
 def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
-                      landing) -> list[dict]:
+                      landing, stories: list[dict] = (), rules: dict | None = None) -> list[dict]:
     """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
     merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
     commit of `log` with an earlier landing (`landing(sha)`: the position of the trunk commit that brought it; a pull
     request's commits land after every trunk commit). The closed story's rounds never saw the change, and it is not
     closed again: such a change is new work of an open story, which then needs its rounds. The closing branch's own
-    later commits land with the close and are judged with it; a revert restores what was judged before."""
+    later commits are judged with the close: those of the same landing, and those a round recorded in the story's
+    file (`stories`) covers — its head reaches the commit, whatever way the branch landed (a fast-forward too, ESC-356),
+    while the story's last round is clean or a person's Decision follows it. A revert restores what was judged before."""
     reverted = revert_status(log, graph)
     closed: dict[str, tuple[int, str]] = {}
     for c in log:
@@ -3697,6 +3728,21 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             at = landing(c["sha"])
             if sid not in closed or at < closed[sid][0]:
                 closed[sid] = (at, c["sha"])
+    heads: dict[str, list[str]] = {}
+    for s in stories:
+        for v in [s, *s.get("copies", [])]:
+            record = v.get("breaker") or {"entries": []}
+            if rules is not None and not v.get("unreadable") and breaker_resolved(record, rules):
+                heads.setdefault(s["id"], []).extend(e[2] for e in record["entries"] if e[0] == "round")
+    covered: dict[str, set] = {}
+
+    def with_close(sha: str, sid: str) -> bool:
+        if landing(sha) == closed[sid][0]:
+            return True
+        if sid not in covered:
+            covered[sid] = reach_until(graph, [h for h in heads.get(sid, ()) if h in graph], set())
+        return sha in covered[sid]
+
     diffs = []
     for c in reversed(in_range):
         ids = list(dict.fromkeys(c["story"] + c["part_of"]))
@@ -3705,8 +3751,8 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
                 or not (c["sha"] in merges if merge else c["sha"] in hits):
             continue
         at = landing(c["sha"])
-        if not all(sid in closed and closed[sid][0] < at for sid in ids):
-            continue  # it names an open story: that story records the rounds when it closes
+        if not all(sid in closed and closed[sid][0] <= at and not with_close(c["sha"], sid) for sid in ids):
+            continue  # it names an open story (which records the rounds when it closes), or it lands with the close
         subject = c["message"].split("\n", 1)[0].strip()[:80]
         what = "a merge whose own resolution changes" if merge else "a commit that changes"
         by = ", ".join(f"{sid} ({short(closed[sid][1])})" for sid in ids)
@@ -3820,7 +3866,8 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     own = merge_own_hits(rules, ctx["trunk_sha"], [])
     diffs += risky_no_story(in_range, hits, own)
     arrival, order = ctx["placed"]
-    diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]])
+    diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
+                               ctx["stories"], rules)
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
@@ -4023,9 +4070,9 @@ def cmd_attribution(state: dict, args: tuple) -> int:
     for c in commits:
         if not c["attributed"]:
             kind = "a merge that brings commits without one" if c["merge"] else "no Story:, Part-of: or No-story:"
-            print(CONTROL.sub("?", f"UNATTRIBUTED {short(c['sha'])} {c['subject'][:80]!r}: {kind}"))
+            print(terminal_line(f"UNATTRIBUTED {short(c['sha'])} {c['subject'][:80]!r}: {kind}"))
     for d in diffs:
-        print(CONTROL.sub("?", f"{d['level']} {d['code']} {d['detail']}"))
+        print(terminal_line(f"{d['level']} {d['code']} {d['detail']}"))
     print(f"{rng}: {len(commits)} commits, {len(answer['unattributed'])} unattributed"
           + (f"; stories: {', '.join(answer['stories'])}" if answer["stories"] else ""))
     return 0
@@ -4293,7 +4340,7 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
             settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas, undone_shas)
         if not complete or any(c["reverts_said"] for c in log):  # ESC-349: what landed since may undo a delivery
             trunk_swarm_stale(records)
-        in_progress_stale(records, newer if complete else None)
+        in_progress_stale(records, newer if complete else None, log)
     settle_corrections(records, tree or [], trunk_sha, meta)
     settle_refs(records, refs, graph, cut, meta.get("refs") if isinstance(meta.get("refs"), dict) else {})
     settle_snapshot_states(stories, records)
@@ -4308,14 +4355,19 @@ def trunk_swarm_stale(records: dict) -> None:
         rec["swarm"] = [e for e in rec["swarm"] if e["state"] == "in-progress"]
 
 
-def in_progress_stale(records: dict, landed: set | None) -> None:
+def in_progress_stale(records: dict, landed: set | None, log: list[dict] = ()) -> None:
     """Leave out a snapshot's in-progress deliveries that may have landed since (HARN-022): one whose head or any commit
-    is among the trunk commits after the snapshot's (`landed`), or every one when this clone cannot list those (None:
-    the trunk was rewritten, or what landed since is past the clone). A delivery merged since is on the trunk or was
-    reverted, never in progress; information only, so it is dropped, never guessed (as ESC-349)."""
-    for rec in records.values():
+    is among the trunk commits after the snapshot's (`landed`), or that a trunk commit since (`log`) names by its task
+    (`Swarm-Task:`) or its story (`Story:`/`Part-of:`) — a squash, rebase or cherry-pick lands new commits (ESC-359) —
+    or every one when this clone cannot list those (None: the trunk was rewritten, or what landed since is past the
+    clone). A delivery that landed is on the trunk or was reverted, never in progress; information only, so it is
+    dropped, never guessed (as ESC-349)."""
+    tasks = {task for c in log if (task := swarm_task(c["trailers"]))}
+    named = {sid for c in log for sid in c["story"] + c["part_of"]}
+    for sid, rec in records.items():
         rec["swarm"] = [e for e in rec["swarm"] if e["state"] != "in-progress" or landed is not None
-                        and e["head"] not in landed and not landed.intersection(e["commits"])]
+                        and e["head"] not in landed and not landed.intersection(e["commits"])
+                        and e["task"] not in tasks and sid not in named]
 
 
 def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sha: str, moves: dict,
@@ -4972,7 +5024,7 @@ def cmd_next(state: dict) -> int:
                    key=lambda r: (r["wave"] is None, r["wave"] or 0, id_key(r["id"])))
     t = SHOW_LABELS[lang]
     for r in ready:
-        print(f"{r['id']}  {t['wave']} {r['wave'] if r['wave'] is not None else '—'}  {r['title']}")
+        print(terminal_line(f"{r['id']}  {t['wave']} {r['wave'] if r['wave'] is not None else '—'}  {r['title']}"))
     if not ready:
         print(t["ready_none"])
     return 0
@@ -5004,7 +5056,7 @@ def cmd_release(state: dict, tag: str) -> int:
     word = t["story_one"] if len(stories) == 1 else t["story_many"]
     head = (t["release"].format(tag=tag, prev=previous[-1][1], n=len(stories), stories=word) if previous
             else t["release_first"].format(tag=tag, n=len(stories), stories=word))
-    print("\n".join([head, *(f"{r['id']}  {r['title']}" for r in stories)]))
+    print("\n".join([head, *(terminal_line(f"{r['id']}  {r['title']}") for r in stories)]))
     return 0
 
 

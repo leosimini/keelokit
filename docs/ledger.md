@@ -167,7 +167,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
 | `RISKY_NO_STORY` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path and names no story; a `No-story: release` commit touching only the release files excepted) | error | `check` (a pull request too) |
-| `RISKY_AFTER_CLOSE` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path under `Story:`/`Part-of:` of stories all closed by a live `Story:` commit of an earlier landing; the closing branch's own later commits and reverts excepted) | error | `check` (a pull request too) |
+| `RISKY_AFTER_CLOSE` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path under `Story:`/`Part-of:` of stories all closed by a live `Story:` commit of an earlier landing; commits of the close's landing, commits a recorded round of the resolved story covers, and reverts excepted) | error | `check` (a pull request too) |
 | `BREAKER_UNRESOLVED` (the last round left findings with no person's Decision after it; the last round decides, past the cap too), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
@@ -193,7 +193,10 @@ must stop and ask. A touch that names a directory (it ends in `/`, or its last p
 `.github`) meets every glob that can match a path beneath it (`**/migrations/**`). A risky change committed under
 the trailer of stories already closed by an earlier landing (before the rule, or with their rounds) is
 `RISKY_AFTER_CLOSE`: their rounds never saw it and nothing closes them again, so it names an open story, which then
-needs its own rounds; commits of the closing branch that land with the close are judged with it.
+needs its own rounds. Commits of the closing branch are judged with the close: those of the same landing (a merge
+brings them with the close), and those a round recorded in the story's file covers (its head reaches the commit)
+while the story's last round is clean or a person's Decision follows it, however the branch landed. A later change
+to a closed story is accepted the same way only when a new round line for it covers it: a reopening with its own round.
 
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
 for a pull request the base's `risky.toml` and committed `[ledger]` with the pull request's story file. The rule holds
