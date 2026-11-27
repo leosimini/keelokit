@@ -1191,5 +1191,40 @@ class HarnRound1Test(BreakerCase):
         self.assertNotIn("\nerror RISKY_NO_STORY forged", r.stdout)
 
 
+class HarnRound2Test(BreakerCase):
+    """HARN-022 cold breaker, round 2 (ESC-360, ESC-361): each finding reproduced as a failing test first."""
+
+    def test_HARN_022_S3_breaker2_the_closing_branch_landed_by_rebase_is_judged_with_its_close_ESC_360(self):
+        repo = self.project({"AUTH-004": story("AUTH-004")})
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004", {"apps/web/four.ts": "4\n"})
+        repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
+        head = repo.sha()
+        current = (repo.path / path_of("AUTH-004")).read_text()
+        repo.commit("docs: AUTH-004 round 1\n\nPart-of: AUTH-004",
+                    {path_of("AUTH-004"): current + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: meanwhile\n\nNo-story: docs", {"docs/m.md": "m\n"})
+        repo.git("checkout", "-q", "feature")
+        repo.git("rebase", "-q", "main")  # GitHub's "Rebase and merge": new shas, the round's head is not landed
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--ff-only", "feature")
+        repo.git("branch", "-q", "-D", "feature")
+        repo.publish()
+        self.assertEqual([d for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"], [])
+        # other work after the rebased close: a later fix is new work again
+        repo.commit("docs: later\n\nNo-story: docs", {"docs/l.md": "l\n"})
+        repo.commit("fix: four again\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 6\n"})
+        repo.publish()
+        self.assertIn("RISKY_AFTER_CLOSE", [d["code"] for d in self.check(repo)[1]])
+
+    def test_HARN_022_S4_breaker2_a_touch_on_the_repository_root_meets_every_path_ESC_361(self):
+        for touch in ("./", "/", ".", "./."):
+            with self.subTest(touch=touch):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=(touch,))},
+                                    risky='paths = ["scripts/verify.sh", "services/*/migrations/**"]\n')
+                self.assertIn("AUTH-001: risky", repo.ledger("risky", "AUTH-001").stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

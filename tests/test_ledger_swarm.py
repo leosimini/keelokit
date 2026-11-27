@@ -900,5 +900,79 @@ class HarnSwarmRound1Test(LedgerCase):
         self.assertNotIn("in-progress", [e["state"] for e in by_id(data)["AUTH-001"]["swarm"]])
 
 
+def wide_frontier(n: int) -> tuple[dict, list[dict], dict, list[str]]:
+    """n swarm pieces (no trailers, all wanted) off B, each brought by two chains of Part-of: merges joined at the top,
+    so every piece is read late: the walk's frontier holds every piece at once."""
+    rng = random.Random(1)
+    graph = {"B": []}
+    log = [{"sha": "B", "story": [], "part_of": []}]
+    pm = pp = "B"
+    for k in range(n):
+        w = "%040x" % rng.getrandbits(160)
+        graph[w] = ["B"]
+        log.append({"sha": w, "story": [], "part_of": []})
+        m, p = "m%07d" % k, "p%07d" % k
+        graph[m], graph[p] = [pm, w], [pp, w]
+        log += [{"sha": m, "story": [], "part_of": [f"S-{k}"]}, {"sha": p, "story": [], "part_of": [f"S-{k}"]}]
+        pm, pp = m, p
+    graph["J"], graph["T"] = [pm, pp], ["B", "J"]
+    log += [{"sha": "J", "story": [], "part_of": []}, {"sha": "T", "story": [], "part_of": []}]
+    arrival = {s: ("B" if s == "B" else "T") for s in graph}
+    return graph, log, arrival, [c["sha"] for c in log if c["sha"] not in ("B", "T", "J") and not c["part_of"]]
+
+
+class HarnSwarmRound2Test(LedgerCase):
+    """HARN-022 cold breaker, round 2 (ESC-362..364): each finding reproduced as a failing test first."""
+
+    def test_HARN_022_S5_breaker2_memory_stays_linear_with_a_wide_frontier_ESC_362(self):
+        import tracemalloc
+        ledger = ledger_module()
+
+        def per_commit(n: int) -> float:
+            graph, log, arrival, wanted = wide_frontier(n)
+            tracemalloc.start()
+            ledger.attributing_merges(graph, log, arrival, wanted)
+            _, top = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            return top / len(graph)
+
+        small, large = per_commit(8000), per_commit(32000)
+        self.assertLess(large, 1.25 * small, (small, large))
+
+    def test_HARN_022_S7_breaker2_risky_and_the_summary_print_screened_ESC_363(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001", "AUTH-002")
+        repo.commit("docs: touches\n\nNo-story: docs", {"backlog/stories/AUTH-001-s.md": (
+            '+++\nid = "AUTH-001"\nepic = "AUTH"\ntitle = "One"\nwave = 1\ndepends_on = []\n'
+            f'touches = ["apps/x{FORMAT}.ts"]\ndimensions = ["logic"]\nrisky = true\n+++\n# One\n')})
+        commit_harness(repo, "chore: risky\n\nNo-story: harness", {".keelokit/risky.toml": 'paths = ["apps/**"]\n'})
+        repo.state("[ledger]\nstale_days = 100000\n")
+        repo.publish()
+        repo.on_branch(f"feat\u202e\u2066x", "wip\n\nPart-of: AUTH-002", keep=True)
+        repo.git("fetch", "-q", "origin")
+        for args in (("risky", "AUTH-001"), ()):
+            r = repo.ledger(*args)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+            for ch in FORMAT:
+                with self.subTest(args=args, ch=hex(ord(ch))):
+                    self.assertNotIn(ch, r.stdout + r.stderr)
+
+    def test_HARN_022_S7_breaker2_a_branch_named_with_a_line_separator_breaks_nothing_ESC_364(self):
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-001")
+        repo.state("[ledger]\nstale_days = 100000\n")
+        repo.publish()
+        for sep in ("\u2028", "\u2029", "\u0085"):
+            repo.on_branch(f"feat{sep}x", "wip\n\nPart-of: AUTH-001", keep=True)
+        repo.git("fetch", "-q", "origin")
+        for args in (("check", "--json"), ("show", "AUTH-001"), (), ("--json",)):
+            with self.subTest(args=args):
+                r = repo.ledger(*args)
+                self.assertNotIn("the ledger failed", r.stderr)
+                self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+        self.assertEqual(by_id(read_json(self, repo))["AUTH-001"]["state"], "in-progress")
+
+
 if __name__ == "__main__":
     unittest.main()
