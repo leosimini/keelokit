@@ -204,11 +204,11 @@ round. A touch naming the repository root (`./`, `/`, `.`) meets every glob; eve
 a round is found by the story's id, over every file under the stories' glob, never by its current path: renaming or
 copying the file moves nothing.
 
-A round's head (full, or 7 to 63 hex digits that resolve uniquely) must be a commit the story's close reaches: the head
+A round's head (full, or 7 to 63 hex digits that resolve uniquely) must be a commit some live close of the story reaches: the head
 the breaker attacked, on the branch that closes it. Any other head is `BREAKER_BAD_ENTRY` and that round counts as not
 clean. When the last round is clean, a risky commit of the story that the close reaches and the round's head does not
 (it landed after the round, the `Story:` commit itself included, or it landed on the trunk before the close outside
-its branch, as a parallel delivery does; a merge counts by its own change: its tree against git's automatic merge of its parents, `git merge-tree`, conflicted paths included) is `BREAKER_STALE` (error); a last round
+its branch, as a parallel delivery does; a merge counts by its own change: its tree against git's automatic merge of its parents, `git merge-tree`, conflicted paths included; and when either side renamed to or from a risky path, or the merge base is not one commit, every risky path whose content differs from every parent's) is `BREAKER_STALE` (error); a last round
 a person decided covers only what its head saw too: run a round on the code that lands. A branch rewritten as it lands (a rebase or a squash)
 rewrites the heads away, so its rounds count as not clean on the trunk (warnings): merge `origin/main` after the
 rounds and land with a merge commit. After the close, a change is covered only by a new round whose head reaches it,

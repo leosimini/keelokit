@@ -3687,13 +3687,15 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                       "every story closed after the rule holds counts as risky"})
     reverted = revert_status(log, graph)
     closing: dict[str, str] = {}
-    latest: dict[str, str] = {}  # the last live Story: commit: what a round's head must be reachable from (ESC-371)
+    latest: dict[str, str] = {}  # the last live Story: commit
+    every_close: dict[str, list[str]] = {}  # every live Story: commit: what a round's head must be reached by
     naming: dict[str, list[str]] = {}
     for c in reversed(in_range):  # oldest first
         if not reverted.get(c["sha"], False):
             for sid in c["story"]:
                 closing.setdefault(sid, c["sha"])
                 latest[sid] = c["sha"]
+                every_close.setdefault(sid, []).append(c["sha"])
     for c in reversed(log):
         for sid in dict.fromkeys(c["story"] + c["part_of"]):
             naming.setdefault(sid, []).append(c["sha"])
@@ -3733,7 +3735,9 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
             continue
         # A round counts as clean only when its head is a commit the close reaches: the head the breaker attacked, on
         # the branch that closes the story (ESC-371). Any other head is a bad entry, and the round is not clean.
-        close_reach = reach_until(graph, [latest[sid]], set())
+        # what any live close of the story reaches, never only the newest: a parallel Story: commit hides nothing
+        # (ESC-388)
+        close_reach = reach_until(graph, every_close[sid], set())
         checked, wrong = [], []
         for i, e in rounds:
             head = resolve_head(e[2], graph)
@@ -3743,7 +3747,7 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
         rounds = checked
         if wrong:
             (e, head), more = wrong[0], len(wrong) - 1
-            why = "names no commit here" if head is None else f"is not a commit {short(latest[sid])} (the close) reaches"
+            why = "names no commit here" if head is None else f"is not a commit any close of the story ({short(latest[sid])}…) reaches"
             diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY", "detail": (
                 f"{sid} ({story['path']}): round {e[1]}'s head {e[2][:12]} {why}"
                 f"{f', and {more} more round(s) too' if more else ''}; a round's head is the head the breaker "
@@ -3864,9 +3868,29 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         return found | combined_diff_hits(spec, tip, exclude, set(pairs))
     patterns = [glob_regex(p) for p in rules["paths"]]
     own: dict[str, list[str]] = {}
-    # diff-tree echoes each pair as a newline-ended header, then its paths, each NUL-ended (none when equal)
-    headers = {f"{auto[m]} {trees[m]}\n": m for m in pairs}
-    current, at = None, 0
+    for m, paths in pair_diffs(diff, [(m, f"{auto[m]} {trees[m]}") for m in pairs]).items():
+        own.setdefault(m, []).extend(paths)
+    try:
+        found |= rename_carried(parents, pairs, spec, patterns)
+    except LedgerError:
+        if complete_history():
+            return found | set(pairs)
+    for m in pairs:
+        risky_conflict = any(rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
+        if own.get(m) or risky_conflict:
+            found.add(m)
+    return found
+
+
+def pair_diffs(diff: str, keys: list[tuple[str, str]]) -> dict[str, list[str]]:
+    """`git diff-tree --stdin -z --name-only` output split by pair: it echoes each input line as a newline-ended
+    header, then that pair's paths, each NUL-ended (none when equal). Every key with that header gets its paths: two
+    merges with the same trees never hide each other (ESC-387)."""
+    headers: dict[str, list[str]] = {}
+    for key, pair in keys:
+        headers.setdefault(f"{pair}\n", []).append(key)
+    found: dict[str, list[str]] = {}
+    current, at = [], 0
     while at < len(diff):
         header = next((h for h in headers if diff.startswith(h, at)), None)
         if header:
@@ -3874,12 +3898,73 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
             continue
         end = diff.find("\0", at)
         end = len(diff) if end < 0 else end
-        if current and end > at:
-            own.setdefault(current, []).append(diff[at:end])
+        if end > at:
+            for key in current:
+                found.setdefault(key, []).append(diff[at:end])
         at = end + 1
-    for m in pairs:
-        risky_conflict = any(rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
-        if own.get(m) or risky_conflict:
+    return found
+
+
+def rename_carried(parents: dict, merges: list[str], spec: list[str], patterns: list) -> set[str]:
+    """The merges where git's automatic merge may have carried content into a risky path no risky commit brought
+    (ESC-386): either side renamed a file to or from a risky path since their merge base (rename detection on), or
+    the merge base is not exactly one commit. For those, a risky path whose content in the merge differs from every
+    parent's is the merge's own change. One `merge-base --all` per merge, one `diff-tree -M --stdin`, one `cat-file`
+    and one `diff-tree --stdin`; LedgerError when git fails."""
+    if not merges:
+        return set()
+    bases = {}
+    for m in merges:
+        out = git_read(["merge-base", "--all", "--end-of-options", *parents[m]], ok=(0, 1)).decode().split()
+        bases[m] = out
+    suspect = {m for m in merges if len(bases[m]) != 1}
+    single = [m for m in merges if len(bases[m]) == 1]
+    if single:
+        # trees, not commits: two commits on a --stdin line read as a commit and its parent (a reversed diff)
+        base_trees = trees_of([bases[m][0] for m in single] + [p for m in single for p in parents[m]])
+        if any(x not in base_trees for m in single for x in (bases[m][0], *parents[m])):
+            raise LedgerError("a tree cannot be read here")
+        lines = [(m, f"{base_trees[bases[m][0]]} {base_trees[p]}") for m in single for p in parents[m]]
+        raw = git_read(["-c", "core.quotePath=false", "diff-tree", "--stdin", "-r", "-M", "--raw", "-z"],
+                       "".join(f"{pair}\n" for _, pair in lines).encode()).decode(errors="replace")
+        headers: dict[str, list[str]] = {}
+        for m, pair in lines:
+            headers.setdefault(f"{pair}\n", []).append(m)
+        fields, current, at = [], [], 0
+        while at < len(raw):
+            header = next((h for h in headers if raw.startswith(h, at)), None)
+            if header:
+                current, at = headers[header], at + len(header)
+                continue
+            end = raw.find("\0", at)
+            end = len(raw) if end < 0 else end
+            fields.append((current, raw[at:end]))
+            at = end + 1
+        i = 0
+        while i < len(fields):
+            keys, meta = fields[i]
+            status = meta.split()[-1] if meta.startswith(":") and meta.split() else ""
+            if status[:1] in ("R", "C") and i + 2 < len(fields) + 1:
+                paths = [fields[j][1] for j in (i + 1, i + 2) if j < len(fields)]
+                if any(rx.fullmatch(path) for path in paths for rx in patterns):
+                    suspect.update(keys)
+                i += 3
+            else:
+                i += 2 if meta.startswith(":") else 1
+    if not suspect:
+        return set()
+    ordered = sorted(suspect)
+    trees = trees_of([*ordered, *(p for m in ordered for p in parents[m])])
+    if any(x not in trees for m in ordered for x in (m, *parents[m])):
+        raise LedgerError("a tree cannot be read here")
+    keys = [((m, i), f"{trees[p]} {trees[m]}") for m in ordered for i, p in enumerate(parents[m])]
+    diff = git_read(["-c", "core.quotePath=false", "diff-tree", "--stdin", "-r", "--name-only", "--no-renames", "-z",
+                     "--", *spec], "".join(f"{pair}\n" for _, pair in keys).encode()).decode(errors="replace")
+    per = pair_diffs(diff, keys)
+    found = set()
+    for m in ordered:
+        sides = [set(per.get((m, i), ())) for i in range(len(parents[m]))]
+        if sides and set.intersection(*sides):  # a risky path that differs from every parent's
             found.add(m)
     return found
 

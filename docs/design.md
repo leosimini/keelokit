@@ -266,7 +266,8 @@ story's last risky change, the `Story:` commit included (else `BREAKER_STALE`, a
 lands. So build-story merges `origin/main` after the rounds instead of rebasing, and a risky story lands with a merge
 commit (this repo's way); squash and rebase landings rewrite the recorded heads, so on the trunk their rounds read as
 `BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A merge's own change is its tree against
-git's automatic merge of its parents (`git merge-tree`), so a clean sync merge of main brings nothing of its own. A change after the close is covered only by a
+git's automatic merge of its parents (`git merge-tree`), so a clean sync merge of main brings nothing of its own; when a rename to or from a risky path is involved, or the merge base
+is not one commit, a risky path whose content differs from every parent's counts as the merge's own change too. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its

@@ -179,7 +179,7 @@ below.
   identical-parent and ancestor-parent merges, the other output paths. The builder stopped; the coordinator decided:
   the revert exemption goes (a revert of a risky change is itself a risky change), merge-tree allows unrelated
   histories and retries merge by merge, the pull request reads the trunk's own-change merges.
-- Round 9 · head 76a6bf9252cc4836505cd3f2184fc2136934f47d · 3 findings (1 HIGH, 2 MEDIUM), not fixed
+- Round 9 · head 76a6bf9252cc4836505cd3f2184fc2136934f47d · 3 findings: ESC-386 (HIGH), ESC-387, ESC-388 · fixed in the commit after 3670f61
   A new agent, cold, 9 attacks, scratch clones only; each finding run by the builder too. Reproduced: (HIGH, a
   regression from base) git merge-tree follows renames, so a `No-story:` edit at a non-risky path that a risky story
   renamed into a risky path lands in the risky file as "automatic", and both checks pass (base's combined diff
@@ -188,4 +188,4 @@ below.
   pull request fails); (MEDIUM) a later `Story:` commit on a branch that does not reach the first close anchors the
   round's head check and BREAKER_STALE on itself, clearing STALE for a risky commit no round saw, and turning a correct
   story's round into a bad entry. Held: 200k fuzzed touches, diff-tree echo format, the revert and merge-revert reading,
-  the screen, the authors reuse, attributing_merges. The builder stops here: the coordinator decides.
+  the screen, the authors reuse, attributing_merges. The builder stopped; the coordinator decided each fix.
