@@ -2136,15 +2136,13 @@ class HarnRound11Test(BreakerCase):
 
     LINES = "".join(f"line {i}\n" for i in range(60)).encode()
 
-    def test_HARN_022_S1_breaker11_a_clean_sync_merge_with_a_mode_change_or_a_union_attribute_is_clean_ESC_390(self):
+    def test_HARN_022_S1_breaker11_a_clean_sync_merge_with_a_mode_change_is_clean_ESC_390(self):
         lines = self.LINES
         x = lines.replace(b"line 5\n", b"line 5 (X)\n")
         cases = {
             "plain": (x, lines.replace(b"line 50\n", b"line 50 (Y)\n"), False, ""),
             "mode": (x, lines, True, ""),
             "mode and edit": (x, lines.replace(b"line 50\n", b"line 50 (Y)\n"), True, ""),
-            "union": (lines.replace(b"line 30\n", b"line 30\nX added\n"),
-                      lines.replace(b"line 30\n", b"line 30\nY added\n"), False, f"{self.TOOL} merge=union\n"),
         }
         for name, (x_text, y_text, chmod, attributes) in cases.items():
             with self.subTest(case=name):
@@ -2422,6 +2420,178 @@ class HarnRound14Test(BreakerCase):
         for notes, number in (("docs/notes.txt", 244), ("docs/notes\tdraft.txt", 245), ("docs/notes\ndraft.txt", 246)):
             with self.subTest(notes=notes):
                 self.assertEqual(self.conflict_flow(notes, number), ([], []))
+
+
+class HarnRound15Test(BreakerCase):
+    """HARN-022 cold breaker, round 15 (ESC-394, ESC-395): from the round's probes. git's merge is read with no
+    attributes (an empty attribute source, no attributes file; a non-empty `$GIT_DIR/info/attributes` fails closed),
+    `.gitattributes` at any depth is always risky, and whether a path is risky is git's pathspec's call, never a regex
+    of the ledger's."""
+
+    codes = HarnRound7Test.codes
+    TOOL = HarnRound11Test.TOOL
+    MIG = "db/migrations/0001.sql"
+    BASE = "".join(f"l{i}\n" for i in range(1, 11)).replace("l5\n", "GRANT ALL;\n")
+
+    def grant_flow(self, attrs: bool, conflict: bool, number: int) -> tuple[GitRepo, list[str]]:
+        """build-story's flow on a migration: AUTH-001's branch rewrites a GRANT; main lands AUTH-002's reviewed
+        fix of the same line (`conflict`) or of another line; the sync merge takes the union of both (by git when a
+        `merge=union` attribute was committed, `attrs`, else by hand). The trunk repo after landing and the pull
+        request's codes."""
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"g{self.repos}")
+        st = {s: story(s, touches=(self.MIG,)) for s in ("AUTH-001", "AUTH-002")}
+        repo.commit("docs: plan\n\nNo-story: docs", {**{path_of(s): x for s, x in st.items()}, self.MIG: self.BASE})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        if attrs:
+            repo.commit("docs: line endings\n\nNo-story: docs", {".gitattributes": "**/migrations/** merge=union\n"})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.git("checkout", "-q", "-b", "feature")
+        head = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001",
+                           {self.MIG: self.BASE.replace("GRANT ALL;\n", "GRANT ALL; -- audited\n")})
+        repo.git("checkout", "-q", "main")
+        fixed = self.BASE.replace("GRANT ALL;\n", "GRANT SELECT;\n") if conflict else \
+            self.BASE.replace("l9\n", "l9 fixed\n")
+        h2 = repo.commit("feat: AUTH-002 fix\n\nPart-of: AUTH-002", {self.MIG: fixed})
+        repo.commit("feat: AUTH-002\n\nDone.\n\nStory: AUTH-002",
+                    {path_of("AUTH-002"): st["AUTH-002"] + "\n## Breaker rounds\n" + round_line(1, h2)})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge origin/main\n\nPart-of: AUTH-001", "origin/main",
+                 check=False, when=repo.next_date())
+        if conflict and not attrs:  # by hand, to the very text the union gives
+            repo.write(self.MIG, self.BASE.replace("GRANT ALL;\n", "GRANT ALL; -- audited\nGRANT SELECT;\n"))
+            repo.git("add", "-A")
+            repo.git("commit", "-q", "--no-edit", when=repo.next_date())
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): st["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=number), "--ci",
+                                   env=PR_ENV)[1])
+        repo.merge("feature", "Merge pull request\n\nPart-of: AUTH-001")
+        repo.publish()
+        return repo, pr
+
+    def test_HARN_022_S3_breaker15_a_merge_union_attribute_never_hides_a_merges_own_change_ESC_394(self):
+        for attrs, number in ((False, 251), (True, 252)):
+            with self.subTest(attrs=attrs):
+                repo, pr = self.grant_flow(attrs, True, number)
+                self.assertIn("GRANT SELECT;", (repo.path / self.MIG).read_text())
+                self.assertIn("BREAKER_STALE", pr)
+                self.assertIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker15_an_attributes_file_added_later_or_left_in_the_work_tree_clears_nothing_ESC_394(self):
+        repo, _ = self.grant_flow(False, True, 253)
+        self.assertIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
+        repo.write(".gitattributes", "**/migrations/** merge=union\n")
+        self.assertIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
+        repo.commit("docs: attributes\n\nNo-story: docs")
+        repo.publish()
+        codes = self.codes(self.check(repo)[1])
+        self.assertIn("BREAKER_STALE", codes)
+        self.assertIn("RISKY_NO_STORY", codes)
+
+    def test_HARN_022_S3_breaker15_an_attributes_file_at_any_depth_is_always_risky_ESC_394(self):
+        for name in (".gitattributes", "apps/api/.gitattributes"):
+            with self.subTest(path=name):
+                self.repos = getattr(self, "repos", 0) + 1
+                repo = GitRepo(self.tmp, name=f"a{self.repos}")
+                repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001")})
+                since = repo.commit("chore: adopt\n\nNo-story: harness")
+                harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+                repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+                repo.commit("docs: attributes\n\nNo-story: docs", {name: "* text=auto\n"})
+                repo.publish()
+                self.assertIn("RISKY_NO_STORY", self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S1_breaker15_a_local_info_attributes_file_fails_closed_and_says_so_ESC_394(self):
+        repo, pr = self.grant_flow(False, False, 254)
+        self.assertNotIn("BREAKER_STALE", pr)
+        self.assertNotIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
+        info = repo.path / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("* -diff\n")
+        rc, diffs = self.check(repo)
+        self.assertIn("BREAKER_STALE", [d["code"] for d in diffs])
+        self.assertIn("MERGE_ATTRIBUTES", [d["code"] for d in diffs])
+
+    def test_HARN_022_S1_breaker15_a_union_attribute_sync_merge_is_stale_accepted_fail_closed(self):
+        """A repository that merges a risky file with `merge=union` gets BREAKER_STALE on a sync merge git merged by
+        that attribute: attributes no longer steer the ledger's merge (ESC-394), accepted as fail-closed
+        (coordinator, 2026-11-28). The remedy is a breaker round on the sync merge, or a Decision."""
+        lines = HarnRound11Test.LINES
+        codes = HarnRound11Test.sync_flow(self, lines, lines.replace(b"line 30\n", b"line 30\nX added\n"),
+                                          lines.replace(b"line 30\n", b"line 30\nY added\n"), False,
+                                          ".keelokit/bin/tool.py merge=union\n")
+        self.assertIn("BREAKER_STALE", codes)
+
+    def binary_flow(self, pattern: str, number: int) -> tuple[list[str], list[str]]:
+        """A sync merge that resolves a binary conflict on a risky file by keeping the branch's bytes, dropping main's
+        reviewed fix, with the risky pattern spelled `pattern`. The pull request's codes and the trunk's."""
+        target = "infra/blob.bin"
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"b{self.repos}")
+        st = {s: story(s, touches=("apps/web/page.ts",)) for s in ("AUTH-001", "AUTH-002")}
+
+        def put(data: bytes) -> None:
+            (repo.path / "infra").mkdir(exist_ok=True)
+            (repo.path / target).write_bytes(data)
+
+        put(b"\x00base\x00" * 10)
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of(s): x for s, x in st.items()})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: f'rounds = 3\npaths = ["{pattern}"]\n'})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.git("checkout", "-q", "-b", "feature")
+        put(b"\x00feature\x00" * 10)
+        head = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001")
+        repo.git("checkout", "-q", "main")
+        put(b"\x00REVIEWED-FIX\x00" * 10)
+        h2 = repo.commit("feat: AUTH-002 fix\n\nPart-of: AUTH-002")
+        repo.commit("feat: AUTH-002\n\nDone.\n\nStory: AUTH-002",
+                    {path_of("AUTH-002"): st["AUTH-002"] + "\n## Breaker rounds\n" + round_line(1, h2)})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge origin/main\n\nPart-of: AUTH-001", "origin/main",
+                 check=False, when=repo.next_date())
+        repo.git("checkout", "--ours", "--", target)
+        repo.git("add", target)
+        repo.git("commit", "-q", "--no-edit", when=repo.next_date())
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): st["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=number), "--ci",
+                                   env=PR_ENV)[1])
+        repo.merge("feature", "Merge pull request\n\nPart-of: AUTH-001")
+        repo.publish()
+        return pr, self.codes(self.check(repo)[1])
+
+    def test_HARN_022_S3_breaker15_a_risky_conflict_is_classified_by_gits_pathspec_ESC_395(self):
+        for pattern, number in (("infra/**", 255), ("infra", 256), ("infra/", 257), ("infra/[a-z]*.bin", 258)):
+            with self.subTest(pattern=pattern):
+                pr, trunk = self.binary_flow(pattern, number)
+                self.assertIn("BREAKER_STALE", pr)
+                self.assertIn("BREAKER_STALE", trunk)
+
+    def test_HARN_022_S3_breaker15_a_no_story_change_under_each_pattern_spelling_is_risky_ESC_395(self):
+        for pattern in ("infra", "infra/", "infra/[a-z]*.bin"):
+            with self.subTest(pattern=pattern):
+                self.repos = getattr(self, "repos", 0) + 1
+                repo = GitRepo(self.tmp, name=f"n{self.repos}")
+                repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001")})
+                since = repo.commit("chore: adopt\n\nNo-story: harness")
+                harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: f'rounds = 3\npaths = ["{pattern}"]\n'})
+                repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+                (repo.path / "infra").mkdir(exist_ok=True)
+                (repo.path / "infra/blob.bin").write_bytes(b"\x00x\x00")
+                repo.commit("chore: sneak\n\nNo-story: docs")
+                repo.publish()
+                self.assertIn("RISKY_NO_STORY", self.codes(self.check(repo)[1]))
 
 if __name__ == "__main__":
     unittest.main()
