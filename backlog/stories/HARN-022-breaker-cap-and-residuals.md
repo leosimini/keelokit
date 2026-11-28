@@ -139,3 +139,11 @@ below.
   after its head, a head that is no commit of the close); `.` and `..` inside a touch. Held: round parsing, a Decision
   followed by a clean round, UNKNOWN_STORY on a mixed trailer, ordinary post-close commits, the screen, fail-closed
   exit codes. The coordinator decided each fix (ESC-369..372).
+- Round 5 · head 2b1dc5e2fe7a96d9d558719ef891e9a63c702699 · 5 findings, not fixed: a later round line launders a risky change; a revert of no commit is exempt; a U+2028 path fakes a revert; BREAKER_STALE on a trailered merge; build-story's rebase and a squash make a clean round a bad entry
+  A new agent, cold, 9 attacks, at the coordinator's call after round 4. Reproduced (each run by the builder too):
+  RISKY_AFTER_CLOSE trusted the commit recording the last round without asking that round's head to reach the change;
+  a "revert" of a sha that is no commit made git fail and the revert check believed the message; change_ids still
+  split git's raw output with str.splitlines; BREAKER_STALE read every path-limited merge as a risky change; build-story
+  step 7.1 rebases after the rounds, and a squash lands new commits, so ESC-371's reachability makes a clean round a bad
+  entry (and the message says it "left findings"). Held: the merge walk against base on 5000 random graphs, the copies,
+  the screen on a non-UTF-8 id. Past the cap and not clean: the builder stops here; a person decides (no ESC rows yet).
