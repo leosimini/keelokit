@@ -132,3 +132,10 @@ below.
   first (RISKY_AFTER_CLOSE now has one rule for every landing and the pull request; every write to the terminal is
   screened), but the fixes have not been attacked by a fourth breaker: the last round is not clean, so `check` says
   BREAKER_UNRESOLVED until a person records a Decision (another round, or land as it is).
+- Round 4 · head 185749e6f7db2ebcc032134f0f6530c4970f877c · 4 findings: ESC-369 (HIGH), ESC-370, ESC-371, ESC-372 · fixed in the commit after c4241b2
+  Run by the coordinator's own breaker on the PR head, past the cap at the coordinator's call. Reproduced: renaming
+  the story file hid RISKY_AFTER_CLOSE (the recording commit was looked for by the current path); a revert of a
+  reviewed fix after the close was exempt; a clean last round never had to see the code that lands (a risky commit
+  after its head, a head that is no commit of the close); `.` and `..` inside a touch. Held: round parsing, a Decision
+  followed by a clean round, UNKNOWN_STORY on a mixed trailer, ordinary post-close commits, the screen, fail-closed
+  exit codes. The coordinator decided each fix (ESC-369..372).

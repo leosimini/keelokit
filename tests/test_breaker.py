@@ -41,6 +41,7 @@ def round_line(n: int, head: str, result: str = "clean") -> str:
 
 
 HEAD = "a" * 40
+PLACEHOLDERS = ("a" * 40, "b" * 40, *(str(n) * 40 for n in range(10)))
 
 
 def harness(repo: GitRepo, message: str, files: dict) -> str:
@@ -73,6 +74,10 @@ class BreakerCase(LedgerCase):
         """The story's Story: commit on the trunk; `rounds` rewrites its file with that section first."""
         files = dict(files or {})
         if rounds is not None:
+            # Placeholder heads (HEAD, "b" * 40, "1" * 40, …) become the commit the close sits on: since HARN-022
+            # (ESC-371) a round counts only when its head is a commit the close reaches.
+            for ph in PLACEHOLDERS:
+                rounds = rounds.replace(f"head {ph} ", f"head {repo.sha()} ")
             current = (repo.path / path_of(sid)).read_text()
             files[path_of(sid)] = current.split("\n## Breaker rounds\n")[0] + "\n## Breaker rounds\n" + rounds
         sha = repo.commit(f"feat: {sid}\n\nWhat was decided.\n\nStory: {sid}", files)
@@ -187,11 +192,11 @@ class BreakerMissingTest(BreakerCase):
 
     def test_HARN_021_S3_recording_the_rounds_later_on_the_trunk_clears_it(self):
         repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
-        self.close(repo, "AUTH-001")
+        close = self.close(repo, "AUTH-001")
         self.assertEqual(self.check(repo)[0], 1)
         repo.commit("docs: AUTH-001's rounds\n\nPart-of: AUTH-001",
                     {path_of("AUTH-001"): story("AUTH-001", touches=("scripts/verify.sh",),
-                                                rounds=round_line(1, HEAD))})
+                                                rounds=round_line(1, close))})
         repo.publish()
         self.assertEqual(self.breaker(self.check(repo)[1]), [])
 
@@ -357,7 +362,7 @@ class BreakerPullRequestTest(BreakerCase):
     def test_HARN_021_S6_a_pull_request_with_its_rounds_passes(self):
         repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
         self.branch(repo, "AUTH-001", {path_of("AUTH-001"): story("AUTH-001", touches=("scripts/verify.sh",),
-                                                                  rounds=round_line(1, HEAD))})
+                                                                  rounds=round_line(1, repo.sha()))})
         code, diffs = self.check(self.pull_request(repo, "feature"), "--ci", env=PR_ENV)
         self.assertEqual(self.breaker(diffs), [])
 
@@ -407,7 +412,7 @@ class BreakerBrokenTest(BreakerCase):
 
     def test_HARN_021_S7_a_round_with_a_short_head_is_no_round(self):
         repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
-        self.close(repo, "AUTH-001", rounds=round_line(1, "abc1234"))
+        self.close(repo, "AUTH-001", rounds=round_line(1, "abc12"))  # under 7 hex digits: no head
         found = self.breaker(self.check(repo)[1])
         self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), found)
         self.assertIn(("warning", "BREAKER_BAD_ENTRY", "AUTH-001"), found)
@@ -1086,13 +1091,13 @@ class RiskyAfterCloseTest(BreakerCase):
         repo.git("revert", "--no-edit", close3, when=repo.next_date())
         repo.git("commit", "-q", "--amend", "-m", f"Revert\n\nThis reverts commit {close3}.\n\nPart-of: AUTH-003")
         repo.commit("fix: three\n\nPart-of: AUTH-003", {".keelokit/bin/three.py": "3\n"})
-        # the closing branch's own later commits, which its recorded round saw, land with the close
+        # the closing branch's own work, which its recorded round saw, before its Story: commit
         repo.git("checkout", "-q", "-b", "feature")
-        repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004", {"apps/web/four.ts": "4\n"})
         fix = repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
         current = (repo.path / path_of("AUTH-004")).read_text()
-        repo.commit("docs: AUTH-004 round 1\n\nPart-of: AUTH-004",
-                    {path_of("AUTH-004"): current + "\n## Breaker rounds\n" + round_line(1, fix)})
+        repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004",
+                    {"apps/web/four.ts": "4\n",
+                     path_of("AUTH-004"): current + "\n## Breaker rounds\n" + round_line(1, fix)})
         repo.git("checkout", "-q", "main")
         repo.merge("feature", "Merge pull request #4 from x/feature")
         repo.publish()
@@ -1158,12 +1163,14 @@ class HarnRound1Test(BreakerCase):
         return [d for d in self.check(ci, "--ci", env=PR_ENV)[1] if d["code"] == "RISKY_AFTER_CLOSE"]
 
     def test_HARN_022_S3_breaker1_the_closing_branch_landed_linearly_is_judged_with_its_close_ESC_356(self):
+        # Since round 4 (ESC-371) a round's head must be a commit the close reaches: a fix after the Story: commit is
+        # work after the close, and the pull request and the trunk agree on it.
         repo = self.project({"AUTH-004": story("AUTH-004")})
-        self.assertEqual(self.closing_branch(repo, 81), [])
+        self.assertEqual([d["code"] for d in self.closing_branch(repo, 81)], ["RISKY_AFTER_CLOSE"])
         repo.git("merge", "-q", "--ff-only", "feature")
         repo.publish()
-        self.assertEqual([d for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"], [],
-                         "the pull request and the trunk agree on the same commits")
+        self.assertEqual([d["code"] for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"],
+                         ["RISKY_AFTER_CLOSE"], "the pull request and the trunk agree on the same commits")
 
     def test_HARN_022_S3_breaker1_a_later_fix_on_top_of_the_close_is_still_reported_ESC_356(self):
         repo = self.project({"AUTH-004": story("AUTH-004")})
@@ -1214,7 +1221,11 @@ class HarnRound2Test(BreakerCase):
         repo.git("merge", "-q", "--ff-only", "feature")
         repo.git("branch", "-q", "-D", "feature")
         repo.publish()
-        self.assertEqual([d for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"], [])
+        # since round 4 (ESC-371): the fix came after the Story: commit and the round's head was rewritten away, so
+        # the round is no clean round of the landed code and the fix is work after the close, as in its pull request
+        codes = [d["code"] for d in self.check(repo)[1]]
+        self.assertIn("RISKY_AFTER_CLOSE", codes)
+        self.assertIn("BREAKER_BAD_ENTRY", codes)
         # other work after the rebased close: a later fix is new work again
         repo.commit("docs: later\n\nNo-story: docs", {"docs/l.md": "l\n"})
         repo.commit("fix: four again\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 6\n"})
@@ -1277,8 +1288,13 @@ class HarnRound3Test(BreakerCase):
         return found
 
     def test_HARN_022_S3_breaker3_other_work_between_the_close_and_a_fix_the_round_saw_ESC_365(self):
-        found = self.verdicts([("close",), ("other",), ("fix",), ("round", "fix")], 91)
+        # Since round 4 (ESC-371) the Story: commit comes after the work and its rounds; other work in between changes
+        # nothing, however the branch lands.
+        found = self.verdicts([("fix",), ("other",), ("round", "fix"), ("close",)], 91)
         self.assertEqual(found, {k: [] for k in ("pull request", *self.LANDINGS)})
+        # the old order (the Story: commit first) is work after the close, everywhere
+        found = self.verdicts([("close",), ("other",), ("fix",), ("round", "fix")], 92)
+        self.assertEqual(found, {k: ["RISKY_AFTER_CLOSE"] for k in ("pull request", *self.LANDINGS)})
 
     def test_HARN_022_S3_breaker3_a_fix_after_the_round_was_recorded_is_reported_everywhere_ESC_366(self):
         found = self.verdicts([("close",), ("round", "close"), ("fix",)], 93)

@@ -119,6 +119,7 @@ import random  # noqa: E402
 import tempfile  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
+import posixpath  # noqa: E402
 import re  # noqa: E402
 import signal  # noqa: E402
 import subprocess  # noqa: E402
@@ -3301,7 +3302,7 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
                                lambda sha: order[arrival[sha]] if sha in arrival else len(order),
-                               list(stories.values()), rules, head)
+                               list(stories.values()), rules, head, cfg)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
                                  config_diffs=False, hits=hits, earlier=earlier)
@@ -3365,7 +3366,7 @@ def cmd_check(state: dict, args: tuple) -> int:
 # risky.toml on the trunk, nothing. The line is a record, as a trailer is: the ledger checks it is there, not that the
 # round happened.
 
-ROUND_LINE = re.compile(r"- Round ([0-9]{1,3}) · head ([0-9a-f]{40}|[0-9a-f]{64}) · (.+)")
+ROUND_LINE = re.compile(r"- Round ([0-9]{1,3}) · head ([0-9a-f]{7,64}) · (.+)")
 DECISION_LINE = re.compile(r"- Decision · ([^·]*\S[^·]*) · ([0-9]{4}-[0-9]{2}-[0-9]{2}) · (.*\S.*)")
 # Without `deciders` in risky.toml, a Decision naming one of these is no person's (ESC-314): a long word anywhere in
 # the name's letters (`subagent`, `ClaudeCode`, `Breaker2`), a short one as a word of its own (`AI`, `the bots`).
@@ -3429,6 +3430,17 @@ def breaker_record(body: str) -> dict:
         bad.append(f"its rounds are numbered {', '.join(map(str, numbers))}, not 1, 2, … in order: none counts")
         entries = [e for e in entries if e[0] != "round"]
     return {"entries": entries, "bad": bad}
+
+
+def resolve_head(text: str, graph: dict) -> str | None:
+    """The commit a round line's head names in this history: the full sha, or the one commit an abbreviation of 7 to 63
+    hex digits starts (ESC-371); None when it names no commit here, or several."""
+    if text in graph:
+        return text
+    if len(text) in (40, 64):
+        return None
+    found = [sha for sha in graph if sha.startswith(text)]
+    return found[0] if len(found) == 1 else None
 
 
 def agent_like(name: str) -> bool:
@@ -3514,15 +3526,18 @@ def touch_meets(touch: str, pattern: str) -> bool:
     for `scripts/verify.sh`, `apps/api/auth` for `**/auth/**`), or, for a touch that is a glob, one whose literal start
     and the pattern's run into each other (when in doubt, risky)."""
     t = touch.strip()
-    while t.startswith("./"):
-        t = t[2:]
-    t = t.lstrip("/").rstrip("/")
-    spelled_dir = touch.rstrip().endswith(("/", "/.")) or t == "."
-    while t.endswith("/."):
-        t = t[:-2].rstrip("/")
-    if t in ("", "."):
-        # `./`, `/` or `.` names the repository's root, which holds every path (ESC-361); a blank touch names nothing
+    spelled_dir = t.endswith(("/", "/.", "/..")) or t in (".", "..")
+    t = t.lstrip("/")
+    if not t:
+        # `/` names the repository's root, which holds every path (ESC-361); a blank touch names nothing
         return bool(touch.strip())
+    # `.` and `..` parts mean what they mean (`.keelokit/./bin`, `apps/../.keelokit/bin`, ESC-372); a touch that leaves
+    # the repository names nothing in it
+    t = posixpath.normpath(t)
+    if t == ".." or t.startswith("../"):
+        return False
+    if t == ".":
+        return True  # `./`, `.`: the root (ESC-361)
     if re.search(r"[*?]", t):
         a, b = literal_prefix(t), literal_prefix(pattern)
         return a.startswith(b) or b.startswith(a)
@@ -3612,11 +3627,13 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                       "every story closed after the rule holds counts as risky"})
     reverted = revert_status(log, graph)
     closing: dict[str, str] = {}
+    latest: dict[str, str] = {}  # the last live Story: commit: what a round's head must be reachable from (ESC-371)
     naming: dict[str, list[str]] = {}
     for c in reversed(in_range):  # oldest first
         if not reverted.get(c["sha"], False):
             for sid in c["story"]:
                 closing.setdefault(sid, c["sha"])
+                latest[sid] = c["sha"]
     for c in reversed(log):
         for sid in dict.fromkeys(c["story"] + c["part_of"]):
             naming.setdefault(sid, []).append(c["sha"])
@@ -3654,6 +3671,23 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                 f"cold breaker rounds (/keelokit:build-story, step 5) and record each under `## Breaker rounds` in "
                 f"{story['path']}: {ROUND_FORMAT}")})
             continue
+        # A round counts as clean only when its head is a commit the close reaches: the head the breaker attacked, on
+        # the branch that closes the story (ESC-371). Any other head is a bad entry, and the round is not clean.
+        close_reach = reach_until(graph, [latest[sid]], set())
+        checked, wrong = [], []
+        for i, e in rounds:
+            head = resolve_head(e[2], graph)
+            if head is None or head not in close_reach:
+                wrong.append((e, head))
+            checked.append((i, (e[0], e[1], head or e[2], e[3] and head is not None and head in close_reach)))
+        rounds = checked
+        if wrong:
+            (e, head), more = wrong[0], len(wrong) - 1
+            why = "names no commit here" if head is None else f"is not a commit {short(latest[sid])} (the close) reaches"
+            diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY", "detail": (
+                f"{sid} ({story['path']}): round {e[1]}'s head {e[2][:12]} {why}"
+                f"{f', and {more} more round(s) too' if more else ''}; a round's head is the head the breaker "
+                "attacked, on the branch that closes the story, so that round counts as not clean")})
         decisions = [i for i, e in enumerate(record["entries"]) if e[0] == "decision" and is_decider(e[1], rules)]
         refused = [e for e in record["entries"] if e[0] == "decision" and not is_decider(e[1], rules)]
         if refused:
@@ -3664,6 +3698,17 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
         # The last round decides, whatever its number (HARN-022): clean, the story is resolved, past the cap too. The
         # cap is where the build stops and asks: findings left there wait for a person's Decision.
         last_at, last = rounds[-1]
+        if last[3]:
+            # The clean last round saw the code that lands: no risky commit of the story that the close reaches may
+            # come after its head (ESC-371).
+            seen = reach_until(graph, [last[2]], set())
+            late = [x for x in naming.get(sid, ()) if x in hits and x in close_reach and x != latest[sid]
+                    and x not in seen]
+            if late:
+                diffs.append({"level": "error", "code": "BREAKER_STALE", "detail": (
+                    f"{sid}: risky commit {short(late[0])}{f' (and {len(late) - 1} more)' if len(late) > 1 else ''} "
+                    f"landed after the last clean round (head {short(last[2])}) in {story['path']}; run a round on "
+                    "the code that lands, and record its head")})
         if not last[3] and not any(i > last_at for i in decisions):
             if len(rounds) >= rules["rounds"]:
                 then = (f"the cap of {rules['rounds']} rounds ({RISKY_FILE}) is reached, so a person decides: another "
@@ -3743,58 +3788,91 @@ def breaker_resolved(record: dict, rules: dict) -> bool:
 
 def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
                       landing, stories: list[dict] = (), rules: dict | None = None,
-                      tip: str | None = None) -> list[dict]:
+                      tip: str | None = None, cfg: dict | None = None) -> list[dict]:
     """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
     merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
     commit of `log` (the earliest by `landing(sha)`: the position of the trunk commit that brought it; a pull request's
     commits land after every trunk commit) that does not reach it. The closed story's rounds never saw the change, and
     it is not closed again: such a change is new work of an open story, which then needs its rounds. One rule, however
     the branch lands (merge, fast-forward, rebase) and in the pull request alike (ESC-356, ESC-360, ESC-365, ESC-366):
-    a later commit lands with the close when the commit that recorded the story's last round in its file (`stories`;
-    found in `tip`'s history by one pickaxe `git log -S<head>`) reaches it, while that round is clean or a person's
-    Decision follows it. A later round line recorded after a change is a reopening with its own round. A revert
-    restores what was judged before."""
+    a later commit lands with the close when the commit that recorded the story's last round reaches it, while that
+    round is clean (its head a commit a live close reaches) or a person's Decision follows it. That commit is the first,
+    in `tip`'s history, whose version of any file under the stories' glob with this id holds that exact round line (one
+    pickaxe `git log -S<head>` and one `cat-file`): renaming or copying the file moves nothing (ESC-369). A later round
+    line recorded after a change is a reopening with its own round. A revert is exempt only when what it reverts came
+    after the close (it undoes unreviewed work); reverting what the close reaches is a change like any other (ESC-370)."""
     reverted = revert_status(log, graph)
     closed: dict[str, tuple[int, str]] = {}
+    closes: dict[str, list[str]] = {}
     for c in log:
         if reverted.get(c["sha"], False):
             continue
         for sid in c["story"]:
             at = landing(c["sha"])
+            closes.setdefault(sid, []).append(c["sha"])
             if sid not in closed or at < closed[sid][0]:
                 closed[sid] = (at, c["sha"])
-    last_head: dict[str, str] = {}
-    paths: dict[str, set] = {}
+    last_round: dict[str, tuple] = {}
     for s in stories:
         for v in [s, *s.get("copies", [])]:
             record = v.get("breaker") or {"entries": []}
             if rules is not None and not v.get("unreadable") and breaker_resolved(record, rules):
-                last_head.setdefault(s["id"], [e[2] for e in record["entries"] if e[0] == "round"][-1])
-                paths.setdefault(s["id"], set()).add(v["path"])
+                last_round.setdefault(s["id"], [e for e in record["entries"] if e[0] == "round"][-1])
     before: dict[str, set] = {}
+    any_close: dict[str, set] = {}
     recorded: dict[str, set] = {}
 
-    def with_close(sha: str, sid: str) -> bool:
-        if sid not in before:  # what the close reaches came before it
+    def reached_by_close(sid: str) -> set:
+        """What the story's (earliest live) close reaches: it came before the close."""
+        if sid not in before:
             before[sid] = reach_until(graph, [closed[sid][1]], set())
-        if sha in before[sid]:
+        return before[sid]
+
+    def recording(sid: str) -> list[str]:
+        """The first commit whose version of a file of this id holds the last round line, if its head is valid."""
+        entry = last_round.get(sid)
+        if entry is None or tip is None or cfg is None:
+            return []
+        head = resolve_head(entry[2], graph)
+        if sid not in any_close:
+            any_close[sid] = reach_until(graph, closes.get(sid, []), set())
+        if head is None or head not in any_close[sid]:
+            return []  # a round whose head is no commit a live close reaches is not clean (ESC-371)
+        out = git_read(["-c", "core.quotePath=false", "log", "--no-renames", "--format=%x00%H", "--name-only",
+                        f"-S{entry[2]}", tip, "--", f":(glob){cfg['stories']}"]).decode(errors="replace")
+        candidates = []
+        for chunk in out.split("\0")[1:]:
+            lines = [line for line in git_lines(chunk) if line.strip()]
+            if lines:
+                candidates += [(lines[0].strip(), path) for path in lines[1:]]
+        blobs = cat_specs([f"{sha}:{path}" for sha, path in candidates])
+        for sha, path in reversed(candidates):  # oldest first
+            try:
+                version = build_story(path, blobs.get(f"{sha}:{path}"), cfg["id_from"]) \
+                    if blobs.get(f"{sha}:{path}") is not None else None
+            except LedgerError:
+                version = None
+            if version and version["id"] == sid and any(
+                    e[0] == "round" and e[2] == entry[2] for e in version["breaker"]["entries"]):
+                return [sha]
+        return []
+
+    def with_close(sha: str, sid: str) -> bool:
+        if sha in reached_by_close(sid):
             return True
         if sid not in recorded:
-            found = []
-            if sid in last_head and tip is not None:
-                out = git_read(["log", "--format=%H", f"-S{last_head[sid]}", tip, "--",
-                                *(f":(literal){path}" for path in sorted(paths[sid]))]).decode()
-                found = out.split()[-1:]  # the oldest: the commit that added the round line
-            recorded[sid] = reach_until(graph, found, set())
+            recorded[sid] = reach_until(graph, recording(sid), set())
         return sha in recorded[sid]
 
     diffs = []
     for c in reversed(in_range):
         ids = list(dict.fromkeys(c["story"] + c["part_of"]))
         merge = len(c["parents"]) > 1
-        if not ids or c["reverts"] or reverted.get(c["sha"], False) \
-                or not (c["sha"] in merges if merge else c["sha"] in hits):
+        if not ids or reverted.get(c["sha"], False) or not (c["sha"] in merges if merge else c["sha"] in hits):
             continue
+        if c["reverts"] and all(sid in closed and target not in reached_by_close(sid)
+                                for target in c["reverts"] for sid in ids):
+            continue  # it undoes work that came after the close, back toward what the rounds saw
         at = landing(c["sha"])
         if not all(sid in closed and closed[sid][0] <= at and not with_close(c["sha"], sid) for sid in ids):
             continue  # it names an open story (which records the rounds when it closes), or it lands with the close
@@ -3912,7 +3990,7 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     diffs += risky_no_story(in_range, hits, own)
     arrival, order = ctx["placed"]
     diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
-                               ctx["stories"], rules, ctx["trunk_sha"])
+                               ctx["stories"], rules, ctx["trunk_sha"], ctx["cfg"])
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))

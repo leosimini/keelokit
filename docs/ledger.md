@@ -168,6 +168,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
 | `RISKY_NO_STORY` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path and names no story; a `No-story: release` commit touching only the release files excepted) | error | `check` (a pull request too) |
 | `RISKY_AFTER_CLOSE` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path under `Story:`/`Part-of:` of stories all closed by a live `Story:` commit of an earlier landing; commits the close reaches, commits the commit recording the resolved story's last round reaches, and reverts excepted) | error | `check` (a pull request too) |
+| `BREAKER_STALE` (a risky commit of the story landed after its last clean round's head and before its close) | error | `check` (a pull request too) |
 | `BREAKER_UNRESOLVED` (the last round left findings with no person's Decision after it; the last round decides, past the cap too), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
@@ -198,7 +199,17 @@ a later commit lands with the close when the commit that recorded the story's la
 (reaches it), while that round is clean or a person's Decision follows it. So the closing branch's commits before its
 round line are judged with the close, and a fix after the round was recorded is reported before it lands. A later
 change to a closed story is accepted only when a new round line recorded after it covers it: a reopening with its own
-round. A touch naming the repository root (`./`, `/`, `.`) meets every glob; every spelling of one directory is one.
+round. A touch naming the repository root (`./`, `/`, `.`) meets every glob; every spelling of one directory is one;
+`.` and `..` inside a touch are normalised, and one that leaves the repository names nothing. The commit that recorded
+a round is found by the story's id, over every file under the stories' glob, never by its current path: renaming or
+copying the file moves nothing. A revert is exempt only when it undoes work that came after the close.
+
+A round's head (full, or 7 to 63 hex digits that resolve uniquely) must be a commit the story's close reaches: the head
+the breaker attacked, on the branch that closes it. Any other head is `BREAKER_BAD_ENTRY` and that round counts as not
+clean. When the last round is clean, a risky commit of the story that the close reaches and the round's head does not
+(it landed after the round and before the close) is `BREAKER_STALE` (error): run a round on the code that lands. A
+branch rewritten as it lands (a rebase or a squash) rewrites the heads away, so its rounds count as not clean on the
+trunk: record them on the head that lands, or land by merge or fast-forward.
 
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
 for a pull request the base's `risky.toml` and committed `[ledger]` with the pull request's story file. The rule holds

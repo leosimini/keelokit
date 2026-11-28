@@ -223,8 +223,12 @@ For a story `ledger.py risky <ID>` calls risky, after step 5's round is clean an
 
 `ledger.py check` (the CI) reports a risky story closed with no round (`BREAKER_MISSING`, error) and one whose last
 round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A risky change under the trailer of a
-story already closed is new work (`RISKY_AFTER_CLOSE`, error): give it an open story, with its own rounds. Record
-each round line after the commits it attacked: a commit after the last round line is not covered by it. A pull
+story already closed is new work (`RISKY_AFTER_CLOSE`, error): give it an open story, with its own rounds. A round's
+head is the head the breaker actually attacked, on the branch that closes the story (full or 7+ hex digits that
+resolve here; a head the close does not reach is `BREAKER_BAD_ENTRY` and that round counts as not clean). The last
+clean round's head must be at or after the story's last risky change: a risky commit between it and the `Story:`
+commit is `BREAKER_STALE` (error). So record each round line after the commits it attacked, and put `Story:` on the
+commit that records the last round, after every risky change. A pull
 request is judged by the trunk's `risky.toml`, never its own.
 
 ## 6. Verify — verifier, mode B
