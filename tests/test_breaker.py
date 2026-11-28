@@ -1226,5 +1226,69 @@ class HarnRound2Test(BreakerCase):
                 self.assertIn("AUTH-001: risky", repo.ledger("risky", "AUTH-001").stdout)
 
 
+class HarnRound3Test(BreakerCase):
+    """HARN-022 cold breaker, round 3 (ESC-365..367): each finding reproduced as a failing test first. The pull request
+    and the trunk give one verdict for one branch, however it lands."""
+
+    LANDINGS = ("merge", "fast-forward", "rebase")
+
+    def branch(self, repo: GitRepo, commits: list, meanwhile: bool = True) -> None:
+        """`feature` off main: ("close"), ("other"), ("fix"), ("round", what its head is) in the given order."""
+        repo.git("checkout", "-q", "-b", "feature")
+        shas = {}
+        for kind, *arg in commits:
+            if kind == "close":
+                shas["close"] = repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004", {"apps/web/four.ts": "4\n"})
+            elif kind == "other":
+                repo.commit("docs: changelog line\n\nNo-story: docs", {"CHANGELOG.md": "x\n"})
+            elif kind == "fix":
+                shas["fix"] = repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
+            else:
+                current = (repo.path / path_of("AUTH-004")).read_text()
+                repo.commit("docs: AUTH-004 round 1\n\nPart-of: AUTH-004",
+                            {path_of("AUTH-004"): current + "\n## Breaker rounds\n" + round_line(1, shas[arg[0]])})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        if meanwhile:
+            repo.commit("docs: meanwhile\n\nNo-story: docs", {"docs/m.md": "m\n"})
+        repo.publish()
+
+    def verdicts(self, commits: list, number: int) -> dict:
+        found = {}
+        for i, landing in enumerate(self.LANDINGS):
+            repo = self.project({"AUTH-004": story("AUTH-004")})
+            self.branch(repo, commits, meanwhile=landing != "fast-forward")
+            ci = BreakerPullRequestTest.pull_request(self, repo, "feature", number=number * 10 + i)
+            found["pull request"] = [d["code"] for d in self.check(ci, "--ci", env=PR_ENV)[1]
+                                     if d["code"] == "RISKY_AFTER_CLOSE"]
+            if landing == "merge":
+                repo.merge("feature", f"Merge pull request #{number}")
+            else:
+                if landing == "rebase":  # GitHub's "Rebase and merge": new shas
+                    repo.git("checkout", "-q", "feature")
+                    repo.git("rebase", "-q", "main")
+                    repo.git("checkout", "-q", "main")
+                repo.git("merge", "-q", "--ff-only", "feature")
+            repo.publish()
+            found[landing] = [d["code"] for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"]
+        return found
+
+    def test_HARN_022_S3_breaker3_other_work_between_the_close_and_a_fix_the_round_saw_ESC_365(self):
+        found = self.verdicts([("close",), ("other",), ("fix",), ("round", "fix")], 91)
+        self.assertEqual(found, {k: [] for k in ("pull request", *self.LANDINGS)})
+
+    def test_HARN_022_S3_breaker3_a_fix_after_the_round_was_recorded_is_reported_everywhere_ESC_366(self):
+        found = self.verdicts([("close",), ("round", "close"), ("fix",)], 93)
+        self.assertEqual(found, {k: ["RISKY_AFTER_CLOSE"] for k in ("pull request", *self.LANDINGS)})
+
+    def test_HARN_022_S4_breaker3_every_spelling_of_a_directory_is_one_ESC_367(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("apps/v1.2/.",)),
+                             "AUTH-002": story("AUTH-002", touches=("apps/v1.2/",)),
+                             "AUTH-003": story("AUTH-003", touches=("apps/v1.2/./",))})
+        for sid in ("AUTH-001", "AUTH-002", "AUTH-003"):
+            with self.subTest(sid=sid):
+                self.assertIn(f"{sid}: risky", repo.ledger("risky", sid).stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

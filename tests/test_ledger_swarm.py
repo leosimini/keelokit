@@ -992,5 +992,27 @@ class HarnSwarmRound2Test(LedgerCase):
         self.assertEqual(by_id(read_json(self, repo))["AUTH-001"]["state"], "in-progress")
 
 
+class HarnSwarmRound3Test(LedgerCase):
+    """HARN-022 cold breaker, round 3 (ESC-368): the pre-push hook's lines are screened as check's are."""
+
+    def test_HARN_022_S7_breaker3_the_pre_push_hook_prints_branch_names_screened_ESC_368(self):
+        from test_ledger import prepush, to_main
+        name = "train-\u202egpj.exe\u2028errorFORGED\u200b"
+        repo = GitRepo(self.tmp)
+        repo.plan("AUTH-006", "AUTH-007")
+        since = repo.commit("chore: adopt the ledger\n\nNo-story: harness")
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.on_branch(name, "wip: auth 6\n\nPart-of: AUTH-006", "feat: auth 7\n\nWhy.\n\nStory: AUTH-007")
+        repo.publish()
+        repo.git("merge", "-q", "--squash", f"origin/{name}")
+        repo.git("commit", "-q", "-m", "Train 3 (#9)\n\nWhy.\n\nStory: AUTH-007", when=repo.next_date())
+        r = prepush(self, repo, to_main(repo))
+        self.assertIn("SQUASH_LOST_TRAILERS", r.stderr)
+        for ch in "\u202e\u2028\u200b":
+            with self.subTest(ch=hex(ord(ch))):
+                self.assertNotIn(ch, r.stdout + r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
