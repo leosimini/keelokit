@@ -1559,5 +1559,49 @@ class HarnRound5Test(BreakerCase):
         self.assertIn("squash and rebase landings", design)
 
 
+class HarnRound6Test(BreakerCase):
+    """HARN-022 cold breaker, round 6 (ESC-379, ESC-380): each finding reproduced as a failing test first."""
+
+    def parallel(self) -> GitRepo:
+        """AUTH-001's closing branch (its work, a round on it, the Story: commit); meanwhile another delivery of
+        AUTH-001 lands on main and changes a migration that no round saw."""
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.git("checkout", "-q", "-b", "feature")
+        head = repo.commit("feat: work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        current = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): current + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        self.par = repo.commit("feat: parallel delivery\n\nPart-of: AUTH-001",
+                               {"db/migrations/0001.sql": "drop table users;\n"})
+        repo.publish()
+        return repo
+
+    def test_HARN_022_S1_breaker6_a_risky_commit_of_the_story_the_close_does_not_reach_is_stale_ESC_379(self):
+        repo = self.parallel()
+        ci = BreakerPullRequestTest.pull_request(self, repo, "feature", number=161)
+        stale = [d for d in self.check(ci, "--ci", env=PR_ENV)[1] if d["code"] == "BREAKER_STALE"]
+        self.assertEqual(len(stale), 1, "the pull request")
+        self.assertIn(self.par[:12], stale[0]["detail"])
+        repo.merge("feature", "Merge pull request #161 from x/feature")
+        repo.publish()
+        stale = [d for d in self.check(repo)[1] if d["code"] == "BREAKER_STALE"]
+        self.assertEqual(len(stale), 1, "the trunk")
+        self.assertIn(self.par[:12], stale[0]["detail"])
+
+    def test_HARN_022_S1_breaker6_a_decided_round_covers_only_what_its_head_saw_ESC_380(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))}, risky=RISKY_TOML + 'deciders = ["Leo"]\n')
+        h = repo.commit("feat: work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        late = repo.commit("feat: later\n\nPart-of: AUTH-001", {"db/migrations/0001.sql": "drop table users;\n"})
+        current = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {path_of("AUTH-001"): current + "\n## Breaker rounds\n"
+                    + round_line(1, h, "1 finding · none") + "- Decision · Leo · 2026-11-28 · land as it is\n"})
+        repo.publish()
+        stale = [d for d in self.check(repo)[1] if d["code"] == "BREAKER_STALE"]
+        self.assertEqual(len(stale), 1)
+        self.assertIn(late[:12], stale[0]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
