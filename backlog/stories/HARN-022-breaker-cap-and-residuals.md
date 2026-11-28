@@ -322,3 +322,19 @@ below.
   close is what every minimal close reaches, the adds are read as commit ids only, a pull request judges every story
   closed at its head; HARN-021's uncovered post-close fixes are true positives, to be covered by HARN-022's clean round
   (option a).
+- Round 20 · head 00f5a9e2dc3492279c3231457685ef00a0612100 · 5 findings (4 MEDIUM, 1 LOW), not fixed
+  A new agent, cold, scratch clones only, told the accepted limitations, the threat model and its severity rule, the
+  known HARN-024 and ESC-318 change, and the planned HARN-021 coverage entry; each MEDIUM finding run by the builder
+  too, on fresh clones. Reproduced: (MEDIUM) a Decision to "land as it is" at the cap always gives BREAKER_STALE once
+  any finding was fixed after the round's head (ESC-380: a decided round covers only what its head saw), a false
+  error on the documented flow (LEDGER-014's real history too), and a pull request that adds the Decision to a story
+  closed on the trunk passes while the trunk fails (`breaker_diffs` in a pull request judges only stories the pull
+  request closes); (MEDIUM) tightening risky.toml turns landed history into errors (RISKY_NO_STORY, RISKY_AFTER_CLOSE,
+  BREAKER_MISSING) with no remedy for past `No-story:` commits, and the pull request that tightens it passes;
+  (MEDIUM) a pull request that fixes a trunk already red is itself red, because `trunk_breaker_diffs` reads the
+  trunk's story files: the HARN-021 coverage plan clears HARN-021 on the trunk once it lands, but HARN-022's pull
+  request stays red until then; (MEDIUM, by round 19's precedent) a pull request that reverts the first close and
+  re-closes covers its own risky change when the last round is not resolved; (LOW, to HARN-023) a squash-landed
+  re-close is RISKY_AFTER_CLOSE. Held: the HARN-021 plan on the trunk (all three errors and the UNRESOLVED clear), the
+  same mechanism abused across stories (equivalent to the accepted unverified round line), round 19's fixes,
+  rule_adds, close ordering. The builder stops here: the coordinator decides.

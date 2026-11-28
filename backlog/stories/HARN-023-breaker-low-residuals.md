@@ -46,6 +46,9 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
   commits, 600 risky stories: 17.9 s against 7.4 s before; 301 adds: 699 MB peak). Probes:
   /tmp/breaker19-HARN-022/probes/p5_perf.py, p6_perf_adds.py (round 19).
 - RISKY_AFTER_CLOSE's detail names the lowest sha among the closes, not the first close (round 19).
+- A correct re-close landed by squash is a RISKY_AFTER_CLOSE error, where squash and rebase landings are documented
+  as warnings only (squash is not the documented landing). Probe: /tmp/breaker20-HARN-022/probes/p3_squash_reclose.py
+  (round 20).
 - On a case-insensitive filesystem a committed `.GITATTRIBUTES` steers git like `.gitattributes`, but the always-risky
   `**/.gitattributes` pathspec is case-sensitive (round 16, not reproduced on ext4).
 - `glob_regex` misreads POSIX classes (`[[:alpha:]]`), which touches may use; story risk by touches only (round 16).
