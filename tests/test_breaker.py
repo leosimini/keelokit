@@ -2593,5 +2593,152 @@ class HarnRound15Test(BreakerCase):
                 repo.publish()
                 self.assertIn("RISKY_NO_STORY", self.codes(self.check(repo)[1]))
 
+
+class HarnRound16Test(BreakerCase):
+    """HARN-022 cold breaker, round 16 (ESC-396): from the round's probes. Every git read the ledger makes runs in one
+    hermetic environment: no system or global config, no config from the environment, no system attributes, no
+    pathspec switches; explicit flags and pins beat config; repository-local merge or diff drivers fail closed."""
+
+    codes = HarnRound7Test.codes
+    MIG = HarnRound15Test.MIG
+    BASE = HarnRound15Test.BASE
+
+    def ours_flow(self, number: int) -> tuple[GitRepo, GitRepo]:
+        """build-story's sync merge keeping the branch's version of a migration, dropping main's reviewed fix (the
+        merge's own change). The trunk repo after landing and the pull request's clone."""
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"o{self.repos}")
+        st = {s: story(s, touches=(self.MIG,)) for s in ("AUTH-001", "AUTH-002")}
+        repo.commit("docs: plan\n\nNo-story: docs", {**{path_of(s): x for s, x in st.items()}, self.MIG: self.BASE})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.git("checkout", "-q", "-b", "feature")
+        head = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001",
+                           {self.MIG: self.BASE.replace("GRANT ALL;\n", "GRANT ALL; -- audited\n")})
+        repo.git("checkout", "-q", "main")
+        h2 = repo.commit("feat: AUTH-002 fix\n\nPart-of: AUTH-002",
+                         {self.MIG: self.BASE.replace("GRANT ALL;\n", "GRANT SELECT;\n")})
+        repo.commit("feat: AUTH-002\n\nDone.\n\nStory: AUTH-002",
+                    {path_of("AUTH-002"): st["AUTH-002"] + "\n## Breaker rounds\n" + round_line(1, h2)})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge origin/main\n\nPart-of: AUTH-001", "origin/main",
+                 check=False, when=repo.next_date())
+        repo.git("checkout", "--ours", self.MIG)
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "--no-edit", when=repo.next_date())
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): st["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        pr = BreakerPullRequestTest.pull_request(self, repo, "feature", number=number)
+        repo.merge("feature", "Merge pull request\n\nPart-of: AUTH-001")
+        repo.publish()
+        return repo, pr
+
+    def config_sources(self, key: str, value: str) -> dict:
+        """name -> the environment that sets `key` from that outside source (a global file, a system file, the
+        environment's GIT_CONFIG_COUNT or GIT_CONFIG_PARAMETERS)."""
+        self.repos = getattr(self, "repos", 0) + 1
+        section, name = key.rsplit(".", 1)
+        conf = self.tmp / f"conf{self.repos}"
+        conf.write_text(f"[{section}]\n\t{name} = {value}\n")
+        return {"global file": {"GIT_CONFIG_GLOBAL": str(conf)},
+                "system file": {"GIT_CONFIG_NOSYSTEM": "0", "GIT_CONFIG_SYSTEM": str(conf)},
+                "GIT_CONFIG_COUNT": {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": key, "GIT_CONFIG_VALUE_0": value},
+                "GIT_CONFIG_PARAMETERS": {"GIT_CONFIG_PARAMETERS": f"'{key}={value}'"}}
+
+    def test_HARN_022_S3_breaker16_outside_config_never_hides_a_merges_own_change_ESC_396(self):
+        repo, pr = self.ours_flow(261)
+        self.assertIn("BREAKER_STALE", self.codes(self.check(pr, "--ci", env=PR_ENV)[1]))
+        self.assertIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
+        for key, value in (("log.diffMerges", "first-parent"), ("log.diffMerges", "combined"),
+                           ("merge.default", "union")):
+            for source, env in self.config_sources(key, value).items():
+                with self.subTest(key=key, value=value, source=source):
+                    self.assertIn("BREAKER_STALE", self.codes(self.check(pr, "--ci", env={**PR_ENV, **env})[1]))
+                    self.assertIn("BREAKER_STALE", self.codes(self.check(repo, env=env)[1]))
+
+    def test_HARN_022_S3_breaker16_repository_config_pins_or_fails_closed_ESC_396(self):
+        repo, pr = self.ours_flow(262)
+        for clone in (repo, pr):
+            clone.git("config", "log.diffMerges", "first-parent")
+            args, env = (("--ci",), PR_ENV) if clone is pr else ((), None)
+            with self.subTest(clone="pull request" if clone is pr else "trunk", key="log.diffMerges"):
+                self.assertIn("BREAKER_STALE", self.codes(self.check(clone, *args, env=env)[1]))
+            clone.git("config", "merge.default", "union")
+            with self.subTest(clone="pull request" if clone is pr else "trunk", key="merge.default"):
+                codes = self.codes(self.check(clone, *args, env=env)[1])
+                self.assertIn("BREAKER_STALE", codes)
+                self.assertIn("MERGE_CONFIG", codes)
+
+    def test_HARN_022_S1_breaker16_a_local_driver_config_says_so_on_a_clean_flow_ESC_396(self):
+        repo, _ = HarnRound15Test.grant_flow(self, False, False, 263)
+        self.assertNotIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
+        repo.git("config", "merge.ours.driver", "true")
+        codes = self.codes(self.check(repo)[1])
+        self.assertIn("MERGE_CONFIG", codes)
+        self.assertIn("BREAKER_STALE", codes)
+
+    def test_HARN_022_S3_breaker16_pathspec_switches_in_the_environment_change_nothing_ESC_396(self):
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"p{self.repos}")
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001"),
+                                                     self.MIG: "create table a();\n"})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.commit("docs: tweak\n\nNo-story: docs", {self.MIG: "drop table users;\n"})
+        repo.publish()
+        for var in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            with self.subTest(env=var):
+                self.assertIn("RISKY_NO_STORY", self.codes(self.check(repo, env={var: "1"})[1]))
+
+    def test_HARN_022_S3_breaker16_every_git_read_runs_hermetic_ESC_396(self):
+        """The system attributes file cannot be moved in a test: the environment every git read gets is checked."""
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("keelokit_ledger_hermetic", LEDGER)
+        module = importlib.util.module_from_spec(spec)
+        argv, sys.argv = sys.argv, ["ledger.py"]
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.argv = argv
+        dirty = {"GIT_CONFIG_PARAMETERS": "'merge.default=union'", "GIT_CONFIG_COUNT": "1",
+                 "GIT_CONFIG_KEY_0": "merge.default", "GIT_CONFIG_VALUE_0": "union", "GIT_CONFIG_SYSTEM": "/tmp/x",
+                 "GIT_CONFIG_GLOBAL": "/tmp/y", "GIT_LITERAL_PATHSPECS": "1", "GIT_ATTR_SOURCE": "HEAD"}
+        saved = {k: os.environ.get(k) for k in dirty}
+        os.environ.update(dirty)
+        try:
+            env = module.hermetic_env()
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        self.assertEqual((env.get("GIT_CONFIG_NOSYSTEM"), env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_ATTR_NOSYSTEM")),
+                         ("1", os.devnull, "1"))
+        for k in ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_LITERAL_PATHSPECS", "GIT_ATTR_SOURCE"):
+            self.assertNotIn(k, env)
+        pins = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertEqual({k: pins.get(k) for k in ("log.diffMerges", "merge.default", "merge.renormalize",
+                                                   "core.autocrlf")},
+                         {"log.diffMerges": "separate", "merge.default": "text", "merge.renormalize": "false",
+                          "core.autocrlf": "false"})
+
+    def test_HARN_022_S1_breaker16_a_risky_pattern_that_cannot_be_read_is_breaker_config_ESC_396(self):
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"r{self.repos}")
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001", touches=("db/x.sql",))})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: 'rounds = 3\npaths = ["db/[z-a]*.sql"]\n'})
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.publish()
+        r = repo.ledger("check", "--json")
+        self.assertNotIn("the ledger failed", r.stderr)
+        self.assertIn("BREAKER_CONFIG", [d["code"] for d in json.loads(r.stdout)["diffs"] if d["level"] == "error"])
+        self.assertNotIn("the ledger failed", repo.ledger("risky", "AUTH-001").stderr)
+
 if __name__ == "__main__":
     unittest.main()
