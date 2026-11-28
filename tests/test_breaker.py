@@ -1829,5 +1829,134 @@ class HarnRound8Test(BreakerCase):
         self.assertIn("BREAKER_STALE", pr)
 
 
+class HarnRound9Test(BreakerCase):
+    """HARN-022 cold breaker, round 9 (ESC-386..388): each finding reproduced as a failing test first, from the round's
+    probes; the decisions are the coordinator's."""
+
+    codes = HarnRound7Test.codes
+    sync_merge_flow = HarnRound7Test.sync_merge_flow
+    repo_with = HarnRound8Test.repo_with
+    unrelated = False
+
+    OLD, NEW = "apps/api/notes/seed.sql", "apps/api/migrations/0002_seed.sql"
+    SEED = "".join(f"insert into t values ({i});\n" for i in range(1, 21))
+
+    def rename_carry(self) -> tuple[list[str], list[str]]:
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"q{self.repos}")
+        self.stories = {"AUTH-001": story("AUTH-001", touches=(MIG,))}
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): self.stories["AUTH-001"], MIG: MIG_BASE})
+        repo.commit("chore: seed notes\n\nNo-story: docs", {self.OLD: self.SEED})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: MIG_TOML})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        fork = repo.sha()
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.git("mv", self.OLD, self.NEW)
+        repo.git("commit", "-q", "-m", "feat: AUTH-001 promote the seed\n\nPart-of: AUTH-001", when=repo.next_date())
+        w = repo.sha()
+        repo.commit("feat: AUTH-001\n\nDecided: x.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): self.stories["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, w)})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge pull request #1 from feature\n\nPart-of: AUTH-001", "feature",
+                 when=repo.next_date())
+        repo.publish()
+        self.assertEqual(self.codes(self.check(repo)[1]), [])
+        evil = self.SEED.replace("(20);", "(20);\nDROP TABLE users; -- EVIL")
+        repo.git("checkout", "-q", "-b", "docs", fork)
+        repo.commit("chore: tweak seed notes\n\nNo-story: docs", {self.OLD: evil})
+        repo.git("push", "-q", "origin", "docs")
+        repo.git("checkout", "-q", "main")
+        pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "docs", number=190),
+                                   "--ci", env=PR_ENV)[1])
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge pull request #2 from docs\n\nNo-story: docs", "docs",
+                 when=repo.next_date())
+        repo.publish()
+        return pr, self.codes(self.check(repo)[1])
+
+    def test_HARN_022_S3_breaker9_an_edit_carried_into_a_risky_file_by_a_rename_is_the_merges_own_ESC_386(self):
+        pr, trunk = self.rename_carry()
+        self.assertIn("RISKY_NO_STORY", pr)
+        self.assertIn("RISKY_NO_STORY", trunk)
+        self.assertTrue((self.tmp / f"q{self.repos}").exists())
+
+    def test_HARN_022_S1_breaker9_build_storys_sync_merge_stays_clean_ESC_386(self):
+        self.assertEqual(self.sync_merge_flow("Part-of: AUTH-001", 192), ([], []))
+
+    def dup_pair(self, recreated_first: bool, number: int) -> tuple[list[str], list[str]]:
+        repo = self.repo_with("AUTH-001", "AUTH-002", "AUTH-003")
+        mig = lambda: (repo.path / MIG).read_text()  # noqa: E731
+        w1 = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {MIG: MIG_BASE.replace("\n2\n", "\ntwo\n")})
+        repo.commit("feat: AUTH-001\n\nDecided: x.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): self.stories["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, w1)})
+        repo.publish()
+        base = repo.sha()
+        repo.git("checkout", "-q", "-b", "s1")
+        repo.commit("docs: side\n\nNo-story: docs", {"docs/s.md": "s\n"})
+        repo.git("checkout", "-q", "-b", "b2", base)
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "s1", when=repo.next_date())
+        evil = mig().replace("\n25\n", "\n25 -- EVIL\n")
+        repo.write(MIG, evil)
+        repo.git("add", MIG)
+        repo.git("commit", "-q", "-m", "Merge s1\n\nPart-of: AUTH-002", when=repo.next_date())
+        other = repo.sha()
+        repo.commit("feat: AUTH-002\n\nDecided: x.\n\nStory: AUTH-002",
+                    {path_of("AUTH-002"): self.stories["AUTH-002"] + "\n## Breaker rounds\n" + round_line(1, other)})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge b2\n\nPart-of: AUTH-002", "b2", when=repo.next_date())
+        r = repo.commit("fix: remove the evil line\n\nPart-of: AUTH-003", {MIG: mig().replace("25 -- EVIL", "25")})
+        repo.commit("feat: AUTH-003\n\nDecided: x.\n\nStory: AUTH-003",
+                    {path_of("AUTH-003"): self.stories["AUTH-003"] + "\n## Breaker rounds\n" + round_line(1, r)})
+        repo.publish()
+        for n in range(400):
+            repo.git("checkout", "-q", "-B", "bh", base)
+            repo.git("merge", "-q", "--no-ff", "--no-commit", "s1", when=repo.next_date())
+            repo.write(MIG, evil)
+            repo.git("add", MIG)
+            repo.git("commit", "-q", "-m", f"Merge s1 ({n})\n\nPart-of: AUTH-001", when=repo.next_date())
+            if (repo.sha() < other) == recreated_first:
+                break
+        repo.git("push", "-q", "origin", "bh")
+        repo.git("checkout", "-q", "main")
+        pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "bh", number=number), "--ci",
+                                   env=PR_ENV)[1])
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge bh\n\nPart-of: AUTH-001", "bh", when=repo.next_date())
+        repo.publish()
+        return pr, self.codes(self.check(repo)[1])
+
+    def test_HARN_022_S3_breaker9_two_merges_with_one_tree_never_hide_each_other_ESC_387(self):
+        for first, number in ((True, 193), (False, 194)):
+            with self.subTest(recreated_first=first):
+                pr, trunk = self.dup_pair(first, number)
+                self.assertIn("RISKY_AFTER_CLOSE", pr)
+                self.assertIn("RISKY_AFTER_CLOSE", trunk)
+
+    def parallel_close(self, honest: bool) -> list[dict]:
+        repo = self.repo_with("AUTH-001")
+        base = repo.sha()
+        repo.git("checkout", "-q", "-b", "y")
+        repo.git("checkout", "-q", "main")
+        repo.git("checkout", "-q", "-b", "x")
+        w = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {MIG: MIG_BASE.replace("\n2\n", "\nEVIL\n")})
+        repo.commit("feat: AUTH-001\n\nDecided: x.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): self.stories["AUTH-001"] + "\n## Breaker rounds\n"
+                     + round_line(1, w if honest else base)})
+        repo.git("checkout", "-q", "y")
+        repo.commit("docs: AUTH-001 typo\n\nDecided: nothing.\n\nStory: AUTH-001", {"docs/typo.md": "t\n"})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge x\n\nPart-of: AUTH-001", "x", when=repo.next_date())
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge y\n\nPart-of: AUTH-001", "y", when=repo.next_date())
+        repo.publish()
+        return self.check(repo)[1]
+
+    def test_HARN_022_S1_breaker9_a_parallel_close_never_hides_what_the_first_close_reaches_ESC_388(self):
+        self.assertIn("BREAKER_STALE", self.codes(self.parallel_close(honest=False)))
+        found = [d["code"] for d in self.parallel_close(honest=True)]
+        self.assertNotIn("BREAKER_STALE", found)
+        self.assertNotIn("BREAKER_BAD_ENTRY", found)
+        self.assertNotIn("BREAKER_UNRESOLVED", found)
+
+
 if __name__ == "__main__":
     unittest.main()
