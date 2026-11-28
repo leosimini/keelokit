@@ -288,7 +288,10 @@ attributes file), so no `.gitattributes`, committed, added later or only in a wo
 `$GIT_DIR/info/attributes`, which no option switches off, makes every merge touching a risky path count
 (`MERGE_ATTRIBUTES`, a warning). Second known limitation, also fail-closed: a repository that merges a risky file
 with `merge=union` gets `BREAKER_STALE` on a sync merge git merged by that attribute; the same remedy applies.
-Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. Before or after (the
+Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. A pull request is judged as the trunk will be once it lands (the trunk check run on the merge result), so one that
+fixes a red trunk is green and one that leaves it red stays red. A round line is a record nobody verifies: its head
+covers whatever it reaches, another story's head included; the cold breaker and the person deciding at the cap
+are what make it honest. Before or after (the
 close, the rule's start) is the commit graph's call, never the order commits arrived on the trunk, which a
 fast-forward landing reorders: merge, fast-forward and rebase landings give one verdict. Every git read runs in
 one hermetic environment (`hermetic_env`): no system or global config, no config or pathspec switches from the

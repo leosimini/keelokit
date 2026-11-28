@@ -1600,7 +1600,9 @@ class HarnRound6Test(BreakerCase):
         self.assertEqual(len(stale), 1, "the trunk")
         self.assertIn(self.par[:12], stale[0]["detail"])
 
-    def test_HARN_022_S1_breaker6_a_decided_round_covers_only_what_its_head_saw_ESC_380(self):
+    def test_HARN_022_S1_breaker6_a_decided_round_covers_what_the_close_reaches_ESC_380_ESC_400(self):
+        """ESC-380 had a decided round cover only what its head saw. A person's Decision accepts the story as closed
+        (coordinator, 2026-11-28, ESC-400): it covers what the close reaches; what comes after the close does not."""
         repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))}, risky=RISKY_TOML + 'deciders = ["Leo"]\n')
         h = repo.commit("feat: work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
         late = repo.commit("feat: later\n\nPart-of: AUTH-001", {"db/migrations/0001.sql": "drop table users;\n"})
@@ -1608,9 +1610,7 @@ class HarnRound6Test(BreakerCase):
         repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {path_of("AUTH-001"): current + "\n## Breaker rounds\n"
                     + round_line(1, h, "1 finding · none") + "- Decision · Leo · 2026-11-28 · land as it is\n"})
         repo.publish()
-        stale = [d for d in self.check(repo)[1] if d["code"] == "BREAKER_STALE"]
-        self.assertEqual(len(stale), 1)
-        self.assertIn(late[:12], stale[0]["detail"])
+        self.assertEqual([d for d in self.check(repo)[1] if d["code"] == "BREAKER_STALE"], [])
 
 
 MIG = "apps/api/migrations/m.sql"
@@ -2375,8 +2375,13 @@ class HarnRound14Test(BreakerCase):
                 self.assertIn("RISKY_NO_STORY", trunk)
 
     def test_HARN_022_S1_breaker14_deleting_a_closed_storys_file_with_nothing_risky_gets_no_risky_error_ESC_393(self):
+        """A closed story's id stays known when its file goes (ESC-400): no RISKY_* for its earlier commits. The
+        pull request reads as the trunk will once it lands; the BREAKER_MISSING a closed story without its file gets is
+        older than HARN-022 and the trunk's too."""
         pr, trunk = self.deleting_pull_request("block", True, 243)
-        self.assertFalse([c for c in pr if c.startswith(("RISKY", "BREAKER"))], pr)
+        self.assertFalse([c for c in pr if c.startswith("RISKY")], pr)
+        breaker = lambda codes: [c for c in codes if c.startswith(("RISKY", "BREAKER"))]  # noqa: E731
+        self.assertEqual(breaker(pr), breaker(trunk))  # UNKNOWN_STORY is attribution's, on the trunk's commits
 
     def conflict_flow(self, notes: str, number: int) -> tuple[list[str], list[str]]:
         """build-story's flow: a round on the head, `git merge origin/main` with a hand-resolved conflict on the

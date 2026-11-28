@@ -3478,68 +3478,38 @@ def pull_request(trunk: str) -> bool:
     return event in ("pull_request", "pull_request_target") and os.environ.get("GITHUB_BASE_REF", trunk) == trunk
 
 
+def pull_request_head(ctx: dict) -> str | None:
+    """The checked-out HEAD (GitHub's merge of the branch into the trunk, refs/pull/N/merge) when it is not the
+    trunk's tip; else None."""
+    head = git_read(["rev-parse", "--verify", "-q", "HEAD^{commit}"], ok=(0, 1)).decode().strip()
+    return head if head and head != ctx["trunk_sha"] else None
+
+
+def merged_view(ctx: dict, head: str) -> dict:
+    """The trunk as it will be once the pull request at `head` lands: its commits before the trunk's, the graph of
+    both, the head's story files; the trunk's rules and `[ledger]` (never the pull request's own, ESC-312)."""
+    graph = read_graph(sorted({head, ctx["trunk_sha"]}))
+    own = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
+    return {**ctx, "trunk_sha": head, "graph": graph, "log": own + ctx["log"],
+            "stories": read_stories(head, ctx["cfg"])[0], "merged": True, "base_sha": ctx["trunk_sha"],
+            "brought": {c["sha"] for c in own}}
+
+
 def pull_request_diffs(state: dict, ctx: dict) -> list[dict]:
     """A pull request's commits, as they would reach the trunk: those the checked-out HEAD (GitHub's merge of the
     branch into the trunk, refs/pull/N/merge) reaches and the trunk does not. That merge stands for the one GitHub
-    makes, attributed when what it brings is; a sync merge of the trunk into the branch brings nothing new."""
-    head = git_read(["rev-parse", "--verify", "-q", "HEAD^{commit}"], ok=(0, 1)).decode().strip()
-    if not head or head == ctx["trunk_sha"]:
+    makes, attributed when what it brings is; a sync merge of the trunk into the branch brings nothing new. Its breaker
+    verdict is the merge result's (trunk_breaker_diffs on merged_view)."""
+    head = pull_request_head(ctx)
+    if head is None:
         return []
-    breaker = pull_request_breaker(ctx, head)
     rctx = range_ctx(state, ctx["cfg"], head, [ctx["trunk_sha"]])
     if rctx is None:
-        return breaker
+        return []
     if cut_reason(rctx["graph"], is_shallow() is not False):
         return [{"level": "error", "code": "HISTORY_INCOMPLETE",
                  "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
-    return attribution_diffs(rctx, rctx["log"], on_trunk=False) + breaker
-
-
-def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
-    """HARN-021: the risky stories a pull request closes, judged by the trunk's risky.toml (or --rules-ref's) and
-    the trunk's committed `[ledger]` (where stories live, how ids are read), never the pull request's own (ESC-312);
-    the story files as the pull request leaves them, else as the trunk has them. Every commit the trunk lacks counts:
-    the rule already holds on the trunk."""
-    rules = ctx.get("risky")
-    if rules is None:
-        if not rule_adds(ctx["trunk_sha"]):
-            return []
-        rules = removed_rules()  # the trunk already lost it: the trunk's check says so; this pull request is judged
-    cfg = read_config(committed_state(ctx["trunk_sha"]))
-    graph = read_graph(sorted({head, ctx["trunk_sha"]}))
-    if cut_reason(graph, is_shallow() is not False):
-        return [{"level": "error", "code": "HISTORY_INCOMPLETE",
-                 "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
-    log = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
-    base = read_stories(ctx["trunk_sha"], cfg)[0]
-    at_head = read_stories(head, cfg)[0]
-    stories = {s["id"]: s for s in base}
-    stories.update({s["id"]: s for s in at_head})
-    # The ids a story file names at the head: what the trunk holds once this lands, never the union with the trunk's
-    # (a pull request that deletes a story file knows no such story, ESC-393).
-    known = {s["id"] for s in at_head}
-    hits = risky_commits(rules, head, [])
-    own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
-    found = risky_no_story(log, hits, own, known)
-    # BREAKER_STALE reads the trunk's own-change merges too, as the trunk's check does (ESC-385)
-    own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
-    found = merge_notes() + found  # the notes of both calls
-    every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
-    # The trunk commits of every story closed at the pull request's head are judged against its closes too: a parallel
-    # delivery the close does not reach, a close revived by a revert, a round line added: the pull request reads them
-    # as the trunk will once it lands (ESC-398, ESC-399).
-    closing_here = {sid for c in every for sid in c["story"]}
-    starts, _ = breaker_start(ctx, rules)
-    held = set(first_reach(ctx["graph"], starts)) if starts else set()
-    trunk_range = since_range(ctx["cfg"], ctx["log"], ctx["graph"])
-    beside = [c for c in (ctx["log"] if trunk_range is None else trunk_range)
-              if c["sha"] not in held and closing_here & set(c["story"] + c["part_of"])]
-    found += risky_after_close(log + beside, every, graph, hits, own_everywhere, list(stories.values()), rules,
-                               known)
-    earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
-    return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
-                                 config_diffs=False, hits=hits, earlier=earlier, merges=own_everywhere,
-                                 )
+    return attribution_diffs(rctx, rctx["log"], on_trunk=False)
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -3549,8 +3519,13 @@ def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]
     diffs = list(ctx["facts"]["diffs"])
     if ctx["reason"] is None:
         diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
-        diffs += trunk_breaker_diffs(ctx)
-        if ci and pull_request(trunk_name(state)):
+        in_pull_request = ci and pull_request(trunk_name(state))
+        head = pull_request_head(ctx) if in_pull_request else None
+        # A pull request is judged as the trunk will be once it lands: the trunk check run on the merge result (its
+        # commits and the trunk's, the head's story files, rounds and closes), so a pull request that fixes a red trunk
+        # is green and one that leaves it red stays red (ESC-400).
+        diffs += trunk_breaker_diffs(merged_view(ctx, head) if head else ctx)
+        if in_pull_request:
             diffs += pull_request_diffs(state, ctx)
     if ci:
         diffs = [{**d, "level": "error"} if d["code"] == "HISTORY_INCOMPLETE" else d for d in diffs]
@@ -3874,8 +3849,11 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
     closing: dict[str, str] = {}
     latest: dict[str, str] = {}  # the last live Story: commit
     every_close: dict[str, list[str]] = {}  # every live Story: commit: what a round's head must be reached by
+    ever_close: dict[str, list[str]] = {}  # every close ever made, reverted too: what orders before and after
     naming: dict[str, list[str]] = {}
     for c in reversed(in_range):  # oldest first
+        for sid in c["story"]:
+            ever_close.setdefault(sid, []).append(c["sha"])
         if not reverted.get(c["sha"], False):
             for sid in c["story"]:
                 closing.setdefault(sid, c["sha"])
@@ -3955,10 +3933,16 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
             # (ESC-376); the close itself is one of them (ESC-377). What descends from the close is RISKY_AFTER_CLOSE's.
             # The graph decides, never the order commits arrived on the trunk, which a fast-forward reorders (ESC-398).
             seen = reach_until(graph, [last[2]], set()) if last[2] in graph else set()
-            minimal, ancestors = first_closes(graph, every_close[sid])
+            # A reverted close still orders what came after it (ESC-400)
+            minimal, ancestors = first_closes(graph, ever_close[sid])
             firsts = set(minimal)
             before_firsts = set().union(*(ancestors[c] for c in minimal))
             stop = before_firsts - firsts
+            if not last[3]:
+                # A person's Decision accepts the story as closed: it covers what every minimal close reaches, the
+                # fixes after the decided round's head included; what comes after the close still needs a re-close and
+                # a valid round (ESC-400).
+                seen |= set.intersection(*(ancestors[c] for c in minimal))
 
             def descends(x: str) -> bool:
                 """x comes after a first close in the graph (that close is its ancestor): RISKY_AFTER_CLOSE's."""
@@ -4354,12 +4338,13 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
     covers nothing new, and renaming the story file moves nothing (ESC-369). A revert gets no exemption: a revert of a
     risky change is itself a risky change (ESC-383); what it really reverts counts as reverted (ESC-374, ESC-382)."""
     reverted = revert_status(log, graph)
-    closes: dict[str, list[str]] = {}
+    closes: dict[str, list[str]] = {}  # the live closes: the story is closed
+    ever: dict[str, list[str]] = {}  # every close ever made, reverted too: what orders before and after (ESC-400)
     for c in log:
-        if reverted.get(c["sha"], False):
-            continue
         for sid in c["story"]:
-            closes.setdefault(sid, []).append(c["sha"])
+            ever.setdefault(sid, []).append(c["sha"])
+            if not reverted.get(c["sha"], False):
+                closes.setdefault(sid, []).append(c["sha"])
     last_round: dict[str, tuple] = {}
     for s in stories:
         for v in [s, *s.get("copies", [])]:
@@ -4375,7 +4360,8 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
         if sid not in before:
             # Before the close is what EVERY minimal close reaches: concurrent closes (a parallel re-close forked before
             # the close, ESC-399) leave only their common ancestry, which fails closed.
-            firsts, ancestors = first_closes(graph, closes[sid])
+            # A reverted close still counts: reverting a close never moves what came after it before it (ESC-400)
+            firsts, ancestors = first_closes(graph, ever[sid])
             reached = [ancestors[c] for c in firsts]
             before[sid] = set.intersection(*reached) if reached else set()
         return before[sid]
@@ -4491,9 +4477,13 @@ def breaker_start(ctx: dict, rules: dict) -> tuple[list[str], list[dict]]:
 def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     """BREAKER_* for the trunk: the risky stories closed after the rule holds (the first commit that brought
     risky.toml, or its `since`; and `[ledger] since` when set), judged by the committed risky.toml (`--rules-ref`'s when given)."""
+    if ctx.get("merged") and cut_reason(ctx["graph"], is_shallow() is not False):
+        return [{"level": "error", "code": "HISTORY_INCOMPLETE",
+                 "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
     rules = ctx.get("risky")
     if rules is None:
-        if not rule_adds(ctx["trunk_sha"]):
+        # the trunk's own history decides: a pull request that brings risky.toml first is not judged by it (ESC-312)
+        if not rule_adds(ctx.get("base_sha", ctx["trunk_sha"])):
             return []
         rules = removed_rules()  # deleting risky.toml never turns the rule off (ESC-331)
         diffs0 = [{"level": "error", "code": "BREAKER_CONFIG", "detail": f"{rules['problem']}; every story closed "
@@ -4504,6 +4494,11 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     # that brought risky.toml (ESC-313): attribution may be optional there, the breaker rounds are not.
     in_range = since_range(ctx["cfg"], ctx["log"], ctx["graph"])
     in_range = ctx["log"] if in_range is None else in_range
+    if ctx.get("brought"):
+        # every commit a pull request brings counts, whatever `since` says: the rule already holds on the trunk
+        # (ESC-312); its own `[ledger] since` moves nothing
+        kept = {c["sha"] for c in in_range} | ctx["brought"]
+        in_range = [c for c in ctx["log"] if c["sha"] in kept]
     starts, diffs = breaker_start(ctx, rules)
     if starts:
         # Exempt only what was on the trunk before the rule: an ancestor of the add (or of its `since`). Whatever else
@@ -4512,9 +4507,11 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
         in_range = [c for c in in_range if c["sha"] not in held]
     hits = risky_commits(rules, ctx["trunk_sha"], [])
     own = merge_own_hits(rules, ctx["trunk_sha"], [])
-    diffs += merge_notes() + risky_no_story(in_range, hits, own, {s["id"] for s in ctx["stories"]})
-    arrival, order = ctx["placed"]
-    diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, ctx["stories"], rules)
+    # A known id names a story file here, or a story that was closed (a Story: commit): archiving a closed story's file
+    # makes none of its commits storyless, while an id that never had either is no story (ESC-392, ESC-400)
+    known = {s["id"] for s in ctx["stories"]} | {sid for c in ctx["log"] for sid in c["story"]}
+    diffs += merge_notes() + risky_no_story(in_range, hits, own, known)
+    diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, ctx["stories"], rules, known)
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))

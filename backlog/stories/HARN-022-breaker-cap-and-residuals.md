@@ -322,7 +322,7 @@ below.
   close is what every minimal close reaches, the adds are read as commit ids only, a pull request judges every story
   closed at its head; HARN-021's uncovered post-close fixes are true positives, to be covered by HARN-022's clean round
   (option a).
-- Round 20 · head 00f5a9e2dc3492279c3231457685ef00a0612100 · 5 findings (4 MEDIUM, 1 LOW), not fixed
+- Round 20 · head 00f5a9e2dc3492279c3231457685ef00a0612100 · 5 findings (4 MEDIUM, 1 LOW), three fixed (ESC-400), one moved to HARN-025 (pre-existing), the LOW to HARN-023
   A new agent, cold, scratch clones only, told the accepted limitations, the threat model and its severity rule, the
   known HARN-024 and ESC-318 change, and the planned HARN-021 coverage entry; each MEDIUM finding run by the builder
   too, on fresh clones. Reproduced: (MEDIUM) a Decision to "land as it is" at the cap always gives BREAKER_STALE once
@@ -337,4 +337,7 @@ below.
   re-closes covers its own risky change when the last round is not resolved; (LOW, to HARN-023) a squash-landed
   re-close is RISKY_AFTER_CLOSE. Held: the HARN-021 plan on the trunk (all three errors and the UNRESOLVED clear), the
   same mechanism abused across stories (equivalent to the accepted unverified round line), round 19's fixes,
-  rule_adds, close ordering. The builder stops here: the coordinator decides.
+  rule_adds, close ordering. The builder stopped; the coordinator decided: a pull request is judged as the trunk
+  will be (the merge result), a reverted close still orders, a Decision covers what the close reaches; tightening
+  risky.toml moved to HARN-025 (pre-existing); from now on a finding blocks only in code this story added or changed,
+  or a regression it causes.
