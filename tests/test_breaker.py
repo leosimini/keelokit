@@ -2324,5 +2324,104 @@ class HarnRound13Test(BreakerCase):
                     self.assertIn(code, [d["code"] for d in diffs if d["level"] == "error"])
                     self.assertNotEqual(rc, 0)
 
+
+class HarnRound14Test(BreakerCase):
+    """HARN-022 cold breaker, round 14 (ESC-393): from the round's probes. A pull request knows the story ids its head
+    has, what the trunk holds after the merge, never the union with the trunk's; the control-character fallback counts
+    a conflicted path only when it is risky."""
+
+    codes = HarnRound7Test.codes
+    MIGRATION = "db/migrations/0001.sql"
+
+    def deleting_pull_request(self, enforce: str, closed: bool, number: int) -> tuple[list[str], list[str]]:
+        """A pull request that deletes AUTH-002's story file: with a risky change under `Part-of: AUTH-002` when the
+        story is open, or, when `closed`, after AUTH-002 closed, touching nothing risky. The pull request's error
+        codes and the trunk's after it lands."""
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"d{self.repos}")
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001"),
+                                                     path_of("AUTH-002"): story("AUTH-002", touches=(self.MIGRATION,))})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "{enforce}"\n')
+        if closed:
+            head = repo.commit("feat: two\n\nPart-of: AUTH-002", {self.MIGRATION: "create table b();\n"})
+            cur = (repo.path / path_of("AUTH-002")).read_text()
+            repo.commit("feat: AUTH-002\n\nDone.\n\nStory: AUTH-002",
+                        {path_of("AUTH-002"): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.git("rm", "-q", path_of("AUTH-002"))
+        if closed:
+            repo.commit("docs: archive AUTH-002\n\nNo-story: docs", {"docs/archive.md": "AUTH-002\n"})
+        else:
+            repo.commit("feat: unreviewed migration\n\nPart-of: AUTH-002", {self.MIGRATION: "drop table users;\n"})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        pr = [d["code"] for d in self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=number),
+                                            "--ci", env=PR_ENV)[1] if d["level"] == "error"]
+        repo.merge("feature", "Merge pull request\n\nNo-story: docs" if closed else
+                   "Merge pull request\n\nPart-of: AUTH-002")
+        repo.publish()
+        return pr, [d["code"] for d in self.check(repo)[1] if d["level"] == "error"]
+
+    def test_HARN_022_S3_breaker14_a_pull_request_that_deletes_a_story_file_knows_no_such_story_ESC_393(self):
+        for enforce, number in (("block", 241), ("warn", 242)):
+            with self.subTest(enforce=enforce):
+                pr, trunk = self.deleting_pull_request(enforce, False, number)
+                self.assertIn("RISKY_NO_STORY", pr)
+                self.assertIn("RISKY_NO_STORY", trunk)
+
+    def test_HARN_022_S1_breaker14_deleting_a_closed_storys_file_with_nothing_risky_gets_no_risky_error_ESC_393(self):
+        pr, trunk = self.deleting_pull_request("block", True, 243)
+        self.assertFalse([c for c in pr if c.startswith(("RISKY", "BREAKER"))], pr)
+
+    def conflict_flow(self, notes: str, number: int) -> tuple[list[str], list[str]]:
+        """build-story's flow: a round on the head, `git merge origin/main` with a hand-resolved conflict on the
+        non-risky `notes` while main changed a risky file under another closed story, then Story:. The BREAKER_ and
+        RISKY_ codes of the pull request and of the trunk."""
+        m1, m2 = "db/migrations/0001.sql", "db/migrations/0002.sql"
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"c{self.repos}")
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001", touches=(m1,)),
+                                                     path_of("AUTH-002"): story("AUTH-002", touches=(m2,)),
+                                                     notes: "base\n"})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.state(f'[ledger]\nsince = "{since}"\n')
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "feature")
+        head = repo.commit("feat: work\n\nPart-of: AUTH-001", {m1: "create table a();\n", notes: "feature\n"})
+        repo.git("checkout", "-q", "main")
+        h2 = repo.commit("feat: two\n\nPart-of: AUTH-002", {m2: "create table b();\n"})
+        cur = (repo.path / path_of("AUTH-002")).read_text()
+        repo.commit("feat: AUTH-002\n\nDone.\n\nStory: AUTH-002",
+                    {path_of("AUTH-002"): cur + "\n## Breaker rounds\n" + round_line(1, h2)})
+        repo.commit("docs: notes\n\nNo-story: docs", {notes: "main\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge origin/main\n\nPart-of: AUTH-001", "origin/main",
+                 check=False, when=repo.next_date())
+        repo.write(notes, "feature and main\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "--no-edit", when=repo.next_date())
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        keep = ("BREAKER", "RISKY")
+        pr = [c for c in self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "feature",
+                                                                                   number=number), "--ci",
+                                               env=PR_ENV)[1]) if c.startswith(keep)]
+        repo.merge("feature", "Merge pull request\n\nPart-of: AUTH-001")
+        repo.publish()
+        return pr, [c for c in self.codes(self.check(repo)[1]) if c.startswith(keep)]
+
+    def test_HARN_022_S1_breaker14_a_control_character_in_a_non_risky_conflicted_path_is_no_own_change_ESC_393(self):
+        for notes, number in (("docs/notes.txt", 244), ("docs/notes\tdraft.txt", 245), ("docs/notes\ndraft.txt", 246)):
+            with self.subTest(notes=notes):
+                self.assertEqual(self.conflict_flow(notes, number), ([], []))
+
 if __name__ == "__main__":
     unittest.main()
