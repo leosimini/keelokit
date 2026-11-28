@@ -148,3 +148,9 @@ below.
   entry (and the message says it "left findings"). Held: the merge walk against base on 5000 random graphs, the copies,
   the screen on a non-UTF-8 id. Past the cap and not clean, so the builder stopped; the coordinator decided each fix
   (merge main after the rounds instead of rebasing; STALE covers the Story: commit; clearer messages), then round 6.
+- Round 6 · head 8be6b367759ee7f85a4e41e6c1d81fbb461d177a · 2 findings: ESC-379 (HIGH), ESC-380 · fixed in the commit after 023eaf6
+  A new agent, cold, 9 attacks. Reproduced: a risky commit of the story that landed before the close outside its
+  ancestry (a parallel delivery) was judged by nothing; a round resolved by a Decision covered risky commits made after
+  its head. Held: a story built exactly as build-story says, checked as a pull request and on the trunk; reverts of
+  every kind; multi-id, unknown and lowercase ids; 36 touch spellings; the merge walk against base on 3000 random
+  graphs; 14 hostile characters through every output; one authors call in show.

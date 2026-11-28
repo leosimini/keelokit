@@ -3314,7 +3314,8 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
                                list(stories.values()), rules)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
-                                 config_diffs=False, hits=hits, earlier=earlier, merges=own)
+                                 config_diffs=False, hits=hits, earlier=earlier, merges=own,
+                                 landing=lambda sha: order[arrival[sha]] if sha in arrival else len(order))
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -3623,7 +3624,7 @@ def missing_story(sid: str) -> dict:
 
 def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], graph: dict, stories: list[dict],
                   config_diffs: bool = True, hits: set = frozenset(), earlier: list[dict] = (),
-                  merges: set = frozenset()) -> list[dict]:
+                  merges: set = frozenset(), landing=None) -> list[dict]:
     """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them, every
     copy of an id). What makes a story risky also comes from `earlier` versions of its file (the trunk's before the
     change under judgment: rewriting the front matter while closing opts nothing out, ESC-327) and from every commit
@@ -3708,20 +3709,25 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
         # The last round decides, whatever its number (HARN-022): clean, the story is resolved, past the cap too. The
         # cap is where the build stops and asks: findings left there wait for a person's Decision.
         last_at, last = rounds[-1]
-        if last[3]:
-            # The clean last round saw the code that lands: no risky commit of the story that the close reaches may
-            # come after its head (ESC-371).
-            # A merge counts by its own resolution (merges), never by what a path-limited log lists for it (ESC-376);
-            # the close itself is a commit the round must reach (ESC-377).
-            seen = reach_until(graph, [last[2]], set())
+        decided = any(i > last_at for i in decisions)
+        if last[3] or decided:
+            # The last round, clean or decided by a person, covers what its head saw: every risky commit of the story
+            # that came before the close — the close reaches it, or it landed earlier (a parallel delivery, ESC-379) —
+            # must be reached by that head (ESC-371, ESC-380). A merge counts by its own resolution (ESC-376); the
+            # close itself is one of them (ESC-377); what lands after the close is RISKY_AFTER_CLOSE's.
+            seen = reach_until(graph, [last[2]], set()) if last[2] in graph else set()
+            first = landing(closing[sid]) if landing else None
             late = [x for x in naming.get(sid, ())
-                    if (x in merges if len(graph.get(x, ())) > 1 else x in hits) and x in close_reach
+                    if not reverted.get(x, False)
+                    and (x in merges if len(graph.get(x, ())) > 1 else x in hits)
+                    and (x in close_reach or first is not None and landing(x) < first)
                     and x not in seen]
             if late:
+                what = "the last clean round" if last[3] else "the last round, which a person decided"
                 diffs.append({"level": "error", "code": "BREAKER_STALE", "detail": (
                     f"{sid}: risky commit {short(late[0])}{f' (and {len(late) - 1} more)' if len(late) > 1 else ''} "
-                    f"landed after the last clean round (head {short(last[2])}) in {story['path']}; run a round on "
-                    "the code that lands, and record its head")})
+                    f"is not reached by {what} (head {short(last[2])}) in {story['path']}; run a round on the code "
+                    "that lands, and record its head")})
         if not last[3] and not any(i > last_at for i in decisions):
             invalid = any(e[1] == last[1] for e, _ in wrong)
             if len(rounds) >= rules["rounds"]:
@@ -3986,7 +3992,7 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
     return diffs0 + diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"], hits=hits,
-                                          earlier=earlier, merges=own)
+                                          earlier=earlier, merges=own, landing=lambda sha: order[arrival[sha]])
 
 
 def work_tree_story(cfg: dict, sid: str) -> dict | None:

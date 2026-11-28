@@ -168,7 +168,7 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
 | `RISKY_NO_STORY` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path and names no story; a `No-story: release` commit touching only the release files excepted) | error | `check` (a pull request too) |
 | `RISKY_AFTER_CLOSE` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path under `Story:`/`Part-of:` of stories all closed by a live `Story:` commit of an earlier landing; commits the close reaches, commits the commit recording the resolved story's last round reaches, and reverts excepted) | error | `check` (a pull request too) |
-| `BREAKER_STALE` (a risky commit of the story landed after its last clean round's head and before its close) | error | `check` (a pull request too) |
+| `BREAKER_STALE` (a risky commit of the story that came before its close — the close reaches it, or it landed earlier — is not reached by the head of its last round, clean or decided by a person) | error | `check` (a pull request too) |
 | `BREAKER_UNRESOLVED` (the last round left findings with no person's Decision after it; the last round decides, past the cap too), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
@@ -207,8 +207,9 @@ copying the file moves nothing.
 A round's head (full, or 7 to 63 hex digits that resolve uniquely) must be a commit the story's close reaches: the head
 the breaker attacked, on the branch that closes it. Any other head is `BREAKER_BAD_ENTRY` and that round counts as not
 clean. When the last round is clean, a risky commit of the story that the close reaches and the round's head does not
-(it landed after the round, the `Story:` commit itself included; a merge counts by its own resolution) is
-`BREAKER_STALE` (error): run a round on the code that lands. A branch rewritten as it lands (a rebase or a squash)
+(it landed after the round, the `Story:` commit itself included, or it landed on the trunk before the close outside
+its branch, as a parallel delivery does; a merge counts by its own resolution) is `BREAKER_STALE` (error); a last round
+a person decided covers only what its head saw too: run a round on the code that lands. A branch rewritten as it lands (a rebase or a squash)
 rewrites the heads away, so its rounds count as not clean on the trunk (warnings): merge `origin/main` after the
 rounds and land with a merge commit. After the close, a change is covered only by a new round whose head reaches it,
 recorded by a re-close (a later `Story:` commit); a revert counts only as the exact inverse of a commit that exists
