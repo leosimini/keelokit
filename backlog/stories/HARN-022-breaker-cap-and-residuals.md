@@ -248,3 +248,15 @@ below.
   zero-width forms, the mixed trailer, a closed story's file deleted after its close, the full test_breaker suite. The
   builder stopped; the coordinator decided: a pull request knows the story ids at its head only, and the LOW finding
   is fixed here too (only a risky conflicted path counts; the globs classify any name).
+- Round 15 · head 4629bef8ec1fb6e3cc4d8a22672d89e4af68c065 · 2 findings (1 HIGH, 1 MEDIUM), not fixed
+  A new agent, cold, scratch clones only, told the accepted limitation; each finding run by the builder too.
+  Reproduced: (HIGH) `git merge-tree` reads `.gitattributes` from the work tree, and `.gitattributes` is no risky
+  path: a `No-story: docs` commit adding `**/migrations/** merge=union` makes a conflict on a risky file merge
+  "cleanly", so build-story's sync merge that unions a reviewed fix back into the old line passes the pull request and
+  the trunk, and a BREAKER_STALE already on the trunk clears once the file is committed later, or only sits in a local
+  work tree; (MEDIUM) a conflicted path counts only when `glob_regex` matches a risky glob, but git's `:(glob)`
+  pathspecs read a directory (`infra`), a trailing slash (`infra/`) and a class (`infra/[a-z]*.bin`) more widely:
+  `risky_commits` sees `infra/blob.bin` as risky while a sync merge resolving a binary conflict on it by keeping the
+  branch's bytes (dropping main's reviewed fix) is not counted, on the trunk and in a pull request. Held: the pull
+  request's known ids, re.DOTALL, risky conflicted paths only, directory renames, non-UTF-8 conflicted names, the full
+  test_breaker suite. The builder stops here: the coordinator decides.
