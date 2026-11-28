@@ -26,6 +26,12 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
   `hash-object` and a temp directory per risky path that differs from both parents, per merge, on every check over the
   whole history: one clean sync merge of 600 risky files edited on both sides took 5.0 s (0.2 s before), 2000 took
   15.5 s. Probe: /tmp/breaker11-HARN-022/probes/p5_perf.py (round 11).
+- `raw_pair_states` (like `pair_diffs`) tries every header for each entry, entries times headers, though the headers
+  come in input order: 4000 merges take 10.5 s on synthetic output. Probe:
+  /tmp/breaker12-HARN-022/probes/p3_pair_parse_cost.py (round 12).
+- The risky rule matches paths, not what is on disk: a `No-story` directory symlink `apps/api/migrations ->
+  ../../sql` and a later `No-story` write to `sql/0001.sql` change a migration with no RISKY_* (older than HARN-022).
+  Probe: /tmp/breaker12-HARN-022/probes/p2_symlink_dir.py (round 12).
 
 Does NOT do: anything HARN-022's open HIGH and MEDIUM findings need (they are HARN-022's, by the coordinator's call).
 
