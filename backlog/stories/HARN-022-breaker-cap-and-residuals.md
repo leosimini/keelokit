@@ -154,3 +154,15 @@ below.
   its head. Held: a story built exactly as build-story says, checked as a pull request and on the trunk; reverts of
   every kind; multi-id, unknown and lowercase ids; 36 touch spellings; the merge walk against base on 3000 random
   graphs; 14 hostile characters through every output; one authors call in show.
+- Round 7 · head ec74f2f1c8bf480168fff2f68064138caa78326a · 3 findings (2 HIGH, 1 MEDIUM), not fixed; 2 LOW to HARN-023
+  A new agent, cold, 9 attacks, each finding run by the builder too. Reproduced: (HIGH) build-story's own flow — a
+  round, then `git merge --no-ff origin/main`, then Story: — is BREAKER_STALE (with a trailer) or RISKY_NO_STORY
+  (without one, at base too) whenever another closed story changed the same risky file on main: merge_own_hits reads
+  `git log --cc --name-only`, which names files merged cleanly from both sides; (MEDIUM) a merge whose resolution takes
+  the other parent's version of a risky file undoes a reviewed fix unseen (the same `--cc`, the other way round);
+  (HIGH) a `merge -s ours` of a risky post-close commit, landed and then reverted, makes revert_status count that commit
+  as reverted while its change stays on the trunk, hiding RISKY_AFTER_CLOSE. LOW: a Decision after a squash landing
+  turns the warnings into BREAKER_STALE (its head resolves to nothing); parse_trailers and breaker_record still split
+  with str.splitlines (a U+2028 forges a Swarm-Task trailer). Held: 34 touches × 8 patterns, a real revert of reviewed
+  work, git_lines, the screen on every path, attributing_merges, the authors reuse. The builder stops here: the
+  coordinator decides.
