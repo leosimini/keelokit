@@ -262,3 +262,14 @@ below.
   test_breaker suite. The builder stopped; the coordinator decided: git's merge read with no attributes (a
   non-empty info/attributes fails closed), `.gitattributes` always risky, a union-merged sync merge accepted as a
   second fail-closed limitation, and every risky-path verdict from git's own pathspec.
+- Round 16 · head 112702f0f96538049ee48d245b15ce254563e79f · 5 findings (2 MEDIUM, 1 LOW-MEDIUM, 2 LOW), not fixed
+  A new agent, cold, scratch clones only, told both accepted limitations, pointed at git configuration and path
+  classification; the MEDIUM and LOW-MEDIUM findings run by the builder too. Reproduced: (MEDIUM) `log.diffMerges`
+  (first-parent, combined, dense-combined) changes what `git log -m` lists, so merge_own_hits never sees a sync
+  merge that keeps the branch's version of a risky file: the pull request and the trunk pass where the baseline is
+  BREAKER_STALE (`rule_adds` reads `-m` the same way); (MEDIUM) the system attributes file (`/etc/gitattributes`)
+  still steers git's merge with no warning (no `GIT_ATTR_NOSYSTEM`); (LOW-MEDIUM) `merge.default` from config or
+  `GIT_CONFIG_COUNT` turns an own-change merge into a clean one; (LOW, to HARN-023, older than this story)
+  `GIT_LITERAL_PATHSPECS=1` turns every risky pathspec literal; (LOW, to HARN-023) a reversed class range in
+  risky.toml crashes `check`. Held: round 15's fixes, `**/.gitattributes` matching, git's pathspec in every verdict
+  path, the parents' trees in risky_paths_of, the two copies. The builder stops here: the coordinator decides.
