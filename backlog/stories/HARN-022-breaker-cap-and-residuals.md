@@ -304,3 +304,18 @@ below.
   only), renames off in local config (stricter). The builder stopped; the coordinator decided: before or after
   comes from the graph (a commit is after a close no first close reaches; only an ancestor of the add is before the
   rule), and the harness-upgrade finding is moved to HARN-024 (pre-existing, blocks release).
+- Round 19 · head 77e2672f0c7077c458bc80761d2269ffa1ce9724 · 6 findings (3 MEDIUM, 3 LOW), not fixed
+  A new agent, cold, scratch clones only, told the accepted limitations, the threat model and its severity rule, and
+  that HARN-024 and the ESC-318 change are known; each MEDIUM finding run by the builder too, on fresh clones.
+  Reproduced: (MEDIUM, a regression of round 18) a branch forked before the close carries a risky `Part-of:` commit
+  and an empty `Story:` re-close and lands by merge: that re-close does not descend from the first close, so
+  `first_closes` counts it as a first close too, it reaches the risky commit, and with a last round not clean nothing
+  reports it, in the pull request and on the trunk; (MEDIUM, from round 16's `--diff-merges=separate`) `rule_adds`
+  reads `git log ... --diff-filter=A`, which now prints the added file's patch, and splits it into words, so a full
+  sha in a risky.toml comment becomes a rule start before the real add: BREAKER_MISSING and RISKY_NO_STORY on a
+  correct config; (MEDIUM, already in round 18's head) `beside` judges only stories the pull request closes with a
+  `Story:` trailer, so a pull request that brings a close back to life another way (a revert of the revert, a new
+  round line) passes and the trunk fails once it lands; (LOW, to HARN-023) concurrent adds judge stories before both;
+  (LOW, to HARN-023) the graph walks' cost; (LOW, to HARN-023) the message names the lowest sha. Held: convoys, ff and
+  merge sails, the clean-round control, re-closes needing a round, content-verified reverts, the pull request's subset
+  of the trunk otherwise, the full test_breaker suite. The builder stops here: the coordinator decides.

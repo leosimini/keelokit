@@ -39,6 +39,13 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
 - `release_only` exempts a `No-story: release` commit whose paths all end in `/package.json`, wherever they sit, so
   `db/migrations/package.json` or `.keelokit/bin/package.json` inside a risky glob lands with no RISKY_NO_STORY
   (older than HARN-022, from HARN-021). Probe: /tmp/breaker13-HARN-022/probes/p3_release_package_json.py (round 13).
+- With two independent adds of risky.toml there is no start (ESC-398, fail closed), so stories closed long before
+  both adds are judged too (BREAKER_MISSING), not only commits after either add. Probe:
+  /tmp/breaker19-HARN-022/probes/p3_concurrent_adds.py (round 19).
+- ESC-398's graph walks cost: about six full ancestry walks per risky closed story and one ancestry set per add (31k
+  commits, 600 risky stories: 17.9 s against 7.4 s before; 301 adds: 699 MB peak). Probes:
+  /tmp/breaker19-HARN-022/probes/p5_perf.py, p6_perf_adds.py (round 19).
+- RISKY_AFTER_CLOSE's detail names the lowest sha among the closes, not the first close (round 19).
 - On a case-insensitive filesystem a committed `.GITATTRIBUTES` steers git like `.gitattributes`, but the always-risky
   `**/.gitattributes` pathspec is case-sensitive (round 16, not reproduced on ext4).
 - `glob_regex` misreads POSIX classes (`[[:alpha:]]`), which touches may use; story risk by touches only (round 16).
