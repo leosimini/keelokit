@@ -2966,5 +2966,114 @@ class HarnRound18Test(BreakerCase):
                 self.assertEqual(len({tuple(v) for v in verdicts.values()}), 1, verdicts)
         self.assertEqual(self.proper("merge"), [])
 
+
+class HarnRound19Test(BreakerCase):
+    """HARN-022 cold breaker, round 19 (ESC-399): from the round's probes. Before the close is what every minimal close
+    reaches (closes that descend from no other close of the story); the rule's adds are read as commit ids only; a pull
+    request judges the trunk commits of every story closed at its head."""
+
+    def setup(self, risky: str = RISKY_TOML) -> tuple[GitRepo, str, str]:
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"c{self.repos}")
+        text = story("AUTH-001", touches=("scripts/verify.sh",))
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("AUTH-001"): text, "scripts/verify.sh": "exit 0\n"})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: risky})
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        return repo, since, text
+
+    def errors(self, repo: GitRepo, *args: str, env: dict | None = None) -> list[str]:
+        return sorted({d["code"] for d in self.check(repo, *args, env=env)[1] if d["level"] == "error"})
+
+    def parallel_reclose(self, fork_before: bool, number: int) -> tuple[list[str], list[str]]:
+        repo, _, text = self.setup()
+        repo.publish()
+        h = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        pre_close = repo.sha()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): text + "\n## Breaker rounds\n" + round_line(1, h, "1 finding: ESC-1 · fixed in x")})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "other", pre_close if fork_before else "main")
+        repo.commit("fix: drop users\n\nPart-of: AUTH-001", {"db/migrations/0001.sql": "drop table users;\n"})
+        repo.git("commit", "-q", "--allow-empty", "-m", "feat: AUTH-001 again\n\nDone.\n\nStory: AUTH-001",
+                 when=repo.next_date())
+        repo.git("push", "-q", "origin", "other")
+        repo.git("checkout", "-q", "main")
+        pr = self.errors(BreakerPullRequestTest.pull_request(self, repo, "other", number=number), "--ci", env=PR_ENV)
+        repo.merge("other", "Merge branch other")
+        repo.publish()
+        return pr, self.errors(repo)
+
+    def test_HARN_022_S3_breaker19_a_parallel_reclose_never_covers_a_change_after_the_close_ESC_399(self):
+        for fork_before, number in ((True, 291), (False, 292)):
+            with self.subTest(fork_before=fork_before):
+                pr, trunk = self.parallel_reclose(fork_before, number)
+                self.assertIn("RISKY_AFTER_CLOSE", pr)
+                self.assertIn("RISKY_AFTER_CLOSE", trunk)
+
+    def test_HARN_022_S1_breaker19_a_full_sha_in_a_risky_toml_comment_moves_no_start_ESC_399(self):
+        for full in (False, True):
+            with self.subTest(full_sha=full):
+                self.repos = getattr(self, "repos", 0) + 1
+                repo = GitRepo(self.tmp, name=f"s{self.repos}")
+                early = repo.commit("docs: plan\n\nNo-story: docs",
+                                    {path_of("AUTH-001"): story("AUTH-001", touches=("scripts/verify.sh",)),
+                                     "scripts/verify.sh": "exit 0\n"})
+                repo.state(f'[ledger]\nsince = "{early}"\nenforce = "block"\n')
+                repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+                repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001")  # closed before the rule
+                ref = early if full else early[:12]
+                harness(repo, "chore: risky stories\n\nNo-story: harness",
+                        {RISKY: f"# agreed in the review after {ref}\n" + RISKY_TOML})
+                repo.publish()
+                self.assertEqual(self.errors(repo), [])
+
+    def revert(self, repo: GitRepo, sha: str) -> str:
+        repo.git("revert", "--no-edit", sha, when=repo.next_date())
+        message = repo.git("log", "-1", "--format=%B").strip() + "\n\nPart-of: AUTH-001"
+        repo.git("commit", "-q", "--amend", "-m", message, when=repo.next_date())
+        return repo.sha()
+
+    def test_HARN_022_S3_breaker19_a_pull_request_reviving_a_close_by_a_revert_is_judged_ESC_399(self):
+        repo, _, text = self.setup()
+        h = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        c1 = repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                         {path_of("AUTH-001"): text + "\n## Breaker rounds\n" + round_line(1, h)})
+        undone = self.revert(repo, c1)
+        repo.commit("fix: more\n\nPart-of: AUTH-001", {"db/migrations/0001.sql": "drop table users;\n"})
+        repo.publish()
+        self.assertEqual(self.errors(repo), [])
+        repo.git("checkout", "-q", "-b", "reland")
+        self.revert(repo, undone)
+        repo.git("push", "-q", "origin", "reland")
+        repo.git("checkout", "-q", "main")
+        pr = self.errors(BreakerPullRequestTest.pull_request(self, repo, "reland", number=293), "--ci", env=PR_ENV)
+        repo.merge("reland", "Merge branch reland\n\nNo-story: docs")
+        repo.publish()
+        self.assertIn("RISKY_AFTER_CLOSE", self.errors(repo))
+        self.assertIn("RISKY_AFTER_CLOSE", pr)
+
+    def test_HARN_022_S3_breaker19_a_pull_request_that_adds_a_round_line_is_judged_ESC_399(self):
+        repo, _, text = self.setup()
+        h = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        r1 = "\n## Breaker rounds\n" + round_line(1, h)
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001", {path_of("AUTH-001"): text + r1})
+        y = repo.commit("fix: more\n\nPart-of: AUTH-001", {"db/migrations/0001.sql": "create table t;\n"})
+        r2 = r1 + round_line(2, y)
+        repo.commit("feat: AUTH-001 again\n\nDone.\n\nStory: AUTH-001", {path_of("AUTH-001"): text + r2})
+        repo.publish()
+        self.assertEqual(self.errors(repo), [])
+        repo.git("checkout", "-q", "-b", "round3")
+        repo.commit("docs: AUTH-001 round 3\n\nPart-of: AUTH-001",
+                    {path_of("AUTH-001"): text + r2 + round_line(3, y, "1 finding: ESC-9 · open")})
+        repo.git("push", "-q", "origin", "round3")
+        repo.git("checkout", "-q", "main")
+        pr = self.errors(BreakerPullRequestTest.pull_request(self, repo, "round3", number=294), "--ci", env=PR_ENV)
+        repo.merge("round3", "Merge branch round3\n\nPart-of: AUTH-001")
+        repo.publish()
+        trunk = self.errors(repo)
+        self.assertIn("RISKY_AFTER_CLOSE", trunk)
+        self.assertEqual(pr, trunk)
+
 if __name__ == "__main__":
     unittest.main()
