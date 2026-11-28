@@ -270,7 +270,9 @@ git's automatic merge of its parents (`git merge-tree`), so a clean sync merge o
 every parent's and that a rename could have filled (absent at the merge base or in a parent) is the merge's own change
 unless it equals a per-path 3-way merge with no rename detection (one side's change, or a clean text `git merge-file`),
 so no rename limit hides an edit; a file present at the base and in both parents is left to git's merge, with its
-modes, attributes and diff algorithm. Path names stay raw bytes; no single merge base fails closed. Known limitation,
+modes, attributes and diff algorithm. Path names stay raw bytes, and git output that carries them is read by
+position, never searched for text; a risky path with a control character in it makes the merge its own change. No
+single merge base fails closed. An id with no story file never counts as an open story. Known limitation,
 accepted as fail-closed: a clean sync merge across a reviewed rename from one risky path to another (main renamed
 the file this branch edited, or the other way round) reads as `BREAKER_STALE`, since the per-path merge does not
 follow renames; a fix must not depend on rename detection (rounds 9 and 10), and the remedy is a breaker round on

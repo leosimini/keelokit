@@ -3355,7 +3355,7 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     stories.update({s["id"]: s for s in read_stories(head, cfg)[0]})
     hits = risky_commits(rules, head, [])
     own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
-    found = risky_no_story(log, hits, own)
+    found = risky_no_story(log, hits, own, set(stories))
     # BREAKER_STALE reads the trunk's own-change merges too, as the trunk's check does (ESC-385)
     own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
@@ -3824,15 +3824,20 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
                     "--format=%x00%H %P", tip, *(["--not", *exclude] if exclude else []), "--", *spec]
                    ).decode(errors="replace")
     parents: dict[str, list[str]] = {}
+    controls: set[str] = set()
     for chunk in out.split("\0")[1:]:
         lines = [line for line in git_lines(chunk) if line.strip()]
         if len(lines) > 1:  # this parent's diff touches a risky path
             fields = lines[0].split()
             parents[fields[0]] = fields[1:]
+            if any(has_control(unquote_path(line)) for line in lines[1:]):
+                controls.add(fields[0])
     if not parents:
         return set()
     pairs = sorted(m for m, ps in parents.items() if len(ps) == 2)
-    found = {m for m, ps in parents.items() if len(ps) != 2}  # an octopus: fail closed
+    # An octopus fails closed; so does a risky path with a control character in it, which no parse can be trusted to
+    # place (ESC-391).
+    found = {m for m, ps in parents.items() if len(ps) != 2} | controls
     auto, conflicted = {}, {}
     try:
         # Unrelated histories merge like any other (an old import, ESC-384); a batch that fails is retried merge by
@@ -3859,9 +3864,11 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         trees = trees_of(pairs)
         if set(trees) != set(pairs):
             raise LedgerError("a merge's tree cannot be read here")
-        diff = git_read(["-c", "core.quotePath=false", "diff-tree", "--stdin", "-r", "--name-only", "-z", "--",
-                         *spec], "".join(f"{auto[m]} {trees[m]}\n" for m in pairs).encode()
-                        ).decode(errors="replace")
+        # Read by position (--raw entries start with ':', paths are NUL-ended): a path never poses as another pair's
+        # header (ESC-391).
+        keys = [(m, f"{auto[m]} {trees[m]}") for m in pairs]
+        own = raw_pair_states(git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev",
+                                        "--", *spec], "".join(f"{pair}\n" for _, pair in keys).encode()), keys)
     except LedgerError:
         if complete_history():
             return found | set(pairs)  # merge-tree missing (old git) or failing: every such merge counts (fail closed)
@@ -3869,42 +3876,45 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         # HARN-022 round 7; the CI's full clone decides, failing closed.
         return found | combined_diff_hits(spec, tip, exclude, set(pairs))
     patterns = [glob_regex(p) for p in rules["paths"]]
-    own: dict[str, list[str]] = {}
-    for m, paths in pair_diffs(diff, [(m, f"{auto[m]} {trees[m]}") for m in pairs]).items():
-        own.setdefault(m, []).extend(paths)
     try:
         found |= per_path_own(parents, pairs, spec)
     except LedgerError:
         if complete_history():
             return found | set(pairs)
     for m in pairs:
-        risky_conflict = any(rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
+        risky_conflict = any(has_control(path) or rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
         if own.get(m) or risky_conflict:
             found.add(m)
     return found
 
 
-def pair_diffs(diff: str, keys: list[tuple[str, str]]) -> dict[str, list[str]]:
-    """`git diff-tree --stdin -z --name-only` output split by pair: it echoes each input line as a newline-ended
-    header, then that pair's paths, each NUL-ended (none when equal). Every key with that header gets its paths: two
-    merges with the same trees never hide each other (ESC-387)."""
-    headers: dict[str, list[str]] = {}
-    for key, pair in keys:
-        headers.setdefault(f"{pair}\n", []).append(key)
-    found: dict[str, list[str]] = {}
-    current, at = [], 0
-    while at < len(diff):
-        header = next((h for h in headers if diff.startswith(h, at)), None)
-        if header:
-            current, at = headers[header], at + len(header)
-            continue
-        end = diff.find("\0", at)
-        end = len(diff) if end < 0 else end
-        if end > at:
-            for key in current:
-                found.setdefault(key, []).append(diff[at:end])
-        at = end + 1
-    return found
+def unquote_path(line: str) -> str:
+    """A path as git prints it outside -z output: C-quoted ("a\\nb", octal escapes) when it holds a special
+    character, else as is."""
+    if len(line) < 2 or not (line.startswith('"') and line.endswith('"')):
+        return line
+    body, out, i = line[1:-1], [], 0
+    simple = {"a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            if nxt in simple:
+                out.append(simple[nxt])
+                i += 2
+                continue
+            if body[i + 1:i + 4].isdigit() and len(body[i + 1:i + 4]) == 3:
+                out.append(chr(int(body[i + 1:i + 4], 8)))
+                i += 4
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def has_control(path: str) -> bool:
+    """A C0 control character (a newline included) or DEL in a path name."""
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path)
 
 
 def raw_pair_states(diff: bytes, keys: list) -> dict:
@@ -4070,13 +4080,14 @@ def release_only(c: dict) -> bool:
     return bool(paths) and all(p in RELEASE_FILES or p.endswith("/package.json") for p in paths)
 
 
-def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
+def risky_no_story(in_range: list[dict], hits: set, merges: set, known: set) -> list[dict]:
     """RISKY_NO_STORY: a commit after the rule's start that changes a risky path and names no story (a `No-story:`
     commit, an unattributed one, a merge whose own resolution does it): it is work of a story, which then needs its
-    rounds (ESC-332, ESC-333). A release commit that touches only the release files is not."""
+    rounds (ESC-332, ESC-333). A release commit that touches only the release files is not. Only ids with a story
+    file (`known`) name a story: an id with none never counts as an open story, in any enforce mode (ESC-392)."""
     diffs = []
     for c in reversed(in_range):
-        if c["story"] or c["part_of"]:
+        if any(sid in known for sid in c["story"] + c["part_of"]):
             continue
         merge = len(c["parents"]) > 1
         if not (c["sha"] in merges if merge else c["sha"] in hits) or not merge and release_only(c):
@@ -4150,9 +4161,11 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             covered[sid] = reach_until(graph, [head], set()) if head and head in live else set()
         return sha in covered[sid]
 
+    known = {s["id"] for s in stories}
     diffs = []
     for c in reversed(in_range):
-        ids = list(dict.fromkeys(c["story"] + c["part_of"]))
+        # An id with no story file is no open story (ESC-392): with none known, risky_no_story reports the commit.
+        ids = [sid for sid in dict.fromkeys(c["story"] + c["part_of"]) if sid in known]
         merge = len(c["parents"]) > 1
         if not ids or reverted.get(c["sha"], False) or not (c["sha"] in merges if merge else c["sha"] in hits):
             continue
@@ -4270,7 +4283,7 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
         in_range = [c for c in in_range if c["sha"] not in held and order[arrival[c["sha"]]] >= first]
     hits = risky_commits(rules, ctx["trunk_sha"], [])
     own = merge_own_hits(rules, ctx["trunk_sha"], [])
-    diffs += risky_no_story(in_range, hits, own)
+    diffs += risky_no_story(in_range, hits, own, {s["id"] for s in ctx["stories"]})
     arrival, order = ctx["placed"]
     diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
                                ctx["stories"], rules)

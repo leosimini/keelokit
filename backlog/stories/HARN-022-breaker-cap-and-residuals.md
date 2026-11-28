@@ -224,7 +224,7 @@ below.
   the trunk agreeing, the round 9 to 11 tests. The builder stopped. The MEDIUM finding: accepted: fail-closed
   limitation, documented (coordinator decision, 2026-11-28); pinned by a test, in design.md, ledger.md and
   build-story, and in HARN-023 for a fix that does not depend on rename detection.
-- Round 13 · head 0b3f225d9e1bfed462d3652add7cda2db578fef7 · 3 findings (1 HIGH, 1 MEDIUM, 1 LOW), not fixed
+- Round 13 · head 0b3f225d9e1bfed462d3652add7cda2db578fef7 · 3 findings (1 HIGH, 1 MEDIUM, 1 LOW), fixed (ESC-391, ESC-392; the LOW one in HARN-023)
   A new agent, cold, scratch clones only, told the accepted limitation; the HIGH and MEDIUM findings run by the
   builder too. Reproduced: (HIGH) `pair_diffs` looks for a merge's diff-tree header at the start of every field,
   path fields included, and git allows a newline in a path: a risky file named "<auto tree> <merge tree>\n<path>" of
@@ -235,4 +235,5 @@ below.
   half older than this story); (LOW, to HARN-023, older than this story) `release_only` exempts any `*/package.json`.
   Held: the merge listing (-s ours, the other parent's version), per_path_own's absent states, raw_pair_states and the
   other parsers, the screen, RISKY_AFTER_CLOSE ordering, same-arrival commits, squash and revert re-closes. The
-  builder stops here: the coordinator decides.
+  builder stopped; the coordinator decided: git output carrying paths is read by position only, a risky path with a
+  control character makes the merge its own, and an id with no story file never counts as an open story.
