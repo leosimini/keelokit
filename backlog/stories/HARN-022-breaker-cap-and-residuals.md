@@ -166,3 +166,14 @@ below.
   with str.splitlines (a U+2028 forges a Swarm-Task trailer). Held: 34 touches × 8 patterns, a real revert of reviewed
   work, git_lines, the screen on every path, attributing_merges, the authors reuse. The builder stopped; the coordinator
   decided each fix (a merge's own change from `git merge-tree`; merge reverts path by path).
+- Round 8 · head 1db12ad430ae0c4cd5db2cca0981f41e71031682 · 4 findings (3 HIGH, 1 MEDIUM), not fixed; 1 LOW to HARN-023
+  A new agent, cold, 9 attacks, scratch clones only; each finding run by the builder too. Reproduced: (HIGH) one old
+  merge of unrelated histories makes `git merge-tree --stdin` stop the whole batch, so with the whole history every
+  later risky-path merge fails closed (RISKY_NO_STORY and BREAKER_STALE on build-story's own landing; the pull request
+  check, which excludes the trunk, passes); (HIGH) reverting another story's reviewed risky commit under `Part-of:` of
+  any closed story is exempt (the exemption reads "not reached by this story's close" as "unreviewed"); (HIGH)
+  reverting a fix a re-close reviewed is exempt under the same story (only the earliest close is asked); (MEDIUM) the
+  pull request check reads only the pull request's own merges for BREAKER_STALE, so a risky trunk merge the last round
+  never saw passes it and fails on the trunk. LOW: a newline in a story title forges a line in `show`. Held: the
+  merge walk against base on 3000 random graphs, merge-tree and diff-tree parsing for clean, conflicted,
+  identical-parent and ancestor-parent merges, the other output paths. The builder stops here: the coordinator decides.

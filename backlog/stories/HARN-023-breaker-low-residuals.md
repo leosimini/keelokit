@@ -4,7 +4,7 @@ epic = "HARN"
 title = "HARN-022's low residuals: a Decision after a squash, and str.splitlines on trailers and story bodies"
 wave = 27
 depends_on = ["HARN-022"]
-touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_breaker.py", "tests/test_ledger_swarm.py", "docs/ledger.md", "docs/escapes.md", "CHANGELOG.md", "backlog/stories/HARN-023-breaker-low-residuals.md"]
+touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_breaker.py", "tests/test_ledger_swarm.py", "tests/test_ledger.py", "docs/ledger.md", "docs/escapes.md", "CHANGELOG.md", "backlog/stories/HARN-023-breaker-low-residuals.md"]
 dimensions = ["logic", "dx"]
 invariants = []
 risky = true
@@ -19,6 +19,9 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
   forges a second trailer git does not see (a `Swarm-Task`, a `Dropped`, a `Convoy`, a No-story category); show lists
   a forged swarm task. `breaker_record` splits the story body the same way. Probe:
   /tmp/breaker7-HARN-022/probe_trailer_sep.py (round 7).
+- `show` prints a story's title without the line screen: a newline in the title forges a line of the card (a fake
+  `state:` line). `next` already keeps it on one line. Probe: /tmp/breaker8-HARN-022/probes/p4_title_newline.py
+  (round 8).
 
 Does NOT do: anything HARN-022's open HIGH and MEDIUM findings need (they are HARN-022's, by the coordinator's call).
 
@@ -36,6 +39,10 @@ Scenario: [S1] A Decision after a squash landing resolves it
 Scenario: [S2] Line separators never forge a trailer
   Given a commit whose trailer value holds U+2028, U+2029 or U+0085
   Then the ledger reads exactly the trailers git reads, and a story body is split at newlines only
+
+Scenario: [S3] A story title never forges a line of the card
+  Given a story whose title holds a newline
+  Then `show` prints it on one line, as `next` does
 ```
 
 ## Testable units
@@ -43,6 +50,7 @@ Scenario: [S2] Line separators never forge a trailer
 |---|---|---|
 | a Decision after a squash | integration (real git) | tests/test_breaker.py |
 | trailers and story bodies split at newlines only | integration (real git) | tests/test_ledger_swarm.py |
+| the title on one line | integration (real git) | tests/test_ledger.py |
 
 ## Definition of done
 `scripts/verify.sh` green, every scenario covered by a test titled with its id, the two ledger.py copies identical,
