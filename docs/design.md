@@ -288,7 +288,9 @@ attributes file), so no `.gitattributes`, committed, added later or only in a wo
 `$GIT_DIR/info/attributes`, which no option switches off, makes every merge touching a risky path count
 (`MERGE_ATTRIBUTES`, a warning). Second known limitation, also fail-closed: a repository that merges a risky file
 with `merge=union` gets `BREAKER_STALE` on a sync merge git merged by that attribute; the same remedy applies.
-Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. Every git read runs in
+Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. Before or after (the
+close, the rule's start) is the commit graph's call, never the order commits arrived on the trunk, which a
+fast-forward landing reorders: merge, fast-forward and rebase landings give one verdict. Every git read runs in
 one hermetic environment (`hermetic_env`): no system or global config, no config or pathspec switches from the
 environment, no system attributes, no replace objects, and pinned values (`log.diffMerges=separate`, no
 renormalising, the trailer separators) over the repository's own config; a key there that steers a merge or a diff

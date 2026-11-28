@@ -579,7 +579,10 @@ class BreakerRound2Test(BreakerCase):
         code, diffs = self.check(clone, "--ci", env=PR_ENV)
         self.assertIn(("error", "BREAKER_MISSING", "AUTH-001"), self.breaker(diffs))
 
-    def test_HARN_021_S5_a_story_closed_on_the_trunk_before_a_side_branch_brought_risky_toml_is_exempt_ESC_318(self):
+    def test_HARN_021_S5_a_story_closed_beside_the_side_branch_that_brought_risky_toml_is_judged_ESC_318_ESC_398(self):
+        """ESC-318 exempted a close that reached the trunk before the merge that brought risky.toml. That order is the
+        trunk's first-parent arrival, which a fast-forward landing rewrites (ESC-398): only an ancestor of the commit
+        that added risky.toml is exempt now (coordinator, 2026-11-28), so a close made beside it is judged."""
         repo = self.project({"AUTH-001": story("AUTH-001", dimensions=("security",))}, risky=None)
         repo.git("checkout", "-q", "-b", "side")
         harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
@@ -587,7 +590,7 @@ class BreakerRound2Test(BreakerCase):
         self.close(repo, "AUTH-001", publish=False)
         repo.merge("side", "Merge pull request #5 from x/side")
         repo.publish()
-        self.assertEqual(self.breaker(self.check(repo)[1]), [])
+        self.assertEqual(self.breaker(self.check(repo)[1]), [("error", "BREAKER_MISSING", "AUTH-001")])
 
     def test_HARN_021_S1_ledger_risky_reads_the_storys_commits_on_the_trunk_ESC_319(self):
         repo = self.project({"AUTH-001": story("AUTH-001")})
