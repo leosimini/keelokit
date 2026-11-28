@@ -224,3 +224,15 @@ below.
   the trunk agreeing, the round 9 to 11 tests. The builder stopped. The MEDIUM finding: accepted: fail-closed
   limitation, documented (coordinator decision, 2026-11-28); pinned by a test, in design.md, ledger.md and
   build-story, and in HARN-023 for a fix that does not depend on rename detection.
+- Round 13 · head 0b3f225d9e1bfed462d3652add7cda2db578fef7 · 3 findings (1 HIGH, 1 MEDIUM, 1 LOW), not fixed
+  A new agent, cold, scratch clones only, told the accepted limitation; the HIGH and MEDIUM findings run by the
+  builder too. Reproduced: (HIGH) `pair_diffs` looks for a merge's diff-tree header at the start of every field,
+  path fields included, and git allows a newline in a path: a risky file named "<auto tree> <merge tree>\n<path>" of
+  another listed merge, present at the base and in both parents (so only the merge-tree diff judges it), swallows a
+  merge's own change, on the trunk and in a pull request; (MEDIUM) under `enforce = "warn"` an id with no story file
+  in the trailer (`Part-of: AUTH-001, ZZZ-999`, or `Part-of: ZZZ-999`) counts as an open story, so RISKY_AFTER_CLOSE
+  and RISKY_NO_STORY give way to an UNKNOWN_STORY warning and the risky change lands with exit 0 (the RISKY_NO_STORY
+  half older than this story); (LOW, to HARN-023, older than this story) `release_only` exempts any `*/package.json`.
+  Held: the merge listing (-s ours, the other parent's version), per_path_own's absent states, raw_pair_states and the
+  other parsers, the screen, RISKY_AFTER_CLOSE ordering, same-arrival commits, squash and revert re-closes. The
+  builder stops here: the coordinator decides.
