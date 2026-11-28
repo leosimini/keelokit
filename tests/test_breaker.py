@@ -1958,5 +1958,119 @@ class HarnRound9Test(BreakerCase):
         self.assertNotIn("BREAKER_UNRESOLVED", found)
 
 
+class HarnRound10Test(BreakerCase):
+    """HARN-022 cold breaker, round 10 (ESC-389): from the round's probes. A merge's own change on a risky path no
+    longer leans on rename detection: a path whose state differs from every parent's is checked by a per-path 3-way
+    merge of its states at the base and the two parents (no renames)."""
+
+    codes = HarnRound7Test.codes
+
+    def rename_limit(self, n: int, number: int) -> tuple[list[str], list[str]]:
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/tool.py",)),
+                             "MOVE-001": story("MOVE-001", touches=("lib/x.py",))})
+        body = "".join(f"line {i} of x\n" for i in range(40))
+        bulk = {f"bulk/f{i}.txt": "".join(f"bulk {i} row {j}\n" for j in range(12)) for i in range(n)}
+        repo.commit("chore: seed\n\nNo-story: harness", {"lib/x.py": body, **bulk})
+        repo.publish()
+        h = harness(repo, "feat: tool\n\nPart-of: AUTH-001", {".keelokit/bin/tool.py": "print(1)\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001", {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, h)})
+        repo.publish()
+        base = repo.sha()
+        repo.git("checkout", "-q", "-b", "a")
+        repo.git("mv", "lib/x.py", ".keelokit/bin/y.py")
+        (repo.path / ".keelokit/bin/y.py").write_text(body.replace("line 0 of x", "line 0 of x (moved)"))
+        (repo.path / "bulk2").mkdir(exist_ok=True)
+        for i in range(n):
+            src = repo.path / f"bulk/f{i}.txt"
+            (repo.path / f"bulk2/g{i}.txt").write_text(src.read_text().replace("row 0", "row zero"))
+            src.unlink()
+        repo.git("add", "-A")
+        repo.git("add", "-f", ".keelokit/bin/y.py")
+        repo.git("commit", "-q", "-m", "refactor: move x\n\nPart-of: MOVE-001", when=repo.next_date())
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge a\n\nPart-of: MOVE-001", "a", when=repo.next_date())
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "b", base)
+        (repo.path / "lib/x.py").write_text(body.replace("line 30 of x", "line 30 of x\nEVIL = True"))
+        repo.git("commit", "-q", "-am", "fix: tweak x\n\nPart-of: AUTH-001", when=repo.next_date())
+        repo.git("push", "-q", "origin", "b")
+        repo.git("checkout", "-q", "main")
+        pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "b", number=number), "--ci",
+                                   env=PR_ENV)[1])
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge b\n\nPart-of: AUTH-001", "b", when=repo.next_date())
+        repo.publish()
+        self.assertIn("EVIL", (repo.path / ".keelokit/bin/y.py").read_text())
+        return pr, self.codes(self.check(repo)[1])
+
+    def test_HARN_022_S3_breaker10_an_edit_carried_by_a_rename_is_own_whatever_the_rename_limit_ESC_389(self):
+        for n, number in ((5, 201), (1100, 202)):
+            with self.subTest(renames=n):
+                pr, trunk = self.rename_limit(n, number)
+                self.assertTrue(set(pr) & {"RISKY_NO_STORY", "RISKY_AFTER_CLOSE"}, pr)
+                self.assertTrue(set(trunk) & {"RISKY_NO_STORY", "RISKY_AFTER_CLOSE"}, trunk)
+
+    def sync_with_rename(self, rename: bool) -> list[str]:
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/tool.py",)),
+                             "AUTH-002": story("AUTH-002", touches=(".keelokit/bin/tool.py",))})
+        tool = "".join(f"line {i}\n" for i in range(60))
+        harness(repo, "chore: seed\n\nNo-story: harness",
+                {".keelokit/bin/tool.py": tool, ".keelokit/bin/old.py": "".join(f"old {i}\n" for i in range(20))})
+        repo.publish()
+        base = repo.sha()
+
+        def build(sid: str, branch: str, files: dict, renames: bool = False) -> None:
+            repo.git("checkout", "-q", "-b", branch, base)
+            harness(repo, f"feat: {sid} work\n\nPart-of: {sid}", files)
+            if renames:
+                repo.git("mv", ".keelokit/bin/old.py", ".keelokit/bin/new.py")
+                repo.git("commit", "-q", "-m", f"refactor: rename old\n\nPart-of: {sid}", when=repo.next_date())
+            head = repo.sha()
+            repo.git("fetch", "-q", "origin")
+            repo.git("merge", "-q", "--no-ff", "-m", f"Merge origin/main into {branch}\n\nPart-of: {sid}", "origin/main",
+                     when=repo.next_date())
+            cur = (repo.path / path_of(sid)).read_text()
+            repo.commit(f"feat: {sid}\n\nDone.\n\nStory: {sid}", {path_of(sid): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+            repo.git("checkout", "-q", "main")
+            repo.git("merge", "-q", "--no-ff", "-m", f"Merge {branch}\n\nPart-of: {sid}", branch, when=repo.next_date())
+            repo.publish()
+
+        build("AUTH-002", "y", {".keelokit/bin/tool.py": tool.replace("line 50\n", "line 50 (Y)\n")}, renames=rename)
+        build("AUTH-001", "x", {".keelokit/bin/tool.py": tool.replace("line 5\n", "line 5 (X)\n")})
+        return [d["code"] for d in self.check(repo)[1] if d["code"].startswith(("BREAKER", "RISKY_AFTER"))]
+
+    def test_HARN_022_S1_breaker10_a_clean_sync_merge_is_clean_with_or_without_an_unrelated_rename_ESC_389(self):
+        for rename in (False, True):
+            with self.subTest(rename=rename):
+                self.assertEqual(self.sync_with_rename(rename), [])
+
+    def test_HARN_022_S1_breaker10_a_resolved_conflict_on_a_risky_file_is_the_merges_own_change_ESC_389(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/bin/tool.py",)),
+                             "AUTH-002": story("AUTH-002", touches=(".keelokit/bin/tool.py",))})
+        tool = "".join(f"line {i}\n" for i in range(30))
+        harness(repo, "chore: seed\n\nNo-story: harness", {".keelokit/bin/tool.py": tool})
+        repo.publish()
+        base = repo.sha()
+        repo.git("checkout", "-q", "-b", "y")
+        h2 = harness(repo, "feat: AUTH-002 work\n\nPart-of: AUTH-002", {".keelokit/bin/tool.py": tool.replace("line 10\n", "line 10 (Y)\n")})
+        cur = (repo.path / path_of("AUTH-002")).read_text()
+        repo.commit("feat: AUTH-002\n\nDone.\n\nStory: AUTH-002", {path_of("AUTH-002"): cur + "\n## Breaker rounds\n" + round_line(1, h2)})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge y\n\nPart-of: AUTH-002", "y", when=repo.next_date())
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "x", base)
+        h = harness(repo, "feat: AUTH-001 work\n\nPart-of: AUTH-001", {".keelokit/bin/tool.py": tool.replace("line 10\n", "line 10 (X)\n")})
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "origin/main", check=False)
+        repo.write(".keelokit/bin/tool.py", tool.replace("line 10\n", "line 10 (X and Y, resolved by hand)\n"))
+        repo.git("add", "-f", ".keelokit/bin/tool.py")
+        repo.git("commit", "-q", "-m", "Merge origin/main into x\n\nPart-of: AUTH-001", when=repo.next_date())
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001", {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, h)})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge x\n\nPart-of: AUTH-001", "x", when=repo.next_date())
+        repo.publish()
+        self.assertIn("BREAKER_STALE", [d["code"] for d in self.check(repo)[1]])
+
+
 if __name__ == "__main__":
     unittest.main()
