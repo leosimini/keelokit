@@ -10,6 +10,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
+import test_ledger
 from test_ledger import LEDGER, GitRepo, LedgerCase
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2722,10 +2723,12 @@ class HarnRound16Test(BreakerCase):
         for k in ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_LITERAL_PATHSPECS", "GIT_ATTR_SOURCE"):
             self.assertNotIn(k, env)
         pins = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
-        self.assertEqual({k: pins.get(k) for k in ("log.diffMerges", "merge.default", "merge.renormalize",
-                                                   "core.autocrlf")},
-                         {"log.diffMerges": "separate", "merge.default": "text", "merge.renormalize": "false",
-                          "core.autocrlf": "false"})
+        self.assertEqual({k: pins.get(k) for k in ("log.diffMerges", "merge.renormalize", "core.autocrlf",
+                                                   "trailer.separators")},
+                         {"log.diffMerges": "separate", "merge.renormalize": "false", "core.autocrlf": "false",
+                          "trailer.separators": ":"})
+        self.assertNotIn("merge.default", pins)  # a pinned name a user driver could shadow (ESC-397)
+        self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
 
     def test_HARN_022_S1_breaker16_a_risky_pattern_that_cannot_be_read_is_breaker_config_ESC_396(self):
         self.repos = getattr(self, "repos", 0) + 1
@@ -2739,6 +2742,115 @@ class HarnRound16Test(BreakerCase):
         self.assertNotIn("the ledger failed", r.stderr)
         self.assertIn("BREAKER_CONFIG", [d["code"] for d in json.loads(r.stdout)["diffs"] if d["level"] == "error"])
         self.assertNotIn("the ledger failed", repo.ledger("risky", "AUTH-001").stderr)
+
+
+class HarnRound17Test(BreakerCase):
+    """HARN-022 cold breaker, round 17 (ESC-397): from the round's probes. git's own view of config (every scope but
+    the ledger's pins) is scanned for keys that steer a merge or a diff, and only those fail closed; nothing pins a
+    driver name a user driver could shadow; replace refs are off; anything at info/attributes but an empty file fails
+    closed; the trailer separators are pinned."""
+
+    codes = HarnRound7Test.codes
+    MIG, BASE = HarnRound15Test.MIG, HarnRound15Test.BASE
+    UNION = "git merge-file --union %A %O %B"
+
+    def all_codes(self, repo: GitRepo, env: dict | None = None) -> list[str]:
+        return [d["code"] for d in self.check(repo, env=env)[1]]
+
+    def test_HARN_022_S3_breaker17_a_worktree_config_merge_driver_fails_closed_ESC_397(self):
+        repo, _ = HarnRound15Test.grant_flow(self, False, True, 271)
+        self.assertIn("BREAKER_STALE", self.all_codes(repo))
+        repo.git("config", "extensions.worktreeConfig", "true")
+        for name in ("text", "union", "mine"):
+            with self.subTest(driver=name):
+                repo.git("config", "--worktree", f"merge.{name}.driver", self.UNION)
+                self.assertIn("BREAKER_STALE", self.all_codes(repo))
+                repo.git("config", "--worktree", "--unset", f"merge.{name}.driver")
+
+    def test_HARN_022_S3_breaker17_a_linked_worktrees_config_merge_driver_fails_closed_ESC_397(self):
+        repo, _ = HarnRound15Test.grant_flow(self, False, True, 272)
+        import shutil
+        import subprocess
+        linked = self.tmp / f"linked{self.repos}"
+        repo.git("worktree", "add", "-q", "--detach", str(linked), "main")
+        for rel in (".keelokit/state.toml", ".keelokit/bin/ledger.py"):  # what the main worktree holds uncommitted
+            (linked / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repo.path / rel, linked / rel)
+        repo.git("config", "extensions.worktreeConfig", "true")
+        subprocess.run(["git", "config", "--worktree", "merge.text.driver", self.UNION], cwd=linked, env=repo.env,
+                       check=True)
+        r = subprocess.run(["python3", ".keelokit/bin/ledger.py", "check", "--json"], cwd=linked,
+                           env=test_ledger.clean_env(self.tmp, repo.env["PATH"]), capture_output=True, text=True)
+        codes = [d["code"] for d in json.loads(r.stdout)["diffs"]]
+        self.assertTrue({"BREAKER_STALE", "MERGE_CONFIG"} & set(codes), codes)
+
+    def test_HARN_022_S1_breaker17_merge_keys_that_steer_no_merge_change_nothing_ESC_397(self):
+        repo, _ = HarnRound15Test.grant_flow(self, False, False, 273)
+        self.assertEqual(self.codes(self.check(repo)[1]), [])
+        for key, value in (("merge.ff", "false"), ("merge.tool", "vimdiff"), ("merge.log", "true"),
+                           ("merge.verbosity", "1")):
+            with self.subTest(key=key):
+                repo.git("config", key, value)
+                self.assertEqual([c for c in self.all_codes(repo) if c.startswith(("BREAKER", "RISKY", "MERGE"))],
+                                 [])
+                repo.git("config", "--unset", key)
+
+    def test_HARN_022_S3_breaker17_local_replace_refs_change_nothing_ESC_397(self):
+        import subprocess
+        repo, _ = HarnRound15Test.grant_flow(self, False, True, 274)
+        self.assertIn("BREAKER_STALE", self.all_codes(repo))
+        g = lambda *a: repo.git(*a).strip()  # noqa: E731
+        merge = g("log", "--merges", "--format=%H", "-1", "--grep=Merge origin/main", "feature")
+        p1, p2 = g("log", "-1", "--format=%P", merge).split()
+        union_tree = g("rev-parse", f"{merge}^{{tree}}")
+
+        def commit_tree(tree: str, parents: list[str], like: str) -> str:
+            env = dict(repo.env)
+            for k, f in (("GIT_AUTHOR_NAME", "%an"), ("GIT_AUTHOR_EMAIL", "%ae"), ("GIT_AUTHOR_DATE", "%ad"),
+                         ("GIT_COMMITTER_NAME", "%cn"), ("GIT_COMMITTER_EMAIL", "%ce"), ("GIT_COMMITTER_DATE", "%cd")):
+                env[k] = g("log", "-1", f"--format={f}", like)
+            args = ["git", "commit-tree", tree] + sum((["-p", p] for p in parents), [])
+            return subprocess.run(args, cwd=repo.path, input=repo.git("log", "-1", "--format=%B", like), env=env,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+
+        for old, new in ((p1, commit_tree(union_tree, [p2], p1)), (merge, commit_tree(union_tree, [p1, p2], merge))):
+            repo.git("replace", "-f", old, new)
+        self.assertIn("BREAKER_STALE", self.all_codes(repo))
+
+    def test_HARN_022_S3_breaker17_anything_but_an_empty_info_attributes_file_fails_closed_ESC_397(self):
+        import subprocess
+        repo, _ = HarnRound15Test.grant_flow(self, False, False, 275)
+        info = repo.path / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        target = info / "attributes"
+        target.write_text("")
+        self.assertNotIn("MERGE_ATTRIBUTES", self.all_codes(repo))
+        target.unlink()
+        target.mkdir()
+        self.assertIn("MERGE_ATTRIBUTES", self.all_codes(repo))
+        target.rmdir()
+        os.mkfifo(target)
+        writer = subprocess.Popen(["sh", "-c", f"while true; do printf '* merge=union\\n' > '{target}'; done"])
+        try:
+            self.assertIn("MERGE_ATTRIBUTES", self.all_codes(repo))
+        finally:
+            writer.kill()
+            writer.wait()
+            target.unlink()
+
+    def test_HARN_022_S3_breaker17_local_trailer_separators_change_no_story_ESC_397(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",)),
+                             "DOC-002": story("DOC-002", touches=("scripts/verify.sh",))})
+        head = harness(repo, "feat: AUTH-001 work\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+        harness(repo, "fix: later\n\nPart-of: AUTH-001\nPart-of# DOC-002", {"scripts/verify.sh": "exit 2\n"})
+        repo.publish()
+        before = self.codes(self.check(repo)[1])
+        self.assertTrue(before)
+        repo.git("config", "trailer.separators", ":#")
+        self.assertEqual(self.codes(self.check(repo)[1]), before)
 
 if __name__ == "__main__":
     unittest.main()
