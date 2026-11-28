@@ -114,3 +114,11 @@ below.
   random graphs, shallow clones at depth 1/2/3/6 across commands, the screen's callers, the authors reuse, the
   directory globs, the last-round verdict. Seen, not counted: `next` and `--release` printed titles raw (screened
   with ESC-357); `glob_regex` reads `[...]` literally where git reads a class (older than this story).
+- Round 2 · head 4d5c0c63fc39d58c28169397bafe56371e65f585 · 5 findings: ESC-360, ESC-361, ESC-362, ESC-363, ESC-364 · fixed in the commit after 93154f0
+  A new agent, cold, 9 attacks. Reproduced: the closing branch landed by rebase read as RISKY_AFTER_CLOSE on the
+  trunk while its pull request was clean; `./`, `/` and `.` as touches met nothing; with a wide frontier the merge
+  walk's memory still grew faster than linear; `risky` and the session summary printed format characters raw; a
+  branch named with U+2028, U+2029 or U+0085 broke every command (older than this story). Held: the merge walk
+  against base on 6000 random graphs with several SWARM_MERGES values, multi-id, revert and merge/squash landings,
+  every screened output path, the snapshot re-check, the authors reuse. Kept on purpose: at most SWARM_BITS ×
+  SWARM_PASSES (4096) pieces per arrival are attributed through merges (information only, as SWARM_MERGES).

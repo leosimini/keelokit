@@ -317,7 +317,7 @@ def ensure_deploy_branches(remaining: float) -> None:
     production are, so its stories read in-version (ESC-249): add deploy/* to origin's fetch and fetch it, pruned. A
     clone that fetches every branch already has them."""
     code, out = git_out("config", "--get-all", "remote.origin.fetch")
-    sources = {line.lstrip("+").split(":", 1)[0] for line in out.splitlines()} if code == 0 else set()
+    sources = {line.lstrip("+").split(":", 1)[0] for line in git_lines(out)} if code == 0 else set()
     if remaining <= 0.2 or "refs/heads/*" in sources or git_out("remote", "get-url", "origin")[0]:
         return
     spec = "+refs/heads/deploy/*:refs/remotes/origin/deploy/*"
@@ -449,6 +449,14 @@ class Screen:
 
 
 CONTROL = Screen(keep="\t\n")
+
+
+def git_lines(text: str) -> list[str]:
+    """The lines of git's output, split at newlines only: str.splitlines also breaks at U+0085, U+2028, U+2029 and
+    \\x1c..\\x1e, which a ref name or a path may hold, and one such branch broke every command (HARN-022)."""
+    if not text:
+        return []
+    return (text[:-1] if text.endswith("\n") else text).split("\n")
 
 
 def terminal_line(text: str) -> str:
@@ -609,7 +617,7 @@ def read_refs(trunk: str, snapshot: str = "") -> dict[str, str]:
     patterns = ["refs/tags/v*", "refs/remotes/origin/", f"refs/heads/{trunk}"]
     fmt = "%(refname)%09%(objectname)%09%(objecttype)%09%(*objectname)%09%(*objecttype)"
     refs, nested = {}, []
-    for line in git_read(["for-each-ref", f"--format={fmt}", *patterns]).decode(errors="replace").splitlines():
+    for line in git_lines(git_read(["for-each-ref", f"--format={fmt}", *patterns]).decode(errors="replace")):
         name, sha, kind, peeled, peeled_kind = line.split("\t")
         if kind == "tag" and peeled_kind == "tag":
             nested.append(name)
@@ -644,7 +652,7 @@ def hidden_snapshots(snapshot: str) -> list[str]:
 def peel_nested(names: list[str]) -> dict[str, str]:
     """name -> commit for tags of tags, one `cat-file --batch-check` of `<ref>^{}` lines; others are dropped."""
     out = git_read(["cat-file", "--batch-check"], "".join(f"{n}^{{}}\n" for n in names).encode())
-    lines = out.decode(errors="replace").splitlines()
+    lines = git_lines(out.decode(errors="replace"))
     if len(lines) != len(names):
         raise LedgerError("git cat-file gave an unexpected answer")
     return {n: line.split()[0] for n, line in zip(names, lines) if line.split()[1:2] == ["commit"]}
@@ -673,7 +681,7 @@ def read_graph(tips: list[str]) -> dict[str, tuple[str, ...]]:
     """sha -> parents of everything the tips reach, from one `rev-list --parents`."""
     out = git_read(["rev-list", "--parents", "--stdin"], "".join(f"{t}\n" for t in tips).encode())
     graph = {}
-    for line in out.decode().splitlines():
+    for line in git_lines(out.decode()):
         sha, *parents = line.split()
         graph[sha] = tuple(parents)
     return graph
@@ -720,7 +728,7 @@ def missing_objects(trunk_sha: str) -> set[str]:
     """Objects of the trunk's tree this clone does not have (a partial or damaged one): one tree walk that
     prints `?<sha>` for each, where `cat-file` would try to fetch it from the promisor remote."""
     out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", f"{trunk_sha}^{{tree}}"])
-    return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
+    return {line[1:] for line in git_lines(out.decode(errors="replace")) if line.startswith("?")}
 
 
 def is_partial_clone() -> bool:
@@ -1685,6 +1693,8 @@ SWARM_BRANCH = "refs/remotes/origin/swarm/"
 SWARM_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")   # a task id that is one: no slash, no control character
 SWARM_AUTHOR = 200             # longest author name kept
 SWARM_MERGES = 2000            # at most this many attributing merges are walked to find a delivery's story
+SWARM_BITS = 1024              # wanted commits per pass of attributing_merges: a mask holds at most this many bits
+SWARM_PASSES = 4               # at most this many passes per arrival (SWARM_BITS × SWARM_PASSES pieces found per arrival)
 SWARM_STATES = ("in-progress", "on-trunk", "reverted")
 SWARM_UNSAFE = Screen()   # in a name: control and format characters, tab and newline too (ESC-348, HARN-022)
 SWARM_KEYS = {"task", "state", "branch", "head", "commits", "authors", "convoy"}
@@ -1739,41 +1749,58 @@ def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: l
                         and (by_sha[m]["story"] or by_sha[m]["part_of"]))
         if not merges:
             continue
-        want = sorted({sha for sha in wanted if arrival_of[sha] == a})
-        index = {sha: i for i, sha in enumerate(want)}  # an index, never a table of masks: 1 << i holds i bits
         parents_of = {x: [p for p in graph.get(x, ()) if p in group] for x in group}
+        asked = set(merges[:budget])  # the first SWARM_MERGES merges, in sha order, as before
+        budget -= len(asked)
+        # Only what an asked merge's other parents reach can be brought: those wanted commits, at most
+        # SWARM_BITS × SWARM_PASSES of them per arrival (information only, as SWARM_MERGES).
+        reachable = reach_until(parents_of, [p for m in asked for p in graph[m][1:] if p in group], set())
+        want = sorted({sha for sha in wanted if arrival_of[sha] == a} & reachable)[:SWARM_BITS * SWARM_PASSES]
+        if not want:
+            continue
+        order = group_order(parents_of)
         children: dict[str, int] = {}
         for x in group:
             for p in parents_of[x]:
                 children[p] = children.get(p, 0) + 1
-        asked = set(merges[:budget])  # the first SWARM_MERGES merges, in sha order, as before
-        budget -= len(asked)
-        # A mask lives until the last child in the group read it (ESC-358): memory follows the walk's frontier, never
-        # a mask per commit of the group.
-        reach: dict[str, int] = {}
-        for x in group_order(parents_of):
-            mask = 1 << index[x] if x in index else 0
-            for p in parents_of[x]:
-                mask |= reach[p]
-            if x in asked:
-                parents = graph[x]
-                mainline = reach.get(parents[0], 0) if parents[0] in group else 0
-                other = 0
-                for p in parents[1:]:
-                    if p in group:
-                        other |= reach[p]
-                ids = by_sha[x]["story"] + by_sha[x]["part_of"]
-                for i in set_bits(other & ~mainline):
-                    found.setdefault(want[i], set()).update(ids)
-            for p in parents_of[x]:
-                children[p] -= 1
-                if not children[p]:
-                    del reach[p]
-            if children.get(x):
-                reach[x] = mask
+        # One pass per SWARM_BITS wanted commits: a mask holds at most SWARM_BITS bits and lives until the group's last
+        # child of its commit read it, so memory stays linear in the group whatever the frontier (ESC-358, ESC-362),
+        # and at most SWARM_PASSES passes keep the time linear too.
+        for first in range(0, len(want), SWARM_BITS):
+            swarm_pass(graph, by_sha, parents_of, order, children, asked, want, first, found)
         if budget <= 0:
             return found
     return found
+
+
+def swarm_pass(graph: dict, by_sha: dict, parents_of: dict, order: list[str], children: dict, asked: set,
+               want: list[str], first: int, found: dict) -> None:
+    """One pass of attributing_merges over a group, for want[first:first + SWARM_BITS]: each commit's mask of the
+    wanted commits it reaches (parents before children, dropped once the last child read it); an asked merge brings
+    what its other parents reach and its first parent does not."""
+    index = {sha: i for i, sha in enumerate(want[first:first + SWARM_BITS])}
+    left = dict(children)
+    reach: dict[str, int] = {}
+    for x in order:
+        mask = 1 << index[x] if x in index else 0
+        for p in parents_of[x]:
+            mask |= reach[p]
+        if x in asked:
+            parents = graph[x]
+            mainline = reach.get(parents[0], 0) if parents[0] in parents_of else 0
+            other = 0
+            for p in parents[1:]:
+                if p in parents_of:
+                    other |= reach[p]
+            ids = by_sha[x]["story"] + by_sha[x]["part_of"]
+            for i in set_bits(other & ~mainline):
+                found.setdefault(want[first + i], set()).update(ids)
+        for p in parents_of[x]:
+            left[p] -= 1
+            if not left[p]:
+                del reach[p]
+        if left.get(x):
+            reach[x] = mask
 
 
 def group_order(parents_of: dict[str, list[str]]) -> list[str]:
@@ -2006,7 +2033,7 @@ def absent_versions(trunk_sha: str) -> set[str]:
     """Blobs of the file's versions this partial clone lacks: one walk that prints `?<sha>` instead of fetching."""
     out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", trunk_sha,
                     "--", f":(literal){CORRECTIONS}"])
-    return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
+    return {line[1:] for line in git_lines(out.decode(errors="replace")) if line.startswith("?")}
 
 
 def cat_blobs(shas: list[str]) -> dict[str, bytes | None]:
@@ -3024,7 +3051,8 @@ def trees_of(shas: list[str]) -> dict[str, str]:
     if not unique:
         return {}
     out = git_read(["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-                   "".join(f"{s}^{{tree}}\n" for s in unique).encode()).decode(errors="replace").splitlines()
+                   "".join(f"{s}^{{tree}}\n" for s in unique).encode()).decode(errors="replace")
+    out = git_lines(out)
     if len(out) != len(unique):
         raise LedgerError("git cat-file gave an unexpected answer")
     return {s: line.split()[0] for s, line in zip(unique, out) if line.split()[1:2] == ["tree"]}
@@ -3273,7 +3301,7 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
                                lambda sha: order[arrival[sha]] if sha in arrival else len(order),
-                               list(stories.values()), rules)
+                               list(stories.values()), rules, arrival, head)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
                                  config_diffs=False, hits=hits, earlier=earlier)
@@ -3489,8 +3517,11 @@ def touch_meets(touch: str, pattern: str) -> bool:
     while t.startswith("./"):
         t = t[2:]
     t = t.lstrip("/").rstrip("/")
-    if not t:
-        return False
+    while t.endswith("/."):
+        t = t[:-2].rstrip("/")
+    if t in ("", "."):
+        # `./`, `/` or `.` names the repository's root, which holds every path (ESC-361); a blank touch names nothing
+        return bool(touch.strip())
     if re.search(r"[*?]", t):
         a, b = literal_prefix(t), literal_prefix(pattern)
         return a.startswith(b) or b.startswith(a)
@@ -3699,6 +3730,9 @@ def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
     return diffs
 
 
+RUN_LIMIT = 1000   # commits walked back from a later commit to the close it may follow (risky_after_close)
+
+
 def breaker_resolved(record: dict, rules: dict) -> bool:
     """A story's rounds as breaker_diffs judges them: some round, the last clean or a decider's Decision after it."""
     rounds = [i for i, e in enumerate(record["entries"]) if e[0] == "round"]
@@ -3710,7 +3744,8 @@ def breaker_resolved(record: dict, rules: dict) -> bool:
 
 
 def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
-                      landing, stories: list[dict] = (), rules: dict | None = None) -> list[dict]:
+                      landing, stories: list[dict] = (), rules: dict | None = None, on_trunk=(),
+                      tip: str | None = None) -> list[dict]:
     """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
     merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
     commit of `log` with an earlier landing (`landing(sha)`: the position of the trunk commit that brought it; a pull
@@ -3718,7 +3753,11 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
     closed again: such a change is new work of an open story, which then needs its rounds. The closing branch's own
     later commits are judged with the close: those of the same landing, and those a round recorded in the story's
     file (`stories`) covers — its head reaches the commit, whatever way the branch landed (a fast-forward too, ESC-356),
-    while the story's last round is clean or a person's Decision follows it. A revert restores what was judged before."""
+    while the story's last round is clean or a person's Decision follows it. When that last round's head is not on the
+    trunk (`on_trunk`: the branch was rewritten as it landed, a rebase), a commit is of the closing branch when it
+    follows the close on first parents through commits of the story alone and the commit that recorded that last round
+    in the story's file (`tip`'s history, one pickaxe `git log`) comes after it (ESC-360): a fix after the round was
+    recorded, or after other work, is new work again. A revert restores what was judged before."""
     reverted = revert_status(log, graph)
     closed: dict[str, tuple[int, str]] = {}
     for c in log:
@@ -3729,19 +3768,51 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             if sid not in closed or at < closed[sid][0]:
                 closed[sid] = (at, c["sha"])
     heads: dict[str, list[str]] = {}
+    last_heads: dict[str, list[str]] = {}
+    paths: dict[str, set] = {}
     for s in stories:
         for v in [s, *s.get("copies", [])]:
             record = v.get("breaker") or {"entries": []}
             if rules is not None and not v.get("unreadable") and breaker_resolved(record, rules):
-                heads.setdefault(s["id"], []).extend(e[2] for e in record["entries"] if e[0] == "round")
+                round_heads = [e[2] for e in record["entries"] if e[0] == "round"]
+                heads.setdefault(s["id"], []).extend(round_heads)
+                last_heads.setdefault(s["id"], []).append(round_heads[-1])
+                paths.setdefault(s["id"], set()).add(v["path"])
     covered: dict[str, set] = {}
+    recorded: dict[str, set] = {}
+    by_sha = {c["sha"]: c for c in log}
+
+    def follows_close(sha: str, sid: str) -> bool:
+        """`sha` follows the close on first parents through commits of `sid` alone."""
+        cur = sha
+        for _ in range(RUN_LIMIT):
+            parents = graph.get(cur, ())
+            if not parents:
+                return False
+            cur = parents[0]
+            if cur == closed[sid][1]:
+                return True
+            c = by_sha.get(cur)
+            if c is None or sid not in c["story"] + c["part_of"]:
+                return False
+        return False
 
     def with_close(sha: str, sid: str) -> bool:
         if landing(sha) == closed[sid][0]:
             return True
         if sid not in covered:
             covered[sid] = reach_until(graph, [h for h in heads.get(sid, ()) if h in graph], set())
-        return sha in covered[sid]
+        if sha in covered[sid]:
+            return True
+        rewritten = sid in last_heads and not any(h in on_trunk for h in last_heads[sid])
+        if not rewritten or tip is None or not follows_close(sha, sid):
+            return False
+        if sid not in recorded:
+            out = git_read(["log", "--format=%H", *(f"-S{h}" for h in last_heads[sid][:1]), tip, "--",
+                            *(f":(literal){path}" for path in sorted(paths[sid]))]).decode()
+            found = out.split()
+            recorded[sid] = reach_until(graph, found[-1:], set()) if found else set()
+        return sha in recorded[sid] and sha != (closed[sid][1])
 
     diffs = []
     for c in reversed(in_range):
@@ -3774,7 +3845,7 @@ def story_versions(tip: str, paths: set[str], cfg: dict, ids: set[str] = frozens
     # Every version of every story file is read, and each counts for the id its own front matter gives: a story moved
     # to a name that says nothing of its id keeps the risk of its earlier versions (ESC-345).
     versions: dict[str, str] = {}
-    for line in out.splitlines():
+    for line in git_lines(out):
         meta, tab, rest = line.partition("\t")
         fields, names = meta.split(), rest.split("\t")
         if not line.startswith(":") or not tab or len(fields) < 5:
@@ -3867,7 +3938,7 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     diffs += risky_no_story(in_range, hits, own)
     arrival, order = ctx["placed"]
     diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
-                               ctx["stories"], rules)
+                               ctx["stories"], rules, arrival, ctx["trunk_sha"])
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
@@ -3938,13 +4009,13 @@ def cmd_risky(state: dict, sid: str) -> int:
         local = risky_config(None, True)
     rules = merge_rules(committed, local)
     if story is None:
-        print(f"Keelokit: no story {sid} in the work tree or on the trunk", file=sys.stderr)
+        print(terminal_line(f"Keelokit: no story {sid} in the work tree or on the trunk"), file=sys.stderr)
         return 2
     changed: set[str] = set()
     if trunk_sha:
         out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{trunk_sha}...HEAD"],
                        ok=(0, 128)).decode(errors="replace")
-        changed = {line for line in out.splitlines() if line.strip()}
+        changed = {line for line in git_lines(out) if line.strip()}
     hits: list[str] = []
     if trunk_sha and rules:  # the story's commits already on the trunk count too (ESC-319)
         found = risky_commits(rules, trunk_sha, [])
@@ -3955,13 +4026,13 @@ def cmd_risky(state: dict, sid: str) -> int:
     if rules is None:
         print(f"Keelokit: no {RISKY_FILE} on the trunk or in the work tree: only `risky = true` makes a story risky")
     if rules and rules["problem"]:
-        print(f"Keelokit: {rules['problem']} (every story counts as risky until it is fixed)")
+        print(terminal_line(f"Keelokit: {rules['problem']} (every story counts as risky until it is fixed)"))
     if why:
-        print(f"{sid}: risky — {'; '.join(why[:6])}{f'; +{len(why) - 6} more' if len(why) > 6 else ''}")
+        print(terminal_line(f"{sid}: risky — {'; '.join(why[:6])}{f'; +{len(why) - 6} more' if len(why) > 6 else ''}"))
         print(f"  build it with the cold breaker loop, each round recorded under `## Breaker rounds`: the last round "
               f"decides; at round {cap} with findings left, stop and ask a person")
     else:
-        print(f"{sid}: not risky (breaker rounds: optional; cap {cap})")
+        print(terminal_line(f"{sid}: not risky (breaker rounds: optional; cap {cap})"))
     return 0
 
 
@@ -5310,7 +5381,7 @@ def archive_ref(sid: str, day: str) -> str:
     """archive/<id>-<YYYYMMDD>, or the first -2, -3… that origin does not have yet (two drops in one day)."""
     base = f"{ARCHIVE}{sid.lower()}-{day}"
     code, out = git_out("ls-remote", "--heads", "origin", f"refs/heads/{base}*")
-    taken = {line.split()[1].removeprefix("refs/heads/") for line in out.splitlines() if len(line.split()) == 2} \
+    taken = {line.split()[1].removeprefix("refs/heads/") for line in git_lines(out) if len(line.split()) == 2} \
         if code == 0 else set()
     n, name = 1, base
     while name in taken:
@@ -5381,7 +5452,7 @@ def comment_char() -> str:
     leaves `#` for every message an editor did not touch)."""
     # core.commentString (git 2.45+) and core.commentChar are one setting: the last one git reads wins.
     code, out = git_out("config", "--get-regexp", r"^core\.comment(char|string)$")
-    values = [line.split(" ", 1)[1] for line in out.splitlines() if " " in line] if code == 0 else []
+    values = [line.split(" ", 1)[1] for line in git_lines(out) if " " in line] if code == 0 else []
     return values[-1] if values and values[-1] != "auto" else "#"
 
 
@@ -5781,7 +5852,7 @@ def run_command(state: dict, command: str, args) -> int:
         if command == "hook":
             return cmd_hook(state, args)
         if command == "prepush":
-            return cmd_prepush(state, args, [] if sys.stdin.isatty() else sys.stdin.read().splitlines())
+            return cmd_prepush(state, args, [] if sys.stdin.isatty() else git_lines(sys.stdin.read()))
         if command == "take":
             return cmd_take(state, args)
         if command == "snapshot":
@@ -5859,7 +5930,7 @@ def show(state: dict, as_json: bool) -> int:
     if as_json:
         print(json.dumps(facts, indent=1))
     else:
-        print("\n".join(summary(facts, read_config(state)["lang"])))
+        print("\n".join(terminal_line(line) for line in summary(facts, read_config(state)["lang"])))
     return 1 if facts["diffs"] else 0
 
 

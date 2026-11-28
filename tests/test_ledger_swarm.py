@@ -868,7 +868,8 @@ class HarnSwarmRound1Test(LedgerCase):
             found = ledger.attributing_merges(graph, log, arrival_of, side)
             _, top = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-            self.assertEqual(len(found), n)
+            # every piece up to the cap per arrival (SWARM_BITS × SWARM_PASSES: information only, as SWARM_MERGES)
+            self.assertEqual(len(found), min(n, ledger.SWARM_BITS * ledger.SWARM_PASSES))
             return top
 
         small, large = peak(4000), peak(16000)
@@ -938,6 +939,23 @@ class HarnSwarmRound2Test(LedgerCase):
 
         small, large = per_commit(8000), per_commit(32000)
         self.assertLess(large, 1.25 * small, (small, large))
+        # and the time: at most SWARM_PASSES passes over the group, whatever the number of wanted commits (counted)
+        passes = []
+        real = ledger.swarm_pass
+        ledger.swarm_pass = lambda *args: (passes.append(1), real(*args))[1]
+        try:
+            for n in (2000, 32000):
+                graph, log, arrival, wanted = wide_frontier(n)
+                rename = {f"m{k:07d}": f"a{n - k:07d}" for k in range(n)}  # the asked merges are the top ones now
+                graph = {rename.get(s, s): [rename.get(p, p) for p in ps] for s, ps in graph.items()}
+                log = [{**c, "sha": rename.get(c["sha"], c["sha"])} for c in log]
+                arrival = {rename.get(s, s): v for s, v in arrival.items()}
+                passes.clear()
+                found = ledger.attributing_merges(graph, log, arrival, wanted)
+                self.assertLessEqual(len(passes), ledger.SWARM_PASSES, n)
+                self.assertGreater(len(found), 0)
+        finally:
+            ledger.swarm_pass = real
 
     def test_HARN_022_S7_breaker2_risky_and_the_summary_print_screened_ESC_363(self):
         repo = GitRepo(self.tmp)
