@@ -3075,5 +3075,121 @@ class HarnRound19Test(BreakerCase):
         self.assertIn("RISKY_AFTER_CLOSE", trunk)
         self.assertEqual(pr, trunk)
 
+
+class HarnRound20Test(BreakerCase):
+    """HARN-022 cold breaker, round 20 (ESC-400): from the round's probes. A pull request is judged as the trunk will be
+    once it lands (its commits and the trunk's, the head's story files and closes); a reverted close still orders what
+    came after it; a person's Decision covers what the close reaches."""
+
+    def setup(self, rounds: int = 3) -> tuple[GitRepo, str]:
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"d{self.repos}")
+        text = story("X-001", touches=("scripts/verify.sh",))
+        repo.commit("docs: plan\n\nNo-story: docs", {path_of("X-001"): text, "scripts/verify.sh": "exit 0\n",
+                                                     "notes.md": "a\n"})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML.replace("rounds = 3", f"rounds = {rounds}")})
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        repo.publish()
+        return repo, text
+
+    def errors(self, repo: GitRepo, *args: str, env: dict | None = None) -> list[str]:
+        return sorted({d["code"] for d in self.check(repo, *args, env=env)[1] if d["level"] == "error"})
+
+    def pr_then_trunk(self, repo: GitRepo, branch: str, number: int, message: str) -> tuple[list[str], list[str]]:
+        repo.git("push", "-q", "origin", branch)
+        repo.git("checkout", "-q", "main")
+        pr = self.errors(BreakerPullRequestTest.pull_request(self, repo, branch, number=number), "--ci", env=PR_ENV)
+        repo.merge(branch, message)
+        repo.publish()
+        return pr, self.errors(repo)
+
+    def red_trunk(self) -> tuple[GitRepo, str, str]:
+        """X closed with a clean round, then a risky fix after the close: the trunk is red (RISKY_AFTER_CLOSE)."""
+        repo, text = self.setup()
+        h = repo.commit("feat: x\n\nPart-of: X-001", {"scripts/verify.sh": "exit 1\n"})
+        r1 = text + "\n## Breaker rounds\n" + round_line(1, h)
+        repo.commit("feat: X\n\nDone.\n\nStory: X-001", {path_of("X-001"): r1})
+        fix = repo.commit("fix: x after close\n\nPart-of: X-001", {"scripts/verify.sh": "exit 2\n"})
+        repo.publish()
+        self.assertIn("RISKY_AFTER_CLOSE", self.errors(repo))
+        return repo, r1, fix
+
+    def test_HARN_022_S1_breaker20_a_pull_request_that_fixes_a_red_trunk_is_green_ESC_400(self):
+        repo, r1, fix = self.red_trunk()
+        repo.git("checkout", "-q", "-b", "cover")
+        repo.commit("docs: X re-closed after round 2 on the fix\n\nRound 2 attacked the fix, clean.\n\nStory: X-001",
+                    {path_of("X-001"): r1 + round_line(2, fix)})
+        pr, trunk = self.pr_then_trunk(repo, "cover", 301, "Merge branch cover")
+        self.assertEqual((pr, trunk), ([], []))
+
+    def test_HARN_022_S3_breaker20_a_pull_request_that_leaves_a_red_trunk_red_is_red_ESC_400(self):
+        repo, _, _ = self.red_trunk()
+        repo.git("checkout", "-q", "-b", "other")
+        repo.commit("docs: notes\n\nNo-story: docs", {"docs/other.md": "o\n"})
+        pr, trunk = self.pr_then_trunk(repo, "other", 302, "Merge branch other")
+        self.assertIn("RISKY_AFTER_CLOSE", pr)
+        self.assertEqual(pr, trunk)
+
+    def revert_first_close(self, result: str, number: int) -> tuple[list[str], list[str]]:
+        repo, text = self.setup()
+        h = repo.commit("feat: x\n\nPart-of: X-001", {"scripts/verify.sh": "exit 1\n"})
+        repo.commit("docs: rounds\n\nPart-of: X-001",
+                    {path_of("X-001"): text + "\n## Breaker rounds\n" + round_line(1, h, result)})
+        c1 = repo.commit("feat: X\n\nDone.\n\nStory: X-001", {"notes.md": "closed\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "b")
+        repo.commit("fix: evil\n\nPart-of: X-001", {"db/migrations/0001.sql": "drop table users;\n"})
+        repo.git("revert", "-n", c1)
+        repo.git("commit", "-q", "-m", f"Revert feat: X\n\nThis reverts commit {c1}.\n\nPart-of: X-001",
+                 when=repo.next_date())
+        repo.commit("feat: X again\n\nDone.\n\nStory: X-001", {"notes.md": "closed again\n"})
+        return self.pr_then_trunk(repo, "b", number, "Merge b\n\nPart-of: X-001")
+
+    def test_HARN_022_S3_breaker20_reverting_the_first_close_never_covers_a_change_after_it_ESC_400(self):
+        pr, trunk = self.revert_first_close("1 finding: ESC-1 · fixed in y", 303)
+        self.assertIn("RISKY_AFTER_CLOSE", pr)
+        self.assertIn("RISKY_AFTER_CLOSE", trunk)
+        pr, trunk = self.revert_first_close("clean", 304)  # the control: an error either way
+        self.assertTrue(pr and trunk, (pr, trunk))
+
+    def test_HARN_022_S1_breaker20_a_decision_added_later_lands_the_story_as_closed_ESC_400(self):
+        repo, text = self.setup()
+        w1 = repo.commit("feat: x\n\nPart-of: X-001", {"scripts/verify.sh": "exit 1\n"})
+        repo.commit("fix: round 1 finding\n\nPart-of: X-001", {"scripts/verify.sh": "exit 2\n"})
+        rec = text + "\n## Breaker rounds\n" + round_line(1, w1, "1 finding: ESC-1 · fixed in the commit after")
+        repo.commit("feat: X\n\nDone.\n\nStory: X-001", {path_of("X-001"): rec})
+        repo.publish()
+        repo.git("checkout", "-q", "-b", "decide")
+        repo.commit("docs: a person decides X\n\nPart-of: X-001",
+                    {path_of("X-001"): rec + "- Decision · Leo · 2026-11-28 · land as it is\n"})
+        pr, trunk = self.pr_then_trunk(repo, "decide", 305, "Merge branch decide")
+        self.assertEqual((pr, trunk), ([], []))
+
+    def test_HARN_022_S1_breaker20_build_storys_cap_decision_lands_the_story_ESC_400(self):
+        repo, text = self.setup(rounds=1)
+        repo.git("checkout", "-q", "-b", "x")
+        w1 = repo.commit("feat: x\n\nPart-of: X-001", {"scripts/verify.sh": "exit 1\n"})
+        rec = text + "\n## Breaker rounds\n" + round_line(1, w1, "1 finding: ESC-1 · fixed in the commit after")
+        repo.commit("test+fix: round 1 finding\n\nPart-of: X-001", {"scripts/verify.sh": "exit 2\n", path_of("X-001"): rec})
+        repo.commit("feat: X\n\nDone; the person decided at the cap.\n\nStory: X-001",
+                    {path_of("X-001"): rec + "- Decision · Leo · 2026-11-28 · land as it is, ESC-1's fix unreviewed\n"})
+        pr, trunk = self.pr_then_trunk(repo, "x", 306, "Merge branch x")
+        self.assertEqual((pr, trunk), ([], []))
+
+    def test_HARN_022_S3_breaker20_a_decision_never_covers_a_change_after_the_close_ESC_400(self):
+        repo, text = self.setup()
+        w1 = repo.commit("feat: x\n\nPart-of: X-001", {"scripts/verify.sh": "exit 1\n"})
+        rec = text + "\n## Breaker rounds\n" + round_line(1, w1, "1 finding: ESC-1 · open")
+        repo.commit("feat: X\n\nDone.\n\nStory: X-001",
+                    {path_of("X-001"): rec + "- Decision · Leo · 2026-11-28 · land as it is\n"})
+        repo.publish()
+        self.assertEqual(self.errors(repo), [])
+        repo.git("checkout", "-q", "-b", "later")
+        repo.commit("fix: after the close\n\nPart-of: X-001", {"db/migrations/0001.sql": "drop table users;\n"})
+        pr, trunk = self.pr_then_trunk(repo, "later", 307, "Merge branch later")
+        self.assertIn("RISKY_AFTER_CLOSE", pr)
+        self.assertIn("RISKY_AFTER_CLOSE", trunk)
+
 if __name__ == "__main__":
     unittest.main()
