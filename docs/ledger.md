@@ -195,8 +195,8 @@ must stop and ask. A touch that names a directory (it ends in `/`, or its last p
 the trailer of stories already closed by an earlier landing (before the rule, or with their rounds) is
 `RISKY_AFTER_CLOSE`: their rounds never saw it and nothing closes them again, so it names an open story, which then
 needs its own rounds. Before or after comes from the commit graph, never from the order commits arrived on the trunk's
-first-parent chain (which a fast-forward landing reorders): a commit is after a close when no first close of the story
-(one no other close precedes) reaches it, and only an ancestor of the commit that added risky.toml is before the rule.
+first-parent chain (which a fast-forward landing reorders): a commit is after a close unless every minimal close of the
+story (one that descends from no other close of it) reaches it, so concurrent closes leave only their common ancestry, and only an ancestor of the commit that added risky.toml is before the rule.
 One rule, however the branch lands (merge, fast-forward, rebase) and in the pull request alike:
 a later commit lands with the close when the commit that recorded the story's last round in its file comes after it
 (reaches it), while that round is clean or a person's Decision follows it. So the closing branch's commits before its

@@ -1531,12 +1531,12 @@ def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict, corr
     return {**base, "commits": loose, "ratio": loose / len(in_range) if in_range else 0.0}
 
 
-def first_closes(graph: dict, closes: list[str]) -> list[str]:
-    """The closes no other close precedes in the graph: what came before the story closed is what they reach. A
-    re-close descends from the close, so its own change comes after it (ESC-398); parallel closes all count."""
+def first_closes(graph: dict, closes: list[str]) -> tuple[list[str], dict[str, set]]:
+    """(the closes no other close precedes in the graph, each close's ancestry, itself included). A re-close descends
+    from the close, so its own change comes after it (ESC-398); concurrent closes are all minimal."""
     unique = sorted(set(closes))
     ancestors = {c: reach_until(graph, [c], set()) for c in unique}
-    return [c for c in unique if not any(d != c and d in ancestors[c] for d in unique)]
+    return [c for c in unique if not any(d != c and d in ancestors[c] for d in unique)], ancestors
 
 
 def reach_until(graph: dict, tips, stop: set) -> set:
@@ -3525,9 +3525,10 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
     found = merge_notes() + found  # the notes of both calls
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
-    # The trunk commits of a story this pull request closes are judged against that close too: a parallel delivery
-    # already on the trunk that the close does not reach is after it, as the trunk will read it (ESC-398).
-    closing_here = {sid for c in log for sid in c["story"]}
+    # The trunk commits of every story closed at the pull request's head are judged against its closes too: a parallel
+    # delivery the close does not reach, a close revived by a revert, a round line added: the pull request reads them
+    # as the trunk will once it lands (ESC-398, ESC-399).
+    closing_here = {sid for c in every for sid in c["story"]}
     starts, _ = breaker_start(ctx, rules)
     held = set(first_reach(ctx["graph"], starts)) if starts else set()
     trunk_range = since_range(ctx["cfg"], ctx["log"], ctx["graph"])
@@ -3954,12 +3955,14 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
             # (ESC-376); the close itself is one of them (ESC-377). What descends from the close is RISKY_AFTER_CLOSE's.
             # The graph decides, never the order commits arrived on the trunk, which a fast-forward reorders (ESC-398).
             seen = reach_until(graph, [last[2]], set()) if last[2] in graph else set()
-            firsts = set(first_closes(graph, every_close[sid]))
-            before_firsts = reach_until(graph, firsts, set())
+            minimal, ancestors = first_closes(graph, every_close[sid])
+            firsts = set(minimal)
+            before_firsts = set().union(*(ancestors[c] for c in minimal))
+            stop = before_firsts - firsts
 
             def descends(x: str) -> bool:
                 """x comes after a first close in the graph (that close is its ancestor): RISKY_AFTER_CLOSE's."""
-                return x not in before_firsts and bool(reach_until(graph, [x], before_firsts - firsts) & firsts)
+                return x not in before_firsts and bool(reach_until(graph, [x], stop) & firsts)
 
             late = [x for x in naming.get(sid, ())
                     if not reverted.get(x, False)
@@ -3988,12 +3991,16 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
     return diffs
 
 
+FULL_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
 def rule_adds(tip: str) -> list[str]:
     """The commits `tip` reaches that added risky.toml (one path-limited `git log`)."""
     # -m: a merge whose own resolution adds the file is an add too (ESC-337).
-    out = git_read(["log", "--full-history", "-m", "--diff-merges=separate", "--format=%H", "--diff-filter=A", tip,
-                    "--", RISKY_FILE]).decode()
-    return list(dict.fromkeys(out.split()))
+    out = git_read(["log", "--full-history", "-m", "--diff-merges=separate", "--no-patch", "--format=%x00%H%x00",
+                    "--diff-filter=A", tip, "--", RISKY_FILE]).decode(errors="replace")
+    # Commit ids only, NUL-delimited and checked as full ids: no word of a patch or a message is ever one (ESC-399).
+    return list(dict.fromkeys(x for x in out.split("\0") if FULL_SHA.fullmatch(x)))
 
 
 def removed_rules() -> dict:
@@ -4363,10 +4370,14 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
     covered: dict[str, set] = {}
 
     def reached_by_close(sid: str) -> set:
-        """What any live close of the story reaches: it came before a close. The commit graph decides, never the order
-        commits arrived on the trunk, which a fast-forward landing reorders (ESC-398)."""
+        """What came before the story closed: the commit graph decides, never the order commits arrived on the trunk,
+        which a fast-forward landing reorders (ESC-398)."""
         if sid not in before:
-            before[sid] = reach_until(graph, first_closes(graph, closes[sid]), set())
+            # Before the close is what EVERY minimal close reaches: concurrent closes (a parallel re-close forked before
+            # the close, ESC-399) leave only their common ancestry, which fails closed.
+            firsts, ancestors = first_closes(graph, closes[sid])
+            reached = [ancestors[c] for c in firsts]
+            before[sid] = set.intersection(*reached) if reached else set()
         return before[sid]
 
     def with_close(sha: str, sid: str) -> bool:

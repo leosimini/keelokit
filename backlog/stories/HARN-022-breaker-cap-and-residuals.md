@@ -304,7 +304,7 @@ below.
   only), renames off in local config (stricter). The builder stopped; the coordinator decided: before or after
   comes from the graph (a commit is after a close no first close reaches; only an ancestor of the add is before the
   rule), and the harness-upgrade finding is moved to HARN-024 (pre-existing, blocks release).
-- Round 19 · head 77e2672f0c7077c458bc80761d2269ffa1ce9724 · 6 findings (3 MEDIUM, 3 LOW), not fixed
+- Round 19 · head 77e2672f0c7077c458bc80761d2269ffa1ce9724 · 6 findings (3 MEDIUM, 3 LOW), fixed (ESC-399; the LOW ones in HARN-023)
   A new agent, cold, scratch clones only, told the accepted limitations, the threat model and its severity rule, and
   that HARN-024 and the ESC-318 change are known; each MEDIUM finding run by the builder too, on fresh clones.
   Reproduced: (MEDIUM, a regression of round 18) a branch forked before the close carries a risky `Part-of:` commit
@@ -318,4 +318,7 @@ below.
   round line) passes and the trunk fails once it lands; (LOW, to HARN-023) concurrent adds judge stories before both;
   (LOW, to HARN-023) the graph walks' cost; (LOW, to HARN-023) the message names the lowest sha. Held: convoys, ff and
   merge sails, the clean-round control, re-closes needing a round, content-verified reverts, the pull request's subset
-  of the trunk otherwise, the full test_breaker suite. The builder stops here: the coordinator decides.
+  of the trunk otherwise, the full test_breaker suite. The builder stopped; the coordinator decided: before the
+  close is what every minimal close reaches, the adds are read as commit ids only, a pull request judges every story
+  closed at its head; HARN-021's uncovered post-close fixes are true positives, to be covered by HARN-022's clean round
+  (option a).
