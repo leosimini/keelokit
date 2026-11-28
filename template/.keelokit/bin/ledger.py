@@ -589,7 +589,8 @@ def read_config(state: dict) -> dict:
 
 
 def glob_regex(pattern: str) -> re.Pattern:
-    """`*` and `?` stay inside one directory, `**` crosses them; anything else is literal."""
+    """`*` and `?` stay inside one directory, `**` crosses them; anything else is literal. Any character a path holds
+    matches, a newline included (ESC-393): a name with a control character is classified like any other."""
     out, i = [], 0
     while i < len(pattern):
         if pattern.startswith("**/", i):
@@ -602,7 +603,7 @@ def glob_regex(pattern: str) -> re.Pattern:
             c = pattern[i]
             out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
             i += 1
-    return re.compile("".join(out))
+    return re.compile("".join(out), re.DOTALL)
 
 
 def iso(epoch: int) -> str:
@@ -3351,18 +3352,22 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
                  "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
     log = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
     base = read_stories(ctx["trunk_sha"], cfg)[0]
+    at_head = read_stories(head, cfg)[0]
     stories = {s["id"]: s for s in base}
-    stories.update({s["id"]: s for s in read_stories(head, cfg)[0]})
+    stories.update({s["id"]: s for s in at_head})
+    # The ids a story file names at the head: what the trunk holds once this lands, never the union with the trunk's
+    # (a pull request that deletes a story file knows no such story, ESC-393).
+    known = {s["id"] for s in at_head}
     hits = risky_commits(rules, head, [])
     own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
-    found = risky_no_story(log, hits, own, set(stories))
+    found = risky_no_story(log, hits, own, known)
     # BREAKER_STALE reads the trunk's own-change merges too, as the trunk's check does (ESC-385)
     own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
                                lambda sha: order[arrival[sha]] if sha in arrival else len(order),
-                               list(stories.values()), rules)
+                               list(stories.values()), rules, known)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
                                  config_diffs=False, hits=hits, earlier=earlier, merges=own_everywhere,
@@ -3882,7 +3887,8 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         if complete_history():
             return found | set(pairs)
     for m in pairs:
-        risky_conflict = any(has_control(path) or rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
+        # Only a risky conflicted path counts; the globs classify a name with a control character too (ESC-393).
+        risky_conflict = any(rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
         if own.get(m) or risky_conflict:
             found.add(m)
     return found
@@ -4112,7 +4118,8 @@ def breaker_resolved(record: dict, rules: dict) -> bool:
 
 
 def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
-                      landing, stories: list[dict] = (), rules: dict | None = None) -> list[dict]:
+                      landing, stories: list[dict] = (), rules: dict | None = None,
+                      known: set | None = None) -> list[dict]:
     """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
     merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
     commit of `log` (the earliest by `landing(sha)`: the position of the trunk commit that brought it; a pull request's
@@ -4161,7 +4168,7 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             covered[sid] = reach_until(graph, [head], set()) if head and head in live else set()
         return sha in covered[sid]
 
-    known = {s["id"] for s in stories}
+    known = {s["id"] for s in stories} if known is None else known
     diffs = []
     for c in reversed(in_range):
         # An id with no story file is no open story (ESC-392): with none known, risky_no_story reports the commit.
