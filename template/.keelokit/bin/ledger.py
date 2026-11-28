@@ -2249,8 +2249,10 @@ def story_file_adds(ctx: dict) -> dict[str, set[str]]:
     paths = {s["path"]: s["id"] for s in ctx["stories"]}
     if not paths:
         return {}
-    out = git_read(["log", "--format=%x00%H", "--diff-filter=A", "--name-only", "--no-renames", ctx["trunk_sha"],
-                    "--", *(f":(literal){p}" for p in sorted(paths))]).decode(errors="replace")
+    # The stories' glob, not each path by name: a path read with replacement characters (not UTF-8) names no file,
+    # while both sides decoded the same way still match (ESC-390).
+    out = git_read(["-c", "core.quotePath=false", "log", "--format=%x00%H", "--diff-filter=A", "--name-only",
+                    "--no-renames", ctx["trunk_sha"], "--", f":(glob){ctx['cfg']['stories']}"]).decode(errors="replace")
     adds: dict[str, set[str]] = {}
     for chunk in out.split("\0")[1:]:
         lines = [line for line in chunk.split("\n") if line.strip()]
@@ -3905,17 +3907,45 @@ def pair_diffs(diff: str, keys: list[tuple[str, str]]) -> dict[str, list[str]]:
     return found
 
 
-def tree_states(commit: str, paths: list[str]) -> dict[str, tuple[str, str]]:
-    """path -> (mode, object id) at `commit` for these paths (absent ones left out), one `git ls-tree`."""
-    out = git_read(["-c", "core.quotePath=false", "ls-tree", "-r", "-z", "--full-tree", commit, "--",
-                    *(f":(literal){p}" for p in paths)]).decode(errors="replace")
-    found = {}
-    for entry in out.split("\0"):
-        meta, tab, path = entry.partition("\t")
-        fields = meta.split()
-        if tab and len(fields) == 3:
-            found[path] = (fields[0], fields[2])
+def raw_pair_states(diff: bytes, keys: list) -> dict:
+    """`git diff-tree --stdin -r --raw -z --no-abbrev` output split by pair, path names kept as raw bytes (ESC-390):
+    key -> {path: (old state, new state)}, a state being (mode, blob) or None when absent. Each newline-ended header
+    is an input line; every key with that header gets its entries (ESC-387)."""
+    headers: dict[bytes, list] = {}
+    for key, pair in keys:
+        headers.setdefault(f"{pair}\n".encode(), []).append(key)
+    found: dict = {}
+    current, at = [], 0
+    while at < len(diff):
+        header = next((h for h in headers if diff.startswith(h, at)), None)
+        if header:
+            current, at = headers[header], at + len(header)
+            continue
+        meta_end = diff.find(b"\0", at)
+        path_end = diff.find(b"\0", meta_end + 1) if meta_end >= 0 else -1
+        fields = diff[at:meta_end].decode("ascii", errors="replace").lstrip(":").split() if meta_end >= 0 else []
+        if path_end < 0 or len(fields) != 5:
+            raise LedgerError("diff-tree --raw output cannot be read")
+        path = diff[meta_end + 1:path_end]
+        old = None if set(fields[0]) == {"0"} else (fields[0], fields[2])
+        new = None if set(fields[1]) == {"0"} else (fields[1], fields[3])
+        for key in current:
+            found.setdefault(key, {})[path] = (old, new)
+        at = path_end + 1
     return found
+
+
+def risky_states(commit: str, spec: list[str]) -> dict[bytes, tuple[str, str]]:
+    """raw path -> (mode, object id) at `commit` for every path the risky pathspec matches: one `git diff-tree` from
+    the empty tree (ls-tree takes no glob pathspec), so no path is looked up by a decoded name (ESC-390)."""
+    empty = git_read(["hash-object", "-t", "tree", "--stdin"], b"").decode().strip()
+    tree = trees_of([commit]).get(commit)
+    if not tree:
+        raise LedgerError("a tree cannot be read here")
+    pair = f"{empty} {tree}"
+    out = git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", "--", *spec],
+                   f"{pair}\n".encode())
+    return {path: new for path, (_, new) in raw_pair_states(out, [("base", pair)]).get("base", {}).items()}
 
 
 def merge_path(base, ours, theirs) -> tuple[str, str] | None:
@@ -3950,32 +3980,41 @@ def merge_path(base, ours, theirs) -> tuple[str, str] | None:
 
 
 def per_path_own(parents: dict, merges: list[str], spec: list[str]) -> set[str]:
-    """The merges with a risky path whose state (absent, or mode and blob) differs from every parent's and is not what
-    a per-path, rename-free 3-way merge of its states at the merge base and the two parents gives (ESC-389): an edit
-    git's merge carried along a rename, whatever its rename limit, is caught, and an unrelated rename changes nothing.
-    No single merge base: every such path is own (fail closed). LedgerError when git fails."""
+    """The merges with a risky path that git's merge may have filled through a rename (ESC-389): one whose state
+    (absent, or mode and blob) differs from every parent's and that is absent at the merge base or in a parent, the
+    only paths a rename can carry content into. Such a path is own unless its state equals a per-path, rename-free
+    3-way merge of its states at the base and the parents (one side's change, or a clean, text, same-mode `git
+    merge-file`). A path present at the base and in both parents is left to the merge-tree diff, git's real merge
+    with its modes, attributes and diff algorithm (ESC-390). Path names stay raw bytes. No single merge base: every
+    such path is own (fail closed). LedgerError when git fails."""
     if not merges:
         return set()
     trees = trees_of([*merges, *(p for m in merges for p in parents[m])])
     if any(x not in trees for m in merges for x in (m, *parents[m])):
         raise LedgerError("a tree cannot be read here")
     keys = [((m, i), f"{trees[p]} {trees[m]}") for m in merges for i, p in enumerate(parents[m])]
-    diff = git_read(["-c", "core.quotePath=false", "diff-tree", "--stdin", "-r", "--name-only", "--no-renames", "-z",
-                     "--", *spec], "".join(f"{pair}\n" for _, pair in keys).encode()).decode(errors="replace")
-    per = pair_diffs(diff, keys)
+    diff = git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", "--", *spec],
+                    "".join(f"{pair}\n" for _, pair in keys).encode())
+    per = raw_pair_states(diff, keys)
     found = set()
     for m in merges:
-        sides = [set(per.get((m, i), ())) for i in range(len(parents[m]))]
-        paths = sorted(set.intersection(*sides)) if sides else []
+        sides = [per.get((m, i), {}) for i in range(len(parents[m]))]
+        paths = set.intersection(*(set(s) for s in sides)) if sides else set()
         if not paths:
             continue
         bases = git_read(["merge-base", "--all", *parents[m]], ok=(0, 1)).decode().split()
         if len(bases) != 1:
             found.add(m)
             continue
-        base, ours, theirs, mine = (tree_states(c, paths) for c in (bases[0], *parents[m], m))
-        if any(mine.get(p) != merge_path(base.get(p), ours.get(p), theirs.get(p)) for p in paths):
-            found.add(m)
+        base = risky_states(bases[0], spec)
+        for path in paths:
+            ours, mine = sides[0][path]
+            theirs = sides[1][path][0]
+            if path in base and ours is not None and theirs is not None:
+                continue  # an existing file: the merge-tree diff decides
+            if mine != merge_path(base.get(path), ours, theirs):
+                found.add(m)
+                break
     return found
 
 

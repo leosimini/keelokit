@@ -267,8 +267,10 @@ lands. So build-story merges `origin/main` after the rounds instead of rebasing,
 commit (this repo's way); squash and rebase landings rewrite the recorded heads, so on the trunk their rounds read as
 `BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A merge's own change is its tree against
 git's automatic merge of its parents (`git merge-tree`), so a clean sync merge of main brings nothing of its own; on top of it, a risky path whose state differs from
-every parent's is the merge's own change unless it equals a per-path 3-way merge with no rename detection (one side's
-change, or a clean text `git merge-file`), so no rename limit hides an edit; no single merge base fails closed. A change after the close is covered only by a
+every parent's and that a rename could have filled (absent at the merge base or in a parent) is the merge's own change
+unless it equals a per-path 3-way merge with no rename detection (one side's change, or a clean text `git merge-file`),
+so no rename limit hides an edit; a file present at the base and in both parents is left to git's merge, with its
+modes, attributes and diff algorithm. Path names stay raw bytes; no single merge base fails closed. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
