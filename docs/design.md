@@ -276,14 +276,20 @@ single merge base fails closed. An id with no story file never counts as an open
 accepted as fail-closed: a clean sync merge across a reviewed rename from one risky path to another (main renamed
 the file this branch edited, or the other way round) reads as `BREAKER_STALE`, since the per-path merge does not
 follow renames; a fix must not depend on rename detection (rounds 9 and 10), and the remedy is a breaker round on
-the sync merge or a person's Decision. A change after the close is covered only by a
+the sync merge or a person's Decision. git's merge is read with no attributes (an empty attribute source, no
+attributes file), so no `.gitattributes`, committed, added later or only in a work tree, steers it; a non-empty
+`$GIT_DIR/info/attributes`, which no option switches off, makes every merge touching a risky path count
+(`MERGE_ATTRIBUTES`, a warning). Second known limitation, also fail-closed: a repository that merges a risky file
+with `merge=union` gets `BREAKER_STALE` on a sync merge git merged by that attribute; the same remedy applies.
+Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
 own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
 no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision after it. History is exempt by
 position: only `Story:` commits that the commit which brought `risky.toml` does not reach, after `[ledger] since`.
-The files that decide what is judged (`risky.toml`, `state.toml`, the corrections) are always risky, so loosening
+The files that decide what is judged (`risky.toml`, `state.toml`, the corrections, and a `.gitattributes` at any depth,
+which steers how git merges and diffs) are always risky, so loosening
 them is work of a story with its own rounds; `RISKY_NO_STORY` refuses a risky change that names no story, in a commit
 or in a merge's own resolution, and `RISKY_AFTER_CLOSE` one under the trailer of stories already closed by an
 earlier landing (it is new work: an open story with its own rounds). A touch that names a directory meets every glob

@@ -475,8 +475,8 @@ RISKY_FILE = ".keelokit/risky.toml"  # HARN-021: what makes a story risky, and i
 DEFAULT_ROUNDS = 3
 MAX_ROUNDS = 20
 # The files that decide what is judged are always risky, whatever risky.toml says (ESC-331): a change to them belongs
-# to a story, which then needs its rounds.
-ALWAYS_RISKY = (RISKY_FILE, STATE_FILE, CORRECTIONS)
+# to a story, which then needs its rounds. A `.gitattributes` at any depth steers how git merges and diffs (ESC-394).
+ALWAYS_RISKY = (RISKY_FILE, STATE_FILE, CORRECTIONS, "**/.gitattributes")
 # What a `No-story: release` commit may change and still not be RISKY_NO_STORY (scripts/release.sh, ship-release).
 RELEASE_FILES = ("CHANGELOG.md", ".claude-plugin/plugin.json", "package.json")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -560,6 +560,53 @@ def git_read(args: list[str], data: bytes | None = None, ok: tuple = (0,), env: 
     return r.stdout
 
 
+ATTR_FREE: dict = {}
+
+
+def attr_free() -> tuple[list[str], dict]:
+    """The global options and environment that make a git call read no attributes (ESC-394): an empty attribute
+    source (the empty tree) and no attributes file, so neither a committed nor a work tree `.gitattributes` steers a
+    merge or a diff. A git without `--attr-source` fails the call: the caller fails closed."""
+    if "empty" not in ATTR_FREE:
+        ATTR_FREE["empty"] = git_read(["hash-object", "-t", "tree", "--stdin"], b"").decode().strip()
+    empty = ATTR_FREE["empty"]
+    return [f"--attr-source={empty}", "-c", "core.attributesFile=/dev/null"], {"GIT_ATTR_SOURCE": empty}
+
+
+def git_read_attr_free(args: list[str], data: bytes | None = None, ok: tuple = (0,)) -> bytes:
+    """git_read with no attributes read (attr_free)."""
+    options, env = attr_free()
+    return git_read([*options, *args], data, ok, env)
+
+
+def local_attributes() -> bool:
+    """Whether `$GIT_DIR/info/attributes` holds anything: no option switches it off, so a merge read here cannot be
+    trusted to be git's own (ESC-394)."""
+    try:
+        rel = git_read(["rev-parse", "--git-path", "info/attributes"]).decode().strip()
+    except LedgerError:
+        return True
+    path = Path(rel) if os.path.isabs(rel) else Path(ROOT) / rel
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return True
+
+
+MERGE_NOTES: set = set()
+
+
+def merge_notes() -> list[dict]:
+    """The warnings merge_own_hits left (MERGE_ATTRIBUTES): why every merge touching a risky path counted."""
+    diffs = []
+    if "info/attributes" in MERGE_NOTES:
+        diffs.append({"level": "warning", "code": "MERGE_ATTRIBUTES", "detail": (
+            "$GIT_DIR/info/attributes is not empty here and no option switches it off, so git's merge cannot be read "
+            "as git makes it: every merge that touches a risky path counts as its own change (empty that file)")})
+    MERGE_NOTES.clear()
+    return diffs
+
+
 def setting(state: dict, key: str, kind: type, default):
     """`[ledger] <key>` when it has the right type (bool never counts as a number), else the default."""
     table = state.get("ledger")
@@ -589,10 +636,25 @@ def read_config(state: dict) -> dict:
 
 
 def glob_regex(pattern: str) -> re.Pattern:
-    """`*` and `?` stay inside one directory, `**` crosses them; anything else is literal. Any character a path holds
-    matches, a newline included (ESC-393): a name with a control character is classified like any other."""
+    """`*` and `?` stay inside one directory, `**` crosses them, `[...]` is a class within one part; a pattern with no
+    wildcard also matches everything beneath it, as git's pathspec does (`infra`, `infra/`, ESC-395). Any character a
+    path holds matches, a newline included (ESC-393). Only story files and touches are matched with it: whether a
+    path in git is risky is always git's own pathspec's call."""
+    if not re.search(r"[*?\[]", pattern):
+        return re.compile(re.escape(pattern.rstrip("/")) + "(?:/.*)?", re.DOTALL)
     out, i = [], 0
     while i < len(pattern):
+        if pattern[i] == "[":
+            j = i + 1
+            negate = pattern[j:j + 1] in ("!", "^")
+            j += negate
+            j += pattern[j:j + 1] == "]"  # a `]` first in the class is one of its characters
+            end = pattern.find("]", j)
+            if end > 0:
+                body = pattern[i + 1 + negate:end].replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+                out.append(f"[^/{body}]" if negate else f"(?!/)[{body}]")  # a class never matches `/`
+                i = end + 1
+                continue
         if pattern.startswith("**/", i):
             out.append("(?:.*/)?")
             i += 3
@@ -3205,9 +3267,14 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
                                   .decode(errors="replace").split("\n") if line)
             same = sorted(sha for sha in path_hits if single_paths[sha] == net_paths)
             if same:
-                net = patch_ids(git_read(["diff-tree", "-p", "--no-color", base, btip])).get("0" * len(btip))
-                ids = patch_ids(git_read(["log", "--no-walk=unsorted", "-p", "--no-color", "--format=commit %H",
-                                          "--stdin"], "".join(f"{sha}\n" for sha in same).encode()))
+                try:  # no attributes: a diff driver or `-diff` never shapes the patch (ESC-394); a warning only
+                    net = patch_ids(git_read_attr_free(["diff-tree", "-p", "--no-color", base, btip])
+                                    ).get("0" * len(btip))
+                    ids = patch_ids(git_read_attr_free(["log", "--no-walk=unsorted", "-p", "--no-color",
+                                                        "--format=commit %H", "--stdin"],
+                                                       "".join(f"{sha}\n" for sha in same).encode()))
+                except LedgerError:
+                    net, ids = None, {}
                 patch_hits = {sha for sha in same if net and ids.get(sha) == net}
         hits = tree_hits | patch_hits
         if not hits:
@@ -3360,7 +3427,7 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     known = {s["id"] for s in at_head}
     hits = risky_commits(rules, head, [])
     own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
-    found = risky_no_story(log, hits, own, known)
+    found = merge_notes() + risky_no_story(log, hits, own, known)
     # BREAKER_STALE reads the trunk's own-change merges too, as the trunk's check does (ESC-385)
     own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
@@ -3583,7 +3650,7 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
 
 def literal_prefix(pattern: str) -> str:
     """What a glob says before its first wildcard."""
-    m = re.search(r"[*?]", pattern)
+    m = re.search(r"[*?\[]", pattern)
     return pattern[:m.start()] if m else pattern
 
 
@@ -3645,7 +3712,7 @@ def glob_beneath(pattern: str, directory: str) -> bool:
     return False
 
 
-def risky_reasons(story: dict, rules: dict | None, changed: set, hits: list | tuple = ()) -> list[str]:
+def risky_reasons(story: dict, rules: dict | None, changed: dict, hits: list | tuple = ()) -> list[str]:
     """Why a story is risky (empty: it is not): its front matter, a dimension, a touch, a changed path, or a commit of
     it that git found changing a path of risky.toml (`hits`)."""
     if rules is None:
@@ -3655,9 +3722,9 @@ def risky_reasons(story: dict, rules: dict | None, changed: set, hits: list | tu
     why += [f"dimension {d}" for d in story.get("risk_dims", story["dimensions"]) if d in rules["dimensions"]]
     why += [f"its commit {short(sha)} changes a path of {RISKY_FILE}" for sha in hits]
     for pattern in rules["paths"]:
-        regex = glob_regex(pattern)
         why += [f"touches {t} ({pattern})" for t in story["touches"] if touch_meets(t, pattern)]
-        why += [f"changes {p} ({pattern})" for p in sorted(changed) if regex.fullmatch(p)]
+        # `changed`: pattern -> the paths git's own pathspec matched (ESC-395)
+        why += [f"changes {p} ({pattern})" for p in sorted(changed.get(pattern, ()))]
     return list(dict.fromkeys(why))
 
 
@@ -3719,7 +3786,7 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
         current = [story, *story.get("copies", [])]
         own = [x for x in naming.get(sid, ()) if x in hits]
         why = list(dict.fromkeys(w for v in current + before.get(sid, []) if not v.get("unreadable")
-                                 for w in risky_reasons(v, rules, set(), own)))
+                                 for w in risky_reasons(v, rules, {}, own)))
         if not why:
             continue
         reason = "; ".join(why[:3]) + (f"; +{len(why) - 3} more" if len(why) > 3 else "")
@@ -3839,6 +3906,10 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
                 controls.add(fields[0])
     if not parents:
         return set()
+    if local_attributes():
+        # No option switches `$GIT_DIR/info/attributes` off: every merge touching a risky path counts (ESC-394)
+        MERGE_NOTES.add("info/attributes")
+        return set(parents)
     pairs = sorted(m for m, ps in parents.items() if len(ps) == 2)
     # An octopus fails closed; so does a risky path with a control character in it, which no parse can be trusted to
     # place (ESC-391).
@@ -3880,18 +3951,39 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         # A clone that lacks objects (shallow, partial) cannot merge them: it reads the combined diff, as before
         # HARN-022 round 7; the CI's full clone decides, failing closed.
         return found | combined_diff_hits(spec, tip, exclude, set(pairs))
-    patterns = [glob_regex(p) for p in rules["paths"]]
     try:
         found |= per_path_own(parents, pairs, spec)
+        # Whether a conflicted path is risky is git's pathspec's call (ESC-395): the risky paths of the automatic
+        # tree, the merge's and its parents', together hold every path a conflict can name.
+        with_conflicts = [m for m in pairs if conflicted[m]]
+        risky_names = risky_paths_of({m: [auto[m], trees[m], *parents[m]] for m in with_conflicts}, spec)
     except LedgerError:
         if complete_history():
             return found | set(pairs)
+        risky_names = {m: None for m in pairs}
     for m in pairs:
-        # Only a risky conflicted path counts; the globs classify a name with a control character too (ESC-393).
-        risky_conflict = any(rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
+        names = risky_names.get(m, set())
+        risky_conflict = bool(conflicted[m]) and (names is None or any(n in names for n in conflicted[m]))
         if own.get(m) or risky_conflict:
             found.add(m)
     return found
+
+
+def risky_paths_of(objects: dict, spec: list[str]) -> dict:
+    """key -> the risky paths (decoded as merge-tree's names are) of any of its trees or commits, by git's own
+    pathspec matching (one `diff-tree --stdin` from the empty tree)."""
+    wanted = sorted({x for xs in objects.values() for x in xs})
+    if not wanted:
+        return {}
+    trees = trees_of(wanted)
+    if any(x not in trees for x in wanted):
+        raise LedgerError("a tree cannot be read here")
+    empty = git_read(["hash-object", "-t", "tree", "--stdin"], b"").decode().strip()
+    keys = [(x, f"{empty} {trees[x]}") for x in wanted]
+    out = git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", "--", *spec],
+                   "".join(f"{pair}\n" for _, pair in keys).encode())
+    per = raw_pair_states(out, keys)
+    return {k: {p.decode(errors="replace") for x in xs for p in per.get(x, {})} for k, xs in objects.items()}
 
 
 def unquote_path(line: str) -> str:
@@ -3988,7 +4080,7 @@ def merge_path(base, ours, theirs) -> tuple[str, str] | None:
                 f.write(text)
             names.append(path)
         try:
-            merged = git_read(["merge-file", "-p", names[1], names[0], names[2]])
+            merged = git_read_attr_free(["merge-file", "-p", names[1], names[0], names[2]])
         except LedgerError:
             return None  # a conflict (merge-file exits with their number)
     blob = git_read(["hash-object", "--stdin"], merged).decode().strip()
@@ -4044,7 +4136,8 @@ def complete_history() -> bool:
 def merge_trees(parents: dict, merges: list[str]) -> list[tuple[str, list[str]]]:
     """(the automatic merge's tree, its conflicted paths) for each merge, from one `git merge-tree --stdin` that allows
     unrelated histories; LedgerError when git fails or answers out of shape."""
-    merged = git_read(["merge-tree", "--stdin", "-z", "--name-only", "--no-messages", "--allow-unrelated-histories"],
+    merged = git_read_attr_free(["merge-tree", "--stdin", "-z", "--name-only", "--no-messages",
+                                 "--allow-unrelated-histories"],
                       "".join(f"{parents[m][0]} {parents[m][1]}\n" for m in merges).encode()
                       ).decode(errors="replace").split("\0")
     answer, i = [], 0
@@ -4290,7 +4383,7 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
         in_range = [c for c in in_range if c["sha"] not in held and order[arrival[c["sha"]]] >= first]
     hits = risky_commits(rules, ctx["trunk_sha"], [])
     own = merge_own_hits(rules, ctx["trunk_sha"], [])
-    diffs += risky_no_story(in_range, hits, own, {s["id"] for s in ctx["stories"]})
+    diffs += merge_notes() + risky_no_story(in_range, hits, own, {s["id"] for s in ctx["stories"]})
     arrival, order = ctx["placed"]
     diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
                                ctx["stories"], rules)
@@ -4366,11 +4459,12 @@ def cmd_risky(state: dict, sid: str) -> int:
     if story is None:
         print(terminal_line(f"Keelokit: no story {sid} in the work tree or on the trunk"), file=sys.stderr)
         return 2
-    changed: set[str] = set()
-    if trunk_sha:
-        out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{trunk_sha}...HEAD"],
-                       ok=(0, 128)).decode(errors="replace")
-        changed = {line for line in git_lines(out) if line.strip()}
+    changed: dict[str, set[str]] = {}
+    if trunk_sha and rules:  # each risky pattern's changed paths, as git's pathspec matches them (ESC-395)
+        for pattern in rules["paths"]:
+            out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "-z", "--no-renames",
+                            f"{trunk_sha}...HEAD", "--", f":(glob){pattern}"], ok=(0, 128)).decode(errors="replace")
+            changed[pattern] = {p for p in out.split("\0") if p}
     hits: list[str] = []
     if trunk_sha and rules:  # the story's commits already on the trunk count too (ESC-319)
         found = risky_commits(rules, trunk_sha, [])

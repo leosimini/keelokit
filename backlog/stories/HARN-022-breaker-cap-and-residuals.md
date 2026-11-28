@@ -248,7 +248,7 @@ below.
   zero-width forms, the mixed trailer, a closed story's file deleted after its close, the full test_breaker suite. The
   builder stopped; the coordinator decided: a pull request knows the story ids at its head only, and the LOW finding
   is fixed here too (only a risky conflicted path counts; the globs classify any name).
-- Round 15 · head 4629bef8ec1fb6e3cc4d8a22672d89e4af68c065 · 2 findings (1 HIGH, 1 MEDIUM), not fixed
+- Round 15 · head 4629bef8ec1fb6e3cc4d8a22672d89e4af68c065 · 2 findings (1 HIGH, 1 MEDIUM), fixed (ESC-394, ESC-395)
   A new agent, cold, scratch clones only, told the accepted limitation; each finding run by the builder too.
   Reproduced: (HIGH) `git merge-tree` reads `.gitattributes` from the work tree, and `.gitattributes` is no risky
   path: a `No-story: docs` commit adding `**/migrations/** merge=union` makes a conflict on a risky file merge
@@ -259,4 +259,6 @@ below.
   `risky_commits` sees `infra/blob.bin` as risky while a sync merge resolving a binary conflict on it by keeping the
   branch's bytes (dropping main's reviewed fix) is not counted, on the trunk and in a pull request. Held: the pull
   request's known ids, re.DOTALL, risky conflicted paths only, directory renames, non-UTF-8 conflicted names, the full
-  test_breaker suite. The builder stops here: the coordinator decides.
+  test_breaker suite. The builder stopped; the coordinator decided: git's merge read with no attributes (a
+  non-empty info/attributes fails closed), `.gitattributes` always risky, a union-merged sync merge accepted as a
+  second fail-closed limitation, and every risky-path verdict from git's own pathspec.

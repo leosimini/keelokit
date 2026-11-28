@@ -252,6 +252,9 @@ builder.
    story edited it (or the other way round), the sync merge reads as `BREAKER_STALE` although git
    merged it cleanly, because the ledger does not follow renames. Run a breaker round that covers the
    sync merge and record its head, or ask the person for a `Decision`; never re-record an old round.
+   The same holds when a `.gitattributes` makes git merge a risky file with `merge=union`: the ledger
+   reads git's merge with no attributes, so that sync merge reads as `BREAKER_STALE` too. A change to a
+   `.gitattributes` is itself a risky change.
 2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
    runs it with the seal, which skips the repeat only for this exact, unchanged commit).
 3. Commit with the trailer that closes the story, as the message's last paragraph, and a body: what
