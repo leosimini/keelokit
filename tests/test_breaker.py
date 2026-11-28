@@ -2818,7 +2818,8 @@ class HarnRound17Test(BreakerCase):
         self.assertIn("BREAKER_STALE", self.all_codes(repo))
 
     def test_HARN_022_S3_breaker17_anything_but_an_empty_info_attributes_file_fails_closed_ESC_397(self):
-        import subprocess
+        """Decided on `lstat` alone, never by opening the file: a symlink and a directory stand for every kind of
+        entry that is not an empty regular file (a FIFO takes the same branch; feeding one races under load)."""
         repo, _ = HarnRound15Test.grant_flow(self, False, False, 275)
         info = repo.path / ".git" / "info"
         info.mkdir(exist_ok=True)
@@ -2829,14 +2830,11 @@ class HarnRound17Test(BreakerCase):
         target.mkdir()
         self.assertIn("MERGE_ATTRIBUTES", self.all_codes(repo))
         target.rmdir()
-        os.mkfifo(target)
-        writer = subprocess.Popen(["sh", "-c", f"while true; do printf '* merge=union\\n' > '{target}'; done"])
-        try:
-            self.assertIn("MERGE_ATTRIBUTES", self.all_codes(repo))
-        finally:
-            writer.kill()
-            writer.wait()
-            target.unlink()
+        source = repo.path / ".git" / "union-attributes"
+        source.write_text("* merge=union\n")
+        target.symlink_to(source)
+        self.assertIn("MERGE_ATTRIBUTES", self.all_codes(repo))
+        target.unlink()
 
     def test_HARN_022_S3_breaker17_local_trailer_separators_change_no_story_ESC_397(self):
         repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",)),
