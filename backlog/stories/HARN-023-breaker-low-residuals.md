@@ -39,6 +39,10 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
 - `release_only` exempts a `No-story: release` commit whose paths all end in `/package.json`, wherever they sit, so
   `db/migrations/package.json` or `.keelokit/bin/package.json` inside a risky glob lands with no RISKY_NO_STORY
   (older than HARN-022, from HARN-021). Probe: /tmp/breaker13-HARN-022/probes/p3_release_package_json.py (round 13).
+- The control-character fallback of `merge_own_hits` (ESC-391) applies to every conflicted path, risky or not: a
+  hand-resolved conflict on `docs/notes\tdraft.txt` in build-story's sync merge reads as BREAKER_STALE (fails closed,
+  but the decision named only risky paths). Probe: /tmp/breaker14-HARN-022/probes/p3_control_in_nonrisky_conflict.py
+  (round 14).
 
 Does NOT do: anything HARN-022's open HIGH and MEDIUM findings need (they are HARN-022's, by the coordinator's call).
 

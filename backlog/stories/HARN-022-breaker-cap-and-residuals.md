@@ -237,3 +237,13 @@ below.
   other parsers, the screen, RISKY_AFTER_CLOSE ordering, same-arrival commits, squash and revert re-closes. The
   builder stopped; the coordinator decided: git output carrying paths is read by position only, a risky path with a
   control character makes the merge its own, and an id with no story file never counts as an open story.
+- Round 14 · head 00f2d160767f2f09b21dfb1ffd5daf793b151213 · 2 findings (1 MEDIUM, 1 LOW), not fixed
+  A new agent, cold, scratch clones only, told the accepted limitation, pointed at the parsers and the trailer ids; the
+  MEDIUM finding run by the builder too. Reproduced: (MEDIUM) in a pull request the known ids are the trunk's stories
+  plus the head's, so an id whose story file the pull request itself deletes still counts as an open story there:
+  under `enforce = "warn"` the pull request exits 0 with only UNKNOWN_STORY and STALE_BRANCH warnings, and once merged
+  the trunk reports RISKY_NO_STORY (the pull request and the trunk disagree; ESC-392's hole on the pull request path);
+  (LOW, to HARN-023) the control-character fallback flags non-risky conflicted paths. Held: raw_pair_states,
+  merge_trees, the C-quoted text parsers, DEL and C1 controls, NUL in messages, ids in other case, lookalikes and
+  zero-width forms, the mixed trailer, a closed story's file deleted after its close, the full test_breaker suite. The
+  builder stops here: the coordinator decides.
