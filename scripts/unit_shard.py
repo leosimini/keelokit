@@ -16,9 +16,10 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parents[1] / "tests"
 
 
-# Seconds per module, measured 2026-11-24 on a 4-core machine, two modules at a time.
+# Seconds per module, measured 2026-11-24 on a 4-core machine, two modules at a time (test_breaker and
+# test_ledger_swarm re-measured 2026-11-28 for HARN-022, after its breaker rounds; test_breaker again after round 17).
 SECONDS = {
-    "test_verify_operativo": 254, "test_ledger": 245, "test_ledger_harbor": 40, "test_ledger_swarm": 25, "test_breaker": 25, "test_doctor": 165, "test_run_local": 105, "test_guard": 120,
+    "test_verify_operativo": 254, "test_ledger": 245, "test_ledger_harbor": 40, "test_ledger_swarm": 50, "test_breaker": 180, "test_doctor": 165, "test_run_local": 105, "test_guard": 120,
     "test_verify": 80, "test_dashboard": 72, "test_hooks": 44, "test_guard_corrections": 26, "test_copier": 13,
     "test_ux_gate": 10, "test_first_commit": 10, "test_landing": 6, "test_verify_plan": 3, "test_process": 3,
     "test_scripts": 2, "test_session_titles": 1, "test_release": 1, "test_ci": 1, "test_workflows": 0.5,

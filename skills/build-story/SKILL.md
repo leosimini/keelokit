@@ -213,15 +213,24 @@ For a story `ledger.py risky <ID>` calls risky, after step 5's round is clean an
    ```
    One top-level line per round; detail goes on indented lines under it. `clean` means nothing reproduced, and it is
    the round's whole result (a round that lists findings is not clean).
-5. **Loop** with a new breaker on the new head until a round is clean, at most `rounds` rounds
-   (`.keelokit/risky.toml`, default 3). The cap hit with findings left: the story does not close silently. Stop
-   (`mode = "auto"` too), tell the person what is left, and record their call as a `Decision` line naming them
-   (another round past the cap, or land as it is with the findings in a follow-up story). An agent never writes a
-   Decision of its own.
+5. **Loop** with a new breaker on the new head until a round is clean. The last round decides, whatever its
+   number: a clean last round closes the story, past the cap too. The cap (`rounds` in `.keelokit/risky.toml`,
+   default 3) is where you stop and ask: at round `rounds` with findings left the story does not close silently.
+   Stop (`mode = "auto"` too), tell the person what is left, and record their call as a `Decision` line naming them
+   (another round past the cap, or land as it is with the findings in a follow-up story). If they choose another
+   round and it is clean, that round decides; no Decision is needed after it. An agent never writes a Decision of
+   its own.
 
 `ledger.py check` (the CI) reports a risky story closed with no round (`BREAKER_MISSING`, error) and one whose last
-round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A pull request is judged by the
-trunk's `risky.toml`, never its own.
+round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A risky change under the trailer of a
+story already closed is new work (`RISKY_AFTER_CLOSE`, error): give it an open story, with its own rounds. A round's
+head is the head the breaker actually attacked, on the branch that closes the story (full or 7+ hex digits that
+resolve here; a head the close does not reach is `BREAKER_BAD_ENTRY` and that round counts as not clean). The last
+clean round's head must be at or after the story's last risky change: a risky commit between it and the `Story:`
+commit is `BREAKER_STALE` (error). So record each round line after the commits it attacked, and put `Story:` on the
+commit that records the last round, after every risky change. A revert of a risky change is itself a risky
+change: after the close it needs a new round (and a re-close) like any other. A pull
+request is judged by the trunk's `risky.toml`, never its own.
 
 ## 6. Verify — verifier, mode B
 
@@ -231,9 +240,21 @@ builder.
 ## 7. Land
 
 1. `git fetch`. If `origin/main` moved past the base recorded in step 5, other work landed in
-   between: `git rebase origin/main`, then `breaker` in mode B (old base → new base × this
-   story) and, if it touched the same journeys, a verifier mode B re-walk of them. Findings go
-   through the step 5.4 loop.
+   between: bring it in, then `breaker` in mode B (old base → new base × this story) and, if it
+   touched the same journeys, a verifier mode B re-walk of them. Findings go through the step 5.4
+   loop. For a risky story, after the breaker rounds, merge `origin/main` (`git merge --no-ff`),
+   never rebase: a rebase rewrites the heads the rounds recorded, and a round counts only when its
+   head is a commit the close reaches. If a rebase is truly needed, do it before the rounds start,
+   or run a new round after it; never re-record an old round on a new head (that is a round nobody
+   ran). A squash or rebase landing rewrites the heads too: on the trunk its rounds read as
+   `BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` (warnings). Land a risky story with a merge commit.
+   Known limitation (fail-closed): when main renamed a risky file to another risky path while this
+   story edited it (or the other way round), the sync merge reads as `BREAKER_STALE` although git
+   merged it cleanly, because the ledger does not follow renames. Run a breaker round that covers the
+   sync merge and record its head, or ask the person for a `Decision`; never re-record an old round.
+   The same holds when a `.gitattributes` makes git merge a risky file with `merge=union`: the ledger
+   reads git's merge with no attributes, so that sync merge reads as `BREAKER_STALE` too. A change to a
+   `.gitattributes` is itself a risky change.
 2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
    runs it with the seal, which skips the repeat only for this exact, unchanged commit).
 3. Commit with the trailer that closes the story, as the message's last paragraph, and a body: what

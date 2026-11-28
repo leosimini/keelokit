@@ -119,8 +119,10 @@ import random  # noqa: E402
 import tempfile  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
+import posixpath  # noqa: E402
 import re  # noqa: E402
 import signal  # noqa: E402
+import stat  # noqa: E402
 import subprocess  # noqa: E402
 import time  # noqa: E402
 import tomllib  # noqa: E402
@@ -148,6 +150,9 @@ GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GI
              "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR")
 
 
+HARDEN_CONFIG: dict = {}
+
+
 def harden_git(hooks_off: bool) -> None:
     """HARN-004 (ESC-271, ESC-280): run by the plugin's hooks, every git call of this copy reads no repository the
     project ships (a directory with HEAD, config, objects/ and refs/ is not a bare repository to it), runs no
@@ -159,6 +164,7 @@ def harden_git(hooks_off: bool) -> None:
               "core.fsmonitor": "false"}
     if hooks_off:
         config["core.hooksPath"] = os.devnull
+    HARDEN_CONFIG.update(config)  # the hermetic environment of every git read carries them too
     try:
         n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
     except ValueError:
@@ -204,6 +210,37 @@ NETWORK = ("could not resolve host", "connection refused", "connection timed out
 def git_env() -> dict:
     return {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
             "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never"}
+
+
+# What every git read pins over any config git still reads (the repository's own): explicit values beat config (ESC-396).
+# No `merge.default`: a pinned driver name is one a user-defined driver of that name shadows (ESC-397); merge_config
+# fails closed on any config that names a driver instead.
+READ_PINS = (("log.diffMerges", "separate"), ("merge.renormalize", "false"), ("core.autocrlf", "false"),
+             ("diff.renames", "true"), ("core.quotePath", "true"), ("trailer.separators", ":"))
+# Variables that steer what git reads or how a pathspec matches; the hermetic environment drops them (ESC-396).
+HERMETIC_DROP = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
+                 "GIT_ATTR_SOURCE", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE")
+HERMETIC: dict = {}
+
+
+def hermetic_env() -> dict:
+    """The environment of every git read (ESC-396), built here only: no system or global config file, no config from
+    the environment (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and its keys), no system attributes, no pathspec switches;
+    then the hardening (harden_git) and READ_PINS as GIT_CONFIG_COUNT entries, over the repository's own config, which
+    no option switches off (merge_config fails closed on it). A ROOT plain git already trusts stays trusted
+    (safe.directory), so a CI container's ownership check reads as it did."""
+    env = {k: v for k, v in git_env().items() if not k.startswith("GIT_CONFIG") and k not in HERMETIC_DROP}
+    if "trusted" not in HERMETIC:
+        code, _ = git_out("rev-parse", "--git-dir")
+        HERMETIC["trusted"] = code == 0
+    pins = [*HARDEN_CONFIG.items(), *READ_PINS]
+    if HERMETIC["trusted"]:
+        pins += [("safe.directory", str(ROOT)), ("safe.directory", str(Path(ROOT).resolve()))]
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
+               GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_COUNT=str(len(pins)))
+    for i, (key, value) in enumerate(pins):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return env
 
 
 def run_git(args: list[str], timeout: float | None = None, env: dict | None = None) -> tuple[int | None, str]:
@@ -317,7 +354,7 @@ def ensure_deploy_branches(remaining: float) -> None:
     production are, so its stories read in-version (ESC-249): add deploy/* to origin's fetch and fetch it, pruned. A
     clone that fetches every branch already has them."""
     code, out = git_out("config", "--get-all", "remote.origin.fetch")
-    sources = {line.lstrip("+").split(":", 1)[0] for line in out.splitlines()} if code == 0 else set()
+    sources = {line.lstrip("+").split(":", 1)[0] for line in git_lines(out)} if code == 0 else set()
     if remaining <= 0.2 or "refs/heads/*" in sources or git_out("remote", "get-url", "origin")[0]:
         return
     spec = "+refs/heads/deploy/*:refs/remotes/origin/deploy/*"
@@ -419,7 +456,50 @@ BUGBASH = "docs/bugbash/"
 ADDENDUM_HEADING = re.compile(r"#{1,6}\s+Addendum\b")
 SQUASHED_TRAILER = re.compile(r"(?m)^[ \t*-]*((?i:story|part-of)):[ \t]*([A-Z][A-Z0-9]*-[0-9]+)")
 TRAILER_LINE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*:|\(cherry picked from commit ")
-CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+class Screen:
+    """What may not reach a terminal or a snapshot as it is: control characters (Cc, C0 and C1), format characters (Cf:
+    bidi overrides and isolates such as U+202E and U+2066..2069, zero-width characters, the BOM) and the line and
+    paragraph separators (Zl, Zp: U+2028, U+2029), by Unicode category, whatever this Python's Unicode version
+    (HARN-022). `keep`: characters let through (the tab and the newline, which the callers turn into what they mean).
+    `.search` and `.sub` read as a regex's."""
+
+    CATEGORIES = ("Cc", "Cf", "Zl", "Zp")
+
+    def __init__(self, keep: str = ""):
+        self.keep = keep
+        self.ascii = re.compile("[%s]" % "".join(re.escape(chr(c)) for c in [*range(0x20), 0x7f] if chr(c) not in keep))
+
+    def bad(self, ch: str) -> bool:
+        return ch not in self.keep and unicodedata.category(ch) in self.CATEGORIES
+
+    def search(self, text: str) -> str | None:
+        """The first such character (truthy), else None."""
+        if text.isascii():
+            m = self.ascii.search(text)
+            return m.group(0) if m else None
+        return next((ch for ch in text if self.bad(ch)), None)
+
+    def sub(self, repl: str, text: str) -> str:
+        if text.isascii():
+            return self.ascii.sub(repl, text)
+        return "".join(repl if self.bad(ch) else ch for ch in text)
+
+
+CONTROL = Screen(keep="\t\n")
+
+
+def git_lines(text: str) -> list[str]:
+    """The lines of git's output, split at newlines only: str.splitlines also breaks at U+0085, U+2028, U+2029 and
+    \\x1c..\\x1e, which a ref name or a path may hold, and one such branch broke every command (HARN-022)."""
+    if not text:
+        return []
+    return (text[:-1] if text.endswith("\n") else text).split("\n")
+
+
+def terminal_line(text: str) -> str:
+    """One terminal line: tabs, newlines and every other character CONTROL screens become one safe character each, so
+    nothing a file name, subject or name holds can start a line of its own (ESC-357)."""
+    return CONTROL.sub("?", text.replace("\t", " ").replace("\n", " "))
 FIX = "run `python3 .keelokit/bin/ledger.py history --ensure`"
 CORRECTIONS = "backlog/ledger-corrections.toml"
 PROPOSED = ".keelokit/ledger-corrections.proposed.toml"
@@ -431,8 +511,9 @@ RISKY_FILE = ".keelokit/risky.toml"  # HARN-021: what makes a story risky, and i
 DEFAULT_ROUNDS = 3
 MAX_ROUNDS = 20
 # The files that decide what is judged are always risky, whatever risky.toml says (ESC-331): a change to them belongs
-# to a story, which then needs its rounds.
-ALWAYS_RISKY = (RISKY_FILE, STATE_FILE, CORRECTIONS)
+# to a story, which then needs its rounds. A `.gitattributes` at any depth steers how git merges and diffs (ESC-394).
+ATTRIBUTES_GLOB = "**/.gitattributes"
+ALWAYS_RISKY = (RISKY_FILE, STATE_FILE, CORRECTIONS, ATTRIBUTES_GLOB)
 # What a `No-story: release` commit may change and still not be RISKY_NO_STORY (scripts/release.sh, ship-release).
 RELEASE_FILES = ("CHANGELOG.md", ".claude-plugin/plugin.json", "package.json")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -507,13 +588,94 @@ def git_read(args: list[str], data: bytes | None = None, ok: tuple = (0,), env: 
     kwargs = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     try:
         r = subprocess.run(["git", *NOPROMPT, *READ_CONFIG, *args], cwd=ROOT,
-                           env={**git_env(), "GIT_NO_LAZY_FETCH": "1", **(env or {})},  # reading never fetches
+                           env={**hermetic_env(), "GIT_NO_LAZY_FETCH": "1", **(env or {})},  # reading never fetches
                            capture_output=True, **kwargs)
     except OSError as e:
         raise LedgerError(f"cannot run git ({e})") from e
     if r.returncode not in ok:
         raise LedgerError(f"git {args[0]} failed: {last_error(r.stderr.decode(errors='replace'))}")
     return r.stdout
+
+
+ATTR_FREE: dict = {}
+
+
+def attr_free() -> tuple[list[str], dict]:
+    """The global options and environment that make a git call read no attributes (ESC-394): an empty attribute
+    source (the empty tree) and no attributes file, so neither a committed nor a work tree `.gitattributes` steers a
+    merge or a diff. A git without `--attr-source` fails the call: the caller fails closed."""
+    if "empty" not in ATTR_FREE:
+        ATTR_FREE["empty"] = git_read(["hash-object", "-t", "tree", "--stdin"], b"").decode().strip()
+    empty = ATTR_FREE["empty"]
+    return [f"--attr-source={empty}", "-c", "core.attributesFile=/dev/null"], {"GIT_ATTR_SOURCE": empty}
+
+
+def git_read_attr_free(args: list[str], data: bytes | None = None, ok: tuple = (0,)) -> bytes:
+    """git_read with no attributes read (attr_free)."""
+    options, env = attr_free()
+    return git_read([*options, *args], data, ok, env)
+
+
+def local_attributes() -> bool:
+    """Whether `$GIT_DIR/info/attributes` holds anything: no option switches it off, so a merge read here cannot be
+    trusted to be git's own (ESC-394)."""
+    try:
+        rel = git_read(["rev-parse", "--git-path", "info/attributes"]).decode().strip()
+    except LedgerError:
+        return True
+    path = Path(rel) if os.path.isabs(rel) else Path(ROOT) / rel
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    # git opens whatever is there: only an empty regular file says nothing (a FIFO, a link or a directory may, ESC-397)
+    return not (stat.S_ISREG(st.st_mode) and st.st_size == 0)
+
+
+def merge_config() -> str | None:
+    """The first config key git itself would read here (every scope the hermetic environment leaves: the repository's
+    config, its worktree config, includes followed; not the ledger's own pins) that can steer git's merge, merge-file
+    or a diff, which no option switches off: a merge driver (`merge.<name>.driver`, `.recursive`), `merge.default`,
+    `merge.renormalize`, `merge.conflictStyle`, a diff driver (`diff.<name>.<key>`) or `diff.external` (ESC-397).
+    `merge.ff`, `merge.tool`, `merge.log` and the like steer nothing the ledger reads. None: none."""
+    try:
+        out = git_read(["config", "--show-scope", "--includes", "--name-only", "--get-regexp", r"^(merge|diff)\."],
+                       ok=(0, 1)).decode(errors="replace")
+    except LedgerError:
+        return "unreadable"
+    for line in git_lines(out):
+        scope, _, key = line.strip().partition("\t")
+        key = key.strip().lower()
+        if not key or scope == "command":
+            continue
+        parts = key.split(".")
+        steering = (parts[0] == "merge" and (len(parts) >= 3 and parts[-1] in ("driver", "recursive")
+                                             or key in ("merge.default", "merge.renormalize", "merge.conflictstyle"))
+                    or parts[0] == "diff" and (len(parts) >= 3 or key == "diff.external"))
+        if steering:
+            return key
+    return None
+
+
+MERGE_NOTES: set = set()
+
+
+def merge_notes() -> list[dict]:
+    """The warnings merge_own_hits left (MERGE_ATTRIBUTES): why every merge touching a risky path counted."""
+    diffs = []
+    if "info/attributes" in MERGE_NOTES:
+        diffs.append({"level": "warning", "code": "MERGE_ATTRIBUTES", "detail": (
+            "$GIT_DIR/info/attributes here is not an empty file and no option switches it off, so git's merge cannot "
+            "be read as git makes it: every merge that touches a risky path counts as its own change (empty it, or "
+            "remove it)")})
+    for note in sorted(n for n in MERGE_NOTES if n.startswith("config:")):
+        diffs.append({"level": "warning", "code": "MERGE_CONFIG", "detail": (
+            f"the repository's own config sets {note.split(':', 1)[1]}, which can steer git's merge or diff and no "
+            "option switches off: every merge that touches a risky path counts as its own change (remove it)")})
+    MERGE_NOTES.clear()
+    return diffs
 
 
 def setting(state: dict, key: str, kind: type, default):
@@ -544,10 +706,35 @@ def read_config(state: dict) -> dict:
             "lang": "es" if lang == "es" else "en"}
 
 
-def glob_regex(pattern: str) -> re.Pattern:
-    """`*` and `?` stay inside one directory, `**` crosses them; anything else is literal."""
+def glob_readable(pattern: str) -> bool:
+    """Whether the glob's classes compile (a reversed range such as `[z-a]` does not)."""
+    try:
+        glob_regex(pattern, strict=True)
+        return True
+    except re.error:
+        return False
+
+
+def glob_regex(pattern: str, strict: bool = False) -> re.Pattern:
+    """`*` and `?` stay inside one directory, `**` crosses them, `[...]` is a class within one part; a pattern with no
+    wildcard also matches everything beneath it, as git's pathspec does (`infra`, `infra/`, ESC-395). Any character a
+    path holds matches, a newline included (ESC-393). Only story files and touches are matched with it: whether a
+    path in git is risky is always git's own pathspec's call."""
+    if not re.search(r"[*?\[]", pattern):
+        return re.compile(re.escape(pattern.rstrip("/")) + "(?:/.*)?", re.DOTALL)
     out, i = [], 0
     while i < len(pattern):
+        if pattern[i] == "[":
+            j = i + 1
+            negate = pattern[j:j + 1] in ("!", "^")
+            j += negate
+            j += pattern[j:j + 1] == "]"  # a `]` first in the class is one of its characters
+            end = pattern.find("]", j)
+            if end > 0:
+                body = pattern[i + 1 + negate:end].replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+                out.append(f"[^/{body}]" if negate else f"(?!/)[{body}]")  # a class never matches `/`
+                i = end + 1
+                continue
         if pattern.startswith("**/", i):
             out.append("(?:.*/)?")
             i += 3
@@ -558,7 +745,12 @@ def glob_regex(pattern: str) -> re.Pattern:
             c = pattern[i]
             out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
             i += 1
-    return re.compile("".join(out))
+    try:
+        return re.compile("".join(out), re.DOTALL)
+    except re.error:
+        if strict:
+            raise
+        return re.compile(re.escape(pattern), re.DOTALL)  # a class that cannot be read matches only itself
 
 
 def iso(epoch: int) -> str:
@@ -574,7 +766,7 @@ def read_refs(trunk: str, snapshot: str = "") -> dict[str, str]:
     patterns = ["refs/tags/v*", "refs/remotes/origin/", f"refs/heads/{trunk}"]
     fmt = "%(refname)%09%(objectname)%09%(objecttype)%09%(*objectname)%09%(*objecttype)"
     refs, nested = {}, []
-    for line in git_read(["for-each-ref", f"--format={fmt}", *patterns]).decode(errors="replace").splitlines():
+    for line in git_lines(git_read(["for-each-ref", f"--format={fmt}", *patterns]).decode(errors="replace")):
         name, sha, kind, peeled, peeled_kind = line.split("\t")
         if kind == "tag" and peeled_kind == "tag":
             nested.append(name)
@@ -609,7 +801,7 @@ def hidden_snapshots(snapshot: str) -> list[str]:
 def peel_nested(names: list[str]) -> dict[str, str]:
     """name -> commit for tags of tags, one `cat-file --batch-check` of `<ref>^{}` lines; others are dropped."""
     out = git_read(["cat-file", "--batch-check"], "".join(f"{n}^{{}}\n" for n in names).encode())
-    lines = out.decode(errors="replace").splitlines()
+    lines = git_lines(out.decode(errors="replace"))
     if len(lines) != len(names):
         raise LedgerError("git cat-file gave an unexpected answer")
     return {n: line.split()[0] for n, line in zip(names, lines) if line.split()[1:2] == ["commit"]}
@@ -638,7 +830,7 @@ def read_graph(tips: list[str]) -> dict[str, tuple[str, ...]]:
     """sha -> parents of everything the tips reach, from one `rev-list --parents`."""
     out = git_read(["rev-list", "--parents", "--stdin"], "".join(f"{t}\n" for t in tips).encode())
     graph = {}
-    for line in out.decode().splitlines():
+    for line in git_lines(out.decode()):
         sha, *parents = line.split()
         graph[sha] = tuple(parents)
     return graph
@@ -685,7 +877,7 @@ def missing_objects(trunk_sha: str) -> set[str]:
     """Objects of the trunk's tree this clone does not have (a partial or damaged one): one tree walk that
     prints `?<sha>` for each, where `cat-file` would try to fetch it from the promisor remote."""
     out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", f"{trunk_sha}^{{tree}}"])
-    return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
+    return {line[1:] for line in git_lines(out.decode(errors="replace")) if line.startswith("?")}
 
 
 def is_partial_clone() -> bool:
@@ -857,6 +1049,7 @@ def read_trunk_log(trunk_sha: str, more: tuple = ()) -> list[dict]:
 
 
 REVERT_CACHE: dict[frozenset, set] = {}
+HISTORY: dict[str, bool] = {}   # whether this clone holds the whole history (real_reverts asks once)
 
 
 def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
@@ -871,7 +1064,7 @@ def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
     for chunk in out.split("\0")[1:]:
         head, _, rest = chunk.partition("\n")
         rows = []
-        for line in rest.splitlines():
+        for line in git_lines(rest):  # newlines only: a path may hold U+2028 (ESC-375)
             meta, tab, path = line.partition("\t")
             fields = meta.lstrip(":").split()
             if line.startswith(":") and tab and len(fields) >= 4:
@@ -884,18 +1077,26 @@ def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
 
 def real_reverts(pairs: set[tuple[str, str]]) -> set[tuple[str, str]]:
     """The (reverter, target) pairs whose reverter's change is the target's inverted: a message-only "revert", or a
-    partial one, reverts nothing (ESC-335). A clone that cannot read the changes (a partial clone without the blobs,
-    a target past a cut) keeps the messages' word: the CI's full clone decides."""
+    partial one, reverts nothing (ESC-335). With the whole history here (not shallow, no promisor: the CI's clone), a
+    target that is no commit reverts nothing, and a change git cannot read counts no revert on a message's word: it
+    fails closed (ESC-374). A clone that lacks history (shallow, partial) keeps the messages' word, as before: its states
+    are read conservatively, and the CI's full clone decides."""
     if not pairs:
         return set()
     key = frozenset(pairs)
     if key not in REVERT_CACHE:
+        if "complete" not in HISTORY:
+            HISTORY["complete"] = is_shallow() is False and not is_partial_clone()
+        complete = HISTORY["complete"]
         try:
-            forward = change_ids(sorted({x for _, x in pairs}), False)
-            back = change_ids(sorted({r for r, _ in pairs}), True)
+            if complete:
+                known = set(peel_nested(sorted({x for _, x in pairs})))
+                pairs = {(r, x) for r, x in pairs if x in known}
+            forward = change_ids(sorted({x for _, x in pairs}), False) if pairs else {}
+            back = change_ids(sorted({r for r, _ in pairs}), True) if pairs else {}
             REVERT_CACHE[key] = {(r, x) for r, x in pairs if forward.get(x) and forward.get(x) == back.get(r)}
         except LedgerError:
-            REVERT_CACHE[key] = set(pairs)
+            REVERT_CACHE[key] = set() if complete else set(pairs)
     return REVERT_CACHE[key]
 
 
@@ -1111,12 +1312,59 @@ def revert_status(log: list[dict], graph: dict) -> dict[str, bool]:
     reverters: dict[str, list[str]] = {}
     for c in log:
         for target in c["reverts"]:
-            for sha in brought_by(graph, target):
+            brought = brought_by(graph, target)
+            if len(graph.get(target, ())) > 1:
+                # A revert of a merge reverts a commit the merge brought only when, path by path, it undoes exactly
+                # what that commit changed (ESC-382); anything less, or a doubt, is no revert of it.
+                brought = [target] + sorted(merge_revert_undoes(c["sha"], [x for x in brought if x != target], graph))
+            for sha in brought:
                 reverters.setdefault(sha, []).append(c["sha"])
     status: dict[str, bool] = {}
     for c in log:
         status[c["sha"]] = any(not status.get(r, False) for r in reverters.get(c["sha"], ()))
     return status
+
+
+MERGE_REVERT_CACHE: dict[tuple, frozenset] = {}
+
+
+def path_changes(shas: list[str]) -> dict[str, dict[str, tuple]]:
+    """commit -> {path: (old mode, new mode, old blob, new blob)} as `git log --raw` records it (a merge: none), one
+    call for all."""
+    if not shas:
+        return {}
+    out = git_read(["-c", "core.quotePath=false", "log", "--no-walk=unsorted", "--stdin", "--raw", "--no-abbrev",
+                    "--no-renames", "--format=%x00%H"], "".join(f"{x}\n" for x in shas).encode()).decode(errors="replace")
+    found: dict[str, dict[str, tuple]] = {}
+    for chunk in out.split("\0")[1:]:
+        head, _, rest = chunk.partition("\n")
+        rows = {}
+        for line in git_lines(rest):
+            meta, tab, path = line.partition("\t")
+            fields = meta.lstrip(":").split()
+            if line.startswith(":") and tab and len(fields) >= 4:
+                rows[path] = (fields[0], fields[1], fields[2], fields[3])
+        found[head.strip()] = rows
+    return found
+
+
+def merge_revert_undoes(reverter: str, brought: list[str], graph: dict) -> frozenset:
+    """The commits of `brought` (non-merges a reverted merge brought) whose every changed path the reverter changes
+    back exactly: the same path from the commit's new blob and mode to its old ones (ESC-382). Blob ids, not patches:
+    no context, binary file or attribute can fake it. On any doubt (a git error), none."""
+    key = (reverter, tuple(sorted(brought)))
+    if key not in MERGE_REVERT_CACHE:
+        singles = [x for x in brought if len(graph.get(x, ())) < 2]
+        try:
+            changes = path_changes(sorted({reverter, *singles}))
+        except LedgerError:
+            changes = {}
+        back = changes.get(reverter, {})
+        MERGE_REVERT_CACHE[key] = frozenset(
+            x for x in singles if changes.get(x) and all(
+                back.get(path) == (new_mode, old_mode, new_blob, old_blob)
+                for path, (old_mode, new_mode, old_blob, new_blob) in changes[x].items()))
+    return MERGE_REVERT_CACHE[key]
 
 
 def story_commits(log: list[dict], reverted: dict, arrival: dict, order: dict) -> tuple[dict, set]:
@@ -1283,6 +1531,14 @@ def unattributed(cfg: dict, log: list[dict], graph: dict, arrival_of: dict, corr
     return {**base, "commits": loose, "ratio": loose / len(in_range) if in_range else 0.0}
 
 
+def first_closes(graph: dict, closes: list[str]) -> tuple[list[str], dict[str, set]]:
+    """(the closes no other close precedes in the graph, each close's ancestry, itself included). A re-close descends
+    from the close, so its own change comes after it (ESC-398); concurrent closes are all minimal."""
+    unique = sorted(set(closes))
+    ancestors = {c: reach_until(graph, [c], set()) for c in unique}
+    return [c for c in unique if not any(d != c and d in ancestors[c] for d in unique)], ancestors
+
+
 def reach_until(graph: dict, tips, stop: set) -> set:
     """The commits reachable from `tips` that are not in `stop` (the walk does not cross them)."""
     stack, found = list(tips), set()
@@ -1323,7 +1579,7 @@ def ledger_facts(state: dict) -> dict:
     return read_all(state)["facts"]
 
 
-def read_all(state: dict, rules_sha: str | None = None) -> dict:
+def read_all(state: dict, rules_sha: str | None = None, show: str | None = None) -> dict:
     """The facts and what they were computed from (for the commands that propose or accept corrections):
     facts, and with a complete history also stories, log, graph, placed (arrivals), corrections, records."""
     cfg = read_config(state)
@@ -1377,8 +1633,16 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
     book = read_logbook(refs)
     apply_logbook({r["id"]: r for r in facts["stories"]}, book, refs, log, placed)
     facts["harbor"] = {"logbook": book["head"], "skipped": book["skipped"], "error": book["error"]}
+    # `show <ID>` asks for the authors of the story's commits in the same git call as the swarm's (HARN-022): a
+    # superset of what why_of lists (every id equal to it but for case, as story_named reads it).
+    asked = set()
+    if show is not None:
+        same = lambda ids: any(i.casefold() == show.casefold() for i in ids)  # noqa: E731
+        asked = {c["sha"] for c in log if same(c["story"] + c["part_of"])}
+        asked |= {c["sha"] for sid, entry in branches.items() if same([sid]) for c in entry["commits"]}
+    authors: dict = {}
     facts["swarm"] = {"error": apply_swarm({r["id"]: r for r in facts["stories"]}, branches, log, graph, placed,
-                                           refs, book)}
+                                           refs, book, asked, authors)}
     facts["unattributed"] = unattributed(cfg, log, graph, placed[0], corrected(corrections))
     facts["diffs"] += corrections["diffs"]
     records = {r["id"]: r for r in facts["stories"]}
@@ -1387,7 +1651,7 @@ def read_all(state: dict, rules_sha: str | None = None) -> dict:
             "unverified": unverified_prefixes(state), "stories": stories, "log": log,
             "graph": graph, "placed": placed, "branches": branches, "tree": tree, "refs": refs, "unreadable": unreadable, "corrections": corrections, "records": records, "reviews": reviews,
             "approval": approval_config(extra["state"]), "areas": delegation["areas"], "delegation": delegation,
-            "harbor": book, "risky": extra["risky"]}
+            "harbor": book, "risky": extra["risky"], "authors": authors}
 
 
 # ── Harbor's logbook (LEDGER-013) ──
@@ -1642,8 +1906,10 @@ SWARM_BRANCH = "refs/remotes/origin/swarm/"
 SWARM_TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")   # a task id that is one: no slash, no control character
 SWARM_AUTHOR = 200             # longest author name kept
 SWARM_MERGES = 2000            # at most this many attributing merges are walked to find a delivery's story
+SWARM_BITS = 1024              # wanted commits per pass of attributing_merges: a mask holds at most this many bits
+SWARM_PASSES = 4               # at most this many passes per arrival (SWARM_BITS × SWARM_PASSES pieces found per arrival)
 SWARM_STATES = ("in-progress", "on-trunk", "reverted")
-SWARM_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f]")   # in a name: control characters, tab and newline too (ESC-348)
+SWARM_UNSAFE = Screen()   # in a name: control and format characters, tab and newline too (ESC-348, HARN-022)
 SWARM_KEYS = {"task", "state", "branch", "head", "commits", "authors", "convoy"}
 
 
@@ -1677,8 +1943,11 @@ def placed_anchor(placed: tuple) -> str:
 
 def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: list[str]) -> dict[str, set[str]]:
     """commit -> the story ids of the trunk merges that bring it (their trailers cover it: docs/ledger.md, "Trailers").
-    Only the commits of its own arrival can bring a commit, so each walk stays inside one arrival's group; at most
-    SWARM_MERGES merges are walked."""
+    Only the commits of its own arrival can bring a commit, so everything stays inside one arrival's group; at most
+    SWARM_MERGES merges are asked. One pass per group (HARN-022): each commit of the group gets the set of wanted
+    commits it reaches (a bit mask, parents before children), and a merge brings what its other parents reach and its
+    first parent does not, so the graph is read in proportion to the group, never merges × group; each mask is
+    dropped once the group's last child of its commit has read it (ESC-358)."""
     by_sha = {c["sha"]: c for c in log}
     groups: dict[str, set[str]] = {}
     for sha in wanted:
@@ -1691,22 +1960,85 @@ def attributing_merges(graph: dict, log: list[dict], arrival_of: dict, wanted: l
     for a, group in sorted(groups.items()):
         merges = sorted(m for m in group if len(graph.get(m, ())) > 1 and m in by_sha
                         and (by_sha[m]["story"] or by_sha[m]["part_of"]))
-        outside = {p for x in group for p in graph.get(x, ())} - group if merges else set()
-        for m in merges:
-            if budget <= 0:
-                return found
-            budget -= 1
-            parents = graph[m]
-            mainline = reach_until(graph, parents[:1], outside)
-            brought = reach_until(graph, parents[1:], outside | mainline)
-            for sha in wanted:
-                if sha in brought:
-                    found.setdefault(sha, set()).update(by_sha[m]["story"], by_sha[m]["part_of"])
+        if not merges:
+            continue
+        parents_of = {x: [p for p in graph.get(x, ()) if p in group] for x in group}
+        asked = set(merges[:budget])  # the first SWARM_MERGES merges, in sha order, as before
+        budget -= len(asked)
+        # Only what an asked merge's other parents reach can be brought: those wanted commits, at most
+        # SWARM_BITS × SWARM_PASSES of them per arrival (information only, as SWARM_MERGES).
+        reachable = reach_until(parents_of, [p for m in asked for p in graph[m][1:] if p in group], set())
+        want = sorted({sha for sha in wanted if arrival_of[sha] == a} & reachable)[:SWARM_BITS * SWARM_PASSES]
+        if not want:
+            continue
+        order = group_order(parents_of)
+        children: dict[str, int] = {}
+        for x in group:
+            for p in parents_of[x]:
+                children[p] = children.get(p, 0) + 1
+        # One pass per SWARM_BITS wanted commits: a mask holds at most SWARM_BITS bits and lives until the group's last
+        # child of its commit read it, so memory stays linear in the group whatever the frontier (ESC-358, ESC-362),
+        # and at most SWARM_PASSES passes keep the time linear too.
+        for first in range(0, len(want), SWARM_BITS):
+            swarm_pass(graph, by_sha, parents_of, order, children, asked, want, first, found)
+        if budget <= 0:
+            return found
     return found
 
 
+def swarm_pass(graph: dict, by_sha: dict, parents_of: dict, order: list[str], children: dict, asked: set,
+               want: list[str], first: int, found: dict) -> None:
+    """One pass of attributing_merges over a group, for want[first:first + SWARM_BITS]: each commit's mask of the
+    wanted commits it reaches (parents before children, dropped once the last child read it); an asked merge brings
+    what its other parents reach and its first parent does not."""
+    index = {sha: i for i, sha in enumerate(want[first:first + SWARM_BITS])}
+    left = dict(children)
+    reach: dict[str, int] = {}
+    for x in order:
+        mask = 1 << index[x] if x in index else 0
+        for p in parents_of[x]:
+            mask |= reach[p]
+        if x in asked:
+            parents = graph[x]
+            mainline = reach.get(parents[0], 0) if parents[0] in parents_of else 0
+            other = 0
+            for p in parents[1:]:
+                if p in parents_of:
+                    other |= reach[p]
+            ids = by_sha[x]["story"] + by_sha[x]["part_of"]
+            for i in set_bits(other & ~mainline):
+                found.setdefault(want[first + i], set()).update(ids)
+        for p in parents_of[x]:
+            left[p] -= 1
+            if not left[p]:
+                del reach[p]
+        if left.get(x):
+            reach[x] = mask
+
+
+def group_order(parents_of: dict[str, list[str]]) -> list[str]:
+    """The commits of a group (commit -> its parents inside the group), each after its parents; each visited once."""
+    done: set[str] = set()
+    out: list[str] = []
+    for root in parents_of:
+        if root in done:
+            continue
+        stack = [(root, False)]
+        while stack:
+            x, finished = stack.pop()
+            if finished:
+                out.append(x)
+                continue
+            if x in done:
+                continue
+            done.add(x)
+            stack.append((x, True))
+            stack.extend((p, False) for p in parents_of[x] if p not in done)
+    return out
+
+
 def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph: dict, placed: tuple, refs: dict,
-                book: dict) -> str | None:
+                book: dict, asked: set = frozenset(), known: dict | None = None) -> str | None:
     """Fill each story's `swarm` list (docs/ledger.md, "Harbor and Swarm"): a delivery not yet integrated is an origin
     branch swarm/<task> holding commits off the trunk with `Part-of: <ID>` and `Swarm-Task: <task>` (that task, the
     branch's), with its head, and the open convoy whose vessel is that branch sealed on that head; an integrated one is
@@ -1758,7 +2090,10 @@ def apply_swarm(records: dict[str, dict], branches: dict, log: list[dict], graph
                 if sid in records:
                     add(sid, task, "reverted" if reverted.get(c["sha"]) else "on-trunk",
                         convoy_sailed(places, arrival_of[c["sha"]]), None, None, c)
-        authors = authors_of(sorted({sha for e in entries.values() for sha in e["commits"]}), placed_anchor(placed))
+        wanted = {sha for e in entries.values() for sha in e["commits"]} | set(asked)
+        authors = authors_of(sorted(wanted), placed_anchor(placed))
+        if known is not None:  # what `show` reuses: the commits asked and their authors (`asked` and `names`)
+            known.update(asked=wanted, names=authors)
         for (sid, *_), e in sorted(entries.items(), key=lambda x: (x[0][0], x[0][1], SWARM_STATES.index(x[0][2]), x[0][3])):
             shas = sorted(e["commits"], key=lambda sha: (e["commits"][sha], sha))
             records[sid]["swarm"].append({**e, "commits": shas,
@@ -1911,7 +2246,7 @@ def absent_versions(trunk_sha: str) -> set[str]:
     """Blobs of the file's versions this partial clone lacks: one walk that prints `?<sha>` instead of fetching."""
     out = git_read(["rev-list", "--objects", "--missing=print", "--no-object-names", trunk_sha,
                     "--", f":(literal){CORRECTIONS}"])
-    return {line[1:] for line in out.decode(errors="replace").splitlines() if line.startswith("?")}
+    return {line[1:] for line in git_lines(out.decode(errors="replace")) if line.startswith("?")}
 
 
 def cat_blobs(shas: list[str]) -> dict[str, bytes | None]:
@@ -2070,8 +2405,10 @@ def story_file_adds(ctx: dict) -> dict[str, set[str]]:
     paths = {s["path"]: s["id"] for s in ctx["stories"]}
     if not paths:
         return {}
-    out = git_read(["log", "--format=%x00%H", "--diff-filter=A", "--name-only", "--no-renames", ctx["trunk_sha"],
-                    "--", *(f":(literal){p}" for p in sorted(paths))]).decode(errors="replace")
+    # The stories' glob, not each path by name: a path read with replacement characters (not UTF-8) names no file,
+    # while both sides decoded the same way still match (ESC-390).
+    out = git_read(["-c", "core.quotePath=false", "log", "--format=%x00%H", "--diff-filter=A", "--name-only",
+                    "--no-renames", ctx["trunk_sha"], "--", f":(glob){ctx['cfg']['stories']}"]).decode(errors="replace")
     adds: dict[str, set[str]] = {}
     for chunk in out.split("\0")[1:]:
         lines = [line for line in chunk.split("\n") if line.strip()]
@@ -2241,7 +2578,7 @@ def cmd_accept(state: dict) -> int:
     appended to the corrections file with the person's name and today's date; nothing else is rewritten."""
     if not person_only("backfill --accept"):
         return 1
-    user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
+    user = git_out("config", "user.name")[1]  # the person's own config, not the hermetic read
     if not user:
         print("Keelokit: set your name first: `git config user.name \"Your Name\"` (it becomes the approver).",
               file=sys.stderr)
@@ -2770,7 +3107,7 @@ def cmd_reject_sample(state: dict, run: str) -> int:
     if not RUN_ID.fullmatch(run):
         print(f"Keelokit: {run!r} is not a run id", file=sys.stderr)
         return 1
-    user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
+    user = git_out("config", "user.name")[1]  # the person's own config, not the hermetic read
     if not user:
         print("Keelokit: set your name first: `git config user.name \"Your Name\"` (it becomes the approver).",
               file=sys.stderr)
@@ -2929,7 +3266,8 @@ def trees_of(shas: list[str]) -> dict[str, str]:
     if not unique:
         return {}
     out = git_read(["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-                   "".join(f"{s}^{{tree}}\n" for s in unique).encode()).decode(errors="replace").splitlines()
+                   "".join(f"{s}^{{tree}}\n" for s in unique).encode()).decode(errors="replace")
+    out = git_lines(out)
     if len(out) != len(unique):
         raise LedgerError("git cat-file gave an unexpected answer")
     return {s: line.split()[0] for s, line in zip(unique, out) if line.split()[1:2] == ["tree"]}
@@ -3022,9 +3360,14 @@ def squashes(ctx: dict, in_range: list[dict]) -> list[tuple[dict, str, list[str]
                                   .decode(errors="replace").split("\n") if line)
             same = sorted(sha for sha in path_hits if single_paths[sha] == net_paths)
             if same:
-                net = patch_ids(git_read(["diff-tree", "-p", "--no-color", base, btip])).get("0" * len(btip))
-                ids = patch_ids(git_read(["log", "--no-walk=unsorted", "-p", "--no-color", "--format=commit %H",
-                                          "--stdin"], "".join(f"{sha}\n" for sha in same).encode()))
+                try:  # no attributes: a diff driver or `-diff` never shapes the patch (ESC-394); a warning only
+                    net = patch_ids(git_read_attr_free(["diff-tree", "-p", "--no-color", base, btip])
+                                    ).get("0" * len(btip))
+                    ids = patch_ids(git_read_attr_free(["log", "--no-walk=unsorted", "-p", "--no-color",
+                                                        "--format=commit %H", "--stdin"],
+                                                       "".join(f"{sha}\n" for sha in same).encode()))
+                except LedgerError:
+                    net, ids = None, {}
                 patch_hits = {sha for sha in same if net and ids.get(sha) == net}
         hits = tree_hits | patch_hits
         if not hits:
@@ -3135,47 +3478,38 @@ def pull_request(trunk: str) -> bool:
     return event in ("pull_request", "pull_request_target") and os.environ.get("GITHUB_BASE_REF", trunk) == trunk
 
 
+def pull_request_head(ctx: dict) -> str | None:
+    """The checked-out HEAD (GitHub's merge of the branch into the trunk, refs/pull/N/merge) when it is not the
+    trunk's tip; else None."""
+    head = git_read(["rev-parse", "--verify", "-q", "HEAD^{commit}"], ok=(0, 1)).decode().strip()
+    return head if head and head != ctx["trunk_sha"] else None
+
+
+def merged_view(ctx: dict, head: str) -> dict:
+    """The trunk as it will be once the pull request at `head` lands: its commits before the trunk's, the graph of
+    both, the head's story files; the trunk's rules and `[ledger]` (never the pull request's own, ESC-312)."""
+    graph = read_graph(sorted({head, ctx["trunk_sha"]}))
+    own = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
+    return {**ctx, "trunk_sha": head, "graph": graph, "log": own + ctx["log"],
+            "stories": read_stories(head, ctx["cfg"])[0], "merged": True, "base_sha": ctx["trunk_sha"],
+            "brought": {c["sha"] for c in own}}
+
+
 def pull_request_diffs(state: dict, ctx: dict) -> list[dict]:
     """A pull request's commits, as they would reach the trunk: those the checked-out HEAD (GitHub's merge of the
     branch into the trunk, refs/pull/N/merge) reaches and the trunk does not. That merge stands for the one GitHub
-    makes, attributed when what it brings is; a sync merge of the trunk into the branch brings nothing new."""
-    head = git_read(["rev-parse", "--verify", "-q", "HEAD^{commit}"], ok=(0, 1)).decode().strip()
-    if not head or head == ctx["trunk_sha"]:
+    makes, attributed when what it brings is; a sync merge of the trunk into the branch brings nothing new. Its breaker
+    verdict is the merge result's (trunk_breaker_diffs on merged_view)."""
+    head = pull_request_head(ctx)
+    if head is None:
         return []
-    breaker = pull_request_breaker(ctx, head)
     rctx = range_ctx(state, ctx["cfg"], head, [ctx["trunk_sha"]])
     if rctx is None:
-        return breaker
+        return []
     if cut_reason(rctx["graph"], is_shallow() is not False):
         return [{"level": "error", "code": "HISTORY_INCOMPLETE",
                  "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
-    return attribution_diffs(rctx, rctx["log"], on_trunk=False) + breaker
-
-
-def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
-    """HARN-021: the risky stories a pull request closes, judged by the trunk's risky.toml (or --rules-ref's) and
-    the trunk's committed `[ledger]` (where stories live, how ids are read), never the pull request's own (ESC-312);
-    the story files as the pull request leaves them, else as the trunk has them. Every commit the trunk lacks counts:
-    the rule already holds on the trunk."""
-    rules = ctx.get("risky")
-    if rules is None:
-        if not rule_adds(ctx["trunk_sha"]):
-            return []
-        rules = removed_rules()  # the trunk already lost it: the trunk's check says so; this pull request is judged
-    cfg = read_config(committed_state(ctx["trunk_sha"]))
-    graph = read_graph(sorted({head, ctx["trunk_sha"]}))
-    if cut_reason(graph, is_shallow() is not False):
-        return [{"level": "error", "code": "HISTORY_INCOMPLETE",
-                 "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
-    log = read_trunk_log(head, ("--not", ctx["trunk_sha"]))
-    base = read_stories(ctx["trunk_sha"], cfg)[0]
-    stories = {s["id"]: s for s in base}
-    stories.update({s["id"]: s for s in read_stories(head, cfg)[0]})
-    hits = risky_commits(rules, head, [])
-    found = risky_no_story(log, hits, merge_own_hits(rules, head, [ctx["trunk_sha"]]))
-    earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
-    return found + breaker_diffs(rules, log, log + read_trunk_log(ctx["trunk_sha"]), graph, list(stories.values()),
-                                 config_diffs=False, hits=hits, earlier=earlier)
+    return attribution_diffs(rctx, rctx["log"], on_trunk=False)
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -3185,8 +3519,13 @@ def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]
     diffs = list(ctx["facts"]["diffs"])
     if ctx["reason"] is None:
         diffs += attribution_diffs(ctx) + stale_branches(ctx) + done_twice(ctx) + snapshot_behind(ctx)
-        diffs += trunk_breaker_diffs(ctx)
-        if ci and pull_request(trunk_name(state)):
+        in_pull_request = ci and pull_request(trunk_name(state))
+        head = pull_request_head(ctx) if in_pull_request else None
+        # A pull request is judged as the trunk will be once it lands: the trunk check run on the merge result (its
+        # commits and the trunk's, the head's story files, rounds and closes), so a pull request that fixes a red trunk
+        # is green and one that leaves it red stays red (ESC-400).
+        diffs += trunk_breaker_diffs(merged_view(ctx, head) if head else ctx)
+        if in_pull_request:
             diffs += pull_request_diffs(state, ctx)
     if ci:
         diffs = [{**d, "level": "error"} if d["code"] == "HISTORY_INCOMPLETE" else d for d in diffs]
@@ -3219,8 +3558,8 @@ def cmd_check(state: dict, args: tuple) -> int:
     if as_json:
         print(json.dumps({"schema": 1, "diffs": diffs}, indent=1))
     else:
-        for d in diffs:
-            print(f"{d['level']} {d['code']} {d['detail']}")
+        for d in diffs:  # details quote paths, subjects and names: nothing in them reaches the terminal (HARN-022)
+            print(terminal_line(f"{d['level']} {d['code']} {d['detail']}"))
     return 1 if any(d["level"] == "error" for d in diffs) else 0
 
 
@@ -3229,14 +3568,14 @@ def cmd_check(state: dict, args: tuple) -> int:
 # commits change) closes only after cold breaker rounds, recorded in its file under `## Breaker rounds`: one line per
 # round, `- Round <n> · head <sha> · clean` or `· <findings> · <fixes>`, and when the last round left findings, a
 # person's `- Decision · <name> · <YYYY-MM-DD> · <what>`. `check` gives BREAKER_MISSING (error) for a risky story
-# closed with no round, BREAKER_UNRESOLVED (warning) when its last round is not clean, or it went past the cap, with no
-# Decision after it, BREAKER_CONFIG for a risky.toml it cannot use (an error: every closed story counts as risky then)
+# closed with no round, BREAKER_UNRESOLVED (warning) when its last round is not clean with no Decision after it (the
+# last round decides, whatever its number: HARN-022), BREAKER_CONFIG for a risky.toml it cannot use (an error: every closed story counts as risky then)
 # and BREAKER_BAD_ENTRY (warning) for a line under the heading that is neither. The rule holds for Story: commits after
 # `[ledger] since` that the commit which brought risky.toml to the trunk (or its `since`) does not reach; without
 # risky.toml on the trunk, nothing. The line is a record, as a trailer is: the ledger checks it is there, not that the
 # round happened.
 
-ROUND_LINE = re.compile(r"- Round ([0-9]{1,3}) · head ([0-9a-f]{40}|[0-9a-f]{64}) · (.+)")
+ROUND_LINE = re.compile(r"- Round ([0-9]{1,3}) · head ([0-9a-f]{7,64}) · (.+)")
 DECISION_LINE = re.compile(r"- Decision · ([^·]*\S[^·]*) · ([0-9]{4}-[0-9]{2}-[0-9]{2}) · (.*\S.*)")
 # Without `deciders` in risky.toml, a Decision naming one of these is no person's (ESC-314): a long word anywhere in
 # the name's letters (`subagent`, `ClaudeCode`, `Breaker2`), a short one as a word of its own (`AI`, `the bots`).
@@ -3302,6 +3641,17 @@ def breaker_record(body: str) -> dict:
     return {"entries": entries, "bad": bad}
 
 
+def resolve_head(text: str, graph: dict) -> str | None:
+    """The commit a round line's head names in this history: the full sha, or the one commit an abbreviation of 7 to 63
+    hex digits starts (ESC-371); None when it names no commit here, or several."""
+    if text in graph:
+        return text
+    if len(text) in (40, 64):
+        return None
+    found = [sha for sha in graph if sha.startswith(text)]
+    return found[0] if len(found) == 1 else None
+
+
 def agent_like(name: str) -> bool:
     """A name that reads as an agent's or a model's, never a person's (AGENT_WORDS, AGENT_SHORT)."""
     name = unicodedata.normalize("NFKC", name)  # fullwidth and other compatibility forms read as what they show
@@ -3363,6 +3713,10 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
                 if odd:
                     problems.append(f"`paths` stay inside the repo, without `..`, `.` or a leading `:` ({odd[0]!r})")
                     rules[key] = [v for v in rules[key] if v not in odd]
+                unreadable = [v for v in rules[key] if not glob_readable(v)]
+                if unreadable:  # a class git and the ledger cannot read the same way (ESC-396)
+                    problems.append(f"`paths` hold a pattern that cannot be read ({unreadable[0]!r})")
+                    rules[key] = [v for v in rules[key] if v not in unreadable]
     rules["dimensions"] = sorted({d.lower() for d in rules["dimensions"]})
     since = data.get("since", "")
     if not isinstance(since, str) or since.strip() and not HEX_SHA.fullmatch(since.strip()):
@@ -3376,7 +3730,7 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
 
 def literal_prefix(pattern: str) -> str:
     """What a glob says before its first wildcard."""
-    m = re.search(r"[*?]", pattern)
+    m = re.search(r"[*?\[]", pattern)
     return pattern[:m.start()] if m else pattern
 
 
@@ -3385,19 +3739,60 @@ def touch_meets(touch: str, pattern: str) -> bool:
     for `scripts/verify.sh`, `apps/api/auth` for `**/auth/**`), or, for a touch that is a glob, one whose literal start
     and the pattern's run into each other (when in doubt, risky)."""
     t = touch.strip()
-    while t.startswith("./"):
-        t = t[2:]
-    t = t.lstrip("/").rstrip("/")
+    spelled_dir = t.endswith(("/", "/.", "/..")) or t in (".", "..")
+    t = t.lstrip("/")
     if not t:
+        # `/` names the repository's root, which holds every path (ESC-361); a blank touch names nothing
+        return bool(touch.strip())
+    # `.` and `..` parts mean what they mean (`.keelokit/./bin`, `apps/../.keelokit/bin`, ESC-372); a touch that leaves
+    # the repository names nothing in it
+    t = posixpath.normpath(t)
+    if t == ".." or t.startswith("../"):
         return False
+    if t == ".":
+        return True  # `./`, `.`: the root (ESC-361)
     if re.search(r"[*?]", t):
         a, b = literal_prefix(t), literal_prefix(pattern)
         return a.startswith(b) or b.startswith(a)
     regex = glob_regex(pattern)
-    return bool(regex.fullmatch(t) or regex.fullmatch(t + "/") or literal_prefix(pattern).startswith(t + "/"))
+    if regex.fullmatch(t) or regex.fullmatch(t + "/") or literal_prefix(pattern).startswith(t + "/"):
+        return True
+    # A touch that names a directory touches everything under it (HARN-022): it meets every glob that can match a path
+    # beneath it (`apps/api` for `**/migrations/**`). A directory is a touch ending in `/`, or whose last part has no
+    # extension (`apps/api`, `.github`, `scripts`); `apps/api/page.ts` stays a file.
+    last = t.rsplit("/", 1)[-1]
+    if spelled_dir or "." not in last.lstrip("."):  # `apps/v1.2/`, `apps/v1.2/.`: one directory (ESC-367)
+        return glob_beneath(pattern, t)
+    return False
 
 
-def risky_reasons(story: dict, rules: dict | None, changed: set, hits: list | tuple = ()) -> list[str]:
+def glob_beneath(pattern: str, directory: str) -> bool:
+    """Whether the glob can match some path strictly beneath `directory` (`*` and `?` within one part, `**` any number
+    of parts; a part with `**` inside it may cross parts, so it counts as matching: when in doubt, risky)."""
+    pat, parts = pattern.split("/"), directory.split("/")
+    seen: set = set()
+    stack = [(0, 0)]
+    while stack:
+        i, j = stack.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if j == len(parts):
+            if i < len(pat) and any(pat[i:]):
+                return True
+            continue
+        if i == len(pat):
+            continue
+        if pat[i] == "**":
+            stack += [(i + 1, j), (i, j + 1)]
+        elif "**" in pat[i]:
+            return True
+        elif glob_regex(pat[i]).fullmatch(parts[j]):
+            stack.append((i + 1, j + 1))
+    return False
+
+
+def risky_reasons(story: dict, rules: dict | None, changed: dict, hits: list | tuple = ()) -> list[str]:
     """Why a story is risky (empty: it is not): its front matter, a dimension, a touch, a changed path, or a commit of
     it that git found changing a path of risky.toml (`hits`)."""
     if rules is None:
@@ -3407,9 +3802,15 @@ def risky_reasons(story: dict, rules: dict | None, changed: set, hits: list | tu
     why += [f"dimension {d}" for d in story.get("risk_dims", story["dimensions"]) if d in rules["dimensions"]]
     why += [f"its commit {short(sha)} changes a path of {RISKY_FILE}" for sha in hits]
     for pattern in rules["paths"]:
-        regex = glob_regex(pattern)
-        why += [f"touches {t} ({pattern})" for t in story["touches"] if touch_meets(t, pattern)]
-        why += [f"changes {p} ({pattern})" for p in sorted(changed) if regex.fullmatch(p)]
+        # A `.gitattributes` can sit in any directory: only a touch naming one meets it (a commit changing one is
+        # risky by git's own pathspec, ESC-394); a directory touch would make every story risky.
+        if pattern == ATTRIBUTES_GLOB:
+            touched = [t for t in story["touches"] if glob_regex(pattern).fullmatch(t.strip().lstrip("/"))]
+        else:
+            touched = [t for t in story["touches"] if touch_meets(t, pattern)]
+        why += [f"touches {t} ({pattern})" for t in touched]
+        # `changed`: pattern -> the paths git's own pathspec matched (ESC-395)
+        why += [f"changes {p} ({pattern})" for p in sorted(changed.get(pattern, ()))]
     return list(dict.fromkeys(why))
 
 
@@ -3431,7 +3832,8 @@ def missing_story(sid: str) -> dict:
 
 
 def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], graph: dict, stories: list[dict],
-                  config_diffs: bool = True, hits: set = frozenset(), earlier: list[dict] = ()) -> list[dict]:
+                  config_diffs: bool = True, hits: set = frozenset(), earlier: list[dict] = (),
+                  merges: set = frozenset()) -> list[dict]:
     """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them, every
     copy of an id). What makes a story risky also comes from `earlier` versions of its file (the trunk's before the
     change under judgment: rewriting the front matter while closing opts nothing out, ESC-327) and from every commit
@@ -3445,11 +3847,18 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                       "every story closed after the rule holds counts as risky"})
     reverted = revert_status(log, graph)
     closing: dict[str, str] = {}
+    latest: dict[str, str] = {}  # the last live Story: commit
+    every_close: dict[str, list[str]] = {}  # every live Story: commit: what a round's head must be reached by
+    ever_close: dict[str, list[str]] = {}  # every close ever made, reverted too: what orders before and after
     naming: dict[str, list[str]] = {}
     for c in reversed(in_range):  # oldest first
+        for sid in c["story"]:
+            ever_close.setdefault(sid, []).append(c["sha"])
         if not reverted.get(c["sha"], False):
             for sid in c["story"]:
                 closing.setdefault(sid, c["sha"])
+                latest[sid] = c["sha"]
+                every_close.setdefault(sid, []).append(c["sha"])
     for c in reversed(log):
         for sid in dict.fromkeys(c["story"] + c["part_of"]):
             naming.setdefault(sid, []).append(c["sha"])
@@ -3466,7 +3875,7 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
         current = [story, *story.get("copies", [])]
         own = [x for x in naming.get(sid, ()) if x in hits]
         why = list(dict.fromkeys(w for v in current + before.get(sid, []) if not v.get("unreadable")
-                                 for w in risky_reasons(v, rules, set(), own)))
+                                 for w in risky_reasons(v, rules, {}, own)))
         if not why:
             continue
         reason = "; ".join(why[:3]) + (f"; +{len(why) - 3} more" if len(why) > 3 else "")
@@ -3487,6 +3896,25 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                 f"cold breaker rounds (/keelokit:build-story, step 5) and record each under `## Breaker rounds` in "
                 f"{story['path']}: {ROUND_FORMAT}")})
             continue
+        # A round counts as clean only when its head is a commit the close reaches: the head the breaker attacked, on
+        # the branch that closes the story (ESC-371). Any other head is a bad entry, and the round is not clean.
+        # what any live close of the story reaches, never only the newest: a parallel Story: commit hides nothing
+        # (ESC-388)
+        close_reach = reach_until(graph, every_close[sid], set())
+        checked, wrong = [], []
+        for i, e in rounds:
+            head = resolve_head(e[2], graph)
+            if head is None or head not in close_reach:
+                wrong.append((e, head))
+            checked.append((i, (e[0], e[1], head or e[2], e[3] and head is not None and head in close_reach)))
+        rounds = checked
+        if wrong:
+            (e, head), more = wrong[0], len(wrong) - 1
+            why = "names no commit here" if head is None else f"is not a commit any close of the story ({short(latest[sid])}…) reaches"
+            diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY", "detail": (
+                f"{sid} ({story['path']}): round {e[1]}'s head {e[2][:12]} {why}"
+                f"{f', and {more} more round(s) too' if more else ''}; a round's head is the head the breaker "
+                "attacked, on the branch that closes the story, so that round counts as not clean")})
         decisions = [i for i, e in enumerate(record["entries"]) if e[0] == "decision" and is_decider(e[1], rules)]
         refused = [e for e in record["entries"] if e[0] == "decision" and not is_decider(e[1], rules)]
         if refused:
@@ -3494,24 +3922,69 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                    else "a person, never an agent or a model")
             diffs.append({"level": "warning", "code": "BREAKER_BAD_ENTRY",
                           "detail": f"{sid} ({story['path']}): {refused[0][2]!r}: a Decision is taken by {who}"})
+        # The last round decides, whatever its number (HARN-022): clean, the story is resolved, past the cap too. The
+        # cap is where the build stops and asks: findings left there wait for a person's Decision.
         last_at, last = rounds[-1]
+        decided = any(i > last_at for i in decisions)
+        if last[3] or decided:
+            # The last round, clean or decided by a person, covers what its head saw: every risky commit of the story
+            # that does not come after its close must be reached by that head (ESC-371, ESC-380): what the close
+            # reaches, and what runs beside it, a parallel delivery (ESC-379). A merge counts by its own resolution
+            # (ESC-376); the close itself is one of them (ESC-377). What descends from the close is RISKY_AFTER_CLOSE's.
+            # The graph decides, never the order commits arrived on the trunk, which a fast-forward reorders (ESC-398).
+            seen = reach_until(graph, [last[2]], set()) if last[2] in graph else set()
+            # A reverted close still orders what came after it (ESC-400)
+            minimal, ancestors = first_closes(graph, ever_close[sid])
+            firsts = set(minimal)
+            before_firsts = set().union(*(ancestors[c] for c in minimal))
+            stop = before_firsts - firsts
+            if not last[3]:
+                # A person's Decision accepts the story as closed: it covers what every minimal close reaches, the
+                # fixes after the decided round's head included; what comes after the close still needs a re-close and
+                # a valid round (ESC-400).
+                seen |= set.intersection(*(ancestors[c] for c in minimal))
+
+            def descends(x: str) -> bool:
+                """x comes after a first close in the graph (that close is its ancestor): RISKY_AFTER_CLOSE's."""
+                return x not in before_firsts and bool(reach_until(graph, [x], stop) & firsts)
+
+            late = [x for x in naming.get(sid, ())
+                    if not reverted.get(x, False)
+                    and (x in merges if len(graph.get(x, ())) > 1 else x in hits)
+                    and x not in seen
+                    and not descends(x)]
+            if late:
+                what = "the last clean round" if last[3] else "the last round, which a person decided"
+                diffs.append({"level": "error", "code": "BREAKER_STALE", "detail": (
+                    f"{sid}: risky commit {short(late[0])}{f' (and {len(late) - 1} more)' if len(late) > 1 else ''} "
+                    f"is not reached by {what} (head {short(last[2])}) in {story['path']}; run a round on the code "
+                    "that lands, and record its head")})
         if not last[3] and not any(i > last_at for i in decisions):
+            invalid = any(e[1] == last[1] for e, _ in wrong)
+            if len(rounds) >= rules["rounds"]:
+                then = (f"the cap of {rules['rounds']} rounds ({RISKY_FILE}) is reached, so a person decides: another "
+                        "round, or land as it is (`- Decision · <person> · <YYYY-MM-DD> · <what>`)")
+            else:
+                then = (f"below the cap of {rules['rounds']}: round {len(rounds) + 1} runs with a new cold breaker on "
+                        "the fixed head (or a person's Decision line lands it as it is)")
+            # a round whose head does not count is no valid round, whatever it says (ESC-378)
+            said = "is no valid round (its head does not count)" if invalid else "left findings"
             diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
-                f"{sid}: its last breaker round ({last[1]}, head {short(last[2])}) left findings, and no person's "
-                f"Decision line follows it in {story['path']}; a person decides: another round, or land as it is "
-                "(`- Decision · <person> · <YYYY-MM-DD> · <what>`)")})
-        elif len(rounds) > rules["rounds"] and not any(i > rounds[rules["rounds"] - 1][0] for i in decisions):
-            diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
-                f"{sid}: {len(rounds)} breaker rounds, past the cap of {rules['rounds']} ({RISKY_FILE}), with no "
-                f"person's Decision line after round {rules['rounds']} in {story['path']}")})
+                f"{sid}: its last breaker round ({last[1]}, head {short(last[2])}) {said}, and no person's "
+                f"Decision line follows it in {story['path']}; {then}")})
     return diffs
+
+
+FULL_SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 def rule_adds(tip: str) -> list[str]:
     """The commits `tip` reaches that added risky.toml (one path-limited `git log`)."""
     # -m: a merge whose own resolution adds the file is an add too (ESC-337).
-    out = git_read(["log", "--full-history", "-m", "--format=%H", "--diff-filter=A", tip, "--", RISKY_FILE]).decode()
-    return list(dict.fromkeys(out.split()))
+    out = git_read(["log", "--full-history", "-m", "--diff-merges=separate", "--no-patch", "--format=%x00%H%x00",
+                    "--diff-filter=A", tip, "--", RISKY_FILE]).decode(errors="replace")
+    # Commit ids only, NUL-delimited and checked as full ids: no word of a patch or a message is ever one (ESC-399).
+    return list(dict.fromkeys(x for x in out.split("\0") if FULL_SHA.fullmatch(x)))
 
 
 def removed_rules() -> dict:
@@ -3520,15 +3993,295 @@ def removed_rules() -> dict:
 
 
 def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
-    """The merges whose OWN change (the combined diff against every parent: a resolution, a file neither side had)
-    touches a risky path, from one `git log --cc` (ESC-333)."""
+    """The merges whose OWN change touches a risky path (ESC-333). A merge's own change is its tree against the tree
+    git makes by merging its parents automatically (`git merge-tree --write-tree`), every path that merge left in
+    conflict included (ESC-381): a clean sync merge of main brings nothing of its own, and a resolution that takes the
+    other side's version of a risky file is its own change. Fixed git calls: the merges whose diff against some parent
+    touches a risky path (one path-limited `git log -m`), one `merge-tree --stdin`, one `cat-file`, one
+    `diff-tree --stdin`. It fails closed: an octopus merge, an old git, or any merge-tree error makes every such merge
+    its own risky change."""
+    spec = [f":(glob){p}" for p in rules["paths"]]
+    out = git_read(["-c", "core.quotePath=false", "log", "--merges", "--full-history", "-m", "--diff-merges=separate",
+                    "--name-only",
+                    "--format=%x00%H %P", tip, *(["--not", *exclude] if exclude else []), "--", *spec]
+                   ).decode(errors="replace")
+    parents: dict[str, list[str]] = {}
+    controls: set[str] = set()
+    for chunk in out.split("\0")[1:]:
+        lines = [line for line in git_lines(chunk) if line.strip()]
+        if len(lines) > 1:  # this parent's diff touches a risky path
+            fields = lines[0].split()
+            parents[fields[0]] = fields[1:]
+            if any(has_control(unquote_path(line)) for line in lines[1:]):
+                controls.add(fields[0])
+    if not parents:
+        return set()
+    if local_attributes():
+        # No option switches `$GIT_DIR/info/attributes` off: every merge touching a risky path counts (ESC-394)
+        MERGE_NOTES.add("info/attributes")
+        return set(parents)
+    driver = merge_config()
+    if driver:
+        # Nor the repository's own config: a merge or diff driver there fails closed the same way (ESC-396)
+        MERGE_NOTES.add(f"config:{driver}")
+        return set(parents)
+    pairs = sorted(m for m, ps in parents.items() if len(ps) == 2)
+    # An octopus fails closed; so does a risky path with a control character in it, which no parse can be trusted to
+    # place (ESC-391).
+    found = {m for m, ps in parents.items() if len(ps) != 2} | controls
+    auto, conflicted = {}, {}
+    try:
+        # Unrelated histories merge like any other (an old import, ESC-384); a batch that fails is retried merge by
+        # merge, so only the merge git cannot merge fails closed.
+        try:
+            batches = [pairs] if pairs else []
+            answers = [merge_trees(parents, pairs)] if pairs else []
+        except LedgerError:
+            batches, answers, failed = [], [], set()
+            for m in pairs:
+                try:
+                    answers.append(merge_trees(parents, [m]))
+                    batches.append([m])
+                except LedgerError:
+                    failed.add(m)
+            if failed:
+                found |= failed if complete_history() else combined_diff_hits(spec, tip, exclude, failed)
+        for batch, answer in zip(batches, answers):
+            for m, (tree, names) in zip(batch, answer):
+                auto[m], conflicted[m] = tree, names
+        pairs = [m for m in pairs if m in auto]
+        if not pairs:
+            return found
+        trees = trees_of(pairs)
+        if set(trees) != set(pairs):
+            raise LedgerError("a merge's tree cannot be read here")
+        # Read by position (--raw entries start with ':', paths are NUL-ended): a path never poses as another pair's
+        # header (ESC-391).
+        keys = [(m, f"{auto[m]} {trees[m]}") for m in pairs]
+        own = raw_pair_states(git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev",
+                                        "--", *spec], "".join(f"{pair}\n" for _, pair in keys).encode()), keys)
+    except LedgerError:
+        if complete_history():
+            return found | set(pairs)  # merge-tree missing (old git) or failing: every such merge counts (fail closed)
+        # A clone that lacks objects (shallow, partial) cannot merge them: it reads the combined diff, as before
+        # HARN-022 round 7; the CI's full clone decides, failing closed.
+        return found | combined_diff_hits(spec, tip, exclude, set(pairs))
+    try:
+        found |= per_path_own(parents, pairs, spec)
+        # Whether a conflicted path is risky is git's pathspec's call (ESC-395): the risky paths of the automatic
+        # tree, the merge's and its parents', together hold every path a conflict can name.
+        with_conflicts = [m for m in pairs if conflicted[m]]
+        risky_names = risky_paths_of({m: [auto[m], trees[m], *parents[m]] for m in with_conflicts}, spec)
+    except LedgerError:
+        if complete_history():
+            return found | set(pairs)
+        risky_names = {m: None for m in pairs}
+    for m in pairs:
+        names = risky_names.get(m, set())
+        risky_conflict = bool(conflicted[m]) and (names is None or any(n in names for n in conflicted[m]))
+        if own.get(m) or risky_conflict:
+            found.add(m)
+    return found
+
+
+def risky_paths_of(objects: dict, spec: list[str]) -> dict:
+    """key -> the risky paths (decoded as merge-tree's names are) of any of its trees or commits, by git's own
+    pathspec matching (one `diff-tree --stdin` from the empty tree)."""
+    wanted = sorted({x for xs in objects.values() for x in xs})
+    if not wanted:
+        return {}
+    trees = trees_of(wanted)
+    if any(x not in trees for x in wanted):
+        raise LedgerError("a tree cannot be read here")
+    empty = git_read(["hash-object", "-t", "tree", "--stdin"], b"").decode().strip()
+    keys = [(x, f"{empty} {trees[x]}") for x in wanted]
+    out = git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", "--", *spec],
+                   "".join(f"{pair}\n" for _, pair in keys).encode())
+    per = raw_pair_states(out, keys)
+    return {k: {p.decode(errors="replace") for x in xs for p in per.get(x, {})} for k, xs in objects.items()}
+
+
+def unquote_path(line: str) -> str:
+    """A path as git prints it outside -z output: C-quoted ("a\\nb", octal escapes) when it holds a special
+    character, else as is."""
+    if len(line) < 2 or not (line.startswith('"') and line.endswith('"')):
+        return line
+    body, out, i = line[1:-1], [], 0
+    simple = {"a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            if nxt in simple:
+                out.append(simple[nxt])
+                i += 2
+                continue
+            if body[i + 1:i + 4].isdigit() and len(body[i + 1:i + 4]) == 3:
+                out.append(chr(int(body[i + 1:i + 4], 8)))
+                i += 4
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def has_control(path: str) -> bool:
+    """A C0 control character (a newline included) or DEL in a path name."""
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path)
+
+
+def raw_pair_states(diff: bytes, keys: list) -> dict:
+    """`git diff-tree --stdin -r --raw -z --no-abbrev` output split by pair, path names kept as raw bytes (ESC-390):
+    key -> {path: (old state, new state)}, a state being (mode, blob) or None when absent. Each newline-ended header
+    is an input line; every key with that header gets its entries (ESC-387)."""
+    headers: dict[bytes, list] = {}
+    for key, pair in keys:
+        headers.setdefault(f"{pair}\n".encode(), []).append(key)
+    found: dict = {}
+    current, at = [], 0
+    while at < len(diff):
+        header = next((h for h in headers if diff.startswith(h, at)), None)
+        if header:
+            current, at = headers[header], at + len(header)
+            continue
+        meta_end = diff.find(b"\0", at)
+        path_end = diff.find(b"\0", meta_end + 1) if meta_end >= 0 else -1
+        fields = diff[at:meta_end].decode("ascii", errors="replace").lstrip(":").split() if meta_end >= 0 else []
+        if path_end < 0 or len(fields) != 5:
+            raise LedgerError("diff-tree --raw output cannot be read")
+        path = diff[meta_end + 1:path_end]
+        old = None if set(fields[0]) == {"0"} else (fields[0], fields[2])
+        new = None if set(fields[1]) == {"0"} else (fields[1], fields[3])
+        for key in current:
+            found.setdefault(key, {})[path] = (old, new)
+        at = path_end + 1
+    return found
+
+
+def risky_states(commit: str, spec: list[str]) -> dict[bytes, tuple[str, str]]:
+    """raw path -> (mode, object id) at `commit` for every path the risky pathspec matches: one `git diff-tree` from
+    the empty tree (ls-tree takes no glob pathspec), so no path is looked up by a decoded name (ESC-390)."""
+    empty = git_read(["hash-object", "-t", "tree", "--stdin"], b"").decode().strip()
+    tree = trees_of([commit]).get(commit)
+    if not tree:
+        raise LedgerError("a tree cannot be read here")
+    pair = f"{empty} {tree}"
+    out = git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", "--", *spec],
+                   f"{pair}\n".encode())
+    return {path: new for path, (_, new) in raw_pair_states(out, [("base", pair)]).get("base", {}).items()}
+
+
+def merge_path(base, ours, theirs) -> tuple[str, str] | None:
+    """git's automatic merge of one path from its three states ((mode, blob) or None), with no rename: one side's
+    change wins; both changed, `git merge-file` decides, and counts only clean, text, same-mode results (an absent
+    base merges as empty). None: no automatic result (a conflict, a delete against an edit, a mode clash, a binary)."""
+    if ours == base:
+        return theirs
+    if theirs == base or ours == theirs:
+        return ours
+    if ours is None or theirs is None or ours[0] != theirs[0] or not ours[0].startswith("100"):
+        return None
+    if base is not None and not base[0].startswith("100"):
+        return None
+    blobs = cat_specs([x[1] for x in (base, ours, theirs) if x is not None])
+    texts = [b"" if x is None else blobs.get(x[1]) for x in (base, ours, theirs)]
+    if any(v is None or b"\0" in v for v in texts):
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        names = []
+        for name, text in zip(("base", "ours", "theirs"), texts):
+            path = os.path.join(tmp, name)
+            with open(path, "wb") as f:
+                f.write(text)
+            names.append(path)
+        try:
+            merged = git_read_attr_free(["merge-file", "-p", names[1], names[0], names[2]])
+        except LedgerError:
+            return None  # a conflict (merge-file exits with their number)
+    blob = git_read(["hash-object", "--stdin"], merged).decode().strip()
+    return (ours[0], blob)
+
+
+def per_path_own(parents: dict, merges: list[str], spec: list[str]) -> set[str]:
+    """The merges with a risky path that git's merge may have filled through a rename (ESC-389): one whose state
+    (absent, or mode and blob) differs from every parent's and that is absent at the merge base or in a parent, the
+    only paths a rename can carry content into. Such a path is own unless its state equals a per-path, rename-free
+    3-way merge of its states at the base and the parents (one side's change, or a clean, text, same-mode `git
+    merge-file`). A path present at the base and in both parents is left to the merge-tree diff, git's real merge
+    with its modes, attributes and diff algorithm (ESC-390). Path names stay raw bytes. No single merge base: every
+    such path is own (fail closed). LedgerError when git fails."""
+    if not merges:
+        return set()
+    trees = trees_of([*merges, *(p for m in merges for p in parents[m])])
+    if any(x not in trees for m in merges for x in (m, *parents[m])):
+        raise LedgerError("a tree cannot be read here")
+    keys = [((m, i), f"{trees[p]} {trees[m]}") for m in merges for i, p in enumerate(parents[m])]
+    diff = git_read(["diff-tree", "--stdin", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", "--", *spec],
+                    "".join(f"{pair}\n" for _, pair in keys).encode())
+    per = raw_pair_states(diff, keys)
+    found = set()
+    for m in merges:
+        sides = [per.get((m, i), {}) for i in range(len(parents[m]))]
+        paths = set.intersection(*(set(s) for s in sides)) if sides else set()
+        if not paths:
+            continue
+        bases = git_read(["merge-base", "--all", *parents[m]], ok=(0, 1)).decode().split()
+        if len(bases) != 1:
+            found.add(m)
+            continue
+        base = risky_states(bases[0], spec)
+        for path in paths:
+            ours, mine = sides[0][path]
+            theirs = sides[1][path][0]
+            if path in base and ours is not None and theirs is not None:
+                continue  # an existing file: the merge-tree diff decides
+            if mine != merge_path(base.get(path), ours, theirs):
+                found.add(m)
+                break
+    return found
+
+
+def complete_history() -> bool:
+    """Whether this clone holds the whole history: not shallow, no promisor (asked once)."""
+    if "complete" not in HISTORY:
+        HISTORY["complete"] = is_shallow() is False and not is_partial_clone()
+    return HISTORY["complete"]
+
+
+def merge_trees(parents: dict, merges: list[str]) -> list[tuple[str, list[str]]]:
+    """(the automatic merge's tree, its conflicted paths) for each merge, from one `git merge-tree --stdin` that allows
+    unrelated histories; LedgerError when git fails or answers out of shape."""
+    merged = git_read_attr_free(["merge-tree", "--stdin", "-z", "--name-only", "--no-messages",
+                                 "--allow-unrelated-histories"],
+                      "".join(f"{parents[m][0]} {parents[m][1]}\n" for m in merges).encode()
+                      ).decode(errors="replace").split("\0")
+    answer, i = [], 0
+    for _ in merges:
+        if i + 1 >= len(merged):
+            raise LedgerError("git merge-tree gave an unexpected answer")
+        status, tree = merged[i], merged[i + 1]
+        i += 2
+        names = []
+        while i < len(merged) and merged[i] != "":
+            names.append(merged[i])
+            i += 1
+        i += 1  # the empty field that ends this merge's conflicted paths
+        if status not in ("0", "1") or not HEX_SHA.fullmatch(tree):
+            raise LedgerError("git merge-tree gave an unexpected answer")
+        answer.append((tree, names))
+    return answer
+
+
+def combined_diff_hits(spec: list[str], tip: str, exclude: list[str], among: set) -> set[str]:
+    """The merges of `among` whose combined diff (`git log --cc`) names a risky path: the best a clone that lacks
+    objects can read; the CI's full clone reads git merge-tree (merge_own_hits)."""
     out = git_read(["-c", "core.quotePath=false", "log", "--merges", "--full-history", "--cc", "--name-only",
-                    "--format=%x00%H", tip, *(["--not", *exclude] if exclude else []), "--",
-                    *(f":(glob){p}" for p in rules["paths"])]).decode(errors="replace")
+                    "--format=%x00%H", tip, *(["--not", *exclude] if exclude else []), "--", *spec]
+                   ).decode(errors="replace")
     found = set()
     for chunk in out.split("\0")[1:]:
-        lines = [line for line in chunk.split("\n") if line.strip()]
-        if len(lines) > 1:
+        lines = [line for line in git_lines(chunk) if line.strip()]
+        if len(lines) > 1 and lines[0].strip() in among:
             found.add(lines[0].strip())
     return found
 
@@ -3541,13 +4294,14 @@ def release_only(c: dict) -> bool:
     return bool(paths) and all(p in RELEASE_FILES or p.endswith("/package.json") for p in paths)
 
 
-def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
+def risky_no_story(in_range: list[dict], hits: set, merges: set, known: set) -> list[dict]:
     """RISKY_NO_STORY: a commit after the rule's start that changes a risky path and names no story (a `No-story:`
     commit, an unattributed one, a merge whose own resolution does it): it is work of a story, which then needs its
-    rounds (ESC-332, ESC-333). A release commit that touches only the release files is not."""
+    rounds (ESC-332, ESC-333). A release commit that touches only the release files is not. Only ids with a story
+    file (`known`) name a story: an id with none never counts as an open story, in any enforce mode (ESC-392)."""
     diffs = []
     for c in reversed(in_range):
-        if c["story"] or c["part_of"]:
+        if any(sid in known for sid in c["story"] + c["part_of"]):
             continue
         merge = len(c["parents"]) > 1
         if not (c["sha"] in merges if merge else c["sha"] in hits) or not merge and release_only(c):
@@ -3558,6 +4312,88 @@ def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
             f"{short(c['sha'])} {subject!r}: {what} a risky path ({RISKY_FILE}, or one of {', '.join(ALWAYS_RISKY)}) "
             "and names no story; such a change is work of a story (Part-of:/Story:), which then needs its breaker "
             "rounds")})
+    return diffs
+
+
+def breaker_resolved(record: dict, rules: dict) -> bool:
+    """A story's rounds as breaker_diffs judges them: some round, the last clean or a decider's Decision after it."""
+    rounds = [i for i, e in enumerate(record["entries"]) if e[0] == "round"]
+    if not rounds:
+        return False
+    last = rounds[-1]
+    return record["entries"][last][3] or any(i > last and e[0] == "decision" and is_decider(e[1], rules)
+                                             for i, e in enumerate(record["entries"]))
+
+
+def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
+                      stories: list[dict] = (), rules: dict | None = None, known: set | None = None) -> list[dict]:
+    """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
+    merge whose own resolution does, under Story:/Part-of: of stories that all have a live Story: commit in `log`, none
+    of which reaches it: the commit graph decides, never the order commits arrived on the trunk (ESC-398). The closed story's rounds never saw the change, and
+    it is not closed again: such a change is new work of an open story, which then needs its rounds. One rule, however
+    the branch lands (merge, fast-forward, rebase) and in the pull request alike (ESC-356, ESC-360, ESC-365, ESC-366):
+    a later commit lands with the close when the head of the story's last valid round reaches it: that round clean or
+    followed by a person's Decision, its head a commit a live close reaches (ESC-373). So a change after the close is
+    covered only by a new round on it, recorded by a re-close (a later Story: commit); a round line naming an older head
+    covers nothing new, and renaming the story file moves nothing (ESC-369). A revert gets no exemption: a revert of a
+    risky change is itself a risky change (ESC-383); what it really reverts counts as reverted (ESC-374, ESC-382)."""
+    reverted = revert_status(log, graph)
+    closes: dict[str, list[str]] = {}  # the live closes: the story is closed
+    ever: dict[str, list[str]] = {}  # every close ever made, reverted too: what orders before and after (ESC-400)
+    for c in log:
+        for sid in c["story"]:
+            ever.setdefault(sid, []).append(c["sha"])
+            if not reverted.get(c["sha"], False):
+                closes.setdefault(sid, []).append(c["sha"])
+    last_round: dict[str, tuple] = {}
+    for s in stories:
+        for v in [s, *s.get("copies", [])]:
+            record = v.get("breaker") or {"entries": []}
+            if rules is not None and not v.get("unreadable") and breaker_resolved(record, rules):
+                last_round.setdefault(s["id"], [e for e in record["entries"] if e[0] == "round"][-1])
+    before: dict[str, set] = {}
+    covered: dict[str, set] = {}
+
+    def reached_by_close(sid: str) -> set:
+        """What came before the story closed: the commit graph decides, never the order commits arrived on the trunk,
+        which a fast-forward landing reorders (ESC-398)."""
+        if sid not in before:
+            # Before the close is what EVERY minimal close reaches: concurrent closes (a parallel re-close forked before
+            # the close, ESC-399) leave only their common ancestry, which fails closed.
+            # A reverted close still counts: reverting a close never moves what came after it before it (ESC-400)
+            firsts, ancestors = first_closes(graph, ever[sid])
+            reached = [ancestors[c] for c in firsts]
+            before[sid] = set.intersection(*reached) if reached else set()
+        return before[sid]
+
+    def with_close(sha: str, sid: str) -> bool:
+        if sha in reached_by_close(sid):
+            return True
+        if sid not in covered:
+            # What the last valid round saw: its head (a commit a live close reaches, so a re-close records it) and
+            # everything before it (ESC-373). A round line never covers a change its head does not reach.
+            head = resolve_head(last_round[sid][2], graph) if sid in last_round else None
+            live = reach_until(graph, closes.get(sid, []), set()) if head else set()
+            covered[sid] = reach_until(graph, [head], set()) if head and head in live else set()
+        return sha in covered[sid]
+
+    known = {s["id"] for s in stories} if known is None else known
+    diffs = []
+    for c in reversed(in_range):
+        # An id with no story file is no open story (ESC-392): with none known, risky_no_story reports the commit.
+        ids = [sid for sid in dict.fromkeys(c["story"] + c["part_of"]) if sid in known]
+        merge = len(c["parents"]) > 1
+        if not ids or reverted.get(c["sha"], False) or not (c["sha"] in merges if merge else c["sha"] in hits):
+            continue
+        if not all(sid in closes and not with_close(c["sha"], sid) for sid in ids):
+            continue  # it names an open story (which records the rounds when it closes), or a close or round saw it
+        subject = c["message"].split("\n", 1)[0].strip()[:80]
+        what = "a merge whose own resolution changes" if merge else "a commit that changes"
+        by = ", ".join(f"{sid} ({short(sorted(closes[sid])[0])})" for sid in ids)
+        diffs.append({"level": "error", "code": "RISKY_AFTER_CLOSE", "detail": (
+            f"{short(c['sha'])} {subject!r}: {what.replace('changes', 'touches')} a risky path (per {RISKY_FILE}) under stories already closed: {by}; "
+            "their breaker rounds never saw it and they are not closed again, so name an open story (Part-of:/Story:) "
+            "for it, which then needs its own breaker rounds")})
     return diffs
 
 
@@ -3572,7 +4408,7 @@ def story_versions(tip: str, paths: set[str], cfg: dict, ids: set[str] = frozens
     # Every version of every story file is read, and each counts for the id its own front matter gives: a story moved
     # to a name that says nothing of its id keeps the risk of its earlier versions (ESC-345).
     versions: dict[str, str] = {}
-    for line in out.splitlines():
+    for line in git_lines(out):
         meta, tab, rest = line.partition("\t")
         fields, names = meta.split(), rest.split("\t")
         if not line.startswith(":") or not tab or len(fields) < 5:
@@ -3609,12 +4445,13 @@ def breaker_start(ctx: dict, rules: dict) -> tuple[list[str], list[dict]]:
     path-limited `git log`), and its `since` when it names exactly one commit (else a warning). Empty: the trunk's history never added
     it (a merge's own resolution, a rules ref that brings it): no start, so every commit after `[ledger] since`."""
     graph = ctx["graph"]
-    adds = [sha for sha in rule_adds(ctx["trunk_sha"]) if sha in graph]
-    # The first add to reach the trunk is the start; a later one (the file deleted and added again, a side branch
-    # that brings its own) moves nothing (ESC-311), nor does a later `since` (ESC-340).
-    arrival, order = ctx["placed"]
-    ct = {c["sha"]: c["ct"] for c in ctx["log"]}
-    starts = [min(adds, key=lambda sha: (order[arrival[sha]], ct.get(sha, 0), sha))] if adds else []
+    adds = sorted(sha for sha in rule_adds(ctx["trunk_sha"]) if sha in graph)
+    # The start is the add every other add descends from: a later one (the file deleted and added again, a side branch
+    # that brings its own) moves nothing (ESC-311), nor does a later `since` (ESC-340). The graph decides, never the
+    # order commits arrived on the trunk, which a fast-forward landing reorders (ESC-398); adds no single one of them
+    # precedes leave no start (fail closed: every commit after `[ledger] since` is judged).
+    reach = {a: reach_until(graph, [a], set()) for a in adds}
+    starts = [a for a in adds if all(a in reach[b] for b in adds)][:1]
     diffs = []
     # `since` counts as the file first had it: a later edit never exempts a closure already judged (ESC-340).
     first = None
@@ -3640,9 +4477,13 @@ def breaker_start(ctx: dict, rules: dict) -> tuple[list[str], list[dict]]:
 def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     """BREAKER_* for the trunk: the risky stories closed after the rule holds (the first commit that brought
     risky.toml, or its `since`; and `[ledger] since` when set), judged by the committed risky.toml (`--rules-ref`'s when given)."""
+    if ctx.get("merged") and cut_reason(ctx["graph"], is_shallow() is not False):
+        return [{"level": "error", "code": "HISTORY_INCOMPLETE",
+                 "detail": "the pull request's history is cut: the CI checks it out with `fetch-depth: 0`"}]
     rules = ctx.get("risky")
     if rules is None:
-        if not rule_adds(ctx["trunk_sha"]):
+        # the trunk's own history decides: a pull request that brings risky.toml first is not judged by it (ESC-312)
+        if not rule_adds(ctx.get("base_sha", ctx["trunk_sha"])):
             return []
         rules = removed_rules()  # deleting risky.toml never turns the rule off (ESC-331)
         diffs0 = [{"level": "error", "code": "BREAKER_CONFIG", "detail": f"{rules['problem']}; every story closed "
@@ -3653,20 +4494,29 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     # that brought risky.toml (ESC-313): attribution may be optional there, the breaker rounds are not.
     in_range = since_range(ctx["cfg"], ctx["log"], ctx["graph"])
     in_range = ctx["log"] if in_range is None else in_range
+    if ctx.get("brought"):
+        # every commit a pull request brings counts, whatever `since` says: the rule already holds on the trunk
+        # (ESC-312); its own `[ledger] since` moves nothing
+        kept = {c["sha"] for c in in_range} | ctx["brought"]
+        in_range = [c for c in ctx["log"] if c["sha"] in kept]
     starts, diffs = breaker_start(ctx, rules)
     if starts:
+        # Exempt only what was on the trunk before the rule: an ancestor of the add (or of its `since`). Whatever else
+        # lands is judged, whenever it was forked or made and however it lands (ESC-318, ESC-398).
         held = set(first_reach(ctx["graph"], starts))
-        # A trunk commit that arrived before the add did is no later for coming off another branch (ESC-318).
-        arrival, order = ctx["placed"]
-        first = order[arrival[starts[0]]]
-        in_range = [c for c in in_range if c["sha"] not in held and order[arrival[c["sha"]]] >= first]
+        in_range = [c for c in in_range if c["sha"] not in held]
     hits = risky_commits(rules, ctx["trunk_sha"], [])
-    diffs += risky_no_story(in_range, hits, merge_own_hits(rules, ctx["trunk_sha"], []))
+    own = merge_own_hits(rules, ctx["trunk_sha"], [])
+    # A known id names a story file here, or a story that was closed (a Story: commit): archiving a closed story's file
+    # makes none of its commits storyless, while an id that never had either is no story (ESC-392, ESC-400)
+    known = {s["id"] for s in ctx["stories"]} | {sid for c in ctx["log"] for sid in c["story"]}
+    diffs += merge_notes() + risky_no_story(in_range, hits, own, known)
+    diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, ctx["stories"], rules, known)
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
     return diffs0 + diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"], hits=hits,
-                                          earlier=earlier)
+                                          earlier=earlier, merges=own)
 
 
 def work_tree_story(cfg: dict, sid: str) -> dict | None:
@@ -3732,13 +4582,14 @@ def cmd_risky(state: dict, sid: str) -> int:
         local = risky_config(None, True)
     rules = merge_rules(committed, local)
     if story is None:
-        print(f"Keelokit: no story {sid} in the work tree or on the trunk", file=sys.stderr)
+        print(terminal_line(f"Keelokit: no story {sid} in the work tree or on the trunk"), file=sys.stderr)
         return 2
-    changed: set[str] = set()
-    if trunk_sha:
-        out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", f"{trunk_sha}...HEAD"],
-                       ok=(0, 128)).decode(errors="replace")
-        changed = {line for line in out.splitlines() if line.strip()}
+    changed: dict[str, set[str]] = {}
+    if trunk_sha and rules:  # each risky pattern's changed paths, as git's pathspec matches them (ESC-395)
+        for pattern in rules["paths"]:
+            out = git_read(["-c", "core.quotePath=false", "diff", "--name-only", "-z", "--no-renames",
+                            f"{trunk_sha}...HEAD", "--", f":(glob){pattern}"], ok=(0, 128)).decode(errors="replace")
+            changed[pattern] = {p for p in out.split("\0") if p}
     hits: list[str] = []
     if trunk_sha and rules:  # the story's commits already on the trunk count too (ESC-319)
         found = risky_commits(rules, trunk_sha, [])
@@ -3749,12 +4600,13 @@ def cmd_risky(state: dict, sid: str) -> int:
     if rules is None:
         print(f"Keelokit: no {RISKY_FILE} on the trunk or in the work tree: only `risky = true` makes a story risky")
     if rules and rules["problem"]:
-        print(f"Keelokit: {rules['problem']} (every story counts as risky until it is fixed)")
+        print(terminal_line(f"Keelokit: {rules['problem']} (every story counts as risky until it is fixed)"))
     if why:
-        print(f"{sid}: risky — {'; '.join(why[:6])}{f'; +{len(why) - 6} more' if len(why) > 6 else ''}")
-        print(f"  build it with the cold breaker loop: up to {cap} rounds, each recorded under `## Breaker rounds`")
+        print(terminal_line(f"{sid}: risky — {'; '.join(why[:6])}{f'; +{len(why) - 6} more' if len(why) > 6 else ''}"))
+        print(f"  build it with the cold breaker loop, each round recorded under `## Breaker rounds`: the last round "
+              f"decides; at round {cap} with findings left, stop and ask a person")
     else:
-        print(f"{sid}: not risky (breaker rounds: optional; cap {cap})")
+        print(terminal_line(f"{sid}: not risky (breaker rounds: optional; cap {cap})"))
     return 0
 
 
@@ -3863,9 +4715,9 @@ def cmd_attribution(state: dict, args: tuple) -> int:
     for c in commits:
         if not c["attributed"]:
             kind = "a merge that brings commits without one" if c["merge"] else "no Story:, Part-of: or No-story:"
-            print(CONTROL.sub("?", f"UNATTRIBUTED {short(c['sha'])} {c['subject'][:80]!r}: {kind}"))
+            print(terminal_line(f"UNATTRIBUTED {short(c['sha'])} {c['subject'][:80]!r}: {kind}"))
     for d in diffs:
-        print(CONTROL.sub("?", f"{d['level']} {d['code']} {d['detail']}"))
+        print(terminal_line(f"{d['level']} {d['code']} {d['detail']}"))
     print(f"{rng}: {len(commits)} commits, {len(answer['unattributed'])} unattributed"
           + (f"; stories: {', '.join(answer['stories'])}" if answer["stories"] else ""))
     return 0
@@ -4110,7 +4962,9 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
                                 "longer holds: the trunk was rewritten since, so nothing it says holds now"})
         mark_unknown(list(records.values()), f"the snapshot is of {short(sha)}, which {trunk} no longer holds; {FIX}")
         trunk_swarm_stale(records)
+        in_progress_stale(records, None)
     elif sha != trunk_sha:
+        newer: set = set()
         if sha in graph:
             newer = reach_until(graph, [trunk_sha], set(first_reach(graph, [sha])))
             complete = not (newer & cut)
@@ -4131,6 +4985,7 @@ def snapshot_view(cfg: dict, trunk: str, trunk_sha: str, refs: dict, graph: dict
             settle_newer(records, log, graph, cut, trunk_sha, moves, story_shas, undone_shas)
         if not complete or any(c["reverts_said"] for c in log):  # ESC-349: what landed since may undo a delivery
             trunk_swarm_stale(records)
+        in_progress_stale(records, newer if complete else None, log)
     settle_corrections(records, tree or [], trunk_sha, meta)
     settle_refs(records, refs, graph, cut, meta.get("refs") if isinstance(meta.get("refs"), dict) else {})
     settle_snapshot_states(stories, records)
@@ -4143,6 +4998,21 @@ def trunk_swarm_stale(records: dict) -> None:
     never guessed (ESC-349); a full history reads them again."""
     for rec in records.values():
         rec["swarm"] = [e for e in rec["swarm"] if e["state"] == "in-progress"]
+
+
+def in_progress_stale(records: dict, landed: set | None, log: list[dict] = ()) -> None:
+    """Leave out a snapshot's in-progress deliveries that may have landed since (HARN-022): one whose head or any commit
+    is among the trunk commits after the snapshot's (`landed`), or that a trunk commit since (`log`) names by its task
+    (`Swarm-Task:`) or its story (`Story:`/`Part-of:`) — a squash, rebase or cherry-pick lands new commits (ESC-359) —
+    or every one when this clone cannot list those (None: the trunk was rewritten, or what landed since is past the
+    clone). A delivery that landed is on the trunk or was reverted, never in progress; information only, so it is
+    dropped, never guessed (as ESC-349)."""
+    tasks = {task for c in log if (task := swarm_task(c["trailers"]))}
+    named = {sid for c in log for sid in c["story"] + c["part_of"]}
+    for sid, rec in records.items():
+        rec["swarm"] = [e for e in rec["swarm"] if e["state"] != "in-progress" or landed is not None
+                        and e["head"] not in landed and not landed.intersection(e["commits"])
+                        and e["task"] not in tasks and sid not in named]
 
 
 def settle_newer(records: dict, log: list[dict], graph: dict, cut: set, trunk_sha: str, moves: dict,
@@ -4700,10 +5570,14 @@ def why_of(ctx: dict, sid: str, rec: dict) -> dict:
     found_commits.sort(key=lambda x: (sid not in x[0].get("story", []), -x[0]["ct"], x[0]["sha"]))
     commits, findings = [], set()
     tasks = {sha: e["task"] for e in rec.get("swarm") or [] for sha in e["commits"]}
-    try:
-        authors = authors_of([c["sha"] for c, _ in found_commits], ctx["trunk_sha"])
-    except LedgerError:
-        authors = {}
+    known = ctx.get("authors") or {}
+    if known and known["asked"].issuperset(c["sha"] for c, _ in found_commits):
+        authors = known["names"]  # read_all asked for them with the swarm's (HARN-022): one git call per show
+    else:
+        try:
+            authors = authors_of([c["sha"] for c, _ in found_commits], ctx["trunk_sha"])
+        except LedgerError:
+            authors = {}
     for c, held in found_commits:
         subject, body = split_message(c["message"], c["trailers"])
         commits.append({"sha": c["sha"], "date": iso(c["ct"]), "kind": "Story" if sid in c.get("story", []) else "Part-of",
@@ -4756,7 +5630,7 @@ def cmd_show(state: dict, args: tuple) -> int:
     trunk has no such story."""
     sid, mode = args
     lang = read_config(state)["lang"]
-    ctx = read_all(state)
+    ctx = read_all(state, show=sid)
     found = story_named(ctx, sid)
     if found is None:
         message = SHOW_LABELS[lang]['no_story'].format(id=sid)
@@ -4795,7 +5669,7 @@ def cmd_next(state: dict) -> int:
                    key=lambda r: (r["wave"] is None, r["wave"] or 0, id_key(r["id"])))
     t = SHOW_LABELS[lang]
     for r in ready:
-        print(f"{r['id']}  {t['wave']} {r['wave'] if r['wave'] is not None else '—'}  {r['title']}")
+        print(terminal_line(f"{r['id']}  {t['wave']} {r['wave'] if r['wave'] is not None else '—'}  {r['title']}"))
     if not ready:
         print(t["ready_none"])
     return 0
@@ -4827,7 +5701,7 @@ def cmd_release(state: dict, tag: str) -> int:
     word = t["story_one"] if len(stories) == 1 else t["story_many"]
     head = (t["release"].format(tag=tag, prev=previous[-1][1], n=len(stories), stories=word) if previous
             else t["release_first"].format(tag=tag, n=len(stories), stories=word))
-    print("\n".join([head, *(f"{r['id']}  {r['title']}" for r in stories)]))
+    print("\n".join([head, *(terminal_line(f"{r['id']}  {r['title']}") for r in stories)]))
     return 0
 
 
@@ -5081,7 +5955,7 @@ def archive_ref(sid: str, day: str) -> str:
     """archive/<id>-<YYYYMMDD>, or the first -2, -3… that origin does not have yet (two drops in one day)."""
     base = f"{ARCHIVE}{sid.lower()}-{day}"
     code, out = git_out("ls-remote", "--heads", "origin", f"refs/heads/{base}*")
-    taken = {line.split()[1].removeprefix("refs/heads/") for line in out.splitlines() if len(line.split()) == 2} \
+    taken = {line.split()[1].removeprefix("refs/heads/") for line in git_lines(out) if len(line.split()) == 2} \
         if code == 0 else set()
     n, name = 1, base
     while name in taken:
@@ -5152,7 +6026,7 @@ def comment_char() -> str:
     leaves `#` for every message an editor did not touch)."""
     # core.commentString (git 2.45+) and core.commentChar are one setting: the last one git reads wins.
     code, out = git_out("config", "--get-regexp", r"^core\.comment(char|string)$")
-    values = [line.split(" ", 1)[1] for line in out.splitlines() if " " in line] if code == 0 else []
+    values = [line.split(" ", 1)[1] for line in git_lines(out) if " " in line] if code == 0 else []
     return values[-1] if values and values[-1] != "auto" else "#"
 
 
@@ -5446,7 +6320,7 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
     if not diffs:
         return 0
     for d in diffs:
-        print(f"Keelokit: {d['code']} — {d['detail']}", file=sys.stderr)
+        print(terminal_line(f"Keelokit: {d['code']} — {d['detail']}"), file=sys.stderr)
     if not any(d["level"] == "error" for d in diffs):
         print(f"Keelokit: the push to {trunk} goes through (warnings only).", file=sys.stderr)
         return 0
@@ -5552,7 +6426,7 @@ def run_command(state: dict, command: str, args) -> int:
         if command == "hook":
             return cmd_hook(state, args)
         if command == "prepush":
-            return cmd_prepush(state, args, [] if sys.stdin.isatty() else sys.stdin.read().splitlines())
+            return cmd_prepush(state, args, [] if sys.stdin.isatty() else git_lines(sys.stdin.read()))
         if command == "take":
             return cmd_take(state, args)
         if command == "snapshot":
@@ -5630,11 +6504,29 @@ def show(state: dict, as_json: bool) -> int:
     if as_json:
         print(json.dumps(facts, indent=1))
     else:
-        print("\n".join(summary(facts, read_config(state)["lang"])))
+        print("\n".join(terminal_line(line) for line in summary(facts, read_config(state)["lang"])))
     return 1 if facts["diffs"] else 0
 
 
+class ScreenedStream:
+    """sys.stdout or sys.stderr with every write screened (HARN-022, ESC-368): no control, format or separator
+    character any output path forgot reaches the terminal (tabs and newlines pass; a line a newline in the data could
+    forge is screened where it is printed, terminal_line). The JSON outputs escape everything that is not ASCII."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, text: str) -> int:
+        self.stream.write(CONTROL.sub("?", text))
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 def main(argv: list[str]) -> int:
+    if not isinstance(sys.stdout, ScreenedStream):
+        sys.stdout, sys.stderr = ScreenedStream(sys.stdout), ScreenedStream(sys.stderr)
     if PLUGIN_MODE and (why := git_dir_problem()):  # ESC-280: run by the plugin's hooks, no git where git can't be trusted
         if argv != ["history", "--ensure"]:
             print(f"Keelokit: {why}.", file=sys.stdout if not argv else sys.stderr)

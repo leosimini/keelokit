@@ -34,7 +34,8 @@ Three facts shape the process:
 
 ## Cutting a release
 
-1. Check that CI is green on the tip of `main`.
+1. Check that CI is green on the tip of `main`, and that no story that blocks the release is open: today HARN-024
+   (a harness upgrade must land without RISKY_NO_STORY).
 2. Pick the version:
    - **patch** (0.5.1): fixes and wording.
    - **minor** (0.6.0): new skills, agents or rules, template changes, anything with upgrade

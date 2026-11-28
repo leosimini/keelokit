@@ -22,9 +22,9 @@ inherits it; change it in the Keelokit template, not here.
 - A risky story (`.keelokit/risky.toml` says what is risky; `python3 .keelokit/bin/ledger.py risky <ID>` says
   whether one is and why) gets cold breaker rounds before it closes: each round a NEW breaker agent briefed with
   the story, the diff and the invariants only, never the builder's conclusions; reproduced findings only; each
-  fix starts with a test that fails before it; until a round is clean or the cap (`rounds`, default 3). Each round
-  is a line under `## Breaker rounds` in the story file. The cap hit with findings left: a person decides, and a
-  `Decision` line names them. `ledger.py check` (CI) reports a risky story closed without its rounds.
+  fix starts with a test that fails before it; until a round is clean. Each round is a line under `## Breaker rounds`
+  in the story file. The last round decides, whatever its number; the cap (`rounds`, default 3) is where you stop and
+  ask: hit with findings left, a person decides, and a `Decision` line names them. `ledger.py check` (CI) reports a risky story closed without its rounds.
 - Critical areas (`.keelokit/critical.toml`) go one story at a time, in full mode, with
   `pnpm mutation` green. Put the critical rule in a pure function; wrap it in a transaction.
 - Anything that writes: what if it runs twice, or twice at once? Answer with a constraint, a

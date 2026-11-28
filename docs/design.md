@@ -249,6 +249,13 @@ contract and writes the why in its `Story:` commit's body, `coordinate` checks a
 
 ### Breaker rounds: risky stories close after cold rounds (HARN-021)
 
+**Who decides.** The verdict that counts is the CI's: a fresh clone of the committed content, judged by the trunk's
+rules. Local checks (the pre-push hook, an agent's own runs) are hardened against their environment (the hermetic git
+reads above) and fail closed where they detect steering (`MERGE_ATTRIBUTES`, `MERGE_CONFIG`), but a local clone's own
+state (its config, replace refs, `info/*`, its environment) can still differ. That is accepted when it can only hide
+from a local run what the CI still reports; a committed-content path to a wrong CI verdict, or a false error on a
+correct committed flow, is never accepted.
+
 A builder's own adversarial review, and a breaker that read the builder's reasoning, missed real bugs on five
 stories in one night; a fresh agent given only the code, the diff and the invariants found them each time. That is
 now the rule for **risky** stories, in this repo and in every generated project. `.keelokit/risky.toml` (the
@@ -257,16 +264,54 @@ and the security, auth, integrity and data dimensions; rounds = 3) says what is 
 dimension, a touch, or a path a trunk commit of the story changes. `ledger.py risky <ID>` says whether and why.
 
 `build-story` (step 5b) runs the loop: a NEW breaker (mode C) per head, briefed with the story, the diff and the
-invariants only; reproduced findings only; each fix starts with a failing test; until a clean round or the cap; one
-line per round under `## Breaker rounds` in the story file, and a person's `Decision` line when the cap is hit with
-findings left. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
+invariants only; reproduced findings only; each fix starts with a failing test; until a clean round; one line per
+round under `## Breaker rounds` in the story file. The last round decides, whatever its number (HARN-022): clean, the
+story is resolved, past the cap too; the cap is where the build must stop and ask, and a person's `Decision` line
+records their call when it is hit with findings left. A round's head must be the head the breaker attacked, a commit
+the close reaches (else `BREAKER_BAD_ENTRY`, not clean), and the last clean round's head must be at or after the
+story's last risky change, the `Story:` commit included (else `BREAKER_STALE`, an error): the rounds see the code that
+lands. So build-story merges `origin/main` after the rounds instead of rebasing, and a risky story lands with a merge
+commit (this repo's way); squash and rebase landings rewrite the recorded heads, so on the trunk their rounds read as
+`BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A merge's own change is its tree against
+git's automatic merge of its parents (`git merge-tree`), so a clean sync merge of main brings nothing of its own; on top of it, a risky path whose state differs from
+every parent's and that a rename could have filled (absent at the merge base or in a parent) is the merge's own change
+unless it equals a per-path 3-way merge with no rename detection (one side's change, or a clean text `git merge-file`),
+so no rename limit hides an edit; a file present at the base and in both parents is left to git's merge, with its
+modes, attributes and diff algorithm. Path names stay raw bytes, and git output that carries them is read by
+position, never searched for text; a risky path with a control character in it makes the merge its own change. No
+single merge base fails closed. An id with no story file never counts as an open story. Known limitation,
+accepted as fail-closed: a clean sync merge across a reviewed rename from one risky path to another (main renamed
+the file this branch edited, or the other way round) reads as `BREAKER_STALE`, since the per-path merge does not
+follow renames; a fix must not depend on rename detection (rounds 9 and 10), and the remedy is a breaker round on
+the sync merge or a person's Decision. git's merge is read with no attributes (an empty attribute source, no
+attributes file), so no `.gitattributes`, committed, added later or only in a work tree, steers it; a non-empty
+`$GIT_DIR/info/attributes`, which no option switches off, makes every merge touching a risky path count
+(`MERGE_ATTRIBUTES`, a warning). Second known limitation, also fail-closed: a repository that merges a risky file
+with `merge=union` gets `BREAKER_STALE` on a sync merge git merged by that attribute; the same remedy applies.
+Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. A pull request is judged as the trunk will be once it lands (the trunk check run on the merge result), so one that
+fixes a red trunk is green and one that leaves it red stays red. A round line is a record nobody verifies: its head
+covers whatever it reaches, another story's head included; the cold breaker and the person deciding at the cap
+are what make it honest. Before or after (the
+close, the rule's start) is the commit graph's call, never the order commits arrived on the trunk, which a
+fast-forward landing reorders: merge, fast-forward and rebase landings give one verdict. Every git read runs in
+one hermetic environment (`hermetic_env`): no system or global config, no config or pathspec switches from the
+environment, no system attributes, no replace objects, and pinned values (`log.diffMerges=separate`, no
+renormalising, the trailer separators) over the repository's own config; a key there that steers a merge or a diff
+(a merge or diff driver, `merge.default`, `merge.renormalize`, `merge.conflictStyle`, `diff.external`), in any scope
+git reads (the worktree's config too), makes every merge touching a risky path count (`MERGE_CONFIG`, a warning). Fetches, pushes and the commands
+that commit keep the person's config: credentials and identity live there. A change after the close is covered only by a
+new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
+nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
 own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
-no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision. History is exempt by
+no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision after it. History is exempt by
 position: only `Story:` commits that the commit which brought `risky.toml` does not reach, after `[ledger] since`.
-The files that decide what is judged (`risky.toml`, `state.toml`, the corrections) are always risky, so loosening
+The files that decide what is judged (`risky.toml`, `state.toml`, the corrections, and a `.gitattributes` at any depth,
+which steers how git merges and diffs) are always risky, so loosening
 them is work of a story with its own rounds; `RISKY_NO_STORY` refuses a risky change that names no story, in a commit
-or in a merge's own resolution. A revert counts only when its change is the reverted commit's inverted.
+or in a merge's own resolution, and `RISKY_AFTER_CLOSE` one under the trailer of stories already closed by an
+earlier landing (it is new work: an open story with its own rounds). A touch that names a directory meets every glob
+beneath it. A revert counts only when its change is the reverted commit's inverted.
 
 ## Lifecycle
 

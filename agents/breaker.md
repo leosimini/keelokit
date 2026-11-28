@@ -69,7 +69,9 @@ section: you judge the code, not the reasoning behind it.
 4. Report reproduced findings only. A suspicion you could not reproduce goes under NOT ATTEMPTED, never under BROKEN.
 
 Each BROKEN item carries its repro: the script's path, the command, what it printed. A round with no reproduced
-finding is `HOLDS`: the orchestrator records it as `clean`.
+finding is `HOLDS`: the orchestrator records it as `clean`. The last round decides, whatever its number: a `HOLDS`
+on the last head closes the story. The cap in `risky.toml` is where the orchestrator must stop and ask a person, not
+a reason for you to soften a finding or to stop attacking.
 
 ## Failure paths: money stories
 

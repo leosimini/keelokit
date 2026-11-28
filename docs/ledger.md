@@ -167,7 +167,9 @@ Exit 0: no difference. 1: differences or a refusal. 2: the environment (no git, 
 | `STALE_BRANCH`, `SNAPSHOT_BEHIND`, `DONE_TWICE`, `PENDING_REVIEW` | warning | `check` |
 | `BREAKER_MISSING` (a risky story closed with no breaker round recorded), `BREAKER_CONFIG` (a `.keelokit/risky.toml` it cannot use: every closed story counts as risky) | error | `check` (a pull request too) |
 | `RISKY_NO_STORY` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path and names no story; a `No-story: release` commit touching only the release files excepted) | error | `check` (a pull request too) |
-| `BREAKER_UNRESOLVED` (the last round left findings, or the rounds went past the cap, with no person's Decision after it), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
+| `RISKY_AFTER_CLOSE` (after the breaker rule's start, a commit, or a merge's own resolution, changes a risky path under `Story:`/`Part-of:` of stories all closed by a live `Story:` commit of an earlier landing; commits the close reaches, commits the commit recording the resolved story's last round reaches, and reverts excepted) | error | `check` (a pull request too) |
+| `BREAKER_STALE` (a risky commit of the story that does not come after its close — every minimal close reaches it, or it runs beside the close — is not reached by the head of its last clean round; a last round a person decided covers what the close reaches) | error | `check` (a pull request too) |
+| `BREAKER_UNRESOLVED` (the last round left findings with no person's Decision after it; the last round decides, past the cap too), `BREAKER_BAD_ENTRY` (a line under `## Breaker rounds` that is neither a round nor a Decision) | warning | `check` (a pull request too) |
 | `NO_STORY`, `STORY_TAKEN`, `STORY_ON_TRUNK`, `LEDGER_DIFF` | refusal | `harbor.py` (Harbor's plan) |
 | `UNATTRIBUTED` | refusal | `swarm.py deliver` (Swarm's plan) |
 
@@ -185,6 +187,38 @@ closes only with its cold breaker rounds recorded in its file:
 - Decision · <person> · <YYYY-MM-DD> · <what was decided>      (only when the last round left findings)
 ```
 
+The last round decides, whatever its number (HARN-022): a clean last round resolves the story, past the cap too. A
+last round with findings is `BREAKER_UNRESOLVED` until a later round is clean or a person's Decision follows it; its
+detail says which comes next (below the cap: the next round; at or past it: a person). The cap is where the build
+must stop and ask. A touch that names a directory (it ends in `/`, or its last part has no extension: `apps/api`,
+`.github`) meets every glob that can match a path beneath it (`**/migrations/**`). A risky change committed under
+the trailer of stories already closed by an earlier landing (before the rule, or with their rounds) is
+`RISKY_AFTER_CLOSE`: their rounds never saw it and nothing closes them again, so it names an open story, which then
+needs its own rounds. Before or after comes from the commit graph, never from the order commits arrived on the trunk's
+first-parent chain (which a fast-forward landing reorders): a commit is after a close unless every minimal close of the
+story (one that descends from no other close of it) reaches it, so concurrent closes leave only their common ancestry, and only an ancestor of the commit that added risky.toml is before the rule.
+One rule, however the branch lands (merge, fast-forward, rebase) and in the pull request alike:
+a later commit lands with the close when the commit that recorded the story's last round in its file comes after it
+(reaches it), while that round is clean or a person's Decision follows it. So the closing branch's commits before its
+round line are judged with the close, and a fix after the round was recorded is reported before it lands. A later
+change to a closed story is accepted only when a new round line recorded after it covers it: a reopening with its own
+round. A touch naming the repository root (`./`, `/`, `.`) meets every glob; every spelling of one directory is one;
+`.` and `..` inside a touch are normalised, and one that leaves the repository names nothing. The commit that recorded
+a round is found by the story's id, over every file under the stories' glob, never by its current path: renaming or
+copying the file moves nothing.
+
+A round's head (full, or 7 to 63 hex digits that resolve uniquely) must be a commit some live close of the story reaches: the head
+the breaker attacked, on the branch that closes it. Any other head is `BREAKER_BAD_ENTRY` and that round counts as not
+clean. When the last round is clean, a risky commit of the story that the close reaches and the round's head does not
+(it landed after the round, the `Story:` commit itself included, or it landed on the trunk before the close outside
+its branch, as a parallel delivery does; a merge counts by its own change: its tree against git's automatic merge of its parents, `git merge-tree`, conflicted paths included; and a risky path whose state differs from every parent's and that is absent at the merge base or in a parent, the only paths a rename can fill, is its own unless it equals a per-path, rename-free 3-way merge of that path at the merge base and the parents: one side's change, or a clean, text, same-mode `git merge-file`; a path present at the base and in both parents is judged by git's merge alone; path names stay raw bytes; no single merge base, or an octopus: own; known limitation, fail-closed: a clean sync merge across a rename from one risky path to another reads as `BREAKER_STALE`, remedied by a round on the sync merge or a Decision; git's merge is read with no attributes, so a sync merge git merged by `merge=union` on a risky file is `BREAKER_STALE` too, the second known fail-closed limitation, with the same remedy; a non-empty `$GIT_DIR/info/attributes` makes every merge touching a risky path count, with a `MERGE_ATTRIBUTES` warning, and so does a key in any config scope git reads (the worktree's too) that steers a merge or a diff (a driver, `merge.default`, `merge.renormalize`, `merge.conflictStyle`, `diff.external`), with `MERGE_CONFIG` (`merge.ff`, `merge.tool` and the like change nothing); anything at `info/attributes` but an empty file fails closed; replace objects are off; every git read runs hermetic: no system, global or environment config, no system attributes, no pathspec switches) is `BREAKER_STALE` (error); a last round
+a person decided covers only what its head saw too: run a round on the code that lands. A branch rewritten as it lands (a rebase or a squash)
+rewrites the heads away, so its rounds count as not clean on the trunk (warnings): merge `origin/main` after the
+rounds and land with a merge commit. After the close, a change is covered only by a new round whose head reaches it,
+recorded by a re-close (a later `Story:` commit); a revert counts only as the exact inverse of a commit that exists
+here, and a revert of a risky change is itself a risky change: it needs its own round, like any change after the close. A revert of a merge reverts
+a commit the merge brought only when it changes back exactly what that commit changed, path by path.
+
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
 for a pull request the base's `risky.toml` and committed `[ledger]` with the pull request's story file. The rule holds
 for `Story:` commits that the first commit to bring `risky.toml` to the trunk does not reach (a later add moves
@@ -198,7 +232,7 @@ what an existing pull request's attribution check says when it edits state.toml)
 of the story's file, its earlier version (as `risky.toml` found it on the trunk, or as the base has it), and every
 trunk or pull-request commit of the story that changes a risky path; the rounds come only from the file as it is.
 Rounds numbered other than 1, 2, … count as none, and nothing inside a code fence or an HTML comment is a record.
-`risky.toml`, `state.toml` and `backlog/ledger-corrections.toml` are always risky paths; once `risky.toml` was on the
+`risky.toml`, `state.toml`, `backlog/ledger-corrections.toml` and `.gitattributes` at any depth are always risky paths; once `risky.toml` was on the
 trunk (added by a commit or by a merge's own resolution), its absence fails closed. Risk is sticky across every
 committed version of every file under the stories' glob, for the id its own front matter gives (whatever it is
 named). Without `deciders`, a Decision name with digits, a non-Latin letter or a known agent, bot or model word is
@@ -206,8 +240,10 @@ refused. Only the `since` of `risky.toml` as it first
 reached the trunk counts. A round is clean only when its whole result reads `clean`.
 
 Reverts, ledger-wide: a commit reverts X only when its message says so and its change is X's inverted as git records
-it (each path's modes and blob ids: no whitespace rule, binary file or `.gitattributes` can fake it); a message-only or partial "revert" is an ordinary commit. A clone that lacks the blobs keeps the
-message's word; the CI's full clone decides. The line is a record, as a trailer is: `check` asks that it is there and well
+it (each path's modes and blob ids: no whitespace rule, binary file or `.gitattributes` can fake it); a message-only or partial "revert" is an ordinary commit. With the whole history (the CI's
+clone), a "revert" of a sha that is no commit reverts nothing, and a change git cannot read counts no revert on a
+message's word (it fails closed, ESC-374); a shallow or partial clone keeps the message's word for its states, and the
+CI's full clone decides. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 
 ### Corrections file
