@@ -265,7 +265,8 @@ the close reaches (else `BREAKER_BAD_ENTRY`, not clean), and the last clean roun
 story's last risky change, the `Story:` commit included (else `BREAKER_STALE`, an error): the rounds see the code that
 lands. So build-story merges `origin/main` after the rounds instead of rebasing, and a risky story lands with a merge
 commit (this repo's way); squash and rebase landings rewrite the recorded heads, so on the trunk their rounds read as
-`BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A change after the close is covered only by a
+`BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A merge's own change is its tree against
+git's automatic merge of its parents (`git merge-tree`), so a clean sync merge of main brings nothing of its own. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its

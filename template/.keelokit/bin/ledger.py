@@ -1164,12 +1164,59 @@ def revert_status(log: list[dict], graph: dict) -> dict[str, bool]:
     reverters: dict[str, list[str]] = {}
     for c in log:
         for target in c["reverts"]:
-            for sha in brought_by(graph, target):
+            brought = brought_by(graph, target)
+            if len(graph.get(target, ())) > 1:
+                # A revert of a merge reverts a commit the merge brought only when, path by path, it undoes exactly
+                # what that commit changed (ESC-382); anything less, or a doubt, is no revert of it.
+                brought = [target] + sorted(merge_revert_undoes(c["sha"], [x for x in brought if x != target], graph))
+            for sha in brought:
                 reverters.setdefault(sha, []).append(c["sha"])
     status: dict[str, bool] = {}
     for c in log:
         status[c["sha"]] = any(not status.get(r, False) for r in reverters.get(c["sha"], ()))
     return status
+
+
+MERGE_REVERT_CACHE: dict[tuple, frozenset] = {}
+
+
+def path_changes(shas: list[str]) -> dict[str, dict[str, tuple]]:
+    """commit -> {path: (old mode, new mode, old blob, new blob)} as `git log --raw` records it (a merge: none), one
+    call for all."""
+    if not shas:
+        return {}
+    out = git_read(["-c", "core.quotePath=false", "log", "--no-walk=unsorted", "--stdin", "--raw", "--no-abbrev",
+                    "--no-renames", "--format=%x00%H"], "".join(f"{x}\n" for x in shas).encode()).decode(errors="replace")
+    found: dict[str, dict[str, tuple]] = {}
+    for chunk in out.split("\0")[1:]:
+        head, _, rest = chunk.partition("\n")
+        rows = {}
+        for line in git_lines(rest):
+            meta, tab, path = line.partition("\t")
+            fields = meta.lstrip(":").split()
+            if line.startswith(":") and tab and len(fields) >= 4:
+                rows[path] = (fields[0], fields[1], fields[2], fields[3])
+        found[head.strip()] = rows
+    return found
+
+
+def merge_revert_undoes(reverter: str, brought: list[str], graph: dict) -> frozenset:
+    """The commits of `brought` (non-merges a reverted merge brought) whose every changed path the reverter changes
+    back exactly: the same path from the commit's new blob and mode to its old ones (ESC-382). Blob ids, not patches:
+    no context, binary file or attribute can fake it. On any doubt (a git error), none."""
+    key = (reverter, tuple(sorted(brought)))
+    if key not in MERGE_REVERT_CACHE:
+        singles = [x for x in brought if len(graph.get(x, ())) < 2]
+        try:
+            changes = path_changes(sorted({reverter, *singles}))
+        except LedgerError:
+            changes = {}
+        back = changes.get(reverter, {})
+        MERGE_REVERT_CACHE[key] = frozenset(
+            x for x in singles if changes.get(x) and all(
+                back.get(path) == (new_mode, old_mode, new_blob, old_blob)
+                for path, (old_mode, new_mode, old_blob, new_blob) in changes[x].items()))
+    return MERGE_REVERT_CACHE[key]
 
 
 def story_commits(log: list[dict], reverted: dict, arrival: dict, order: dict) -> tuple[dict, set]:
@@ -3757,15 +3804,89 @@ def removed_rules() -> dict:
 
 
 def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
-    """The merges whose OWN change (the combined diff against every parent: a resolution, a file neither side had)
-    touches a risky path, from one `git log --cc` (ESC-333)."""
+    """The merges whose OWN change touches a risky path (ESC-333). A merge's own change is its tree against the tree
+    git makes by merging its parents automatically (`git merge-tree --write-tree`), every path that merge left in
+    conflict included (ESC-381): a clean sync merge of main brings nothing of its own, and a resolution that takes the
+    other side's version of a risky file is its own change. Fixed git calls: the merges whose diff against some parent
+    touches a risky path (one path-limited `git log -m`), one `merge-tree --stdin`, one `cat-file`, one
+    `diff-tree --stdin`. It fails closed: an octopus merge, an old git, or any merge-tree error makes every such merge
+    its own risky change."""
+    spec = [f":(glob){p}" for p in rules["paths"]]
+    out = git_read(["-c", "core.quotePath=false", "log", "--merges", "--full-history", "-m", "--name-only",
+                    "--format=%x00%H %P", tip, *(["--not", *exclude] if exclude else []), "--", *spec]
+                   ).decode(errors="replace")
+    parents: dict[str, list[str]] = {}
+    for chunk in out.split("\0")[1:]:
+        lines = [line for line in git_lines(chunk) if line.strip()]
+        if len(lines) > 1:  # this parent's diff touches a risky path
+            fields = lines[0].split()
+            parents[fields[0]] = fields[1:]
+    if not parents:
+        return set()
+    pairs = sorted(m for m, ps in parents.items() if len(ps) == 2)
+    found = {m for m, ps in parents.items() if len(ps) != 2}  # an octopus: fail closed
+    try:
+        merged = git_read(["merge-tree", "--stdin", "-z", "--name-only", "--no-messages"],
+                          "".join(f"{parents[m][0]} {parents[m][1]}\n" for m in pairs).encode()
+                          ).decode(errors="replace").split("\0")
+        auto, conflicted, i = {}, {}, 0
+        for m in pairs:
+            status, tree = merged[i], merged[i + 1]
+            i += 2
+            names = []
+            while i < len(merged) and merged[i] != "":
+                names.append(merged[i])
+                i += 1
+            i += 1  # the empty field that ends this merge's conflicted paths
+            if status not in ("0", "1") or not HEX_SHA.fullmatch(tree):
+                raise LedgerError("git merge-tree gave an unexpected answer")
+            auto[m], conflicted[m] = tree, names
+        trees = trees_of(pairs)
+        if set(trees) != set(pairs):
+            raise LedgerError("a merge's tree cannot be read here")
+        diff = git_read(["-c", "core.quotePath=false", "diff-tree", "--stdin", "-r", "--name-only", "-z", "--",
+                         *spec], "".join(f"{auto[m]} {trees[m]}\n" for m in pairs).encode()
+                        ).decode(errors="replace")
+    except LedgerError:
+        if "complete" not in HISTORY:
+            HISTORY["complete"] = is_shallow() is False and not is_partial_clone()
+        if HISTORY["complete"]:
+            return found | set(pairs)  # merge-tree missing (old git) or failing: every such merge counts (fail closed)
+        # A clone that lacks objects (shallow, partial) cannot merge them: it reads the combined diff, as before
+        # HARN-022 round 7; the CI's full clone decides, failing closed.
+        return found | combined_diff_hits(spec, tip, exclude, set(pairs))
+    patterns = [glob_regex(p) for p in rules["paths"]]
+    own: dict[str, list[str]] = {}
+    # diff-tree echoes each pair as a newline-ended header, then its paths, each NUL-ended (none when equal)
+    headers = {f"{auto[m]} {trees[m]}\n": m for m in pairs}
+    current, at = None, 0
+    while at < len(diff):
+        header = next((h for h in headers if diff.startswith(h, at)), None)
+        if header:
+            current, at = headers[header], at + len(header)
+            continue
+        end = diff.find("\0", at)
+        end = len(diff) if end < 0 else end
+        if current and end > at:
+            own.setdefault(current, []).append(diff[at:end])
+        at = end + 1
+    for m in pairs:
+        risky_conflict = any(rx.fullmatch(path) for path in conflicted[m] for rx in patterns)
+        if own.get(m) or risky_conflict:
+            found.add(m)
+    return found
+
+
+def combined_diff_hits(spec: list[str], tip: str, exclude: list[str], among: set) -> set[str]:
+    """The merges of `among` whose combined diff (`git log --cc`) names a risky path: the best a clone that lacks
+    objects can read; the CI's full clone reads git merge-tree (merge_own_hits)."""
     out = git_read(["-c", "core.quotePath=false", "log", "--merges", "--full-history", "--cc", "--name-only",
-                    "--format=%x00%H", tip, *(["--not", *exclude] if exclude else []), "--",
-                    *(f":(glob){p}" for p in rules["paths"])]).decode(errors="replace")
+                    "--format=%x00%H", tip, *(["--not", *exclude] if exclude else []), "--", *spec]
+                   ).decode(errors="replace")
     found = set()
     for chunk in out.split("\0")[1:]:
-        lines = [line for line in chunk.split("\n") if line.strip()]
-        if len(lines) > 1:
+        lines = [line for line in git_lines(chunk) if line.strip()]
+        if len(lines) > 1 and lines[0].strip() in among:
             found.add(lines[0].strip())
     return found
 
