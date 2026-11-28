@@ -39,6 +39,13 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
 - `release_only` exempts a `No-story: release` commit whose paths all end in `/package.json`, wherever they sit, so
   `db/migrations/package.json` or `.keelokit/bin/package.json` inside a risky glob lands with no RISKY_NO_STORY
   (older than HARN-022, from HARN-021). Probe: /tmp/breaker13-HARN-022/probes/p3_release_package_json.py (round 13).
+- A repository-local `trailer.separators` changes which story a commit's trailers name (`Part-of# DOC-002` read as
+  a trailer), so a local check can differ from the CI's; no pin covers `trailer.*`. Probe:
+  /tmp/breaker17-HARN-022/probes/p3_trailer_config.py (round 17).
+- Local tampering hides an own change from a local check (the CI's clone still reports it): replace refs
+  (`refs/replace`, no `GIT_NO_REPLACE_OBJECTS`; `GIT_REPLACE_REF_BASE` and `GIT_GRAFT_FILE` not dropped) and a FIFO at
+  `info/attributes` (`local_attributes` asks `is_file()`). Probes: /tmp/breaker17-HARN-022/probes/p2_replace_refs.py,
+  p6_info_attributes_fifo.py (round 17).
 - On a case-insensitive filesystem a committed `.GITATTRIBUTES` steers git like `.gitattributes`, but the always-risky
   `**/.gitattributes` pathspec is case-sensitive (round 16, not reproduced on ext4).
 - `glob_regex` misreads POSIX classes (`[[:alpha:]]`), which touches may use; story risk by touches only (round 16).

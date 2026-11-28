@@ -275,3 +275,16 @@ below.
   path, the parents' trees in risky_paths_of, the two copies. The builder stopped; the coordinator decided: one
   hermetic environment for every git read, explicit flags and pins over config, a local merge or diff driver fails
   closed (MERGE_CONFIG); both LOW findings fixed here too.
+- Round 17 · head 76e7f8d92754c02247437cbc0d8158ed40f95f18 · 4 findings (1 MEDIUM, 1 LOW-MEDIUM, 2 LOW), not fixed
+  A new agent, cold, scratch clones only, told both accepted limitations, pointed at everything outside the committed
+  content; the MEDIUM and LOW-MEDIUM findings run by the builder too. Reproduced: (MEDIUM) `merge_config` reads
+  `git config --local --includes`, which never reads `$GIT_DIR/config.worktree` (on with `extensions.worktreeConfig`,
+  which the ledger itself turns on for `keelokit.story`), while git's merge does; and the `merge.default=text` pin
+  makes git look for a user-defined driver named `text` first, so `merge.text.driver` in `config.worktree` runs inside
+  the ledger's merge-tree and a hand-made union reads as automatic: exit 0 where the baseline is BREAKER_STALE, in a
+  linked worktree too; (LOW-MEDIUM) `merge_config` fails closed on any `merge.*` key, also ones merge-tree never reads
+  (`merge.ff`, `merge.tool`, `merge.log`, `merge.conflictStyle`), so build-story's clean flow gets RISKY_AFTER_CLOSE and
+  BREAKER_STALE errors; (LOW, to HARN-023) a local `trailer.separators` changes which story a commit names; (LOW, to
+  HARN-023) local replace refs and a FIFO at `info/attributes`. Held: round 16's fixes, 30 other repository-local
+  keys, the linked worktree's verdict, the two copies, the full test_breaker suite. The builder stops here: the
+  coordinator decides.
