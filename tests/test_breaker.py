@@ -1086,10 +1086,13 @@ class RiskyAfterCloseTest(BreakerCase):
         repo.git("revert", "--no-edit", close3, when=repo.next_date())
         repo.git("commit", "-q", "--amend", "-m", f"Revert\n\nThis reverts commit {close3}.\n\nPart-of: AUTH-003")
         repo.commit("fix: three\n\nPart-of: AUTH-003", {".keelokit/bin/three.py": "3\n"})
-        # the closing branch's own later commits land with the close
+        # the closing branch's own later commits, which its recorded round saw, land with the close
         repo.git("checkout", "-q", "-b", "feature")
         repo.commit("feat: AUTH-004\n\nWhy.\n\nStory: AUTH-004", {"apps/web/four.ts": "4\n"})
-        repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
+        fix = repo.commit("fix: four\n\nPart-of: AUTH-004", {"scripts/verify.sh": "exit 5\n"})
+        current = (repo.path / path_of("AUTH-004")).read_text()
+        repo.commit("docs: AUTH-004 round 1\n\nPart-of: AUTH-004",
+                    {path_of("AUTH-004"): current + "\n## Breaker rounds\n" + round_line(1, fix)})
         repo.git("checkout", "-q", "main")
         repo.merge("feature", "Merge pull request #4 from x/feature")
         repo.publish()

@@ -122,3 +122,13 @@ below.
   against base on 6000 random graphs with several SWARM_MERGES values, multi-id, revert and merge/squash landings,
   every screened output path, the snapshot re-check, the authors reuse. Kept on purpose: at most SWARM_BITS ×
   SWARM_PASSES (4096) pieces per arrival are attributed through merges (information only, as SWARM_MERGES).
+- Round 3 · head 7c18f960bcbac5deca2f1c51fe7872ca9bd6335f · 4 findings: ESC-365, ESC-366, ESC-367, ESC-368 · fixed in the commit after 51decaa; the cap (3) is hit, so no round 4 without a person
+  A new agent, cold, 10 attacks. Reproduced: a `No-story:` commit between the close and a fix the round saw read as
+  RISKY_AFTER_CLOSE after a rebase landing; a fix after the round was recorded passed the pull request and a merge
+  landing and failed only after a fast-forward (the landing decided); `apps/v1.2/.` counted as a file; the pre-push
+  hook printed branch names raw. Held: the merge walk against base on 3000 random graphs, with budgets 1..4 and many
+  passes; every screened output path of show, check, next, --release, risky, history and attribution; a story renamed
+  after a rebase landing; git_lines; the authors reuse; the cap verdict. Every finding is fixed with a test that failed
+  first (RISKY_AFTER_CLOSE now has one rule for every landing and the pull request; every write to the terminal is
+  screened), but the fixes have not been attacked by a fourth breaker: the last round is not clean, so `check` says
+  BREAKER_UNRESOLVED until a person records a Decision (another round, or land as it is).

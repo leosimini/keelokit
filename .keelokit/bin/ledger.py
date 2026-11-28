@@ -3301,7 +3301,7 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
                                lambda sha: order[arrival[sha]] if sha in arrival else len(order),
-                               list(stories.values()), rules, arrival, head)
+                               list(stories.values()), rules, head)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
                                  config_diffs=False, hits=hits, earlier=earlier)
@@ -3517,6 +3517,7 @@ def touch_meets(touch: str, pattern: str) -> bool:
     while t.startswith("./"):
         t = t[2:]
     t = t.lstrip("/").rstrip("/")
+    spelled_dir = touch.rstrip().endswith(("/", "/.")) or t == "."
     while t.endswith("/."):
         t = t[:-2].rstrip("/")
     if t in ("", "."):
@@ -3532,7 +3533,7 @@ def touch_meets(touch: str, pattern: str) -> bool:
     # beneath it (`apps/api` for `**/migrations/**`). A directory is a touch ending in `/`, or whose last part has no
     # extension (`apps/api`, `.github`, `scripts`); `apps/api/page.ts` stays a file.
     last = t.rsplit("/", 1)[-1]
-    if touch.rstrip().endswith("/") or "." not in last.lstrip("."):
+    if spelled_dir or "." not in last.lstrip("."):  # `apps/v1.2/`, `apps/v1.2/.`: one directory (ESC-367)
         return glob_beneath(pattern, t)
     return False
 
@@ -3730,9 +3731,6 @@ def risky_no_story(in_range: list[dict], hits: set, merges: set) -> list[dict]:
     return diffs
 
 
-RUN_LIMIT = 1000   # commits walked back from a later commit to the close it may follow (risky_after_close)
-
-
 def breaker_resolved(record: dict, rules: dict) -> bool:
     """A story's rounds as breaker_diffs judges them: some round, the last clean or a decider's Decision after it."""
     rounds = [i for i, e in enumerate(record["entries"]) if e[0] == "round"]
@@ -3744,20 +3742,18 @@ def breaker_resolved(record: dict, rules: dict) -> bool:
 
 
 def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
-                      landing, stories: list[dict] = (), rules: dict | None = None, on_trunk=(),
+                      landing, stories: list[dict] = (), rules: dict | None = None,
                       tip: str | None = None) -> list[dict]:
     """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
     merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
-    commit of `log` with an earlier landing (`landing(sha)`: the position of the trunk commit that brought it; a pull
-    request's commits land after every trunk commit). The closed story's rounds never saw the change, and it is not
-    closed again: such a change is new work of an open story, which then needs its rounds. The closing branch's own
-    later commits are judged with the close: those of the same landing, and those a round recorded in the story's
-    file (`stories`) covers — its head reaches the commit, whatever way the branch landed (a fast-forward too, ESC-356),
-    while the story's last round is clean or a person's Decision follows it. When that last round's head is not on the
-    trunk (`on_trunk`: the branch was rewritten as it landed, a rebase), a commit is of the closing branch when it
-    follows the close on first parents through commits of the story alone and the commit that recorded that last round
-    in the story's file (`tip`'s history, one pickaxe `git log`) comes after it (ESC-360): a fix after the round was
-    recorded, or after other work, is new work again. A revert restores what was judged before."""
+    commit of `log` (the earliest by `landing(sha)`: the position of the trunk commit that brought it; a pull request's
+    commits land after every trunk commit) that does not reach it. The closed story's rounds never saw the change, and
+    it is not closed again: such a change is new work of an open story, which then needs its rounds. One rule, however
+    the branch lands (merge, fast-forward, rebase) and in the pull request alike (ESC-356, ESC-360, ESC-365, ESC-366):
+    a later commit lands with the close when the commit that recorded the story's last round in its file (`stories`;
+    found in `tip`'s history by one pickaxe `git log -S<head>`) reaches it, while that round is clean or a person's
+    Decision follows it. A later round line recorded after a change is a reopening with its own round. A revert
+    restores what was judged before."""
     reverted = revert_status(log, graph)
     closed: dict[str, tuple[int, str]] = {}
     for c in log:
@@ -3767,52 +3763,30 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             at = landing(c["sha"])
             if sid not in closed or at < closed[sid][0]:
                 closed[sid] = (at, c["sha"])
-    heads: dict[str, list[str]] = {}
-    last_heads: dict[str, list[str]] = {}
+    last_head: dict[str, str] = {}
     paths: dict[str, set] = {}
     for s in stories:
         for v in [s, *s.get("copies", [])]:
             record = v.get("breaker") or {"entries": []}
             if rules is not None and not v.get("unreadable") and breaker_resolved(record, rules):
-                round_heads = [e[2] for e in record["entries"] if e[0] == "round"]
-                heads.setdefault(s["id"], []).extend(round_heads)
-                last_heads.setdefault(s["id"], []).append(round_heads[-1])
+                last_head.setdefault(s["id"], [e[2] for e in record["entries"] if e[0] == "round"][-1])
                 paths.setdefault(s["id"], set()).add(v["path"])
-    covered: dict[str, set] = {}
+    before: dict[str, set] = {}
     recorded: dict[str, set] = {}
-    by_sha = {c["sha"]: c for c in log}
-
-    def follows_close(sha: str, sid: str) -> bool:
-        """`sha` follows the close on first parents through commits of `sid` alone."""
-        cur = sha
-        for _ in range(RUN_LIMIT):
-            parents = graph.get(cur, ())
-            if not parents:
-                return False
-            cur = parents[0]
-            if cur == closed[sid][1]:
-                return True
-            c = by_sha.get(cur)
-            if c is None or sid not in c["story"] + c["part_of"]:
-                return False
-        return False
 
     def with_close(sha: str, sid: str) -> bool:
-        if landing(sha) == closed[sid][0]:
+        if sid not in before:  # what the close reaches came before it
+            before[sid] = reach_until(graph, [closed[sid][1]], set())
+        if sha in before[sid]:
             return True
-        if sid not in covered:
-            covered[sid] = reach_until(graph, [h for h in heads.get(sid, ()) if h in graph], set())
-        if sha in covered[sid]:
-            return True
-        rewritten = sid in last_heads and not any(h in on_trunk for h in last_heads[sid])
-        if not rewritten or tip is None or not follows_close(sha, sid):
-            return False
         if sid not in recorded:
-            out = git_read(["log", "--format=%H", *(f"-S{h}" for h in last_heads[sid][:1]), tip, "--",
-                            *(f":(literal){path}" for path in sorted(paths[sid]))]).decode()
-            found = out.split()
-            recorded[sid] = reach_until(graph, found[-1:], set()) if found else set()
-        return sha in recorded[sid] and sha != (closed[sid][1])
+            found = []
+            if sid in last_head and tip is not None:
+                out = git_read(["log", "--format=%H", f"-S{last_head[sid]}", tip, "--",
+                                *(f":(literal){path}" for path in sorted(paths[sid]))]).decode()
+                found = out.split()[-1:]  # the oldest: the commit that added the round line
+            recorded[sid] = reach_until(graph, found, set())
+        return sha in recorded[sid]
 
     diffs = []
     for c in reversed(in_range):
@@ -3938,7 +3912,7 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     diffs += risky_no_story(in_range, hits, own)
     arrival, order = ctx["placed"]
     diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
-                               ctx["stories"], rules, arrival, ctx["trunk_sha"])
+                               ctx["stories"], rules, ctx["trunk_sha"])
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
@@ -5746,7 +5720,7 @@ def cmd_prepush(state: dict, remote: str, lines: list[str]) -> int:
     if not diffs:
         return 0
     for d in diffs:
-        print(f"Keelokit: {d['code']} — {d['detail']}", file=sys.stderr)
+        print(terminal_line(f"Keelokit: {d['code']} — {d['detail']}"), file=sys.stderr)
     if not any(d["level"] == "error" for d in diffs):
         print(f"Keelokit: the push to {trunk} goes through (warnings only).", file=sys.stderr)
         return 0
@@ -5934,7 +5908,25 @@ def show(state: dict, as_json: bool) -> int:
     return 1 if facts["diffs"] else 0
 
 
+class ScreenedStream:
+    """sys.stdout or sys.stderr with every write screened (HARN-022, ESC-368): no control, format or separator
+    character any output path forgot reaches the terminal (tabs and newlines pass; a line a newline in the data could
+    forge is screened where it is printed, terminal_line). The JSON outputs escape everything that is not ASCII."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, text: str) -> int:
+        self.stream.write(CONTROL.sub("?", text))
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 def main(argv: list[str]) -> int:
+    if not isinstance(sys.stdout, ScreenedStream):
+        sys.stdout, sys.stderr = ScreenedStream(sys.stdout), ScreenedStream(sys.stderr)
     if PLUGIN_MODE and (why := git_dir_problem()):  # ESC-280: run by the plugin's hooks, no git where git can't be trusted
         if argv != ["history", "--ensure"]:
             print(f"Keelokit: {why}.", file=sys.stdout if not argv else sys.stderr)

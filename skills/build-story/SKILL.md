@@ -223,7 +223,8 @@ For a story `ledger.py risky <ID>` calls risky, after step 5's round is clean an
 
 `ledger.py check` (the CI) reports a risky story closed with no round (`BREAKER_MISSING`, error) and one whose last
 round left findings with no Decision after it (`BREAKER_UNRESOLVED`, warning). A risky change under the trailer of a
-story already closed is new work (`RISKY_AFTER_CLOSE`, error): give it an open story, with its own rounds. A pull
+story already closed is new work (`RISKY_AFTER_CLOSE`, error): give it an open story, with its own rounds. Record
+each round line after the commits it attacked: a commit after the last round line is not covered by it. A pull
 request is judged by the trunk's `risky.toml`, never its own.
 
 ## 6. Verify — verifier, mode B
