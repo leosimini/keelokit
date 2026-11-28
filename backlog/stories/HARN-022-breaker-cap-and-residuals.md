@@ -199,3 +199,15 @@ below.
   risky file (build-story's own flow). Held: fake reverts by blob id, unknown ids in trailers, the screen under C and
   C.UTF-8, the two copies, the pull request and the trunk agreeing. The builder stopped; the coordinator decided: rename
   detection is gone, a per-path rename-free 3-way merge decides what a merge brings of its own.
+- Round 11 · head ceba4eaaabd36c8381249c3e8c68217653174992 · 4 findings (1 HIGH, 2 MEDIUM, 1 LOW), not fixed
+  A new agent, cold, scratch clones only; each HIGH and MEDIUM finding run by the builder too. Reproduced: (HIGH) the
+  per-path check decodes diff-tree's path names with replacement characters and then asks `ls-tree` for that name, so
+  a risky path that is not valid UTF-8 reads as absent everywhere and never counts: round 9's rename carry into
+  `0002_\xffseed.sql` passes both checks, on the trunk and in a pull request (caught before ESC-389); (MEDIUM) the
+  per-path merge is not git's: a mode change on one side with an edit on the other, or a `merge=union` attribute,
+  merges cleanly in git and has no result here, so build-story's own clean sync merge is BREAKER_STALE; (MEDIUM)
+  `git merge-file` and git's merge (ort, histogram) disagree on some clean text merges (4 in 3000 fuzzed), with the
+  same false BREAKER_STALE; (LOW, to HARN-023) a cost per risky path per merge (600 paths: 5.0 s against 0.2 s).
+  Held: symlinks, gitlinks, delete against edit, add/add and binaries fail closed; no single merge base and octopus
+  fail closed; newlines, tabs, leading dashes and glob characters in paths; hash-object with no filters; the two
+  copies; the round 9 and 10 tests. The builder stops here: the coordinator decides.

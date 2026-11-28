@@ -22,6 +22,10 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
 - `show` prints a story's title without the line screen: a newline in the title forges a line of the card (a fake
   `state:` line). `next` already keeps it on one line. Probe: /tmp/breaker8-HARN-022/probes/p4_title_newline.py
   (round 8).
+- The per-path 3-way check of a merge's own risky change (ESC-389) costs a `cat-file`, a `merge-file`, a
+  `hash-object` and a temp directory per risky path that differs from both parents, per merge, on every check over the
+  whole history: one clean sync merge of 600 risky files edited on both sides took 5.0 s (0.2 s before), 2000 took
+  15.5 s. Probe: /tmp/breaker11-HARN-022/probes/p5_perf.py (round 11).
 
 Does NOT do: anything HARN-022's open HIGH and MEDIUM findings need (they are HARN-022's, by the coordinator's call).
 
