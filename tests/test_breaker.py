@@ -1603,5 +1603,119 @@ class HarnRound6Test(BreakerCase):
         self.assertIn(late[:12], stale[0]["detail"])
 
 
+MIG = "apps/api/migrations/m.sql"
+MIG_TOML = 'rounds = 3\ndimensions = ["security"]\npaths = ["**/migrations/**"]\n'
+MIG_BASE = "".join(f"{i}\n" for i in range(1, 31))
+
+
+class HarnRound7Test(BreakerCase):
+    """HARN-022 cold breaker, round 7 (ESC-381, ESC-382): each finding reproduced as a failing test first, from the
+    round's probes; the decisions are the coordinator's. A merge's own change is its tree against git's automatic
+    merge of its parents (`git merge-tree`); a merge revert reverts what a brought commit changed, path by path."""
+
+    def repo_with(self, *sids: str) -> GitRepo:
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"m{self.repos}")
+        self.stories = {s: story(s, touches=(MIG,)) for s in sids}
+        repo.commit("docs: plan\n\nNo-story: docs", {**{path_of(s): x for s, x in self.stories.items()}, MIG: MIG_BASE})
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: MIG_TOML})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        return repo
+
+    def codes(self, diffs: list[dict]) -> list[str]:
+        return [d["code"] for d in diffs if d["level"] == "error"]
+
+    def sync_merge_flow(self, trailer: str, number: int) -> tuple[list[str], list[str]]:
+        repo = self.repo_with("AUTH-001", "AUTH-002")
+        repo.git("checkout", "-q", "-b", "feature")
+        h = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {MIG: MIG_BASE.replace("\n2\n", "\ntwo\n")})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        h2 = repo.commit("feat: AUTH-002 work\n\nPart-of: AUTH-002", {MIG: MIG_BASE.replace("\n28\n", "\nx28\n")})
+        repo.commit("feat: AUTH-002\n\nDecided: x.\n\nStory: AUTH-002",
+                    {path_of("AUTH-002"): self.stories["AUTH-002"] + "\n## Breaker rounds\n" + round_line(1, h2)})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        msg = "Merge origin/main into feature" + (f"\n\n{trailer}" if trailer else "")
+        repo.git("merge", "-q", "--no-ff", "-m", msg, "origin/main", when=repo.next_date())
+        repo.commit("feat: AUTH-001\n\nDecided: x.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): self.stories["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, h)})
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "feature", number=number), "--ci",
+                                   env=PR_ENV)[1])
+        repo.git("merge", "-q", "--no-ff", "-m", f"Merge pull request #{number} from feature", "feature",
+                 when=repo.next_date())
+        repo.publish()
+        return pr, self.codes(self.check(repo)[1])
+
+    def test_HARN_022_S1_breaker7_build_storys_sync_merge_of_main_is_no_own_change_ESC_381(self):
+        for trailer, number in (("Part-of: AUTH-001", 171), ("", 172)):
+            with self.subTest(trailer=trailer or "none"):
+                self.assertEqual(self.sync_merge_flow(trailer, number), ([], []))
+
+    def test_HARN_022_S3_breaker7_a_merge_taking_the_other_sides_risky_file_is_its_own_change_ESC_381(self):
+        for trailer, code in (("Part-of: AUTH-001", "RISKY_AFTER_CLOSE"), ("", "RISKY_NO_STORY")):
+            with self.subTest(trailer=trailer or "none"):
+                repo = self.repo_with("AUTH-001")
+                fork = repo.sha()
+                fix = repo.commit("feat: AUTH-001 fix\n\nPart-of: AUTH-001", {MIG: MIG_BASE.replace("\n2\n", "\nFIXED\n")})
+                repo.commit("feat: AUTH-001\n\nDecided: x.\n\nStory: AUTH-001",
+                            {path_of("AUTH-001"): self.stories["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, fix)})
+                repo.publish()
+                repo.git("checkout", "-q", "-b", "old", fork)
+                repo.commit("docs: notes\n\nNo-story: docs", {"docs/n.md": "n\n"})
+                repo.git("checkout", "-q", "main")
+                repo.git("merge", "-q", "--no-ff", "--no-commit", "old", when=repo.next_date())
+                repo.git("checkout", "old", "--", MIG)
+                repo.git("commit", "-q", "-m", "Merge old" + (f"\n\n{trailer}" if trailer else ""), when=repo.next_date())
+                repo.publish()
+                self.assertIn(code, self.codes(self.check(repo)[1]))
+
+    def landed_x(self) -> tuple[GitRepo, str, str]:
+        repo = self.repo_with("AUTH-001")
+        fix = repo.commit("feat: AUTH-001 fix\n\nPart-of: AUTH-001", {MIG: MIG_BASE.replace("\n2\n", "\nFIXED\n")})
+        c1 = repo.commit("feat: AUTH-001\n\nDecided: x.\n\nStory: AUTH-001",
+                         {path_of("AUTH-001"): self.stories["AUTH-001"] + "\n## Breaker rounds\n" + round_line(1, fix)})
+        repo.git("checkout", "-q", "-b", "bx")
+        x = repo.commit("feat: sneak\n\nPart-of: AUTH-001", {MIG: (repo.path / MIG).read_text().replace("\n5\n", "\nEVIL\n")})
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "Merge bx\n\nNo-story: docs", "bx", when=repo.next_date())
+        repo.publish()
+        self.assertIn("RISKY_AFTER_CLOSE", self.codes(self.check(repo)[1]))
+        return repo, c1, x
+
+    def test_HARN_022_S3_breaker7_a_merge_revert_reverts_only_what_it_undoes_ESC_382(self):
+        repo, c1, x = self.landed_x()
+        repo.git("checkout", "-q", "-b", "bt", c1)
+        repo.git("merge", "-q", "-s", "ours", "--no-commit", x, when=repo.next_date())
+        repo.write("notes/z.txt", "z\n")
+        repo.git("add", "notes/z.txt")
+        repo.git("commit", "-q", "-m", "Merge x (ours)\n\nNo-story: docs", when=repo.next_date())
+        t_ = repo.sha()
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "bt", when=repo.next_date(), check=False)
+        repo.git("checkout", "HEAD", "--", MIG)
+        repo.git("commit", "-q", "-m", "Merge bt\n\nNo-story: docs", when=repo.next_date())
+        repo.git("revert", "--no-edit", "-m", "1", t_, when=repo.next_date())
+        msg = repo.git("log", "-1", "--format=%B").strip()
+        repo.git("commit", "-q", "--amend", "-m", msg + "\n\nNo-story: docs", when=repo.next_date())
+        repo.publish()
+        self.assertIn("EVIL", (repo.path / MIG).read_text())
+        self.assertIn("RISKY_AFTER_CLOSE", self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker7_a_real_revert_of_the_merge_that_carried_x_reverts_x_ESC_382(self):
+        repo, c1, x = self.landed_x()
+        merge = repo.sha()
+        repo.git("revert", "--no-edit", "-m", "1", merge, when=repo.next_date())
+        msg = repo.git("log", "-1", "--format=%B").strip()
+        repo.git("commit", "-q", "--amend", "-m", msg + "\n\nPart-of: AUTH-001", when=repo.next_date())
+        repo.publish()
+        self.assertNotIn("EVIL", (repo.path / MIG).read_text())
+        self.assertNotIn("RISKY_AFTER_CLOSE", self.codes(self.check(repo)[1]))
+
+
 if __name__ == "__main__":
     unittest.main()
