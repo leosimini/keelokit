@@ -32,6 +32,10 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
 - The risky rule matches paths, not what is on disk: a `No-story` directory symlink `apps/api/migrations ->
   ../../sql` and a later `No-story` write to `sql/0001.sql` change a migration with no RISKY_* (older than HARN-022).
   Probe: /tmp/breaker12-HARN-022/probes/p2_symlink_dir.py (round 12).
+- A risky-to-risky rename across a sync merge gives a false `BREAKER_STALE` (main renamed the file the branch
+  edited, or the other way round); accepted in HARN-022 as a fail-closed limitation and pinned by
+  `test_HARN_022_S1_breaker12_a_sync_merge_across_a_risky_rename_is_stale_accepted_fail_closed`. A fix must not depend
+  on rename detection. Probe: /tmp/breaker12-HARN-022/probes/p1_rename_sync_fp.py (round 12).
 
 Does NOT do: anything HARN-022's open HIGH and MEDIUM findings need (they are HARN-022's, by the coordinator's call).
 

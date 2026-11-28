@@ -213,7 +213,7 @@ below.
   copies; the round 9 and 10 tests. The builder stopped; the coordinator decided: path names stay raw bytes, and
   the per-path merge applies only where a rename can fill a path (absent at the base or in a parent); a file present
   everywhere is judged by git's merge alone.
-- Round 12 · head 58632d85489b5cb6000afdf4eecbfbf38e9a119c · 3 findings (1 MEDIUM, 2 LOW), not fixed
+- Round 12 · head 58632d85489b5cb6000afdf4eecbfbf38e9a119c · 3 findings (1 MEDIUM, 2 LOW), the MEDIUM accepted, the LOWs to HARN-023
   A new agent, cold, scratch clones only; the MEDIUM finding run by the builder too. Reproduced: (MEDIUM) a clean sync
   merge reads as BREAKER_STALE, in the pull request and on the trunk, when one side renamed a risky file to another
   risky path (with or without an edit) and the other side edited it: the new path is absent at the base and in a
@@ -221,4 +221,6 @@ below.
   ESC-389); (LOW, to HARN-023) raw_pair_states' parse cost; (LOW, to HARN-023, older than this story) a directory
   symlink hides a migration from the path rule. Held: no rename carry into an existing risky file (git's merge does no
   break detection), directory renames conflict and count, octopus fails closed, the raw parser, the pull request and
-  the trunk agreeing, the round 9 to 11 tests. The builder stops here: the coordinator decides.
+  the trunk agreeing, the round 9 to 11 tests. The builder stopped. The MEDIUM finding: accepted: fail-closed
+  limitation, documented (coordinator decision, 2026-11-28); pinned by a test, in design.md, ledger.md and
+  build-story, and in HARN-023 for a fix that does not depend on rename detection.

@@ -270,7 +270,11 @@ git's automatic merge of its parents (`git merge-tree`), so a clean sync merge o
 every parent's and that a rename could have filled (absent at the merge base or in a parent) is the merge's own change
 unless it equals a per-path 3-way merge with no rename detection (one side's change, or a clean text `git merge-file`),
 so no rename limit hides an edit; a file present at the base and in both parents is left to git's merge, with its
-modes, attributes and diff algorithm. Path names stay raw bytes; no single merge base fails closed. A change after the close is covered only by a
+modes, attributes and diff algorithm. Path names stay raw bytes; no single merge base fails closed. Known limitation,
+accepted as fail-closed: a clean sync merge across a reviewed rename from one risky path to another (main renamed
+the file this branch edited, or the other way round) reads as `BREAKER_STALE`, since the per-path merge does not
+follow renames; a fix must not depend on rename detection (rounds 9 and 10), and the remedy is a breaker round on
+the sync merge or a person's Decision. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its

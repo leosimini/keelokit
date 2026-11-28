@@ -248,6 +248,10 @@ builder.
    or run a new round after it; never re-record an old round on a new head (that is a round nobody
    ran). A squash or rebase landing rewrites the heads too: on the trunk its rounds read as
    `BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` (warnings). Land a risky story with a merge commit.
+   Known limitation (fail-closed): when main renamed a risky file to another risky path while this
+   story edited it (or the other way round), the sync merge reads as `BREAKER_STALE` although git
+   merged it cleanly, because the ledger does not follow renames. Run a breaker round that covers the
+   sync merge and record its head, or ask the person for a `Decision`; never re-record an old round.
 2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
    runs it with the seal, which skips the repeat only for this exact, unchanged commit).
 3. Commit with the trailer that closes the story, as the message's last paragraph, and a body: what

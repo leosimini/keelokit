@@ -2160,5 +2160,76 @@ class HarnRound11Test(BreakerCase):
                                lines.replace(b"line 50\n", b"line 50 (Y)\n"), extra=b"EVIL = True\n")
         self.assertIn("BREAKER_STALE", codes)
 
+
+class HarnRound12Test(BreakerCase):
+    """HARN-022 cold breaker, round 12: from the round's probes. A clean sync merge across a reviewed risky-to-risky
+    rename reads as BREAKER_STALE: the new path is absent at the base and in a parent, and the rename-free per-path
+    merge does not follow git's rename. Accepted as a fail-closed limitation (coordinator, 2026-11-28): a fix must not
+    lean on rename detection again (rounds 9 and 10). The remedy is a breaker round on the sync merge, or a Decision.
+    These tests pin the behaviour so a change to it is a decision, not an accident."""
+
+    codes = HarnRound7Test.codes
+    A, B = ".keelokit/bin/a.py", ".keelokit/bin/b.py"
+
+    def rename_sync(self, story_renames: bool, edit_too: bool, number: int) -> tuple[list[str], list[str]]:
+        """AUTH-002 lands on main first; AUTH-001 builds, records its round, merges origin/main, closes. One of them
+        renames a.py to b.py (with an edit when `edit_too`), the other edits a.py. The pull request's codes for
+        AUTH-001's branch and the trunk's after it lands, BREAKER_ and RISKY_AFTER only."""
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(self.A, self.B)),
+                             "AUTH-002": story("AUTH-002", touches=(self.A, self.B))})
+        harness(repo, "chore: seed\n\nNo-story: harness", {self.A: "".join(f"line {i}\n" for i in range(60))})
+        repo.publish()
+        base = repo.sha()
+
+        def rename() -> None:
+            repo.git("mv", self.A, self.B)
+            if edit_too:
+                p = repo.path / self.B
+                p.write_text(p.read_text().replace("line 50\n", "line 50 (Y)\n"))
+                repo.git("add", "-f", self.B)
+
+        def edit() -> None:
+            p = repo.path / self.A
+            p.write_text(p.read_text().replace("line 5\n", "line 5 (X)\n"))
+            repo.git("add", "-f", self.A)
+
+        def build(sid: str, branch: str, work, land: bool) -> list[str]:
+            repo.git("checkout", "-q", "-b", branch, base)
+            work()
+            repo.git("commit", "-q", "-m", f"feat: {sid} work\n\nPart-of: {sid}", when=repo.next_date())
+            head = repo.sha()
+            repo.git("fetch", "-q", "origin")
+            repo.git("merge", "-q", "--no-ff", "-m", f"Merge origin/main into {branch}\n\nPart-of: {sid}",
+                     "origin/main", when=repo.next_date())
+            cur = (repo.path / path_of(sid)).read_text()
+            repo.commit(f"feat: {sid}\n\nDone.\n\nStory: {sid}",
+                        {path_of(sid): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+            pr = []
+            if not land:
+                repo.git("push", "-q", "origin", branch)
+                repo.git("checkout", "-q", "main")
+                pr = self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, branch, number=number),
+                                           "--ci", env=PR_ENV)[1])
+            repo.git("checkout", "-q", "main")
+            repo.git("merge", "-q", "--no-ff", "-m", f"Merge {branch}\n\nPart-of: {sid}", branch,
+                     when=repo.next_date())
+            repo.publish()
+            return pr
+
+        build("AUTH-002", "y", edit if story_renames else rename, True)
+        pr = build("AUTH-001", "x", rename if story_renames else edit, False)
+        keep = ("BREAKER", "RISKY_AFTER")
+        return ([c for c in pr if c.startswith(keep)],
+                [c for c in self.codes(self.check(repo)[1]) if c.startswith(keep)])
+
+    def test_HARN_022_S1_breaker12_a_sync_merge_across_a_risky_rename_is_stale_accepted_fail_closed(self):
+        cases = {"main renames": (False, False, 211), "main renames and edits": (False, True, 212),
+                 "the story renames": (True, False, 213)}
+        for name, (story_renames, edit_too, number) in cases.items():
+            with self.subTest(case=name):
+                pr, trunk = self.rename_sync(story_renames, edit_too, number)
+                self.assertIn("BREAKER_STALE", pr)
+                self.assertIn("BREAKER_STALE", trunk)
+
 if __name__ == "__main__":
     unittest.main()
