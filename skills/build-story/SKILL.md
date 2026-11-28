@@ -228,7 +228,8 @@ head is the head the breaker actually attacked, on the branch that closes the st
 resolve here; a head the close does not reach is `BREAKER_BAD_ENTRY` and that round counts as not clean). The last
 clean round's head must be at or after the story's last risky change: a risky commit between it and the `Story:`
 commit is `BREAKER_STALE` (error). So record each round line after the commits it attacked, and put `Story:` on the
-commit that records the last round, after every risky change. A pull
+commit that records the last round, after every risky change. A revert of a risky change is itself a risky
+change: after the close it needs a new round (and a re-close) like any other. A pull
 request is judged by the trunk's `risky.toml`, never its own.
 
 ## 6. Verify — verifier, mode B

@@ -213,7 +213,7 @@ a person decided covers only what its head saw too: run a round on the code that
 rewrites the heads away, so its rounds count as not clean on the trunk (warnings): merge `origin/main` after the
 rounds and land with a merge commit. After the close, a change is covered only by a new round whose head reaches it,
 recorded by a re-close (a later `Story:` commit); a revert counts only as the exact inverse of a commit that exists
-here, and is exempt only when it undoes an ancestor of its own that came after the close. A revert of a merge reverts
+here, and a revert of a risky change is itself a risky change: it needs its own round, like any change after the close. A revert of a merge reverts
 a commit the merge brought only when it changes back exactly what that commit changed, path by path.
 
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and

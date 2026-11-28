@@ -268,7 +268,7 @@ commit (this repo's way); squash and rebase landings rewrite the recorded heads,
 `BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A merge's own change is its tree against
 git's automatic merge of its parents (`git merge-tree`), so a clean sync merge of main brings nothing of its own. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
-nothing new. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
+nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
 own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
 no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision after it. History is exempt by

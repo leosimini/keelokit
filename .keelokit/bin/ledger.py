@@ -3354,6 +3354,8 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     hits = risky_commits(rules, head, [])
     own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
     found = risky_no_story(log, hits, own)
+    # BREAKER_STALE reads the trunk's own-change merges too, as the trunk's check does (ESC-385)
+    own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
@@ -3361,7 +3363,7 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
                                list(stories.values()), rules)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
-                                 config_diffs=False, hits=hits, earlier=earlier, merges=own,
+                                 config_diffs=False, hits=hits, earlier=earlier, merges=own_everywhere,
                                  landing=lambda sha: order[arrival[sha]] if sha in arrival else len(order))
 
 
@@ -3825,22 +3827,29 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         return set()
     pairs = sorted(m for m, ps in parents.items() if len(ps) == 2)
     found = {m for m, ps in parents.items() if len(ps) != 2}  # an octopus: fail closed
+    auto, conflicted = {}, {}
     try:
-        merged = git_read(["merge-tree", "--stdin", "-z", "--name-only", "--no-messages"],
-                          "".join(f"{parents[m][0]} {parents[m][1]}\n" for m in pairs).encode()
-                          ).decode(errors="replace").split("\0")
-        auto, conflicted, i = {}, {}, 0
-        for m in pairs:
-            status, tree = merged[i], merged[i + 1]
-            i += 2
-            names = []
-            while i < len(merged) and merged[i] != "":
-                names.append(merged[i])
-                i += 1
-            i += 1  # the empty field that ends this merge's conflicted paths
-            if status not in ("0", "1") or not HEX_SHA.fullmatch(tree):
-                raise LedgerError("git merge-tree gave an unexpected answer")
-            auto[m], conflicted[m] = tree, names
+        # Unrelated histories merge like any other (an old import, ESC-384); a batch that fails is retried merge by
+        # merge, so only the merge git cannot merge fails closed.
+        try:
+            batches = [pairs] if pairs else []
+            answers = [merge_trees(parents, pairs)] if pairs else []
+        except LedgerError:
+            batches, answers, failed = [], [], set()
+            for m in pairs:
+                try:
+                    answers.append(merge_trees(parents, [m]))
+                    batches.append([m])
+                except LedgerError:
+                    failed.add(m)
+            if failed:
+                found |= failed if complete_history() else combined_diff_hits(spec, tip, exclude, failed)
+        for batch, answer in zip(batches, answers):
+            for m, (tree, names) in zip(batch, answer):
+                auto[m], conflicted[m] = tree, names
+        pairs = [m for m in pairs if m in auto]
+        if not pairs:
+            return found
         trees = trees_of(pairs)
         if set(trees) != set(pairs):
             raise LedgerError("a merge's tree cannot be read here")
@@ -3848,9 +3857,7 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
                          *spec], "".join(f"{auto[m]} {trees[m]}\n" for m in pairs).encode()
                         ).decode(errors="replace")
     except LedgerError:
-        if "complete" not in HISTORY:
-            HISTORY["complete"] = is_shallow() is False and not is_partial_clone()
-        if HISTORY["complete"]:
+        if complete_history():
             return found | set(pairs)  # merge-tree missing (old git) or failing: every such merge counts (fail closed)
         # A clone that lacks objects (shallow, partial) cannot merge them: it reads the combined diff, as before
         # HARN-022 round 7; the CI's full clone decides, failing closed.
@@ -3875,6 +3882,36 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
         if own.get(m) or risky_conflict:
             found.add(m)
     return found
+
+
+def complete_history() -> bool:
+    """Whether this clone holds the whole history: not shallow, no promisor (asked once)."""
+    if "complete" not in HISTORY:
+        HISTORY["complete"] = is_shallow() is False and not is_partial_clone()
+    return HISTORY["complete"]
+
+
+def merge_trees(parents: dict, merges: list[str]) -> list[tuple[str, list[str]]]:
+    """(the automatic merge's tree, its conflicted paths) for each merge, from one `git merge-tree --stdin` that allows
+    unrelated histories; LedgerError when git fails or answers out of shape."""
+    merged = git_read(["merge-tree", "--stdin", "-z", "--name-only", "--no-messages", "--allow-unrelated-histories"],
+                      "".join(f"{parents[m][0]} {parents[m][1]}\n" for m in merges).encode()
+                      ).decode(errors="replace").split("\0")
+    answer, i = [], 0
+    for _ in merges:
+        if i + 1 >= len(merged):
+            raise LedgerError("git merge-tree gave an unexpected answer")
+        status, tree = merged[i], merged[i + 1]
+        i += 2
+        names = []
+        while i < len(merged) and merged[i] != "":
+            names.append(merged[i])
+            i += 1
+        i += 1  # the empty field that ends this merge's conflicted paths
+        if status not in ("0", "1") or not HEX_SHA.fullmatch(tree):
+            raise LedgerError("git merge-tree gave an unexpected answer")
+        answer.append((tree, names))
+    return answer
 
 
 def combined_diff_hits(spec: list[str], tip: str, exclude: list[str], among: set) -> set[str]:
@@ -3940,9 +3977,8 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
     a later commit lands with the close when the head of the story's last valid round reaches it: that round clean or
     followed by a person's Decision, its head a commit a live close reaches (ESC-373). So a change after the close is
     covered only by a new round on it, recorded by a re-close (a later Story: commit); a round line naming an older head
-    covers nothing new, and renaming the story file moves nothing (ESC-369). A revert is exempt only when it reverts an
-    ancestor of its own that came after the close (it undoes unreviewed work); reverting what the close reaches is a
-    change like any other (ESC-370, ESC-374)."""
+    covers nothing new, and renaming the story file moves nothing (ESC-369). A revert gets no exemption: a revert of a
+    risky change is itself a risky change (ESC-383); what it really reverts counts as reverted (ESC-374, ESC-382)."""
     reverted = revert_status(log, graph)
     closed: dict[str, tuple[int, str]] = {}
     closes: dict[str, list[str]] = {}
@@ -3986,11 +4022,6 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
         merge = len(c["parents"]) > 1
         if not ids or reverted.get(c["sha"], False) or not (c["sha"] in merges if merge else c["sha"] in hits):
             continue
-        if c["reverts"]:
-            mine = reach_until(graph, [c["sha"]], set())
-            if all(sid in closed and target in mine and target not in reached_by_close(sid)
-                   for target in c["reverts"] for sid in ids):
-                continue  # it undoes work of its own history that came after the close, back toward what rounds saw
         at = landing(c["sha"])
         if not all(sid in closed and closed[sid][0] <= at and not with_close(c["sha"], sid) for sid in ids):
             continue  # it names an open story (which records the rounds when it closes), or it lands with the close
