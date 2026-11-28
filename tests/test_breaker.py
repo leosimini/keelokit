@@ -2231,5 +2231,98 @@ class HarnRound12Test(BreakerCase):
                 self.assertIn("BREAKER_STALE", pr)
                 self.assertIn("BREAKER_STALE", trunk)
 
+
+class HarnRound13Test(BreakerCase):
+    """HARN-022 cold breaker, round 13 (ESC-391, ESC-392): from the round's probes. Git output that carries path names
+    is read by position, never searched for text: a path cannot pose as another merge's header. An id with no story
+    file never counts as an open story."""
+
+    codes = HarnRound7Test.codes
+
+    def header_collision(self, attack: bool, pull_request: bool, number: int) -> list[str]:
+        """A merge whose own resolution adds a hunk to a risky file present at the base and in both parents, named
+        after another listed merge's diff-tree header (`attack`), or plainly. The trunk's codes, or the pull
+        request's when `pull_request`."""
+        self.repos = getattr(self, "repos", 0) + 1
+        repo = GitRepo(self.tmp, name=f"h{self.repos}")
+        repo.commit("docs: plan\n\nNo-story: docs",
+                    {path_of("AUTH-001"): story("AUTH-001", touches=("db/migrations/x.sql",)),
+                     path_of("AUTH-003"): story("AUTH-003", touches=("db/migrations/q.sql",))})
+        if not pull_request:  # the other merge: an old one on the trunk
+            repo.git("checkout", "-q", "-b", "old")
+            repo.commit("docs: old migration\n\nNo-story: docs", {"db/migrations/0001.sql": "create table a();\n"})
+            repo.git("checkout", "-q", "main")
+            repo.commit("docs: main moves\n\nNo-story: docs")
+            other = repo.merge("old", "Merge old\n\nNo-story: docs")
+        since = repo.commit("chore: adopt\n\nNo-story: harness")
+        harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        repo.state(f'[ledger]\nsince = "{since}"\nenforce = "block"\n')
+        if pull_request:  # the other merge: inside the pull request, on a branch that forked before the file
+            early = repo.sha()
+            repo.git("checkout", "-q", "-b", "e", early)
+            repo.commit("feat: q\n\nPart-of: AUTH-003", {"db/migrations/q.sql": "create table q();\n"})
+            repo.git("checkout", "-q", "-b", "d", early)
+            repo.commit("feat: d\n\nPart-of: AUTH-003")
+            other = repo.merge("e", "Merge e\n\nPart-of: AUTH-003")
+            repo.git("checkout", "-q", "main")
+        auto = repo.git("merge-tree", "--write-tree", f"{other}^1", f"{other}^2").split()[0]
+        tree = repo.git("rev-parse", f"{other}^{{tree}}").strip()
+        name = f"{auto} {tree}\ndb/migrations/p.sql" if attack else "db/migrations/p.sql"
+        body = "".join(f"line {i}\n" for i in range(40))
+        head = repo.commit("feat: AUTH-001 work\n\nPart-of: AUTH-001", {name: body})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+        repo.publish()
+        if pull_request:
+            repo.git("checkout", "-q", "-b", "b")
+            repo.merge("d", "Merge d\n\nPart-of: AUTH-003")
+        repo.git("checkout", "-q", "-b", "c")
+        repo.commit("docs: c\n\nNo-story: docs")
+        repo.git("checkout", "-q", "b" if pull_request else "main")
+        repo.commit("docs: b\n\nNo-story: docs")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "c")
+        (repo.path / name).write_text(body.replace("line 20\n", "line 20\nDROP TABLE users;\n"))
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "Merge c\n\nNo-story: docs", when=repo.next_date())
+        if not pull_request:
+            repo.publish()
+            return self.codes(self.check(repo)[1])
+        repo.git("push", "-q", "origin", "b")
+        repo.git("checkout", "-q", "main")
+        return self.codes(self.check(BreakerPullRequestTest.pull_request(self, repo, "b", number=number), "--ci",
+                                     env=PR_ENV)[1])
+
+    def test_HARN_022_S3_breaker13_a_path_named_like_another_merges_header_never_hides_an_evil_merge_ESC_391(self):
+        for pull_request, number in ((False, 0), (True, 231)):
+            for attack in (False, True):
+                with self.subTest(pull_request=pull_request, attack=attack):
+                    self.assertIn("RISKY_NO_STORY", self.header_collision(attack, pull_request, number + attack))
+
+    def test_HARN_022_S3_breaker13_an_id_with_no_story_file_never_counts_as_an_open_story_ESC_392(self):
+        migration = "db/migrations/0001.sql"
+        expected = {"Part-of: AUTH-001": "RISKY_AFTER_CLOSE", "Part-of: AUTH-001, ZZZ-999": "RISKY_AFTER_CLOSE",
+                    "Part-of: ZZZ-999": "RISKY_NO_STORY"}
+        for enforce in ("block", "warn"):
+            for trailer, code in expected.items():
+                with self.subTest(enforce=enforce, trailer=trailer):
+                    self.repos = getattr(self, "repos", 0) + 1
+                    repo = GitRepo(self.tmp, name=f"u{self.repos}")
+                    repo.commit("docs: plan\n\nNo-story: docs",
+                                {path_of("AUTH-001"): story("AUTH-001", touches=(migration,))})
+                    since = repo.commit("chore: adopt\n\nNo-story: harness")
+                    harness(repo, "chore: risky\n\nNo-story: harness", {RISKY: RISKY_TOML})
+                    repo.state(f'[ledger]\nsince = "{since}"\nenforce = "{enforce}"\n')
+                    head = repo.commit("feat: work\n\nPart-of: AUTH-001", {migration: "create table a();\n"})
+                    cur = (repo.path / path_of("AUTH-001")).read_text()
+                    repo.commit("feat: AUTH-001\n\nDone.\n\nStory: AUTH-001",
+                                {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+                    repo.commit(f"fix: unreviewed migration change\n\n{trailer}", {migration: "drop table users;\n"})
+                    repo.publish()
+                    rc, diffs = self.check(repo)
+                    self.assertIn(code, [d["code"] for d in diffs if d["level"] == "error"])
+                    self.assertNotEqual(rc, 0)
+
 if __name__ == "__main__":
     unittest.main()
