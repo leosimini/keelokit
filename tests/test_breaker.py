@@ -3,6 +3,7 @@ checked by `ledger.py check` (BREAKER_MISSING, BREAKER_UNRESOLVED, BREAKER_CONFI
 Run: python3 -m unittest tests.test_breaker  (from the repo root, or `discover -s tests`)
 
 Everything runs against real git with local remotes, as tests/test_ledger.py does (its GitRepo)."""
+import os
 import json
 import re
 import tomllib
@@ -2071,6 +2072,92 @@ class HarnRound10Test(BreakerCase):
         repo.publish()
         self.assertIn("BREAKER_STALE", [d["code"] for d in self.check(repo)[1]])
 
+
+
+class HarnRound11Test(BreakerCase):
+    """HARN-022 cold breaker, round 11 (ESC-390): from the round's probes. Path names stay raw bytes in the per-path
+    check, and a risky file that exists at the merge base and in both parents is judged by git's own merge (its
+    modes, attributes and diff algorithm), never by a lone `git merge-file`."""
+
+    codes = HarnRound7Test.codes
+    rename_carry = HarnRound9Test.rename_carry
+    OLD, SEED = HarnRound9Test.OLD, HarnRound9Test.SEED
+    TOOL = ".keelokit/bin/tool.py"
+
+    def test_HARN_022_S3_breaker11_a_rename_carry_into_a_non_utf8_risky_path_is_the_merges_own_ESC_390(self):
+        self.NEW = "apps/api/migrations/0002_\udcffseed.sql"  # round 9's test is the UTF-8 control
+        pr, trunk = self.rename_carry()
+        self.assertIn("RISKY_NO_STORY", pr)
+        self.assertIn("RISKY_NO_STORY", trunk)
+
+    def sync_flow(self, base_text: bytes, x_text: bytes, y_text: bytes, chmod_y: bool = False,
+                  attributes: str = "", extra: bytes | None = None) -> list[str]:
+        """build-story's flow on a risky file another closed story changed on main: AUTH-002 lands y_text; AUTH-001
+        writes x_text, records its round, merges origin/main (adding `extra` to the result when given), closes,
+        lands. The BREAKER_ and RISKY_AFTER codes the trunk reports."""
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(self.TOOL,)),
+                             "AUTH-002": story("AUTH-002", touches=(self.TOOL,))})
+        seed = {self.TOOL: base_text.decode()}
+        if attributes:
+            seed[".gitattributes"] = attributes
+        harness(repo, "chore: seed\n\nNo-story: harness", seed)
+        repo.publish()
+        base = repo.sha()
+
+        def build(sid: str, branch: str, text: bytes, chmod: bool, add: bytes | None) -> None:
+            repo.git("checkout", "-q", "-b", branch, base)
+            (repo.path / self.TOOL).write_bytes(text)
+            if chmod:
+                os.chmod(repo.path / self.TOOL, 0o755)
+            repo.git("add", "-f", self.TOOL)
+            repo.git("commit", "-q", "-m", f"feat: {sid} work\n\nPart-of: {sid}", when=repo.next_date())
+            head = repo.sha()
+            repo.git("fetch", "-q", "origin")
+            message = f"Merge origin/main into {branch}\n\nPart-of: {sid}"
+            if add is None:
+                repo.git("merge", "-q", "--no-ff", "-m", message, "origin/main", when=repo.next_date())
+            else:
+                repo.git("merge", "-q", "--no-ff", "--no-commit", "origin/main", when=repo.next_date())
+                (repo.path / self.TOOL).write_bytes((repo.path / self.TOOL).read_bytes() + add)
+                repo.git("add", "-f", self.TOOL)
+                repo.git("commit", "-q", "-m", message, when=repo.next_date())
+            cur = (repo.path / path_of(sid)).read_text()
+            repo.commit(f"feat: {sid}\n\nDone.\n\nStory: {sid}",
+                        {path_of(sid): cur + "\n## Breaker rounds\n" + round_line(1, head)})
+            repo.git("checkout", "-q", "main")
+            repo.git("merge", "-q", "--no-ff", "-m", f"Merge {branch}\n\nPart-of: {sid}", branch,
+                     when=repo.next_date())
+            repo.publish()
+
+        build("AUTH-002", "y", y_text, chmod_y, None)
+        build("AUTH-001", "x", x_text, False, extra)
+        return [c for c in self.codes(self.check(repo)[1]) if c.startswith(("BREAKER", "RISKY_AFTER"))]
+
+    LINES = "".join(f"line {i}\n" for i in range(60)).encode()
+
+    def test_HARN_022_S1_breaker11_a_clean_sync_merge_with_a_mode_change_or_a_union_attribute_is_clean_ESC_390(self):
+        lines = self.LINES
+        x = lines.replace(b"line 5\n", b"line 5 (X)\n")
+        cases = {
+            "plain": (x, lines.replace(b"line 50\n", b"line 50 (Y)\n"), False, ""),
+            "mode": (x, lines, True, ""),
+            "mode and edit": (x, lines.replace(b"line 50\n", b"line 50 (Y)\n"), True, ""),
+            "union": (lines.replace(b"line 30\n", b"line 30\nX added\n"),
+                      lines.replace(b"line 30\n", b"line 30\nY added\n"), False, f"{self.TOOL} merge=union\n"),
+        }
+        for name, (x_text, y_text, chmod, attributes) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(self.sync_flow(lines, x_text, y_text, chmod, attributes), [])
+
+    def test_HARN_022_S1_breaker11_a_clean_sync_merge_git_merges_unlike_merge_file_is_clean_ESC_390(self):
+        self.assertEqual(self.sync_flow(b"b\nb\nb\nb\nx\n{\nb\nb\n", b"b\n\nb\nb\nb\n{\nx\n{\nb\nb\n",
+                                        b"b\nb\nreturn 0;\nb\nb\nx\nb\nb\n"), [])
+
+    def test_HARN_022_S1_breaker11_a_hunk_beyond_gits_merge_of_an_existing_risky_file_is_own_ESC_390(self):
+        lines = self.LINES
+        codes = self.sync_flow(lines, lines.replace(b"line 5\n", b"line 5 (X)\n"),
+                               lines.replace(b"line 50\n", b"line 50 (Y)\n"), extra=b"EVIL = True\n")
+        self.assertIn("BREAKER_STALE", codes)
 
 if __name__ == "__main__":
     unittest.main()
