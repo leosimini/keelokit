@@ -189,3 +189,12 @@ below.
   round's head check and BREAKER_STALE on itself, clearing STALE for a risky commit no round saw, and turning a correct
   story's round into a bad entry. Held: 200k fuzzed touches, diff-tree echo format, the revert and merge-revert reading,
   the screen, the authors reuse, attributing_merges. The builder stopped; the coordinator decided each fix.
+- Round 10 · head 71dc136a7edae7650fb6f68c970555e0596ad626 · 2 findings (1 HIGH, 1 MEDIUM), not fixed
+  A new agent, cold, 9 attacks, scratch clones only; each finding run by the builder too. Reproduced: (HIGH) the rename
+  check runs `git diff-tree -M` with the default rename limit (1000), so a commit with more than 1000 inexact renames
+  hides a rename into a risky path that git's merge (a higher limit, only the sources the other side changed) still
+  follows: an edit at the old path lands in the risky file and both checks pass (caught at 5 renames, missed at 1100);
+  (MEDIUM) once any risky rename exists on either side, every risky path that differs from every parent counts, so a
+  clean sync merge of a risky file both sides edited is BREAKER_STALE when the other side also renamed an unrelated
+  risky file (build-story's own flow). Held: fake reverts by blob id, unknown ids in trailers, the screen under C and
+  C.UTF-8, the two copies, the pull request and the trunk agreeing. The builder stops here: the coordinator decides.
