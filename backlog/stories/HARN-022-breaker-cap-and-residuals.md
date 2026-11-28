@@ -289,3 +289,16 @@ below.
   keys, the linked worktree's verdict, the two copies, the full test_breaker suite. The builder stopped; the
   coordinator decided: no merge.default pin, git's own view of every config scope scanned for steering keys only, the
   LOW findings fixed here too, and the threat model written down (design.md, "Who decides").
+- Round 18 · head 9337b2bc9f5f22409e499ca7b2060d0ae807fea3 · 2 findings (2 MEDIUM), not fixed
+  A new agent, cold, scratch clones only, told both accepted limitations and the threat model with its severity rule
+  (local-only state is LOW at most); each finding run by the builder too, on fresh clones with `check --ci`.
+  Reproduced: (MEDIUM) "after the close" and the rule's start are read from the trunk's current first-parent chain, so
+  a branch that merges origin/main and lands by fast-forward (a direct push, or a `git pull` merge on main) makes main's
+  earlier commits arrive with its sync merge: a `Part-of:` risky commit made after a close whose last round is not
+  clean or decided is no longer RISKY_AFTER_CLOSE, and risky work committed after the rule held falls before it
+  (RISKY_NO_STORY and BREAKER_MISSING vanish); pull requests are not affected, contrary to "one rule however the branch
+  lands" in docs/ledger.md; (MEDIUM, older than this story, HARN-021) harness-upgrade commits the upgrade with
+  `No-story: harness`, which is RISKY_NO_STORY once risky.toml is on the trunk (`.keelokit/bin/**`, state.toml), in
+  warn mode too; `ledger.py accept`'s corrections commit may be the same. Held: a non-risky story's merge dropping a
+  reviewed fix (a hit, BREAKER_MISSING), the merge-landing controls, the revert reading, the config hardening (local
+  only), renames off in local config (stricter). The builder stops here: the coordinator decides.
