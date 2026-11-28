@@ -341,3 +341,19 @@ below.
   will be (the merge result), a reverted close still orders, a Decision covers what the close reaches; tightening
   risky.toml moved to HARN-025 (pre-existing); from now on a finding blocks only in code this story added or changed,
   or a regression it causes.
+- Round 21 · head dda7d8c854ea9e6ec3571b1c35848f2559345f6f · 4 findings (4 MEDIUM, blocking) and 1 pre-existing note, not fixed
+  A new agent, cold, scratch clones only, told the accepted limitations, the threat model, the severity and scope
+  rules, HARN-024 and HARN-025; each finding run by the builder too, on fresh clones and pull requests. Reproduced:
+  (MEDIUM, a regression of ESC-400) "a closed id stays known" counts ids whose only Story: commit was reverted, so a
+  reverted `Story: ZZZ-999` makes a later `Part-of: ZZZ-999` risky change storyless-but-known: under warn, exit 0 on
+  the trunk and in a pull request (ESC-392's hole again); (MEDIUM, this story's code) a person's Decision at the cap
+  on a re-close fails: RISKY_AFTER_CLOSE covers only what the decided round's head reaches, so the fix after the last
+  round, reached by the re-close, stays an error (round 20's finding in its re-close form); (MEDIUM, a pull-request
+  regression of ESC-400) the merged view's `earlier` no longer holds the trunk's current story files, and
+  `story_versions` stops at 20000 blobs, so a pull request that flips a story's front matter and floods
+  `backlog/stories/` with 20001 junk files closes a risky story with no round (the trunk side was already a hole);
+  (MEDIUM, a pull-request regression of ESC-400) `breaker_start` matches risky.toml's `since` against the merged
+  graph, so a pull request can bring the `since` commit and exempt its own commits. Pre-existing note: a pull request
+  that adds risky.toml first passes and the trunk then fails (ESC-312's design). Held: round 20's and 19's fixes, a
+  correct reopen flow, a live fake close, the trunk's rules on pull requests, the full test_breaker suite. The builder
+  stops here: the coordinator decides.
