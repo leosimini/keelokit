@@ -901,6 +901,7 @@ def read_trunk_log(trunk_sha: str, more: tuple = ()) -> list[dict]:
 
 
 REVERT_CACHE: dict[frozenset, set] = {}
+HISTORY: dict[str, bool] = {}   # whether this clone holds the whole history (real_reverts asks once)
 
 
 def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
@@ -915,7 +916,7 @@ def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
     for chunk in out.split("\0")[1:]:
         head, _, rest = chunk.partition("\n")
         rows = []
-        for line in rest.splitlines():
+        for line in git_lines(rest):  # newlines only: a path may hold U+2028 (ESC-375)
             meta, tab, path = line.partition("\t")
             fields = meta.lstrip(":").split()
             if line.startswith(":") and tab and len(fields) >= 4:
@@ -928,18 +929,26 @@ def change_ids(shas: list[str], reverse: bool) -> dict[str, str]:
 
 def real_reverts(pairs: set[tuple[str, str]]) -> set[tuple[str, str]]:
     """The (reverter, target) pairs whose reverter's change is the target's inverted: a message-only "revert", or a
-    partial one, reverts nothing (ESC-335). A clone that cannot read the changes (a partial clone without the blobs,
-    a target past a cut) keeps the messages' word: the CI's full clone decides."""
+    partial one, reverts nothing (ESC-335). With the whole history here (not shallow, no promisor: the CI's clone), a
+    target that is no commit reverts nothing, and a change git cannot read counts no revert on a message's word: it
+    fails closed (ESC-374). A clone that lacks history (shallow, partial) keeps the messages' word, as before: its states
+    are read conservatively, and the CI's full clone decides."""
     if not pairs:
         return set()
     key = frozenset(pairs)
     if key not in REVERT_CACHE:
+        if "complete" not in HISTORY:
+            HISTORY["complete"] = is_shallow() is False and not is_partial_clone()
+        complete = HISTORY["complete"]
         try:
-            forward = change_ids(sorted({x for _, x in pairs}), False)
-            back = change_ids(sorted({r for r, _ in pairs}), True)
+            if complete:
+                known = set(peel_nested(sorted({x for _, x in pairs})))
+                pairs = {(r, x) for r, x in pairs if x in known}
+            forward = change_ids(sorted({x for _, x in pairs}), False) if pairs else {}
+            back = change_ids(sorted({r for r, _ in pairs}), True) if pairs else {}
             REVERT_CACHE[key] = {(r, x) for r, x in pairs if forward.get(x) and forward.get(x) == back.get(r)}
         except LedgerError:
-            REVERT_CACHE[key] = set(pairs)
+            REVERT_CACHE[key] = set() if complete else set(pairs)
     return REVERT_CACHE[key]
 
 
@@ -3302,10 +3311,10 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
                                lambda sha: order[arrival[sha]] if sha in arrival else len(order),
-                               list(stories.values()), rules, head, cfg)
+                               list(stories.values()), rules)
     earlier = base + story_versions(head, closed_paths(log, list(stories.values()), base), cfg, closed_ids(log))
     return found + breaker_diffs(rules, log, every, graph, list(stories.values()),
-                                 config_diffs=False, hits=hits, earlier=earlier)
+                                 config_diffs=False, hits=hits, earlier=earlier, merges=own)
 
 
 def all_diffs(state: dict, ci: bool, rules_sha: str | None = None) -> list[dict]:
@@ -3613,7 +3622,8 @@ def missing_story(sid: str) -> dict:
 
 
 def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], graph: dict, stories: list[dict],
-                  config_diffs: bool = True, hits: set = frozenset(), earlier: list[dict] = ()) -> list[dict]:
+                  config_diffs: bool = True, hits: set = frozenset(), earlier: list[dict] = (),
+                  merges: set = frozenset()) -> list[dict]:
     """BREAKER_* for the stories a live Story: commit of `in_range` closes (story files as `stories` has them, every
     copy of an id). What makes a story risky also comes from `earlier` versions of its file (the trunk's before the
     change under judgment: rewriting the front matter while closing opts nothing out, ESC-327) and from every commit
@@ -3701,8 +3711,11 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
         if last[3]:
             # The clean last round saw the code that lands: no risky commit of the story that the close reaches may
             # come after its head (ESC-371).
+            # A merge counts by its own resolution (merges), never by what a path-limited log lists for it (ESC-376);
+            # the close itself is a commit the round must reach (ESC-377).
             seen = reach_until(graph, [last[2]], set())
-            late = [x for x in naming.get(sid, ()) if x in hits and x in close_reach and x != latest[sid]
+            late = [x for x in naming.get(sid, ())
+                    if (x in merges if len(graph.get(x, ())) > 1 else x in hits) and x in close_reach
                     and x not in seen]
             if late:
                 diffs.append({"level": "error", "code": "BREAKER_STALE", "detail": (
@@ -3710,14 +3723,17 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
                     f"landed after the last clean round (head {short(last[2])}) in {story['path']}; run a round on "
                     "the code that lands, and record its head")})
         if not last[3] and not any(i > last_at for i in decisions):
+            invalid = any(e[1] == last[1] for e, _ in wrong)
             if len(rounds) >= rules["rounds"]:
                 then = (f"the cap of {rules['rounds']} rounds ({RISKY_FILE}) is reached, so a person decides: another "
                         "round, or land as it is (`- Decision · <person> · <YYYY-MM-DD> · <what>`)")
             else:
                 then = (f"below the cap of {rules['rounds']}: round {len(rounds) + 1} runs with a new cold breaker on "
                         "the fixed head (or a person's Decision line lands it as it is)")
+            # a round whose head does not count is no valid round, whatever it says (ESC-378)
+            said = "is no valid round (its head does not count)" if invalid else "left findings"
             diffs.append({"level": "warning", "code": "BREAKER_UNRESOLVED", "detail": (
-                f"{sid}: its last breaker round ({last[1]}, head {short(last[2])}) left findings, and no person's "
+                f"{sid}: its last breaker round ({last[1]}, head {short(last[2])}) {said}, and no person's "
                 f"Decision line follows it in {story['path']}; {then}")})
     return diffs
 
@@ -3787,20 +3803,19 @@ def breaker_resolved(record: dict, rules: dict) -> bool:
 
 
 def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: set, merges: set,
-                      landing, stories: list[dict] = (), rules: dict | None = None,
-                      tip: str | None = None, cfg: dict | None = None) -> list[dict]:
+                      landing, stories: list[dict] = (), rules: dict | None = None) -> list[dict]:
     """RISKY_AFTER_CLOSE (HARN-022): a commit of `in_range` (after the rule's start) that changes a risky path, or a
     merge whose own resolution does, under Story:/Part-of: of stories that were all closed already, by a live Story:
     commit of `log` (the earliest by `landing(sha)`: the position of the trunk commit that brought it; a pull request's
     commits land after every trunk commit) that does not reach it. The closed story's rounds never saw the change, and
     it is not closed again: such a change is new work of an open story, which then needs its rounds. One rule, however
     the branch lands (merge, fast-forward, rebase) and in the pull request alike (ESC-356, ESC-360, ESC-365, ESC-366):
-    a later commit lands with the close when the commit that recorded the story's last round reaches it, while that
-    round is clean (its head a commit a live close reaches) or a person's Decision follows it. That commit is the first,
-    in `tip`'s history, whose version of any file under the stories' glob with this id holds that exact round line (one
-    pickaxe `git log -S<head>` and one `cat-file`): renaming or copying the file moves nothing (ESC-369). A later round
-    line recorded after a change is a reopening with its own round. A revert is exempt only when what it reverts came
-    after the close (it undoes unreviewed work); reverting what the close reaches is a change like any other (ESC-370)."""
+    a later commit lands with the close when the head of the story's last valid round reaches it: that round clean or
+    followed by a person's Decision, its head a commit a live close reaches (ESC-373). So a change after the close is
+    covered only by a new round on it, recorded by a re-close (a later Story: commit); a round line naming an older head
+    covers nothing new, and renaming the story file moves nothing (ESC-369). A revert is exempt only when it reverts an
+    ancestor of its own that came after the close (it undoes unreviewed work); reverting what the close reaches is a
+    change like any other (ESC-370, ESC-374)."""
     reverted = revert_status(log, graph)
     closed: dict[str, tuple[int, str]] = {}
     closes: dict[str, list[str]] = {}
@@ -3819,8 +3834,7 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             if rules is not None and not v.get("unreadable") and breaker_resolved(record, rules):
                 last_round.setdefault(s["id"], [e for e in record["entries"] if e[0] == "round"][-1])
     before: dict[str, set] = {}
-    any_close: dict[str, set] = {}
-    recorded: dict[str, set] = {}
+    covered: dict[str, set] = {}
 
     def reached_by_close(sid: str) -> set:
         """What the story's (earliest live) close reaches: it came before the close."""
@@ -3828,41 +3842,16 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
             before[sid] = reach_until(graph, [closed[sid][1]], set())
         return before[sid]
 
-    def recording(sid: str) -> list[str]:
-        """The first commit whose version of a file of this id holds the last round line, if its head is valid."""
-        entry = last_round.get(sid)
-        if entry is None or tip is None or cfg is None:
-            return []
-        head = resolve_head(entry[2], graph)
-        if sid not in any_close:
-            any_close[sid] = reach_until(graph, closes.get(sid, []), set())
-        if head is None or head not in any_close[sid]:
-            return []  # a round whose head is no commit a live close reaches is not clean (ESC-371)
-        out = git_read(["-c", "core.quotePath=false", "log", "--no-renames", "--format=%x00%H", "--name-only",
-                        f"-S{entry[2]}", tip, "--", f":(glob){cfg['stories']}"]).decode(errors="replace")
-        candidates = []
-        for chunk in out.split("\0")[1:]:
-            lines = [line for line in git_lines(chunk) if line.strip()]
-            if lines:
-                candidates += [(lines[0].strip(), path) for path in lines[1:]]
-        blobs = cat_specs([f"{sha}:{path}" for sha, path in candidates])
-        for sha, path in reversed(candidates):  # oldest first
-            try:
-                version = build_story(path, blobs.get(f"{sha}:{path}"), cfg["id_from"]) \
-                    if blobs.get(f"{sha}:{path}") is not None else None
-            except LedgerError:
-                version = None
-            if version and version["id"] == sid and any(
-                    e[0] == "round" and e[2] == entry[2] for e in version["breaker"]["entries"]):
-                return [sha]
-        return []
-
     def with_close(sha: str, sid: str) -> bool:
         if sha in reached_by_close(sid):
             return True
-        if sid not in recorded:
-            recorded[sid] = reach_until(graph, recording(sid), set())
-        return sha in recorded[sid]
+        if sid not in covered:
+            # What the last valid round saw: its head (a commit a live close reaches, so a re-close records it) and
+            # everything before it (ESC-373). A round line never covers a change its head does not reach.
+            head = resolve_head(last_round[sid][2], graph) if sid in last_round else None
+            live = reach_until(graph, closes.get(sid, []), set()) if head else set()
+            covered[sid] = reach_until(graph, [head], set()) if head and head in live else set()
+        return sha in covered[sid]
 
     diffs = []
     for c in reversed(in_range):
@@ -3870,9 +3859,11 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
         merge = len(c["parents"]) > 1
         if not ids or reverted.get(c["sha"], False) or not (c["sha"] in merges if merge else c["sha"] in hits):
             continue
-        if c["reverts"] and all(sid in closed and target not in reached_by_close(sid)
-                                for target in c["reverts"] for sid in ids):
-            continue  # it undoes work that came after the close, back toward what the rounds saw
+        if c["reverts"]:
+            mine = reach_until(graph, [c["sha"]], set())
+            if all(sid in closed and target in mine and target not in reached_by_close(sid)
+                   for target in c["reverts"] for sid in ids):
+                continue  # it undoes work of its own history that came after the close, back toward what rounds saw
         at = landing(c["sha"])
         if not all(sid in closed and closed[sid][0] <= at and not with_close(c["sha"], sid) for sid in ids):
             continue  # it names an open story (which records the rounds when it closes), or it lands with the close
@@ -3880,7 +3871,7 @@ def risky_after_close(in_range: list[dict], log: list[dict], graph: dict, hits: 
         what = "a merge whose own resolution changes" if merge else "a commit that changes"
         by = ", ".join(f"{sid} ({short(closed[sid][1])})" for sid in ids)
         diffs.append({"level": "error", "code": "RISKY_AFTER_CLOSE", "detail": (
-            f"{short(c['sha'])} {subject!r}: {what} a risky path ({RISKY_FILE}) under stories already closed: {by}; "
+            f"{short(c['sha'])} {subject!r}: {what.replace('changes', 'touches')} a risky path (per {RISKY_FILE}) under stories already closed: {by}; "
             "their breaker rounds never saw it and they are not closed again, so name an open story (Part-of:/Story:) "
             "for it, which then needs its own breaker rounds")})
     return diffs
@@ -3990,12 +3981,12 @@ def trunk_breaker_diffs(ctx: dict) -> list[dict]:
     diffs += risky_no_story(in_range, hits, own)
     arrival, order = ctx["placed"]
     diffs += risky_after_close(in_range, ctx["log"], ctx["graph"], hits, own, lambda sha: order[arrival[sha]],
-                               ctx["stories"], rules, ctx["trunk_sha"], ctx["cfg"])
+                               ctx["stories"], rules)
     earlier = read_stories(starts[0], ctx["cfg"])[0] if starts else []  # the files as the rule found them
     earlier += story_versions(ctx["trunk_sha"], closed_paths(in_range, ctx["stories"], earlier), ctx["cfg"],
                               closed_ids(in_range))
     return diffs0 + diffs + breaker_diffs(rules, in_range, ctx["log"], ctx["graph"], ctx["stories"], hits=hits,
-                                          earlier=earlier)
+                                          earlier=earlier, merges=own)
 
 
 def work_tree_story(cfg: dict, sid: str) -> dict | None:

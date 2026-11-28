@@ -262,7 +262,12 @@ round under `## Breaker rounds` in the story file. The last round decides, whate
 story is resolved, past the cap too; the cap is where the build must stop and ask, and a person's `Decision` line
 records their call when it is hit with findings left. A round's head must be the head the breaker attacked, a commit
 the close reaches (else `BREAKER_BAD_ENTRY`, not clean), and the last clean round's head must be at or after the
-story's last risky change (else `BREAKER_STALE`, an error): the rounds see the code that lands. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
+story's last risky change, the `Story:` commit included (else `BREAKER_STALE`, an error): the rounds see the code that
+lands. So build-story merges `origin/main` after the rounds instead of rebasing, and a risky story lands with a merge
+commit (this repo's way); squash and rebase landings rewrite the recorded heads, so on the trunk their rounds read as
+`BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` — warnings, never an error. A change after the close is covered only by a
+new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
+nothing new. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
 own rules), and its two copies are one file. `check` gives `BREAKER_MISSING` (error) for a risky story closed with
 no round and `BREAKER_UNRESOLVED` (warning) for a last round with findings and no Decision after it. History is exempt by

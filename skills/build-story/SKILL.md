@@ -239,9 +239,14 @@ builder.
 ## 7. Land
 
 1. `git fetch`. If `origin/main` moved past the base recorded in step 5, other work landed in
-   between: `git rebase origin/main`, then `breaker` in mode B (old base → new base × this
-   story) and, if it touched the same journeys, a verifier mode B re-walk of them. Findings go
-   through the step 5.4 loop.
+   between: bring it in, then `breaker` in mode B (old base → new base × this story) and, if it
+   touched the same journeys, a verifier mode B re-walk of them. Findings go through the step 5.4
+   loop. For a risky story, after the breaker rounds, merge `origin/main` (`git merge --no-ff`),
+   never rebase: a rebase rewrites the heads the rounds recorded, and a round counts only when its
+   head is a commit the close reaches. If a rebase is truly needed, do it before the rounds start,
+   or run a new round after it; never re-record an old round on a new head (that is a round nobody
+   ran). A squash or rebase landing rewrites the heads too: on the trunk its rounds read as
+   `BREAKER_BAD_ENTRY` and `BREAKER_UNRESOLVED` (warnings). Land a risky story with a merge commit.
 2. `pnpm verify --preflight` first if the full run is long, then `pnpm verify` (the pre-push hook
    runs it with the seal, which skips the repeat only for this exact, unchanged commit).
 3. Commit with the trailer that closes the story, as the message's last paragraph, and a body: what

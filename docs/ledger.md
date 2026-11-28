@@ -202,14 +202,17 @@ change to a closed story is accepted only when a new round line recorded after i
 round. A touch naming the repository root (`./`, `/`, `.`) meets every glob; every spelling of one directory is one;
 `.` and `..` inside a touch are normalised, and one that leaves the repository names nothing. The commit that recorded
 a round is found by the story's id, over every file under the stories' glob, never by its current path: renaming or
-copying the file moves nothing. A revert is exempt only when it undoes work that came after the close.
+copying the file moves nothing.
 
 A round's head (full, or 7 to 63 hex digits that resolve uniquely) must be a commit the story's close reaches: the head
 the breaker attacked, on the branch that closes it. Any other head is `BREAKER_BAD_ENTRY` and that round counts as not
 clean. When the last round is clean, a risky commit of the story that the close reaches and the round's head does not
-(it landed after the round and before the close) is `BREAKER_STALE` (error): run a round on the code that lands. A
-branch rewritten as it lands (a rebase or a squash) rewrites the heads away, so its rounds count as not clean on the
-trunk: record them on the head that lands, or land by merge or fast-forward.
+(it landed after the round, the `Story:` commit itself included; a merge counts by its own resolution) is
+`BREAKER_STALE` (error): run a round on the code that lands. A branch rewritten as it lands (a rebase or a squash)
+rewrites the heads away, so its rounds count as not clean on the trunk (warnings): merge `origin/main` after the
+rounds and land with a merge commit. After the close, a change is covered only by a new round whose head reaches it,
+recorded by a re-close (a later `Story:` commit); a revert counts only as the exact inverse of a commit that exists
+here, and is exempt only when it undoes an ancestor of its own that came after the close.
 
 `check` reads the story file and `risky.toml` from the trunk's committed tree (`--rules-ref`'s with that flag), and
 for a pull request the base's `risky.toml` and committed `[ledger]` with the pull request's story file. The rule holds
@@ -232,8 +235,10 @@ refused. Only the `since` of `risky.toml` as it first
 reached the trunk counts. A round is clean only when its whole result reads `clean`.
 
 Reverts, ledger-wide: a commit reverts X only when its message says so and its change is X's inverted as git records
-it (each path's modes and blob ids: no whitespace rule, binary file or `.gitattributes` can fake it); a message-only or partial "revert" is an ordinary commit. A clone that lacks the blobs keeps the
-message's word; the CI's full clone decides. The line is a record, as a trailer is: `check` asks that it is there and well
+it (each path's modes and blob ids: no whitespace rule, binary file or `.gitattributes` can fake it); a message-only or partial "revert" is an ordinary commit. With the whole history (the CI's
+clone), a "revert" of a sha that is no commit reverts nothing, and a change git cannot read counts no revert on a
+message's word (it fails closed, ESC-374); a shallow or partial clone keeps the message's word for its states, and the
+CI's full clone decides. The line is a record, as a trailer is: `check` asks that it is there and well
 formed, not that the round happened.
 
 ### Corrections file
