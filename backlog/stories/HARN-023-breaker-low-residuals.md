@@ -5,7 +5,7 @@ title = "HARN-022's low residuals: a Decision after a squash, and str.splitlines
 wave = 27
 depends_on = ["HARN-022"]
 touches = ["template/.keelokit/bin/ledger.py", ".keelokit/bin/ledger.py", "tests/test_breaker.py", "tests/test_ledger_swarm.py", "docs/ledger.md", "docs/escapes.md", "CHANGELOG.md", "backlog/stories/HARN-023-breaker-low-residuals.md"]
-dimensions = ["logic", "integrity", "dx"]
+dimensions = ["logic", "dx"]
 invariants = []
 risky = true
 +++
