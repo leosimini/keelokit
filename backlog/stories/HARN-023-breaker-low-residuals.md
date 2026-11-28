@@ -39,12 +39,9 @@ HARN-022's cold breaker rounds 6 and 7 left LOW findings, which the coordinator 
 - `release_only` exempts a `No-story: release` commit whose paths all end in `/package.json`, wherever they sit, so
   `db/migrations/package.json` or `.keelokit/bin/package.json` inside a risky glob lands with no RISKY_NO_STORY
   (older than HARN-022, from HARN-021). Probe: /tmp/breaker13-HARN-022/probes/p3_release_package_json.py (round 13).
-- `GIT_LITERAL_PATHSPECS=1` in the environment makes every `:(glob)` pathspec literal, so no commit or merge is risky
-  (older than HARN-022): the git scrub should drop it, with `GIT_GLOB/NOGLOB/ICASE_PATHSPECS`. Probe:
-  /tmp/breaker16-HARN-022/probes/p3_literal_pathspecs.py (round 16).
-- A reversed class range in risky.toml (`db/[z-a]*.sql`) passes `risky_config` and crashes `check` and `risky` in
-  `glob_regex` (exit 2) instead of a BREAKER_CONFIG. Probe: /tmp/breaker16-HARN-022/probes/p4_class_range_crash.py
-  (round 16).
+- On a case-insensitive filesystem a committed `.GITATTRIBUTES` steers git like `.gitattributes`, but the always-risky
+  `**/.gitattributes` pathspec is case-sensitive (round 16, not reproduced on ext4).
+- `glob_regex` misreads POSIX classes (`[[:alpha:]]`), which touches may use; story risk by touches only (round 16).
 
 Does NOT do: anything HARN-022's open HIGH and MEDIUM findings need (they are HARN-022's, by the coordinator's call).
 

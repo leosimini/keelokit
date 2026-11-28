@@ -149,6 +149,9 @@ GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GI
              "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR")
 
 
+HARDEN_CONFIG: dict = {}
+
+
 def harden_git(hooks_off: bool) -> None:
     """HARN-004 (ESC-271, ESC-280): run by the plugin's hooks, every git call of this copy reads no repository the
     project ships (a directory with HEAD, config, objects/ and refs/ is not a bare repository to it), runs no
@@ -160,6 +163,7 @@ def harden_git(hooks_off: bool) -> None:
               "core.fsmonitor": "false"}
     if hooks_off:
         config["core.hooksPath"] = os.devnull
+    HARDEN_CONFIG.update(config)  # the hermetic environment of every git read carries them too
     try:
         n = max(int(os.environ.get("GIT_CONFIG_COUNT") or 0), 0)
     except ValueError:
@@ -205,6 +209,35 @@ NETWORK = ("could not resolve host", "connection refused", "connection timed out
 def git_env() -> dict:
     return {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
             "SSH_ASKPASS": "true", "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "never"}
+
+
+# What every git read pins over any config git still reads (the repository's own): explicit values beat config (ESC-396).
+READ_PINS = (("log.diffMerges", "separate"), ("merge.default", "text"), ("merge.renormalize", "false"),
+             ("core.autocrlf", "false"), ("diff.renames", "true"), ("core.quotePath", "true"))
+# Variables that steer what git reads or how a pathspec matches; the hermetic environment drops them (ESC-396).
+HERMETIC_DROP = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
+                 "GIT_ATTR_SOURCE", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS")
+HERMETIC: dict = {}
+
+
+def hermetic_env() -> dict:
+    """The environment of every git read (ESC-396), built here only: no system or global config file, no config from
+    the environment (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and its keys), no system attributes, no pathspec switches;
+    then the hardening (harden_git) and READ_PINS as GIT_CONFIG_COUNT entries, over the repository's own config, which
+    no option switches off (merge_config fails closed on it). A ROOT plain git already trusts stays trusted
+    (safe.directory), so a CI container's ownership check reads as it did."""
+    env = {k: v for k, v in git_env().items() if not k.startswith("GIT_CONFIG") and k not in HERMETIC_DROP}
+    if "trusted" not in HERMETIC:
+        code, _ = git_out("rev-parse", "--git-dir")
+        HERMETIC["trusted"] = code == 0
+    pins = [*HARDEN_CONFIG.items(), *READ_PINS]
+    if HERMETIC["trusted"]:
+        pins += [("safe.directory", str(ROOT)), ("safe.directory", str(Path(ROOT).resolve()))]
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
+               GIT_CONFIG_COUNT=str(len(pins)))
+    for i, (key, value) in enumerate(pins):
+        env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return env
 
 
 def run_git(args: list[str], timeout: float | None = None, env: dict | None = None) -> tuple[int | None, str]:
@@ -552,7 +585,7 @@ def git_read(args: list[str], data: bytes | None = None, ok: tuple = (0,), env: 
     kwargs = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     try:
         r = subprocess.run(["git", *NOPROMPT, *READ_CONFIG, *args], cwd=ROOT,
-                           env={**git_env(), "GIT_NO_LAZY_FETCH": "1", **(env or {})},  # reading never fetches
+                           env={**hermetic_env(), "GIT_NO_LAZY_FETCH": "1", **(env or {})},  # reading never fetches
                            capture_output=True, **kwargs)
     except OSError as e:
         raise LedgerError(f"cannot run git ({e})") from e
@@ -594,6 +627,21 @@ def local_attributes() -> bool:
         return True
 
 
+def merge_config() -> str | None:
+    """The first repository-local config key (includes followed) that can steer git's merge or diff, which no option
+    switches off: any `merge.*`, a diff driver (`diff.<name>.<key>`) or `diff.external`. None: none."""
+    try:
+        out = git_read(["config", "--local", "--includes", "--name-only", "--get-regexp", r"^(merge|diff)\."],
+                       ok=(0, 1)).decode(errors="replace")
+    except LedgerError:
+        return "unreadable"
+    for key in git_lines(out):
+        key = key.strip().lower()
+        if key.startswith("merge.") or key == "diff.external" or key.count(".") >= 2:
+            return key
+    return None
+
+
 MERGE_NOTES: set = set()
 
 
@@ -604,6 +652,10 @@ def merge_notes() -> list[dict]:
         diffs.append({"level": "warning", "code": "MERGE_ATTRIBUTES", "detail": (
             "$GIT_DIR/info/attributes is not empty here and no option switches it off, so git's merge cannot be read "
             "as git makes it: every merge that touches a risky path counts as its own change (empty that file)")})
+    for note in sorted(n for n in MERGE_NOTES if n.startswith("config:")):
+        diffs.append({"level": "warning", "code": "MERGE_CONFIG", "detail": (
+            f"the repository's own config sets {note.split(':', 1)[1]}, which can steer git's merge or diff and no "
+            "option switches off: every merge that touches a risky path counts as its own change (remove it)")})
     MERGE_NOTES.clear()
     return diffs
 
@@ -636,7 +688,16 @@ def read_config(state: dict) -> dict:
             "lang": "es" if lang == "es" else "en"}
 
 
-def glob_regex(pattern: str) -> re.Pattern:
+def glob_readable(pattern: str) -> bool:
+    """Whether the glob's classes compile (a reversed range such as `[z-a]` does not)."""
+    try:
+        glob_regex(pattern, strict=True)
+        return True
+    except re.error:
+        return False
+
+
+def glob_regex(pattern: str, strict: bool = False) -> re.Pattern:
     """`*` and `?` stay inside one directory, `**` crosses them, `[...]` is a class within one part; a pattern with no
     wildcard also matches everything beneath it, as git's pathspec does (`infra`, `infra/`, ESC-395). Any character a
     path holds matches, a newline included (ESC-393). Only story files and touches are matched with it: whether a
@@ -666,7 +727,12 @@ def glob_regex(pattern: str) -> re.Pattern:
             c = pattern[i]
             out.append("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c))
             i += 1
-    return re.compile("".join(out), re.DOTALL)
+    try:
+        return re.compile("".join(out), re.DOTALL)
+    except re.error:
+        if strict:
+            raise
+        return re.compile(re.escape(pattern), re.DOTALL)  # a class that cannot be read matches only itself
 
 
 def iso(epoch: int) -> str:
@@ -2486,7 +2552,7 @@ def cmd_accept(state: dict) -> int:
     appended to the corrections file with the person's name and today's date; nothing else is rewritten."""
     if not person_only("backfill --accept"):
         return 1
-    user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
+    user = git_out("config", "user.name")[1]  # the person's own config, not the hermetic read
     if not user:
         print("Keelokit: set your name first: `git config user.name \"Your Name\"` (it becomes the approver).",
               file=sys.stderr)
@@ -3015,7 +3081,7 @@ def cmd_reject_sample(state: dict, run: str) -> int:
     if not RUN_ID.fullmatch(run):
         print(f"Keelokit: {run!r} is not a run id", file=sys.stderr)
         return 1
-    user = git_read(["config", "user.name"], ok=(0, 1)).decode(errors="replace").strip()
+    user = git_out("config", "user.name")[1]  # the person's own config, not the hermetic read
     if not user:
         print("Keelokit: set your name first: `git config user.name \"Your Name\"` (it becomes the approver).",
               file=sys.stderr)
@@ -3428,9 +3494,10 @@ def pull_request_breaker(ctx: dict, head: str) -> list[dict]:
     known = {s["id"] for s in at_head}
     hits = risky_commits(rules, head, [])
     own = merge_own_hits(rules, head, [ctx["trunk_sha"]])
-    found = merge_notes() + risky_no_story(log, hits, own, known)
+    found = risky_no_story(log, hits, own, known)
     # BREAKER_STALE reads the trunk's own-change merges too, as the trunk's check does (ESC-385)
     own_everywhere = own | merge_own_hits(rules, ctx["trunk_sha"], [])
+    found = merge_notes() + found  # the notes of both calls
     every = log + ctx["log"]  # the pull request's commits, then the trunk's (as the trunk's check read them)
     arrival, order = ctx["placed"]
     found += risky_after_close(log, every, graph, hits, own,
@@ -3638,6 +3705,10 @@ def risky_config(content: bytes | None, present: bool) -> dict | None:
                 if odd:
                     problems.append(f"`paths` stay inside the repo, without `..`, `.` or a leading `:` ({odd[0]!r})")
                     rules[key] = [v for v in rules[key] if v not in odd]
+                unreadable = [v for v in rules[key] if not glob_readable(v)]
+                if unreadable:  # a class git and the ledger cannot read the same way (ESC-396)
+                    problems.append(f"`paths` hold a pattern that cannot be read ({unreadable[0]!r})")
+                    rules[key] = [v for v in rules[key] if v not in unreadable]
     rules["dimensions"] = sorted({d.lower() for d in rules["dimensions"]})
     since = data.get("since", "")
     if not isinstance(since, str) or since.strip() and not HEX_SHA.fullmatch(since.strip()):
@@ -3881,7 +3952,8 @@ def breaker_diffs(rules: dict | None, in_range: list[dict], log: list[dict], gra
 def rule_adds(tip: str) -> list[str]:
     """The commits `tip` reaches that added risky.toml (one path-limited `git log`)."""
     # -m: a merge whose own resolution adds the file is an add too (ESC-337).
-    out = git_read(["log", "--full-history", "-m", "--format=%H", "--diff-filter=A", tip, "--", RISKY_FILE]).decode()
+    out = git_read(["log", "--full-history", "-m", "--diff-merges=separate", "--format=%H", "--diff-filter=A", tip,
+                    "--", RISKY_FILE]).decode()
     return list(dict.fromkeys(out.split()))
 
 
@@ -3899,7 +3971,8 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
     `diff-tree --stdin`. It fails closed: an octopus merge, an old git, or any merge-tree error makes every such merge
     its own risky change."""
     spec = [f":(glob){p}" for p in rules["paths"]]
-    out = git_read(["-c", "core.quotePath=false", "log", "--merges", "--full-history", "-m", "--name-only",
+    out = git_read(["-c", "core.quotePath=false", "log", "--merges", "--full-history", "-m", "--diff-merges=separate",
+                    "--name-only",
                     "--format=%x00%H %P", tip, *(["--not", *exclude] if exclude else []), "--", *spec]
                    ).decode(errors="replace")
     parents: dict[str, list[str]] = {}
@@ -3916,6 +3989,11 @@ def merge_own_hits(rules: dict, tip: str, exclude: list[str]) -> set[str]:
     if local_attributes():
         # No option switches `$GIT_DIR/info/attributes` off: every merge touching a risky path counts (ESC-394)
         MERGE_NOTES.add("info/attributes")
+        return set(parents)
+    driver = merge_config()
+    if driver:
+        # Nor the repository's own config: a merge or diff driver there fails closed the same way (ESC-396)
+        MERGE_NOTES.add(f"config:{driver}")
         return set(parents)
     pairs = sorted(m for m, ps in parents.items() if len(ps) == 2)
     # An octopus fails closed; so does a risky path with a control character in it, which no parse can be trusted to

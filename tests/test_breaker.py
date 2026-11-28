@@ -2670,7 +2670,7 @@ class HarnRound16Test(BreakerCase):
                 self.assertIn("BREAKER_STALE", self.codes(self.check(clone, *args, env=env)[1]))
             clone.git("config", "merge.default", "union")
             with self.subTest(clone="pull request" if clone is pr else "trunk", key="merge.default"):
-                codes = self.codes(self.check(clone, *args, env=env)[1])
+                codes = [d["code"] for d in self.check(clone, *args, env=env)[1]]  # MERGE_CONFIG is a warning
                 self.assertIn("BREAKER_STALE", codes)
                 self.assertIn("MERGE_CONFIG", codes)
 
@@ -2678,7 +2678,7 @@ class HarnRound16Test(BreakerCase):
         repo, _ = HarnRound15Test.grant_flow(self, False, False, 263)
         self.assertNotIn("BREAKER_STALE", self.codes(self.check(repo)[1]))
         repo.git("config", "merge.ours.driver", "true")
-        codes = self.codes(self.check(repo)[1])
+        codes = [d["code"] for d in self.check(repo)[1]]  # MERGE_CONFIG is a warning
         self.assertIn("MERGE_CONFIG", codes)
         self.assertIn("BREAKER_STALE", codes)
 

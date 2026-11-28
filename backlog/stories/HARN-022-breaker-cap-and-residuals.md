@@ -262,7 +262,7 @@ below.
   test_breaker suite. The builder stopped; the coordinator decided: git's merge read with no attributes (a
   non-empty info/attributes fails closed), `.gitattributes` always risky, a union-merged sync merge accepted as a
   second fail-closed limitation, and every risky-path verdict from git's own pathspec.
-- Round 16 · head 112702f0f96538049ee48d245b15ce254563e79f · 5 findings (2 MEDIUM, 1 LOW-MEDIUM, 2 LOW), not fixed
+- Round 16 · head 112702f0f96538049ee48d245b15ce254563e79f · 5 findings (2 MEDIUM, 1 LOW-MEDIUM, 2 LOW), fixed (ESC-396)
   A new agent, cold, scratch clones only, told both accepted limitations, pointed at git configuration and path
   classification; the MEDIUM and LOW-MEDIUM findings run by the builder too. Reproduced: (MEDIUM) `log.diffMerges`
   (first-parent, combined, dense-combined) changes what `git log -m` lists, so merge_own_hits never sees a sync
@@ -272,4 +272,6 @@ below.
   `GIT_CONFIG_COUNT` turns an own-change merge into a clean one; (LOW, to HARN-023, older than this story)
   `GIT_LITERAL_PATHSPECS=1` turns every risky pathspec literal; (LOW, to HARN-023) a reversed class range in
   risky.toml crashes `check`. Held: round 15's fixes, `**/.gitattributes` matching, git's pathspec in every verdict
-  path, the parents' trees in risky_paths_of, the two copies. The builder stops here: the coordinator decides.
+  path, the parents' trees in risky_paths_of, the two copies. The builder stopped; the coordinator decided: one
+  hermetic environment for every git read, explicit flags and pins over config, a local merge or diff driver fails
+  closed (MERGE_CONFIG); both LOW findings fixed here too.

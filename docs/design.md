@@ -281,7 +281,12 @@ attributes file), so no `.gitattributes`, committed, added later or only in a wo
 `$GIT_DIR/info/attributes`, which no option switches off, makes every merge touching a risky path count
 (`MERGE_ATTRIBUTES`, a warning). Second known limitation, also fail-closed: a repository that merges a risky file
 with `merge=union` gets `BREAKER_STALE` on a sync merge git merged by that attribute; the same remedy applies.
-Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. A change after the close is covered only by a
+Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. Every git read runs in
+one hermetic environment (`hermetic_env`): no system or global config, no config or pathspec switches from the
+environment, no system attributes, and pinned values (`log.diffMerges=separate`, `merge.default=text`, no
+renormalising) over the repository's own config; a merge or diff driver in that config, which nothing switches
+off, makes every merge touching a risky path count (`MERGE_CONFIG`, a warning). Fetches, pushes and the commands
+that commit keep the person's config: credentials and identity live there. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads
 rules from the trunk's committed tree (a pull request is judged by the base's `risky.toml`, so it cannot loosen its
