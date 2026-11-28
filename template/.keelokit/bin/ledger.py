@@ -476,7 +476,8 @@ DEFAULT_ROUNDS = 3
 MAX_ROUNDS = 20
 # The files that decide what is judged are always risky, whatever risky.toml says (ESC-331): a change to them belongs
 # to a story, which then needs its rounds. A `.gitattributes` at any depth steers how git merges and diffs (ESC-394).
-ALWAYS_RISKY = (RISKY_FILE, STATE_FILE, CORRECTIONS, "**/.gitattributes")
+ATTRIBUTES_GLOB = "**/.gitattributes"
+ALWAYS_RISKY = (RISKY_FILE, STATE_FILE, CORRECTIONS, ATTRIBUTES_GLOB)
 # What a `No-story: release` commit may change and still not be RISKY_NO_STORY (scripts/release.sh, ship-release).
 RELEASE_FILES = ("CHANGELOG.md", ".claude-plugin/plugin.json", "package.json")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -3722,7 +3723,13 @@ def risky_reasons(story: dict, rules: dict | None, changed: dict, hits: list | t
     why += [f"dimension {d}" for d in story.get("risk_dims", story["dimensions"]) if d in rules["dimensions"]]
     why += [f"its commit {short(sha)} changes a path of {RISKY_FILE}" for sha in hits]
     for pattern in rules["paths"]:
-        why += [f"touches {t} ({pattern})" for t in story["touches"] if touch_meets(t, pattern)]
+        # A `.gitattributes` can sit in any directory: only a touch naming one meets it (a commit changing one is
+        # risky by git's own pathspec, ESC-394); a directory touch would make every story risky.
+        if pattern == ATTRIBUTES_GLOB:
+            touched = [t for t in story["touches"] if glob_regex(pattern).fullmatch(t.strip().lstrip("/"))]
+        else:
+            touched = [t for t in story["touches"] if touch_meets(t, pattern)]
+        why += [f"touches {t} ({pattern})" for t in touched]
         # `changed`: pattern -> the paths git's own pathspec matched (ESC-395)
         why += [f"changes {p} ({pattern})" for p in sorted(changed.get(pattern, ()))]
     return list(dict.fromkeys(why))
