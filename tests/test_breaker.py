@@ -1293,5 +1293,124 @@ class HarnRound3Test(BreakerCase):
                 self.assertIn(f"{sid}: risky", repo.ledger("risky", sid).stdout)
 
 
+class HarnRound4Test(BreakerCase):
+    """HARN-022 round 4, the coordinator's breaker (ESC-369..372): each finding reproduced as a failing test first."""
+
+    @staticmethod
+    def codes(diffs: list[dict]) -> list[tuple[str, str]]:
+        return [(d["level"], d["code"]) for d in diffs]
+
+    def closed_with_round(self) -> GitRepo:
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.commit("feat: check\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        self.close(repo, "AUTH-001", {"apps/web/x.ts": "x\n"}, rounds=round_line(1, repo.sha()))
+        self.assertEqual(self.check(repo), (0, []))
+        return repo
+
+    def test_HARN_022_S3_breaker4_renaming_the_story_file_never_hides_a_change_after_the_close_ESC_369(self):
+        for how in ("rename", "rename and edit"):
+            with self.subTest(how=how):
+                repo = self.closed_with_round()
+                repo.commit("fix: unreviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0  # backdoor\n"})
+                repo.git("mv", path_of("AUTH-001"), "backlog/stories/AUTH-001-renamed.md")
+                if how == "rename and edit":
+                    path = repo.path / "backlog/stories/AUTH-001-renamed.md"
+                    path.write_text(path.read_text() + "\nA line.\n")
+                    repo.git("add", "-A")
+                repo.git("commit", "-q", "-m", "docs: rename story\n\nNo-story: docs", when=repo.next_date())
+                repo.publish()
+                self.assertIn(("error", "RISKY_AFTER_CLOSE"), self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker4_renaming_hides_nothing_in_a_pull_request_either_ESC_369(self):
+        repo = self.closed_with_round()
+        repo.git("checkout", "-q", "-b", "feature")
+        repo.commit("fix: unreviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0  # backdoor\n"})
+        repo.git("mv", path_of("AUTH-001"), "backlog/stories/AUTH-001-renamed.md")
+        repo.git("commit", "-q", "-m", "docs: rename story\n\nNo-story: docs", when=repo.next_date())
+        repo.git("push", "-q", "origin", "feature")
+        repo.git("checkout", "-q", "main")
+        ci = BreakerPullRequestTest.pull_request(self, repo, "feature", number=151)
+        self.assertIn(("error", "RISKY_AFTER_CLOSE"), self.codes(self.check(ci, "--ci", env=PR_ENV)[1]))
+
+    def test_HARN_022_S3_breaker4_a_second_file_with_the_id_does_not_move_the_record_ESC_369(self):
+        repo = self.closed_with_round()
+        repo.commit("fix: unreviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0  # backdoor\n"})
+        copy = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("docs: a copy\n\nNo-story: docs", {"backlog/stories/AUTH-001-copy.md": copy})
+        repo.publish()
+        self.assertIn(("error", "RISKY_AFTER_CLOSE"), self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker4_reverting_a_reviewed_fix_after_the_close_is_reported_ESC_370(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.commit("feat: check\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1  # vulnerable\n"})
+        fix = repo.commit("fix: round 1 finding\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1  # fixed\n"})
+        self.close(repo, "AUTH-001", {"apps/web/x.ts": "x\n"},
+                   rounds=round_line(1, fix, "1 finding: ESC-1 · fixed") + round_line(2, fix))
+        self.assertEqual(self.check(repo), (0, []))
+        repo.git("revert", "--no-edit", fix, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert fix\n\nThis reverts commit {fix}.\n\nPart-of: AUTH-001")
+        repo.publish()
+        self.assertIn(("error", "RISKY_AFTER_CLOSE"), self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker4_reverting_unreviewed_work_after_the_close_is_not_reported_ESC_370(self):
+        repo = self.closed_with_round()
+        bad = repo.commit("fix: unreviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0  # backdoor\n"})
+        repo.git("revert", "--no-edit", bad, when=repo.next_date())
+        repo.git("commit", "-q", "--amend", "-m", f"Revert\n\nThis reverts commit {bad}.\n\nPart-of: AUTH-001")
+        repo.publish()
+        self.assertEqual([c for c in self.codes(self.check(repo)[1]) if c[1] == "RISKY_AFTER_CLOSE"], [])
+
+    def test_HARN_022_S1_breaker4_risky_code_after_the_last_clean_round_is_stale_ESC_371(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        a = repo.commit("feat: reviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("docs: round 1\n\nPart-of: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, a)})
+        late = repo.commit("fix: unreviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 0  # backdoor\n"})
+        repo.commit("feat: AUTH-001\n\nWhat was decided.\n\nStory: AUTH-001", {"apps/web/x.ts": "x\n"})
+        repo.publish()
+        code, diffs = self.check(repo)
+        self.assertEqual(code, 1)
+        stale = [d for d in diffs if d["code"] == "BREAKER_STALE"]
+        self.assertEqual([d["level"] for d in stale], ["error"])
+        self.assertIn(late[:12], stale[0]["detail"])
+
+    def test_HARN_022_S1_breaker4_a_round_head_that_is_no_commit_of_the_close_is_no_clean_round_ESC_371(self):
+        for head in ("f" * 40, "e" * 40):
+            with self.subTest(head=head):
+                repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+                rounds = ("".join(round_line(i, repo.sha(), "2 findings: X · fixed") for i in (1, 2, 3))
+                          + round_line(4, head))
+                self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 0\n"}, rounds=rounds)
+                found = self.codes(self.check(repo)[1])
+                self.assertIn(("warning", "BREAKER_BAD_ENTRY"), found)
+                self.assertIn(("warning", "BREAKER_UNRESOLVED"), found)
+        # a commit that exists but that the close does not reach (another branch's) is no clean round either
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.git("checkout", "-q", "-b", "elsewhere")
+        other = repo.commit("chore: elsewhere\n\nNo-story: docs", {"docs/e.md": "e\n"})
+        repo.git("push", "-q", "origin", "elsewhere")
+        repo.git("checkout", "-q", "main")
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 0\n"}, rounds=round_line(1, other))
+        found = self.codes(self.check(repo)[1])
+        self.assertIn(("warning", "BREAKER_BAD_ENTRY"), found)
+        self.assertIn(("warning", "BREAKER_UNRESOLVED"), found)
+
+    def test_HARN_022_S1_breaker4_an_abbreviated_head_that_resolves_counts_ESC_371(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        a = repo.commit("feat: reviewed\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        self.close(repo, "AUTH-001", {"apps/web/x.ts": "x\n"}, rounds=round_line(1, a[:9]))
+        self.assertEqual(self.check(repo), (0, []))
+
+    def test_HARN_022_S4_breaker4_dot_parts_inside_a_touch_are_normalised_ESC_372(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=(".keelokit/./bin",)),
+                             "AUTH-002": story("AUTH-002", touches=("apps/../.keelokit/bin",)),
+                             "AUTH-003": story("AUTH-003", touches=("../outside/.keelokit/bin",))},
+                            risky='paths = [".keelokit/bin/**"]\n')
+        self.assertIn("AUTH-001: risky", repo.ledger("risky", "AUTH-001").stdout)
+        self.assertIn("AUTH-002: risky", repo.ledger("risky", "AUTH-002").stdout)
+        self.assertIn("AUTH-003: not risky", repo.ledger("risky", "AUTH-003").stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
