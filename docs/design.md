@@ -249,6 +249,13 @@ contract and writes the why in its `Story:` commit's body, `coordinate` checks a
 
 ### Breaker rounds: risky stories close after cold rounds (HARN-021)
 
+**Who decides.** The verdict that counts is the CI's: a fresh clone of the committed content, judged by the trunk's
+rules. Local checks (the pre-push hook, an agent's own runs) are hardened against their environment (the hermetic git
+reads above) and fail closed where they detect steering (`MERGE_ATTRIBUTES`, `MERGE_CONFIG`), but a local clone's own
+state (its config, replace refs, `info/*`, its environment) can still differ. That is accepted when it can only hide
+from a local run what the CI still reports; a committed-content path to a wrong CI verdict, or a false error on a
+correct committed flow, is never accepted.
+
 A builder's own adversarial review, and a breaker that read the builder's reasoning, missed real bugs on five
 stories in one night; a fresh agent given only the code, the diff and the invariants found them each time. That is
 now the rule for **risky** stories, in this repo and in every generated project. `.keelokit/risky.toml` (the
@@ -283,9 +290,10 @@ attributes file), so no `.gitattributes`, committed, added later or only in a wo
 with `merge=union` gets `BREAKER_STALE` on a sync merge git merged by that attribute; the same remedy applies.
 Whether a path is risky is always git's own pathspec's call, never a regex of the ledger's. Every git read runs in
 one hermetic environment (`hermetic_env`): no system or global config, no config or pathspec switches from the
-environment, no system attributes, and pinned values (`log.diffMerges=separate`, `merge.default=text`, no
-renormalising) over the repository's own config; a merge or diff driver in that config, which nothing switches
-off, makes every merge touching a risky path count (`MERGE_CONFIG`, a warning). Fetches, pushes and the commands
+environment, no system attributes, no replace objects, and pinned values (`log.diffMerges=separate`, no
+renormalising, the trailer separators) over the repository's own config; a key there that steers a merge or a diff
+(a merge or diff driver, `merge.default`, `merge.renormalize`, `merge.conflictStyle`, `diff.external`), in any scope
+git reads (the worktree's config too), makes every merge touching a risky path count (`MERGE_CONFIG`, a warning). Fetches, pushes and the commands
 that commit keep the person's config: credentials and identity live there. A change after the close is covered only by a
 new round on it whose head a re-close (a later `Story:` commit) reaches; a round line naming an older head covers
 nothing new. A revert of a risky change is itself a risky change: it gets no exemption and needs its own round. The ledger enforces it, not the doctor: it already knows what closed a story and since when, reads

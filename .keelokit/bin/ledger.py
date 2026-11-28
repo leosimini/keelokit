@@ -122,6 +122,7 @@ import os  # noqa: E402
 import posixpath  # noqa: E402
 import re  # noqa: E402
 import signal  # noqa: E402
+import stat  # noqa: E402
 import subprocess  # noqa: E402
 import time  # noqa: E402
 import tomllib  # noqa: E402
@@ -212,11 +213,13 @@ def git_env() -> dict:
 
 
 # What every git read pins over any config git still reads (the repository's own): explicit values beat config (ESC-396).
-READ_PINS = (("log.diffMerges", "separate"), ("merge.default", "text"), ("merge.renormalize", "false"),
-             ("core.autocrlf", "false"), ("diff.renames", "true"), ("core.quotePath", "true"))
+# No `merge.default`: a pinned driver name is one a user-defined driver of that name shadows (ESC-397); merge_config
+# fails closed on any config that names a driver instead.
+READ_PINS = (("log.diffMerges", "separate"), ("merge.renormalize", "false"), ("core.autocrlf", "false"),
+             ("diff.renames", "true"), ("core.quotePath", "true"), ("trailer.separators", ":"))
 # Variables that steer what git reads or how a pathspec matches; the hermetic environment drops them (ESC-396).
 HERMETIC_DROP = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
-                 "GIT_ATTR_SOURCE", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS")
+                 "GIT_ATTR_SOURCE", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_REPLACE_REF_BASE", "GIT_GRAFT_FILE")
 HERMETIC: dict = {}
 
 
@@ -234,7 +237,7 @@ def hermetic_env() -> dict:
     if HERMETIC["trusted"]:
         pins += [("safe.directory", str(ROOT)), ("safe.directory", str(Path(ROOT).resolve()))]
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
-               GIT_CONFIG_COUNT=str(len(pins)))
+               GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_COUNT=str(len(pins)))
     for i, (key, value) in enumerate(pins):
         env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
     return env
@@ -622,22 +625,36 @@ def local_attributes() -> bool:
         return True
     path = Path(rel) if os.path.isabs(rel) else Path(ROOT) / rel
     try:
-        return path.is_file() and path.stat().st_size > 0
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
     except OSError:
         return True
+    # git opens whatever is there: only an empty regular file says nothing (a FIFO, a link or a directory may, ESC-397)
+    return not (stat.S_ISREG(st.st_mode) and st.st_size == 0)
 
 
 def merge_config() -> str | None:
-    """The first repository-local config key (includes followed) that can steer git's merge or diff, which no option
-    switches off: any `merge.*`, a diff driver (`diff.<name>.<key>`) or `diff.external`. None: none."""
+    """The first config key git itself would read here (every scope the hermetic environment leaves: the repository's
+    config, its worktree config, includes followed; not the ledger's own pins) that can steer git's merge, merge-file
+    or a diff, which no option switches off: a merge driver (`merge.<name>.driver`, `.recursive`), `merge.default`,
+    `merge.renormalize`, `merge.conflictStyle`, a diff driver (`diff.<name>.<key>`) or `diff.external` (ESC-397).
+    `merge.ff`, `merge.tool`, `merge.log` and the like steer nothing the ledger reads. None: none."""
     try:
-        out = git_read(["config", "--local", "--includes", "--name-only", "--get-regexp", r"^(merge|diff)\."],
+        out = git_read(["config", "--show-scope", "--includes", "--name-only", "--get-regexp", r"^(merge|diff)\."],
                        ok=(0, 1)).decode(errors="replace")
     except LedgerError:
         return "unreadable"
-    for key in git_lines(out):
+    for line in git_lines(out):
+        scope, _, key = line.strip().partition("\t")
         key = key.strip().lower()
-        if key.startswith("merge.") or key == "diff.external" or key.count(".") >= 2:
+        if not key or scope == "command":
+            continue
+        parts = key.split(".")
+        steering = (parts[0] == "merge" and (len(parts) >= 3 and parts[-1] in ("driver", "recursive")
+                                             or key in ("merge.default", "merge.renormalize", "merge.conflictstyle"))
+                    or parts[0] == "diff" and (len(parts) >= 3 or key == "diff.external"))
+        if steering:
             return key
     return None
 
@@ -650,8 +667,9 @@ def merge_notes() -> list[dict]:
     diffs = []
     if "info/attributes" in MERGE_NOTES:
         diffs.append({"level": "warning", "code": "MERGE_ATTRIBUTES", "detail": (
-            "$GIT_DIR/info/attributes is not empty here and no option switches it off, so git's merge cannot be read "
-            "as git makes it: every merge that touches a risky path counts as its own change (empty that file)")})
+            "$GIT_DIR/info/attributes here is not an empty file and no option switches it off, so git's merge cannot "
+            "be read as git makes it: every merge that touches a risky path counts as its own change (empty it, or "
+            "remove it)")})
     for note in sorted(n for n in MERGE_NOTES if n.startswith("config:")):
         diffs.append({"level": "warning", "code": "MERGE_CONFIG", "detail": (
             f"the repository's own config sets {note.split(':', 1)[1]}, which can steer git's merge or diff and no "
