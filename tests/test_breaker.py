@@ -2107,10 +2107,11 @@ class HarnRound11Test(BreakerCase):
         def build(sid: str, branch: str, text: bytes, chmod: bool, add: bytes | None) -> None:
             repo.git("checkout", "-q", "-b", branch, base)
             (repo.path / self.TOOL).write_bytes(text)
-            if chmod:
-                os.chmod(repo.path / self.TOOL, 0o755)
             repo.git("add", "-f", self.TOOL)
+            if chmod:  # the executable bit set in the index, not on disk
+                repo.git("update-index", "--chmod=+x", self.TOOL)
             repo.git("commit", "-q", "-m", f"feat: {sid} work\n\nPart-of: {sid}", when=repo.next_date())
+            repo.git("reset", "-q", "--hard")  # the working tree takes the committed mode
             head = repo.sha()
             repo.git("fetch", "-q", "origin")
             message = f"Merge origin/main into {branch}\n\nPart-of: {sid}"
